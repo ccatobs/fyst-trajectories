@@ -7,7 +7,14 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing import Trajectory, get_fyst_site, print_trajectory
+from fyst_pointing import (
+    SCAN_FLAG_SCIENCE,
+    SCAN_FLAG_TURNAROUND,
+    SCAN_FLAG_UNCLASSIFIED,
+    Trajectory,
+    get_fyst_site,
+    print_trajectory,
+)
 from fyst_pointing.exceptions import AzimuthBoundsError
 from fyst_pointing.patterns import TrajectoryMetadata
 from fyst_pointing.trajectory_utils import _format_trajectory
@@ -343,3 +350,65 @@ class TestFormatTrajectory:
         output = buf.getvalue()
         assert len(output) > 0
         assert "t (s)" in output
+
+
+class TestScanFlagValidation:
+    """Tests for scan_flag field on Trajectory."""
+
+    def test_scan_flag_length_mismatch_raises(self):
+        """scan_flag must match times length if provided."""
+        times = np.array([0, 1, 2], dtype=float)
+        with pytest.raises(ValueError, match="scan_flag"):
+            Trajectory(
+                times=times,
+                az=np.zeros(3),
+                el=np.zeros(3),
+                az_vel=np.zeros(3),
+                el_vel=np.zeros(3),
+                scan_flag=np.zeros(5, dtype=np.int8),
+            )
+
+    def test_science_mask_default_all_true(self):
+        """science_mask should be all True when scan_flag is None."""
+        traj = Trajectory(
+            times=np.array([0, 1, 2], dtype=float),
+            az=np.zeros(3),
+            el=np.zeros(3),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+        )
+        assert traj.scan_flag is None
+        mask = traj.science_mask
+        assert mask.dtype == bool
+        assert np.all(mask)
+
+    def test_science_mask_with_flags(self):
+        """science_mask should reflect scan_flag values."""
+        flags = np.array(
+            [SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, SCAN_FLAG_SCIENCE],
+            dtype=np.int8,
+        )
+        traj = Trajectory(
+            times=np.array([0, 1, 2], dtype=float),
+            az=np.zeros(3),
+            el=np.zeros(3),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+            scan_flag=flags,
+        )
+        expected = np.array([True, False, True])
+        np.testing.assert_array_equal(traj.science_mask, expected)
+
+    def test_science_mask_excludes_unclassified(self):
+        """Unclassified samples are NOT treated as science."""
+        flags = np.array([SCAN_FLAG_UNCLASSIFIED, SCAN_FLAG_SCIENCE], dtype=np.int8)
+        traj = Trajectory(
+            times=np.array([0, 1], dtype=float),
+            az=np.zeros(2),
+            el=np.zeros(2),
+            az_vel=np.zeros(2),
+            el_vel=np.zeros(2),
+            scan_flag=flags,
+        )
+        expected = np.array([False, True])
+        np.testing.assert_array_equal(traj.science_mask, expected)

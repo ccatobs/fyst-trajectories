@@ -3,6 +3,14 @@ Plotting Functions
 
 Visualization utilities for trajectories and observational data.
 
+.. note::
+
+   This module requires the ``plotting`` extra::
+
+       pip install "fyst-pointing[plotting]"
+
+   This installs ``matplotlib`` and ``scipy``.
+
 .. automodule:: fyst_pointing.plotting
    :members:
    :undoc-members:

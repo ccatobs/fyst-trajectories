@@ -7,6 +7,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from fyst_pointing.patterns import ConstantElScanConfig, ConstantElScanPattern
+from fyst_pointing.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
 
 class TestConstantElScanPattern:
@@ -334,3 +335,68 @@ class TestConstantElPropertyBased:
 
         # Duration matches requested
         assert trajectory.duration == pytest.approx(duration, abs=0.5)
+
+
+class TestScanFlags:
+    """Tests for turnaround flagging in constant elevation scans."""
+
+    def _make_trajectory(self, site, az_start=100.0, az_stop=150.0, az_speed=2.0, az_accel=1.0):
+        config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=az_start,
+            az_stop=az_stop,
+            elevation=45.0,
+            az_speed=az_speed,
+            az_accel=az_accel,
+            n_scans=1,
+        )
+        pattern = ConstantElScanPattern(config)
+        return pattern.generate(site, duration=120.0, start_time=None)
+
+    def test_ce_trajectory_has_scan_flags(self, site):
+        """CE trajectory should have scan_flag with only values 1 and 2."""
+        trajectory = self._make_trajectory(site)
+
+        assert trajectory.scan_flag is not None
+        assert len(trajectory.scan_flag) == trajectory.n_points
+        unique_flags = set(np.unique(trajectory.scan_flag))
+        assert unique_flags <= {SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND}
+
+    def test_ce_science_mask(self, site):
+        """science_mask should be True only for constant-velocity samples."""
+        trajectory = self._make_trajectory(site)
+        mask = trajectory.science_mask
+
+        assert mask.dtype == bool
+        assert mask.shape == (trajectory.n_points,)
+        # Science mask matches scan_flag == 1
+        np.testing.assert_array_equal(mask, trajectory.scan_flag == SCAN_FLAG_SCIENCE)
+        # There should be both science and turnaround samples
+        assert mask.sum() > 0
+        assert (~mask).sum() > 0
+
+    def test_ce_turnaround_at_edges(self, site):
+        """Turnaround flags should appear near azimuth extremes."""
+        trajectory = self._make_trajectory(site)
+
+        az_min = trajectory.az.min()
+        az_max = trajectory.az.max()
+        az_range = az_max - az_min
+
+        # Samples near the edges (within 10% of range) should be turnaround
+        near_min = trajectory.az < az_min + 0.1 * az_range
+        near_max = trajectory.az > az_max - 0.1 * az_range
+        near_edges = near_min | near_max
+
+        # At least some edge samples should be flagged as turnaround
+        turnaround_at_edges = near_edges & (trajectory.scan_flag == SCAN_FLAG_TURNAROUND)
+        assert turnaround_at_edges.sum() > 0
+
+    def test_triangular_profile_all_turnaround(self, site):
+        """Small throws with triangular profile should be all turnaround."""
+        trajectory = self._make_trajectory(
+            site, az_start=100.0, az_stop=102.0, az_speed=2.0, az_accel=1.0
+        )
+
+        assert trajectory.scan_flag is not None
+        assert np.all(trajectory.scan_flag == SCAN_FLAG_TURNAROUND)

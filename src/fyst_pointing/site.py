@@ -168,6 +168,12 @@ class AtmosphericConditions:
         Temperature in Kelvin.
     relative_humidity : float
         Relative humidity as a fraction (0-1).
+    obswl : float or None, optional
+        Observing wavelength in microns. When ``> 100 µm``, astropy uses
+        the radio refraction model instead of optical. The radio model is
+        wavelength-independent, so any value above 100 µm (e.g. 200 µm)
+        covers all FYST submillimeter bands. Default is ``None``, which
+        preserves astropy's default optical refraction (1.0 µm).
 
     Raises
     ------
@@ -178,6 +184,7 @@ class AtmosphericConditions:
     pressure: float
     temperature: float
     relative_humidity: float
+    obswl: float | None = None
 
     def __post_init__(self) -> None:
         """Validate atmospheric conditions."""
@@ -223,6 +230,13 @@ class AtmosphericConditions:
     def temperature_degc(self) -> u.Quantity:
         """Temperature as an astropy Quantity in Celsius (for AltAz frame)."""
         return (self.temperature - 273.15) * u.deg_C
+
+    @property
+    def obswl_quantity(self) -> u.Quantity | None:
+        """Observing wavelength as an astropy Quantity in microns, or None."""
+        if self.obswl is None:
+            return None
+        return self.obswl * u.micron
 
 
 @dataclass(frozen=True)

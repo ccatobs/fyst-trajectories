@@ -136,6 +136,54 @@ class PongScanPattern(CelestialPattern):
         """Return pattern identifier."""
         return "pong"
 
+    def generate_offsets(self, duration: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate scan pattern offsets without coordinate conversion.
+
+        Returns pure sky-plane offsets suitable for use by external libraries
+        that handle their own coordinate transforms.
+
+        Parameters
+        ----------
+        duration : float
+            Total duration of the scan in seconds.
+
+        Returns
+        -------
+        times : np.ndarray
+            Time array in seconds from scan start.
+        x_offsets : np.ndarray
+            X offsets in the sky-plane tangent frame, in degrees.
+        y_offsets : np.ndarray
+            Y offsets in the sky-plane tangent frame, in degrees.
+        """
+        if duration <= 0:
+            raise ValueError(f"duration must be positive, got {duration}")
+
+        x_numvert, y_numvert, amp_x, amp_y = self._compute_vertices()
+
+        vert_spacing = math.sqrt(2) * self.config.spacing
+        vavg = self.config.velocity / math.sqrt(2)
+
+        peri_x = x_numvert * vert_spacing * 2 / vavg
+        peri_y = y_numvert * vert_spacing * 2 / vavg
+
+        n_points = int(round(duration / self.config.timestep)) + 1
+        times = np.linspace(0, duration, n_points)
+
+        x_offsets = self._fourier_triangle_wave(self.config.num_terms, amp_x, times, peri_x)
+        y_offsets = self._fourier_triangle_wave(self.config.num_terms, amp_y, times, peri_y)
+
+        if self.config.angle != 0.0:
+            angle_rad = math.radians(self.config.angle)
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+            x_rot = x_offsets * cos_a - y_offsets * sin_a
+            y_rot = x_offsets * sin_a + y_offsets * cos_a
+            x_offsets = x_rot
+            y_offsets = y_rot
+
+        return times, x_offsets, y_offsets
+
     def generate(
         self,
         site: Site,
@@ -179,32 +227,9 @@ class PongScanPattern(CelestialPattern):
                 "Provide an astropy Time object."
             )
 
-        timestep = self.config.timestep
         coords = Coordinates(site, atmosphere=atmosphere)
 
-        x_numvert, y_numvert, amp_x, amp_y = self._compute_vertices()
-
-        vert_spacing = math.sqrt(2) * self.config.spacing
-
-        vavg = self.config.velocity / math.sqrt(2)
-
-        peri_x = x_numvert * vert_spacing * 2 / vavg
-        peri_y = y_numvert * vert_spacing * 2 / vavg
-
-        n_points = int(round(duration / timestep)) + 1
-        times = np.linspace(0, duration, n_points)
-
-        x_offsets = self._fourier_triangle_wave(self.config.num_terms, amp_x, times, peri_x)
-        y_offsets = self._fourier_triangle_wave(self.config.num_terms, amp_y, times, peri_y)
-
-        if self.config.angle != 0.0:
-            angle_rad = math.radians(self.config.angle)
-            cos_a = math.cos(angle_rad)
-            sin_a = math.sin(angle_rad)
-            x_rot = x_offsets * cos_a - y_offsets * sin_a
-            y_rot = x_offsets * sin_a + y_offsets * cos_a
-            x_offsets = x_rot
-            y_offsets = y_rot
+        times, x_offsets, y_offsets = self.generate_offsets(duration)
 
         obstimes = start_time + TimeDelta(times * u.s)
 

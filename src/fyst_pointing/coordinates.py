@@ -185,15 +185,21 @@ class Coordinates:
         Returns
         -------
         AltAz
-            Astropy AltAz frame configured for the site.
+            Astropy AltAz frame configured for the site. When the
+            atmosphere has ``obswl > 100 µm``, astropy automatically
+            uses the radio refraction model instead of optical.
         """
-        return AltAz(
-            obstime=obstime,
-            location=self.location,
-            pressure=self.atmosphere.pressure_hpa,
-            temperature=self.atmosphere.temperature_degc,
-            relative_humidity=self.atmosphere.relative_humidity,
-        )
+        kwargs = {
+            "obstime": obstime,
+            "location": self.location,
+            "pressure": self.atmosphere.pressure_hpa,
+            "temperature": self.atmosphere.temperature_degc,
+            "relative_humidity": self.atmosphere.relative_humidity,
+        }
+        obswl = self.atmosphere.obswl_quantity
+        if obswl is not None:
+            kwargs["obswl"] = obswl
+        return AltAz(**kwargs)
 
     def radec_to_altaz(
         self,

@@ -71,9 +71,13 @@ class ConstantElScanConfig(ScanConfig):
     elevation : float
         Fixed elevation in degrees.
     az_speed : float
-        Azimuth scan speed in degrees/second.
+        Azimuth scan speed in azimuth coordinate degrees/second
+        (not on-sky). The on-sky speed is
+        ``az_speed * cos(elevation)``. This is the value sent
+        directly to the Vertex ACU.
     az_accel : float
-        Azimuth acceleration in degrees/second^2.
+        Azimuth acceleration in azimuth coordinate
+        degrees/second^2 (not on-sky).
     n_scans : int
         Number of one-way scan sweeps (legs).
     timestep : float
@@ -146,7 +150,9 @@ class PongScanConfig(ScanConfig):
     spacing : float
         Space between scan lines in degrees. Must be positive.
     velocity : float
-        Total scan velocity in degrees/second. Must be positive.
+        Total scan velocity in sky-offset degrees/second. This is
+        the speed in the tangent plane, not azimuth coordinate
+        velocity. Must be positive.
     num_terms : int
         Fourier terms for triangle wave approximation.
     angle : float
@@ -227,7 +233,9 @@ class DaisyScanConfig(ScanConfig):
     radius : float
         Characteristic radius R0 in degrees. Must be positive.
     velocity : float
-        Scan velocity in degrees/second. Must be positive.
+        Scan velocity in sky-offset degrees/second. This is the
+        speed in the tangent plane, not azimuth coordinate
+        velocity. Must be positive.
     turn_radius : float
         Radius of curvature for turns in degrees. Must be positive.
     avoidance_radius : float
@@ -361,7 +369,9 @@ class LinearMotionConfig(ScanConfig):
     el_start : float
         Starting elevation in degrees.
     az_velocity : float
-        Azimuth velocity in degrees/second.
+        Azimuth velocity in azimuth coordinate degrees/second
+        (not on-sky). The on-sky component is
+        ``az_velocity * cos(elevation)``.
     el_velocity : float
         Elevation velocity in degrees/second.
     timestep : float

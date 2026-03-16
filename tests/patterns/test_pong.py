@@ -202,3 +202,26 @@ class TestPongVertexComputation:
         x_numvert, y_numvert, _, _ = pattern._compute_vertices()
 
         assert (x_numvert % 2) != (y_numvert % 2)
+
+
+class TestPongScanFlags:
+    """Tests for scan flag behavior on Pong trajectories."""
+
+    def test_pong_trajectory_no_flags(self, site):
+        """Pong trajectory should have scan_flag=None (continuous pattern)."""
+        start_time = Time("2026-03-15T04:00:00", scale="utc")
+        config = PongScanConfig(
+            timestep=0.1,
+            width=2.0,
+            height=2.0,
+            spacing=0.1,
+            velocity=0.5,
+            num_terms=4,
+            angle=0.0,
+        )
+        pattern = PongScanPattern(ra=180.0, dec=-30.0, config=config)
+        trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
+
+        assert trajectory.scan_flag is None
+        # science_mask should be all True when scan_flag is None
+        assert np.all(trajectory.science_mask)

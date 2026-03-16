@@ -1,6 +1,8 @@
 Installation
 ============
 
+**Requires Python 3.10 or higher.**
+
 From GitHub::
 
     pip install "fyst-pointing @ git+https://github.com/ccatobs/fyst-pointing.git"

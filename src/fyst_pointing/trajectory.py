@@ -64,6 +64,12 @@ if TYPE_CHECKING:
     from .patterns.base import TrajectoryMetadata
     from .site import Site
 
+# Scan flag constants for turnaround flagging.
+# These follow the SO ACU convention: 0 = unclassified, 1 = science, 2 = turnaround.
+SCAN_FLAG_UNCLASSIFIED: int = 0
+SCAN_FLAG_SCIENCE: int = 1
+SCAN_FLAG_TURNAROUND: int = 2
+
 
 # Trajectory is intentionally a non-frozen (mutable) dataclass.  Pattern
 # generate() methods and TrajectoryBuilder set metadata after construction,
@@ -102,6 +108,10 @@ class Trajectory:
         The epoch/equinox if relevant (e.g., "J2000"). Primarily used for
         documentation when the trajectory was derived from celestial coordinates.
         Default is None.
+    scan_flag : np.ndarray or None, optional
+        Per-sample scan phase flag. Values follow the SO ACU convention:
+        0 = unclassified, 1 = constant-velocity science sweep,
+        2 = turnaround. None means no flagging info is available.
 
     Attributes
     ----------
@@ -128,6 +138,7 @@ class Trajectory:
     metadata: "TrajectoryMetadata | None" = field(default=None, repr=False)
     coordsys: str | None = None
     epoch: str | None = None
+    scan_flag: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         """Validate that all trajectory arrays have the same length and are finite."""
@@ -144,6 +155,11 @@ class Trajectory:
                 raise ValueError(
                     f"Array length mismatch: times has {n} elements but {name} has {len(arr)}"
                 )
+        if self.scan_flag is not None and len(self.scan_flag) != n:
+            raise ValueError(
+                f"Array length mismatch: times has {n} elements "
+                f"but scan_flag has {len(self.scan_flag)}"
+            )
         for name, arr in [
             ("times", self.times),
             ("az", self.az),
@@ -183,6 +199,22 @@ class Trajectory:
     def center_dec(self) -> float | None:
         """Center Dec from metadata, if available."""
         return self.metadata.center_dec if self.metadata else None
+
+    @property
+    def science_mask(self) -> np.ndarray:
+        """Boolean mask that is True for science-quality samples.
+
+        Returns True where ``scan_flag == SCAN_FLAG_SCIENCE``, or all True
+        if ``scan_flag`` is None (no flagging information available).
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array with the same length as ``times``.
+        """
+        if self.scan_flag is None:
+            return np.ones(self.n_points, dtype=bool)
+        return self.scan_flag == SCAN_FLAG_SCIENCE
 
     @property
     def az_accel(self) -> np.ndarray:

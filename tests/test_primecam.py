@@ -253,6 +253,20 @@ class TestResolveOffset:
         """resolve_offset() with no arguments should return None (boresight)."""
         assert resolve_offset() is None
 
+    def test_dy_only_returns_instrument_offset(self):
+        """resolve_offset(dy=10.0) should return InstrumentOffset with dx=0.0."""
+        result = resolve_offset(dy=10.0)
+        assert isinstance(result, InstrumentOffset)
+        assert result.dx == pytest.approx(0.0)
+        assert result.dy == pytest.approx(10.0)
+
+    def test_dy_only_with_dx_none(self):
+        """resolve_offset(dx=None, dy=5.0) should return InstrumentOffset with dx=0.0."""
+        result = resolve_offset(dx=None, dy=5.0)
+        assert isinstance(result, InstrumentOffset)
+        assert result.dx == pytest.approx(0.0)
+        assert result.dy == pytest.approx(5.0)
+
     def test_module_and_dx_raises_value_error(self):
         """resolve_offset(module='i1', dx=10.0) should raise ValueError (ambiguous)."""
         with pytest.raises(ValueError, match="Cannot specify both"):

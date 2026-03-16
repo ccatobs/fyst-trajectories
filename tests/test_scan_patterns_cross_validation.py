@@ -68,10 +68,10 @@ def _pong_offsets_scanning(
     sample_interval: float,
     times: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute Pong x/y offsets using scan_patterns at specified times.
+    """Compute Pong x/y offsets using the scan_patterns algorithm at specified times.
 
-    Creates a Pong object, extracts the internal vertex/period parameters,
-    then evaluates the Fourier expansion at the given *times* so that both
+    Replicates the vertex computation from scan_patterns' Pong class and
+    evaluates the Fourier expansion at the given *times* so that both
     packages are sampled at identical instants.
 
     Parameters
@@ -98,16 +98,7 @@ def _pong_offsets_scanning(
     y : np.ndarray
         Y offsets in degrees.
     """
-    pong = Pong(
-        num_term=num_term,
-        width=width,
-        height=height,
-        spacing=spacing,
-        velocity=velocity,
-        sample_interval=sample_interval,
-    )
-
-    # Pull internal parameters for direct Fourier evaluation
+    # Compute internal parameters for direct Fourier evaluation
     vert_spacing = math.sqrt(2) * spacing
     vavg = velocity / math.sqrt(2)
 
@@ -131,9 +122,21 @@ def _pong_offsets_scanning(
     amp_x = x_numvert * vert_spacing / 2
     amp_y = y_numvert * vert_spacing / 2
 
-    # Evaluate the Fourier expansion at each requested time
-    x = np.array([pong._fourier_expansion(num_term, amp_x, t, peri_x) for t in times])
-    y = np.array([pong._fourier_expansion(num_term, amp_y, t, peri_y) for t in times])
+    # Evaluate the Fourier expansion at each requested time.
+    # This is the triangle-wave Fourier series from the SCUBA paper,
+    # previously accessed via Pong._fourier_expansion (removed in Phase 6).
+    def _fourier_expansion(n_term, amp, t, peri):
+        N = n_term * 2 - 1
+        a = (8 * amp) / (math.pi**2)
+        b = 2 * math.pi / peri
+        pos = 0.0
+        for n in range(1, N + 1, 2):
+            c = math.pow(-1, (n - 1) / 2) / n**2
+            pos += c * math.sin(b * n * t)
+        return pos * a
+
+    x = np.array([_fourier_expansion(num_term, amp_x, t, peri_x) for t in times])
+    y = np.array([_fourier_expansion(num_term, amp_y, t, peri_y) for t in times])
     return x, y
 
 

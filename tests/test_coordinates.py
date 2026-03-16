@@ -511,3 +511,66 @@ class TestProperMotion:
 
         assert az_pm == pytest.approx(az_static, abs=0.001)
         assert el_pm == pytest.approx(el_static, abs=0.001)
+
+
+class TestObservingWavelength:
+    """Tests for observing wavelength (obswl) support in refraction calculations."""
+
+    def test_radio_refraction_differs_from_optical(self, site):
+        """Radio refraction (obswl=200 µm) produces different results from optical.
+
+        At moderate elevations the difference should be ~1-2 arcsec. The radio
+        model refracts LESS than optical, so radio elevation should be slightly
+        lower (closer to geometric) than optical elevation for the same source.
+        """
+        # Typical FYST conditions at 5612 m: ~500 hPa, ~270 K
+        atmo_optical = AtmosphericConditions(
+            pressure=500.0, temperature=270.0, relative_humidity=0.2
+        )
+        atmo_radio = AtmosphericConditions(
+            pressure=500.0, temperature=270.0, relative_humidity=0.2, obswl=200.0
+        )
+
+        coords_optical = Coordinates(site, atmosphere=atmo_optical)
+        coords_radio = Coordinates(site, atmosphere=atmo_radio)
+
+        # Pick a source at moderate elevation (~30 deg) where refraction
+        # difference is measurable but not extreme.
+        obstime = Time("2026-06-15T04:00:00", scale="utc")
+        ra, dec = 180.0, -30.0
+
+        _az_opt, el_opt = coords_optical.radec_to_altaz(ra, dec, obstime=obstime)
+        _az_rad, el_rad = coords_radio.radec_to_altaz(ra, dec, obstime=obstime)
+
+        diff_arcsec = abs(el_opt - el_rad) * 3600.0
+
+        # The difference should be nonzero (radio != optical refraction model)
+        assert diff_arcsec > 0.1, f"Expected measurable difference, got {diff_arcsec:.3f} arcsec"
+        # At moderate elevation the difference should be under ~5 arcsec
+        assert diff_arcsec < 5.0, f"Difference unexpectedly large: {diff_arcsec:.3f} arcsec"
+
+    def test_obswl_none_matches_default(self, site):
+        """obswl=None should behave identically to the old code (no obswl kwarg)."""
+        atmo_with_none = AtmosphericConditions(
+            pressure=500.0, temperature=270.0, relative_humidity=0.2, obswl=None
+        )
+        atmo_without = AtmosphericConditions(
+            pressure=500.0, temperature=270.0, relative_humidity=0.2
+        )
+
+        coords_with = Coordinates(site, atmosphere=atmo_with_none)
+        coords_without = Coordinates(site, atmosphere=atmo_without)
+
+        obstime = Time("2026-06-15T04:00:00", scale="utc")
+        ra, dec = 83.633, 22.014
+
+        az1, el1 = coords_with.radec_to_altaz(ra, dec, obstime=obstime)
+        az2, el2 = coords_without.radec_to_altaz(ra, dec, obstime=obstime)
+
+        assert az1 == pytest.approx(az2, abs=1e-12)
+        assert el1 == pytest.approx(el2, abs=1e-12)
+
+    def test_no_refraction_ignores_obswl(self, site):
+        """no_refraction() should leave obswl=None (irrelevant when pressure=0)."""
+        atmo = AtmosphericConditions.no_refraction()
+        assert atmo.obswl is None

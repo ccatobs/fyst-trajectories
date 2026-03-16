@@ -325,6 +325,48 @@ class TestApplyDetectorOffset:
 
         assert adjusted.start_time == start_time
 
+    def test_preserves_scan_flag_with_offset(self, site):
+        """Test that scan_flag is preserved when applying a non-zero offset."""
+        start_time = Time("2026-03-15T04:00:00", scale="utc")
+        n = 10
+        scan_flag = np.array([1, 1, 1, 2, 2, 2, 1, 1, 1, 2], dtype=np.int8)
+        trajectory = Trajectory(
+            times=np.linspace(0, 9, n),
+            az=np.full(n, 180.0),
+            el=np.full(n, 45.0),
+            az_vel=np.zeros(n),
+            el_vel=np.zeros(n),
+            start_time=start_time,
+            scan_flag=scan_flag,
+        )
+
+        offset = InstrumentOffset(dx=30.0, dy=30.0)
+        adjusted = apply_detector_offset(trajectory, offset, site)
+
+        assert adjusted.scan_flag is not None
+        np.testing.assert_array_equal(adjusted.scan_flag, scan_flag)
+
+    def test_preserves_scan_flag_with_zero_offset(self, site):
+        """Test that scan_flag is preserved for the zero-offset early-exit path."""
+        start_time = Time("2026-03-15T04:00:00", scale="utc")
+        n = 5
+        scan_flag = np.array([1, 2, 1, 2, 1], dtype=np.int8)
+        trajectory = Trajectory(
+            times=np.linspace(0, 4, n),
+            az=np.full(n, 180.0),
+            el=np.full(n, 45.0),
+            az_vel=np.zeros(n),
+            el_vel=np.zeros(n),
+            start_time=start_time,
+            scan_flag=scan_flag,
+        )
+
+        offset = InstrumentOffset(dx=0.0, dy=0.0)
+        adjusted = apply_detector_offset(trajectory, offset, site)
+
+        assert adjusted.scan_flag is not None
+        np.testing.assert_array_equal(adjusted.scan_flag, scan_flag)
+
 
 class TestPrimeCamOffsets:
     """Tests for predefined PrimeCam offsets."""

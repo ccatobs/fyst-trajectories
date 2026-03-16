@@ -232,7 +232,9 @@ def plan_pong_scan(
     field : FieldRegion
         Rectangular field specification (center RA/Dec, width, height).
     velocity : float
-        Scan velocity in degrees/second. Must be positive.
+        Scan velocity in sky-offset degrees/second. This is the
+        speed in the tangent plane, not azimuth coordinate
+        velocity. Must be positive.
     spacing : float
         Line spacing in degrees. Must be positive.
     num_terms : int
@@ -425,7 +427,8 @@ def _find_elevation_crossing(
     if len(crossings) == 0:
         return None
     idx = crossings[0]
-    frac = (target_el - el_array[idx]) / (el_array[idx + 1] - el_array[idx])
+    denom = el_array[idx + 1] - el_array[idx]
+    frac = 0.5 if abs(denom) < 1e-12 else (target_el - el_array[idx]) / denom
     return search_times[idx] + TimeDelta(frac * step_seconds * u.s)
 
 
@@ -541,16 +544,25 @@ def _compute_ce_duration(
 def _compute_ce_az_range(
     field: "FieldRegion",
     angle: float,
-    _elevation: float,
     coords_obj: Coordinates,
-    obs_midtime: Time,
+    obs_start: Time,
+    obs_end: Time,
     padding: float,
 ) -> tuple[float, float]:
     """Compute azimuth range needed to cover a field at given elevation.
 
     Evaluates the azimuth of all four rotated corners and the field center
-    at the observation midpoint time, then returns the encompassing range
-    with padding.
+    at three times (start, midpoint, end) and returns the encompassing range
+    with padding. Using three times captures the temporal variation in
+    azimuth coverage as the field transits.
+
+    .. note::
+
+        Like ``_compute_ce_duration``, this does not handle fields that
+        straddle the azimuth 0/360 discontinuity (e.g. corners at 350°
+        and 10°). Such fields would produce an incorrect ~340° throw
+        instead of ~20°. This is acceptable for FYST's typical targets
+        but should be addressed if planning near-north transit scans.
 
     Parameters
     ----------
@@ -558,13 +570,12 @@ def _compute_ce_az_range(
         Rectangular field specification.
     angle : float
         Field rotation angle in degrees.
-    _elevation : float
-        Target elevation in degrees (currently unused but kept for
-        future altitude-dependent azimuth corrections).
     coords_obj : Coordinates
         Coordinate transformer for the site.
-    obs_midtime : Time
-        Midpoint time of the observation.
+    obs_start : Time
+        Start time of the observation.
+    obs_end : Time
+        End time of the observation.
     padding : float
         Extra padding in degrees on each side.
 
@@ -577,15 +588,17 @@ def _compute_ce_az_range(
         field.ra_center, field.dec_center, field.width, field.height, angle
     )
 
-    corner_azimuths = []
-    for ra_c, dec_c in corners:
-        az_c, _ = coords_obj.radec_to_altaz(ra_c, dec_c, obs_midtime)
-        corner_azimuths.append(az_c)
+    obs_mid = obs_start + (obs_end - obs_start) / 2.0
+    eval_times = [obs_start, obs_mid, obs_end]
 
-    az_center, _ = coords_obj.radec_to_altaz(field.ra_center, field.dec_center, obs_midtime)
-    corner_azimuths.append(az_center)
+    all_azimuths = []
+    points = list(corners) + [(field.ra_center, field.dec_center)]
+    for t in eval_times:
+        for ra_c, dec_c in points:
+            az_c, _ = coords_obj.radec_to_altaz(ra_c, dec_c, t)
+            all_azimuths.append(az_c)
 
-    return min(corner_azimuths) - padding, max(corner_azimuths) + padding
+    return min(all_azimuths) - padding, max(all_azimuths) + padding
 
 
 def plan_constant_el_scan(
@@ -626,7 +639,10 @@ def plan_constant_el_scan(
     elevation : float
         Fixed elevation for the scan in degrees.
     velocity : float
-        Azimuth scan speed in degrees/second. Must be positive.
+        Azimuth scan speed in azimuth coordinate degrees/second
+        (not on-sky). The on-sky speed is
+        ``velocity * cos(elevation)``. This is the value sent
+        directly to the Vertex ACU. Must be positive.
     site : Site
         Telescope site configuration.
     start_time : str or Time
@@ -710,14 +726,13 @@ def plan_constant_el_scan(
         step_seconds=step_seconds,
     )
 
-    # Compute azimuth range at observation midpoint
-    obs_mid = obs_start + TimeDelta(duration / 2.0 * u.s)
-    az_min, az_max = _compute_ce_az_range(field, angle, elevation, coords_obj, obs_mid, az_padding)
+    # Compute azimuth range across the full observation window
+    az_min, az_max = _compute_ce_az_range(field, angle, coords_obj, obs_start, obs_end, az_padding)
 
     # Compute n_scans from duration and sweep time
     az_throw = az_max - az_min
     scan_leg_time = az_throw / velocity
-    n_scans = max(1, int(duration / scan_leg_time))
+    n_scans = max(1, round(duration / scan_leg_time))
 
     # Build config, pattern, and trajectory
     config = ConstantElScanConfig(
@@ -802,7 +817,9 @@ def plan_daisy_scan(
     radius : float
         Characteristic radius R0 in degrees. Must be positive.
     velocity : float
-        Scan velocity in degrees/second. Must be positive.
+        Scan velocity in sky-offset degrees/second. This is the
+        speed in the tangent plane, not azimuth coordinate
+        velocity. Must be positive.
     turn_radius : float
         Radius of curvature for turns in degrees. Must be positive.
     avoidance_radius : float

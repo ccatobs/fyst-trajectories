@@ -87,9 +87,9 @@ def _daisy_loop_python(
     ra_avoid : float
         Avoidance radius in degrees.
     target_speed : float
-        Target velocity in degrees/second.
+        Target velocity in sky-offset degrees/second.
     start_acc : float
-        Start acceleration in degrees/second^2.
+        Start acceleration in sky-offset degrees/second^2.
     y_offset : float
         Initial y offset in degrees.
     small_dist_eps : float
@@ -236,6 +236,58 @@ class DaisyScanPattern(CelestialPattern):
         """Return pattern identifier."""
         return "daisy"
 
+    def generate_offsets(self, duration: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate scan pattern offsets without coordinate conversion.
+
+        Returns pure sky-plane offsets suitable for use by external libraries
+        that handle their own coordinate transforms.
+
+        Parameters
+        ----------
+        duration : float
+            Total duration of the scan in seconds.
+
+        Returns
+        -------
+        times : np.ndarray
+            Time array in seconds from scan start.
+        x_offsets : np.ndarray
+            X offsets in the sky-plane tangent frame, in degrees.
+        y_offsets : np.ndarray
+            Y offsets in the sky-plane tangent frame, in degrees.
+        """
+        if duration <= 0:
+            raise ValueError(f"duration must be positive, got {duration}")
+
+        timestep = self.config.timestep
+
+        if timestep > _DAISY_INTERNAL_TIMESTEP:
+            sample_every = math.ceil(timestep / _DAISY_INTERNAL_TIMESTEP)
+            dt = timestep / sample_every
+        else:
+            sample_every = 1
+            dt = timestep
+
+        x_coords, y_coords = self._generate_daisy_pattern(
+            duration=duration,
+            dt=dt,
+            r0=self.config.radius,
+            rt=self.config.turn_radius,
+            ra_avoid=self.config.avoidance_radius,
+            target_speed=self.config.velocity,
+            start_acc=self.config.start_acceleration,
+            y_offset=self.config.y_offset,
+        )
+
+        if sample_every > 1:
+            x_coords = x_coords[::sample_every]
+            y_coords = y_coords[::sample_every]
+
+        n_points = len(x_coords)
+        times = np.linspace(0, duration, n_points)
+
+        return times, x_coords, y_coords
+
     def generate(
         self,
         site: Site,
@@ -279,47 +331,15 @@ class DaisyScanPattern(CelestialPattern):
                 "Provide an astropy Time object."
             )
 
-        timestep = self.config.timestep
         coords = Coordinates(site, atmosphere=atmosphere)
 
-        r0 = self.config.radius
-        rt = self.config.turn_radius
-        ra_avoid = self.config.avoidance_radius
-        target_speed = self.config.velocity
-        start_acc = self.config.start_acceleration
-        y_offset = self.config.y_offset
-
-        if timestep > _DAISY_INTERNAL_TIMESTEP:
-            sample_every = math.ceil(timestep / _DAISY_INTERNAL_TIMESTEP)
-            dt = timestep / sample_every
-        else:
-            sample_every = 1
-            dt = timestep
-
-        x_coords, y_coords = self._generate_daisy_pattern(
-            duration=duration,
-            dt=dt,
-            r0=r0,
-            rt=rt,
-            ra_avoid=ra_avoid,
-            target_speed=target_speed,
-            start_acc=start_acc,
-            y_offset=y_offset,
-        )
-
-        if sample_every > 1:
-            x_coords = x_coords[::sample_every]
-            y_coords = y_coords[::sample_every]
-
-        n_points = len(x_coords)
-
-        times = np.linspace(0, duration, n_points)
+        times, x_offsets, y_offsets = self.generate_offsets(duration)
 
         obstimes = start_time + TimeDelta(times * u.s)
 
         az, el = sky_offsets_to_altaz(
-            x_coords,
-            y_coords,
+            x_offsets,
+            y_offsets,
             self.ra,
             self.dec,
             obstimes,
@@ -401,9 +421,9 @@ class DaisyScanPattern(CelestialPattern):
         ra_avoid : float
             Avoidance radius in degrees.
         target_speed : float
-            Target velocity in degrees/second.
+            Target velocity in sky-offset degrees/second.
         start_acc : float
-            Start acceleration in degrees/second^2.
+            Start acceleration in sky-offset degrees/second^2.
         y_offset : float
             Initial y offset in degrees.
 

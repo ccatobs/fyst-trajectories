@@ -183,7 +183,7 @@ def resolve_offset(
     >>> resolve_offset()
     """
     has_module = module is not None
-    has_custom = dx is not None
+    has_custom = dx is not None or dy is not None
 
     if has_module and has_custom:
         raise ValueError(
@@ -195,6 +195,6 @@ def resolve_offset(
         return get_primecam_offset(module)
 
     if has_custom:
-        return InstrumentOffset(dx=dx, dy=dy or 0.0, name=name)
+        return InstrumentOffset(dx=dx or 0.0, dy=dy or 0.0, name=name)
 
     return None

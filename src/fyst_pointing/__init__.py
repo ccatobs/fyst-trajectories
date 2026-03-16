@@ -154,7 +154,12 @@ from .site import (
 )
 
 # Trajectory container
-from .trajectory import Trajectory
+from .trajectory import (
+    SCAN_FLAG_SCIENCE,
+    SCAN_FLAG_TURNAROUND,
+    SCAN_FLAG_UNCLASSIFIED,
+    Trajectory,
+)
 from .trajectory_utils import (
     get_absolute_times,
     plot_trajectory,
@@ -213,6 +218,9 @@ __all__ = [
     "normalize_frame",
     # Trajectory
     "Trajectory",
+    "SCAN_FLAG_UNCLASSIFIED",
+    "SCAN_FLAG_SCIENCE",
+    "SCAN_FLAG_TURNAROUND",
     "print_trajectory",
     "validate_sun_avoidance",
     "validate_trajectory",

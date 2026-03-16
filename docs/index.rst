@@ -1,7 +1,9 @@
 fyst-pointing
 =============
 
-A Python library for telescope pointing and trajectory generation.
+Pointing and trajectory generation for the FYST (Fred Young Submillimeter
+Telescope).  Wraps astropy with FYST-specific site coordinates, telescope
+limits, and scan pattern generators.
 
 .. toctree::
    :maxdepth: 2

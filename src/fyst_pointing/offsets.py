@@ -609,6 +609,7 @@ def apply_detector_offset(
             coordsys=trajectory.coordsys,
             epoch=trajectory.epoch,
             metadata=trajectory.metadata,
+            scan_flag=trajectory.scan_flag,
         )
 
     coords = Coordinates(site, atmosphere=None)
@@ -662,6 +663,7 @@ def apply_detector_offset(
         metadata=trajectory.metadata,
         coordsys=trajectory.coordsys,
         epoch=trajectory.epoch,
+        scan_flag=trajectory.scan_flag,
     )
 
     if validate:

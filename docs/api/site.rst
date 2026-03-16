@@ -8,6 +8,24 @@ Site Configuration
 
 .. autofunction:: fyst_pointing.get_fyst_site
 
+Overriding Defaults
+-------------------
+
+``get_fyst_site()`` accepts keyword arguments to override Tier 3
+parameters (sun avoidance).  Tier 1 and Tier 2 parameters (location,
+optics, mechanical limits) are fixed constants::
+
+    from fyst_pointing import get_fyst_site
+
+    # Default FYST site
+    site = get_fyst_site()
+
+    # Override sun avoidance radius (default is 45 degrees)
+    site_custom = get_fyst_site(sun_exclusion_radius=30.0)
+
+    # Disable sun avoidance entirely (for testing)
+    site_no_sun = get_fyst_site(sun_avoidance_enabled=False)
+
 Convenience Constants
 ---------------------
 

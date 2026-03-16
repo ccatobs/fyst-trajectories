@@ -11,7 +11,7 @@ from astropy.time import Time
 
 from ..exceptions import PointingWarning
 from ..site import AtmosphericConditions, Site
-from ..trajectory import Trajectory
+from ..trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, Trajectory
 from ..trajectory_utils import validate_trajectory_bounds
 from .base import AltAzPattern, TrajectoryMetadata
 from .configs import ConstantElScanConfig
@@ -108,7 +108,7 @@ class ConstantElScanPattern(AltAzPattern):
         el = np.full(n_points, self.config.elevation)
         el_vel = np.zeros(n_points)
 
-        az, az_vel = self._compute_scan_positions(
+        az, az_vel, scan_flag = self._compute_scan_positions(
             times=times,
             az_min=az_min,
             az_max=az_max,
@@ -128,6 +128,7 @@ class ConstantElScanPattern(AltAzPattern):
             start_time=start_time,
             metadata=self.get_metadata(),
             coordsys="altaz",
+            scan_flag=scan_flag,
         )
 
     def get_metadata(self) -> TrajectoryMetadata:
@@ -158,8 +159,8 @@ class ConstantElScanPattern(AltAzPattern):
         az_speed: float,
         az_accel: float,
         start_increasing: bool,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute positions and velocities for a back-and-forth scan (vectorized).
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute positions, velocities, and scan flags for a back-and-forth scan.
 
         Uses a trapezoidal velocity profile with smooth turnarounds.
         All points are computed simultaneously using NumPy vectorized operations.
@@ -173,9 +174,11 @@ class ConstantElScanPattern(AltAzPattern):
         az_max : float
             Maximum azimuth bound in degrees.
         az_speed : float
-            Scan speed in degrees/second.
+            Scan speed in azimuth coordinate degrees/second
+            (not on-sky).
         az_accel : float
-            Acceleration in degrees/second^2.
+            Acceleration in azimuth coordinate degrees/second^2
+            (not on-sky).
         start_increasing : bool
             If True, start scanning toward increasing azimuth.
 
@@ -185,6 +188,8 @@ class ConstantElScanPattern(AltAzPattern):
             Azimuth positions in degrees.
         velocities : np.ndarray
             Azimuth velocities in degrees/second.
+        scan_flag : np.ndarray
+            Per-sample scan flag (1 = science, 2 = turnaround).
         """
         az_throw = az_max - az_min
         t_half_turn = az_speed / az_accel
@@ -199,8 +204,10 @@ class ConstantElScanPattern(AltAzPattern):
         pos_fwd = az_min if start_increasing else az_max
         pos_rev = az_max if start_increasing else az_min
 
+        scan_flag = np.empty(len(times), dtype=np.int8)
+
         if d_cruise < 0:
-            # Triangular velocity profile
+            # Triangular velocity profile — no cruise phase, all turnaround
             v_peak = np.sqrt(az_accel * az_throw)
             t_half_turn_actual = v_peak / az_accel
             t_half_cycle = 2 * t_half_turn_actual
@@ -231,6 +238,9 @@ class ConstantElScanPattern(AltAzPattern):
             velocities = np.where(in_accel, vel_accel, vel_decel)
             displacement = np.where(in_accel, disp_accel, disp_decel)
             positions = start_pos + direction * displacement
+
+            # Triangular profile never reaches cruise speed — all turnaround
+            scan_flag[:] = SCAN_FLAG_TURNAROUND
 
         else:
             # Trapezoidal velocity profile
@@ -277,6 +287,10 @@ class ConstantElScanPattern(AltAzPattern):
                 in_cruise, pos_cruise, np.where(in_decel, pos_decel, pos_accel_rev)
             )
 
+            # Cruise = science, decel + accel-reverse = turnaround
+            scan_flag[:] = SCAN_FLAG_TURNAROUND
+            scan_flag[in_cruise] = SCAN_FLAG_SCIENCE
+
         # Diagnostic: warn if positions exceed bounds by more than floating-point noise
         pos_min = positions.min()
         pos_max = positions.max()
@@ -293,4 +307,4 @@ class ConstantElScanPattern(AltAzPattern):
         # Clip only floating-point noise (< 0.01 deg)
         positions = np.clip(positions, az_min, az_max)
 
-        return positions, velocities
+        return positions, velocities, scan_flag
