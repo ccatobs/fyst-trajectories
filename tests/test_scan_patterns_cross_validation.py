@@ -1,6 +1,6 @@
-"""Cross-validation tests comparing fyst-pointing against scan_patterns.
+"""Cross-validation tests comparing fyst-trajectories against scan_patterns.
 
-This module validates that scan pattern implementations in fyst-pointing
+This module validates that scan pattern implementations in fyst-trajectories
 produce the same results as the legacy ``scan_patterns`` package (imported
 as ``scanning``).
 
@@ -11,7 +11,7 @@ Both packages implement the same Fourier expansion (Pong) and CV Daisy
 algorithms. For Pong (a closed-form Fourier series), results match to
 machine precision (~1e-10 deg). For Daisy (an iterative simulation),
 the unit-scale difference (scan_patterns uses arcseconds internally,
-fyst-pointing uses degrees) causes floating-point divergence that
+fyst-trajectories uses degrees) causes floating-point divergence that
 compounds over thousands of steps. The standard Daisy case agrees
 within ~0.5 milliarcsec; the Ra=0 case is numerically degenerate and
 shows larger divergence (see class docstring for details).
@@ -24,7 +24,7 @@ tolerance is larger because the packages use different astronomy backends
 Key parameter mapping between the two packages:
 
 =================  ======================
-scan_patterns       fyst-pointing
+scan_patterns       fyst-trajectories
 =================  ======================
 ``num_term``        ``num_terms``
 ``start_acc``       ``start_acceleration``
@@ -149,7 +149,7 @@ def _pong_offsets_ccat(
     timestep: float,
     times: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute Pong x/y offsets using fyst-pointing at specified times.
+    """Compute Pong x/y offsets using fyst-trajectories at specified times.
 
     Instantiates a PongScanPattern to access the internal Fourier method
     and vertex computation, then evaluates at the given *times*.
@@ -178,8 +178,8 @@ def _pong_offsets_ccat(
     y : np.ndarray
         Y offsets in degrees.
     """
-    from fyst_pointing.patterns.configs import PongScanConfig
-    from fyst_pointing.patterns.pong import PongScanPattern
+    from fyst_trajectories.patterns.configs import PongScanConfig
+    from fyst_trajectories.patterns.pong import PongScanPattern
 
     config = PongScanConfig(
         timestep=timestep,
@@ -270,7 +270,7 @@ def _daisy_offsets_ccat(
     timestep: float,
     y_offset: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate Daisy offsets using fyst-pointing.
+    """Generate Daisy offsets using fyst-trajectories.
 
     Uses the internal ``_generate_daisy_pattern`` method to get raw x/y
     offsets (before coordinate conversion), matching what scan_patterns
@@ -302,8 +302,8 @@ def _daisy_offsets_ccat(
     y : np.ndarray
         Y offsets in degrees.
     """
-    from fyst_pointing.patterns.configs import DaisyScanConfig
-    from fyst_pointing.patterns.daisy import _DAISY_INTERNAL_TIMESTEP, DaisyScanPattern
+    from fyst_trajectories.patterns.configs import DaisyScanConfig
+    from fyst_trajectories.patterns.daisy import _DAISY_INTERNAL_TIMESTEP, DaisyScanPattern
 
     config = DaisyScanConfig(
         timestep=timestep,
@@ -398,13 +398,13 @@ class TestPongSkyOffsets:
             x_sp,
             x_cc,
             atol=self.TOLERANCE,
-            err_msg="Pong x offsets diverge between scan_patterns and fyst-pointing",
+            err_msg="Pong x offsets diverge between scan_patterns and fyst-trajectories",
         )
         np.testing.assert_allclose(
             y_sp,
             y_cc,
             atol=self.TOLERANCE,
-            err_msg="Pong y offsets diverge between scan_patterns and fyst-pointing",
+            err_msg="Pong y offsets diverge between scan_patterns and fyst-trajectories",
         )
 
         # Velocity comparison via numerical gradient.
@@ -430,8 +430,8 @@ class TestPongSkyOffsets:
     @pytest.mark.slow
     def test_pong_vertex_counts_agree(self):
         """Both packages compute identical vertex counts for the same inputs."""
-        from fyst_pointing.patterns.configs import PongScanConfig
-        from fyst_pointing.patterns.pong import PongScanPattern
+        from fyst_trajectories.patterns.configs import PongScanConfig
+        from fyst_trajectories.patterns.pong import PongScanPattern
 
         width, height, spacing = 2.0, 2.0, 0.1
         vert_spacing = math.sqrt(2) * spacing
@@ -450,7 +450,7 @@ class TestPongSkyOffsets:
             nv[most] += 2
         x_nv_sp, y_nv_sp = nv
 
-        # -- fyst-pointing --
+        # -- fyst-trajectories --
         config = PongScanConfig(
             timestep=0.01,
             width=width,
@@ -468,7 +468,7 @@ class TestPongSkyOffsets:
 
     @pytest.mark.slow
     def test_pong_rotation_end_to_end(self):
-        """Rotated Pong data from scan_patterns matches fyst-pointing.
+        """Rotated Pong data from scan_patterns matches fyst-trajectories.
 
         Both packages apply rotation internally during data generation.
         This test compares the fully-rotated output arrays at matching
@@ -494,9 +494,9 @@ class TestPongSkyOffsets:
         x_sp = np.array(sp_data["x_coord"])
         y_sp = np.array(sp_data["y_coord"])
 
-        # -- fyst-pointing: evaluate unrotated offsets, apply rotation --
-        from fyst_pointing.patterns.configs import PongScanConfig
-        from fyst_pointing.patterns.pong import PongScanPattern
+        # -- fyst-trajectories: evaluate unrotated offsets, apply rotation --
+        from fyst_trajectories.patterns.configs import PongScanConfig
+        from fyst_trajectories.patterns.pong import PongScanPattern
 
         config = PongScanConfig(
             timestep=sample_interval,
@@ -559,12 +559,12 @@ class TestDaisySkyOffsets:
     numerical results:
 
     1. **Unit scale**: scan_patterns runs the simulation in arcseconds
-       (converting back to degrees at the end), while fyst-pointing runs
+       (converting back to degrees at the end), while fyst-trajectories runs
        in degrees throughout. Floating-point arithmetic at different
        magnitudes produces slightly different results that compound over
        the ~24000 iterative steps.
 
-    2. **Epsilon guard**: fyst-pointing adds a small-distance epsilon
+    2. **Epsilon guard**: fyst-trajectories adds a small-distance epsilon
        check (r < 1e-10 deg) at the origin that scan_patterns lacks.
 
     These differences are purely numerical -- the underlying equations
@@ -630,13 +630,13 @@ class TestDaisySkyOffsets:
             x_sp[skip:],
             x_cc[skip:],
             atol=self.TOLERANCE,
-            err_msg="Daisy x offsets diverge between scan_patterns and fyst-pointing",
+            err_msg="Daisy x offsets diverge between scan_patterns and fyst-trajectories",
         )
         np.testing.assert_allclose(
             y_sp[skip:],
             y_cc[skip:],
             atol=self.TOLERANCE,
-            err_msg="Daisy y offsets diverge between scan_patterns and fyst-pointing",
+            err_msg="Daisy y offsets diverge between scan_patterns and fyst-trajectories",
         )
 
     @pytest.mark.slow
@@ -707,7 +707,7 @@ class TestDaisySkyOffsets:
         r_cc = np.sqrt(x_cc[skip:] ** 2 + y_cc[skip:] ** 2)
         assert abs(r_sp.max() - r_cc.max()) / r_sp.max() < 0.1, (
             f"Scan envelopes differ: scan_patterns max_r={r_sp.max():.4f}, "
-            f"fyst-pointing max_r={r_cc.max():.4f}"
+            f"fyst-trajectories max_r={r_cc.max():.4f}"
         )
 
 
@@ -724,7 +724,7 @@ def _make_harmonized_site():
     Refraction is disabled so both backends compute geometric
     (vacuum) coordinates.
     """
-    from fyst_pointing.site import (
+    from fyst_trajectories.site import (
         AxisLimits,
         Site,
         SunAvoidanceConfig,
@@ -786,7 +786,7 @@ class TestPongAltAzTrajectory:
 
     The two packages use different astronomy backends for sky-to-AltAz
     conversion (manual spherical trig in scan_patterns vs astropy with
-    IERS in fyst-pointing). Refraction is disabled so both backends
+    IERS in fyst-trajectories). Refraction is disabled so both backends
     compute geometric (vacuum) coordinates, isolating the remaining
     differences:
 
@@ -796,7 +796,7 @@ class TestPongAltAzTrajectory:
     """
 
     # Dominated by the sky-offset method difference: scan_patterns uses
-    # a flat-sky approximation, fyst-pointing uses spherical_offsets_by.
+    # a flat-sky approximation, fyst-trajectories uses spherical_offsets_by.
     POSITION_TOLERANCE = 0.22  # degrees
 
     @pytest.mark.slow
@@ -810,8 +810,8 @@ class TestPongAltAzTrajectory:
     )
     def test_pong_altaz_agreement(self, ra, dec):
         """Pong AltAz trajectories agree within tolerance."""
-        from fyst_pointing.patterns.configs import PongScanConfig
-        from fyst_pointing.patterns.pong import PongScanPattern
+        from fyst_trajectories.patterns.configs import PongScanConfig
+        from fyst_trajectories.patterns.pong import PongScanPattern
 
         harmonized_site = _make_harmonized_site()
         sp_lat = harmonized_site.latitude
@@ -885,8 +885,8 @@ class TestDaisyAltAzTrajectory:
     @pytest.mark.slow
     def test_daisy_altaz_agreement(self):
         """Daisy AltAz trajectories agree within tolerance."""
-        from fyst_pointing.patterns.configs import DaisyScanConfig
-        from fyst_pointing.patterns.daisy import DaisyScanPattern
+        from fyst_trajectories.patterns.configs import DaisyScanConfig
+        from fyst_trajectories.patterns.daisy import DaisyScanPattern
 
         harmonized_site = _make_harmonized_site()
         sp_lat = harmonized_site.latitude

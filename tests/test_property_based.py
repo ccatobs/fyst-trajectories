@@ -18,9 +18,9 @@ from astropy.time import Time
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from fyst_pointing import Coordinates, InstrumentOffset, get_fyst_site
-from fyst_pointing.offsets import boresight_to_detector, detector_to_boresight
-from fyst_pointing.patterns import (
+from fyst_trajectories import Coordinates, InstrumentOffset, get_fyst_site
+from fyst_trajectories.offsets import boresight_to_detector, detector_to_boresight
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     ConstantElScanPattern,
     LinearMotionConfig,

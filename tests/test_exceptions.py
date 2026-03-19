@@ -12,14 +12,14 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.exceptions import (
+from fyst_trajectories.exceptions import (
     AzimuthBoundsError,
     ElevationBoundsError,
     PointingError,
     TargetNotObservableError,
     TrajectoryBoundsError,
 )
-from fyst_pointing.patterns import (
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     ConstantElScanPattern,
     DaisyScanConfig,
@@ -30,7 +30,7 @@ from fyst_pointing.patterns import (
     PongScanPattern,
     TrajectoryBuilder,
 )
-from fyst_pointing.trajectory import Trajectory
+from fyst_trajectories.trajectory import Trajectory
 
 
 class TestExceptionStructuredData:

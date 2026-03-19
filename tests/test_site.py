@@ -13,9 +13,9 @@ import yaml
 from astropy import units as u
 from astropy.coordinates import EarthLocation
 
-from fyst_pointing import Site
-from fyst_pointing.offsets import InstrumentOffset, compute_focal_plane_rotation
-from fyst_pointing.site import (
+from fyst_trajectories import Site
+from fyst_trajectories.offsets import InstrumentOffset, compute_focal_plane_rotation
+from fyst_trajectories.site import (
     FYST_AZ_MAX,
     FYST_AZ_MAX_ACCELERATION,
     FYST_AZ_MAX_VELOCITY,

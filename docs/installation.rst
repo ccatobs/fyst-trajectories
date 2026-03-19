@@ -5,15 +5,15 @@ Installation
 
 From GitHub::
 
-    pip install "fyst-pointing @ git+https://github.com/ccatobs/fyst-pointing.git"
+    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git"
 
 Development install
 -------------------
 
 Clone and install in editable mode with development extras::
 
-    git clone https://github.com/ccatobs/fyst-pointing.git
-    cd fyst-pointing
+    git clone https://github.com/ccatobs/fyst-trajectories.git
+    cd fyst-trajectories
     pip install -e ".[dev]"
 
 Running tests

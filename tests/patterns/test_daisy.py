@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing import Coordinates
-from fyst_pointing.patterns import DaisyScanConfig, DaisyScanPattern
+from fyst_trajectories import Coordinates
+from fyst_trajectories.patterns import DaisyScanConfig, DaisyScanPattern
 
 
 class TestDaisyScanPattern:

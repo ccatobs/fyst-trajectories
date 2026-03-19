@@ -7,11 +7,11 @@ Visualization utilities for trajectories and observational data.
 
    This module requires the ``plotting`` extra::
 
-       pip install "fyst-pointing[plotting]"
+       pip install "fyst-trajectories[plotting]"
 
    This installs ``matplotlib`` and ``scipy``.
 
-.. automodule:: fyst_pointing.plotting
+.. automodule:: fyst_trajectories.plotting
    :members:
    :undoc-members:
    :show-inheritance:
@@ -23,10 +23,10 @@ Generate hit-density maps in RA/Dec for multiple detector modules::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
-    from fyst_pointing.plotting import plot_hit_map
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories.plotting import plot_hit_map
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")

@@ -18,20 +18,20 @@ import pytest
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
-from fyst_pointing import get_fyst_site
-from fyst_pointing.coordinates import Coordinates
-from fyst_pointing.exceptions import (
+from fyst_trajectories import get_fyst_site
+from fyst_trajectories.coordinates import Coordinates
+from fyst_trajectories.exceptions import (
     PointingWarning,
 )
-from fyst_pointing.planning import (
+from fyst_trajectories.planning import (
     FieldRegion,
     _check_field_sun_safety,
     plan_daisy_scan,
     plan_pong_scan,
 )
-from fyst_pointing.site import SunAvoidanceConfig
-from fyst_pointing.trajectory import Trajectory
-from fyst_pointing.trajectory_utils import validate_sun_avoidance, validate_trajectory
+from fyst_trajectories.site import SunAvoidanceConfig
+from fyst_trajectories.trajectory import Trajectory
+from fyst_trajectories.trajectory_utils import validate_sun_avoidance, validate_trajectory
 
 # Pre-flight check: verify the sun is high enough at the test obstime for
 # meaningful sun-avoidance tests.  This avoids silent skips inside tests

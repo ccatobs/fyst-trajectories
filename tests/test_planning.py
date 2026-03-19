@@ -1,4 +1,4 @@
-"""Tests for fyst_pointing.planning module."""
+"""Tests for fyst_trajectories.planning module."""
 
 import math
 
@@ -6,16 +6,16 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.exceptions import (
+from fyst_trajectories.exceptions import (
     TargetNotObservableError,
 )
-from fyst_pointing.offsets import InstrumentOffset
-from fyst_pointing.patterns.configs import (
+from fyst_trajectories.offsets import InstrumentOffset
+from fyst_trajectories.patterns.configs import (
     ConstantElScanConfig,
     DaisyScanConfig,
     PongScanConfig,
 )
-from fyst_pointing.planning import (
+from fyst_trajectories.planning import (
     FieldRegion,
     ScanBlock,
     _field_region_corners,

@@ -7,20 +7,20 @@ import pytest
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
-from fyst_pointing import Coordinates, get_fyst_site
-from fyst_pointing.exceptions import (
+from fyst_trajectories import Coordinates, get_fyst_site
+from fyst_trajectories.exceptions import (
     AzimuthBoundsError,
     ElevationBoundsError,
     PointingWarning,
     TrajectoryBoundsError,
 )
-from fyst_pointing.patterns.utils import (
+from fyst_trajectories.patterns.utils import (
     compute_velocities,
     generate_time_array,
     normalize_azimuth,
     sky_offsets_to_altaz,
 )
-from fyst_pointing.trajectory_utils import (
+from fyst_trajectories.trajectory_utils import (
     validate_trajectory_bounds,
     validate_trajectory_dynamics,
 )

@@ -1,12 +1,12 @@
 Site Configuration
 ==================
 
-.. automodule:: fyst_pointing.site
+.. automodule:: fyst_trajectories.site
    :members:
    :undoc-members:
    :show-inheritance:
 
-.. autofunction:: fyst_pointing.get_fyst_site
+.. autofunction:: fyst_trajectories.get_fyst_site
 
 Overriding Defaults
 -------------------
@@ -15,7 +15,7 @@ Overriding Defaults
 parameters (sun avoidance).  Tier 1 and Tier 2 parameters (location,
 optics, mechanical limits) are fixed constants::
 
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     # Default FYST site
     site = get_fyst_site()
@@ -29,7 +29,7 @@ optics, mechanical limits) are fixed constants::
 Convenience Constants
 ---------------------
 
-.. py:data:: fyst_pointing.FYST_LOCATION
+.. py:data:: fyst_trajectories.FYST_LOCATION
 
    Pre-computed :class:`~astropy.coordinates.EarthLocation` for the FYST
    telescope.  Equivalent to ``get_fyst_site().location``.  Useful for
@@ -37,7 +37,7 @@ Convenience Constants
 
    ::
 
-       from fyst_pointing import FYST_LOCATION
+       from fyst_trajectories import FYST_LOCATION
 
        print(FYST_LOCATION.lat)   # -22d59m08.3004s
        print(FYST_LOCATION.lon)   # -67d44m25.0008s

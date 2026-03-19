@@ -6,8 +6,8 @@ from astropy.time import Time
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from fyst_pointing.patterns import ConstantElScanConfig, ConstantElScanPattern
-from fyst_pointing.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
+from fyst_trajectories.patterns import ConstantElScanConfig, ConstantElScanPattern
+from fyst_trajectories.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
 
 class TestConstantElScanPattern:

@@ -11,8 +11,8 @@ The pattern type is automatically inferred from the config class::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     start_time = Time("2026-03-15T04:00:00", scale="utc")
 
@@ -33,7 +33,7 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 TrajectoryBuilder
 -----------------
 
-.. autoclass:: fyst_pointing.patterns.TrajectoryBuilder
+.. autoclass:: fyst_trajectories.patterns.TrajectoryBuilder
    :members:
    :undoc-members:
 
@@ -41,7 +41,7 @@ TrajectoryBuilder
 
     from astropy.time import Time
 
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -62,81 +62,81 @@ TrajectoryBuilder
 Base Classes
 ------------
 
-.. autoclass:: fyst_pointing.patterns.ScanPattern
+.. autoclass:: fyst_trajectories.patterns.ScanPattern
    :members:
 
-.. autoclass:: fyst_pointing.patterns.CelestialPattern
-   :members:
-   :show-inheritance:
-
-.. autoclass:: fyst_pointing.patterns.AltAzPattern
+.. autoclass:: fyst_trajectories.patterns.CelestialPattern
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.TrajectoryMetadata
+.. autoclass:: fyst_trajectories.patterns.AltAzPattern
+   :members:
+   :show-inheritance:
+
+.. autoclass:: fyst_trajectories.patterns.TrajectoryMetadata
    :members:
 
 Configuration Classes
 ---------------------
 
-.. autoclass:: fyst_pointing.patterns.ScanConfig
+.. autoclass:: fyst_trajectories.patterns.ScanConfig
    :members:
 
-.. autoclass:: fyst_pointing.patterns.ConstantElScanConfig
+.. autoclass:: fyst_trajectories.patterns.ConstantElScanConfig
    :members:
    :show-inheritance:
 
 .. tip::
 
    For field-based observations, use
-   :func:`~fyst_pointing.planning.plan_constant_el_scan` instead of manually
+   :func:`~fyst_trajectories.planning.plan_constant_el_scan` instead of manually
    constructing ``ConstantElScanConfig``. It auto-computes the azimuth range,
    duration, and number of scans from a ``FieldRegion``.
 
-.. autoclass:: fyst_pointing.patterns.PongScanConfig
+.. autoclass:: fyst_trajectories.patterns.PongScanConfig
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.DaisyScanConfig
+.. autoclass:: fyst_trajectories.patterns.DaisyScanConfig
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.SiderealTrackConfig
+.. autoclass:: fyst_trajectories.patterns.SiderealTrackConfig
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.PlanetTrackConfig
+.. autoclass:: fyst_trajectories.patterns.PlanetTrackConfig
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.LinearMotionConfig
+.. autoclass:: fyst_trajectories.patterns.LinearMotionConfig
    :members:
    :show-inheritance:
 
 Pattern Classes
 ---------------
 
-.. autoclass:: fyst_pointing.patterns.ConstantElScanPattern
+.. autoclass:: fyst_trajectories.patterns.ConstantElScanPattern
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.PongScanPattern
+.. autoclass:: fyst_trajectories.patterns.PongScanPattern
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.DaisyScanPattern
+.. autoclass:: fyst_trajectories.patterns.DaisyScanPattern
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.SiderealTrackPattern
+.. autoclass:: fyst_trajectories.patterns.SiderealTrackPattern
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.PlanetTrackPattern
+.. autoclass:: fyst_trajectories.patterns.PlanetTrackPattern
    :members:
    :show-inheritance:
 
-.. autoclass:: fyst_pointing.patterns.LinearMotionPattern
+.. autoclass:: fyst_trajectories.patterns.LinearMotionPattern
    :members:
    :show-inheritance:
 
@@ -171,7 +171,7 @@ Registry Functions (Advanced)
 For interactive discovery or dynamic scenarios where pattern names are
 determined at runtime::
 
-    from fyst_pointing import list_patterns, get_pattern
+    from fyst_trajectories import list_patterns, get_pattern
 
     # List available patterns
     print(list_patterns())
@@ -179,8 +179,8 @@ determined at runtime::
     # Get pattern class by name (useful for plugins or config-driven selection)
     PatternClass = get_pattern("pong")
 
-.. autofunction:: fyst_pointing.patterns.list_patterns
+.. autofunction:: fyst_trajectories.patterns.list_patterns
 
-.. autofunction:: fyst_pointing.patterns.get_pattern
+.. autofunction:: fyst_trajectories.patterns.get_pattern
 
-.. autofunction:: fyst_pointing.patterns.register_pattern
+.. autofunction:: fyst_trajectories.patterns.register_pattern

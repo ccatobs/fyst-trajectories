@@ -6,33 +6,33 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.exceptions import PointingWarning, TargetNotObservableError
-from fyst_pointing.offsets import (
+from fyst_trajectories.exceptions import PointingWarning, TargetNotObservableError
+from fyst_trajectories.offsets import (
     InstrumentOffset,
     apply_detector_offset,
     boresight_to_detector,
     compute_focal_plane_rotation,
     detector_to_boresight,
 )
-from fyst_pointing.patterns import (
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     PongScanConfig,
     TrajectoryBuilder,
 )
-from fyst_pointing.primecam import (
+from fyst_trajectories.primecam import (
     PRIMECAM_CENTER,
     PRIMECAM_I1,
     PRIMECAM_MODULES,
     get_primecam_offset,
 )
-from fyst_pointing.site import (
+from fyst_trajectories.site import (
     AxisLimits,
     Site,
     SunAvoidanceConfig,
     TelescopeLimits,
     get_fyst_site,
 )
-from fyst_pointing.trajectory import Trajectory
+from fyst_trajectories.trajectory import Trajectory
 
 
 class TestBoresightToDetector:

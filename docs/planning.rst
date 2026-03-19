@@ -44,8 +44,8 @@ Plan a Pong survey scan over a 2x2 degree field::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_pong_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
 
     site = get_fyst_site()
 
@@ -66,8 +66,8 @@ Plan a Pong survey scan over a 2x2 degree field::
 
 Plan a constant-elevation scan over a field with auto-computed timing::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_constant_el_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
 
     site = get_fyst_site()
 
@@ -108,10 +108,10 @@ When to Use What
 Field Regions
 -------------
 
-A :class:`~fyst_pointing.planning.FieldRegion` defines a rectangular sky area
+A :class:`~fyst_trajectories.planning.FieldRegion` defines a rectangular sky area
 by its center coordinates and angular extent::
 
-    from fyst_pointing.planning import FieldRegion
+    from fyst_trajectories.planning import FieldRegion
 
     # Stripe 82 CMB field: 60 deg RA x 14 deg Dec
     cmb_field = FieldRegion(
@@ -128,7 +128,7 @@ by its center coordinates and angular extent::
 Planning a Pong Scan
 --------------------
 
-:func:`~fyst_pointing.planning.plan_pong_scan` converts a field region into a
+:func:`~fyst_trajectories.planning.plan_pong_scan` converts a field region into a
 Pong scan trajectory. It automatically computes the Pong period from the field
 dimensions, spacing, and velocity, then generates one full period by default.
 
@@ -136,8 +136,8 @@ Basic usage::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_pong_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
 
     site = get_fyst_site()
 
@@ -168,7 +168,7 @@ Multiple cycles::
 
 With a detector offset (for off-axis PrimeCam modules)::
 
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories.primecam import get_primecam_offset
 
     offset = get_primecam_offset("i1")
     block = plan_pong_scan(
@@ -190,8 +190,8 @@ This example reproduces the two-field Stripe 82 survey configuration::
     from astropy.time import Time, TimeDelta
     import astropy.units as u
 
-    from fyst_pointing import Coordinates, get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_pong_scan
+    from fyst_trajectories import Coordinates, get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
 
     site = get_fyst_site()
     coords = Coordinates(site)
@@ -223,7 +223,7 @@ This example reproduces the two-field Stripe 82 survey configuration::
 Planning a Constant-Elevation Scan
 -----------------------------------
 
-:func:`~fyst_pointing.planning.plan_constant_el_scan` is the **recommended way**
+:func:`~fyst_trajectories.planning.plan_constant_el_scan` is the **recommended way**
 to plan a constant-elevation scan over a known field. It auto-computes the azimuth
 range, observation duration, and number of scans from the field geometry and
 celestial timing -- the same algorithm used by the FYST scan strategy planning
@@ -236,12 +236,12 @@ Given a field region, target elevation, and approximate start time, it:
 2. Computes the azimuth range that covers the entire field at that elevation
    at the midpoint of the observation.
 3. Derives ``n_scans`` from the duration and single-leg sweep time.
-4. Builds and returns a :class:`~fyst_pointing.planning.ScanBlock`.
+4. Builds and returns a :class:`~fyst_trajectories.planning.ScanBlock`.
 
 Basic usage::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_constant_el_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
 
     site = get_fyst_site()
 
@@ -262,7 +262,7 @@ Basic usage::
 
 With a detector offset::
 
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories.primecam import get_primecam_offset
 
     offset = get_primecam_offset("i1")
     block = plan_constant_el_scan(
@@ -277,14 +277,14 @@ With a detector offset::
 Planning a Daisy Scan
 ---------------------
 
-:func:`~fyst_pointing.planning.plan_daisy_scan` plans a Daisy (constant-velocity
+:func:`~fyst_trajectories.planning.plan_daisy_scan` plans a Daisy (constant-velocity
 petal) scan for point-source observations. Unlike Pong and CES scans, the Daisy
 scan takes a single RA/Dec position rather than a ``FieldRegion``::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import plan_daisy_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_daisy_scan
 
     site = get_fyst_site()
 
@@ -307,11 +307,11 @@ scan takes a single RA/Dec position rather than a ``FieldRegion``::
 Scan Block Output
 -----------------
 
-All planning functions return a :class:`~fyst_pointing.planning.ScanBlock`
+All planning functions return a :class:`~fyst_trajectories.planning.ScanBlock`
 containing:
 
 ``trajectory``
-    The generated :class:`~fyst_pointing.trajectory.Trajectory`, ready for
+    The generated :class:`~fyst_trajectories.trajectory.Trajectory`, ready for
     telescope upload or further analysis.
 
 ``config``
@@ -349,5 +349,5 @@ Example of inspecting a scan block::
     print(block.summary)
 
     # Validate trajectory against telescope limits
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
     traj.validate(get_fyst_site())

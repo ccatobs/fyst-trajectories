@@ -12,9 +12,9 @@ Quick Example
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -67,8 +67,8 @@ based on whether the trajectory contains celestial coordinates.
 The helper ``compute_focal_plane_rotation`` provides the same calculation
 for use outside of trajectory adjustment::
 
-    from fyst_pointing import get_fyst_site, InstrumentOffset
-    from fyst_pointing.offsets import compute_focal_plane_rotation
+    from fyst_trajectories import get_fyst_site, InstrumentOffset
+    from fyst_trajectories.offsets import compute_focal_plane_rotation
 
     site = get_fyst_site()
     offset = InstrumentOffset(dx=5.0, dy=3.0, instrument_rotation=10.0)
@@ -83,8 +83,8 @@ Point Transformations
 
 Compute detector position from boresight::
 
-    from fyst_pointing import InstrumentOffset
-    from fyst_pointing.offsets import boresight_to_detector
+    from fyst_trajectories import InstrumentOffset
+    from fyst_trajectories.offsets import boresight_to_detector
 
     offset = InstrumentOffset(dx=5.0, dy=3.0)  # arcmin
 
@@ -96,7 +96,7 @@ Compute detector position from boresight::
 
 Compute boresight position to place detector on target::
 
-    from fyst_pointing.offsets import detector_to_boresight
+    from fyst_trajectories.offsets import detector_to_boresight
 
     bore_az, bore_el = detector_to_boresight(
         det_az=180.0, det_el=45.0,
@@ -111,9 +111,9 @@ Apply offset to entire trajectory with time-varying field rotation::
 
     from astropy.time import Time
 
-    from fyst_pointing import InstrumentOffset, get_fyst_site
-    from fyst_pointing.offsets import apply_detector_offset
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import InstrumentOffset, get_fyst_site
+    from fyst_trajectories.offsets import apply_detector_offset
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -171,7 +171,7 @@ Predefined offsets for PrimeCam focal plane:
 
 **Access**::
 
-    from fyst_pointing.primecam import (
+    from fyst_trajectories.primecam import (
         PRIMECAM_I1,
         PRIMECAM_MODULES,
         get_primecam_offset,
@@ -190,7 +190,7 @@ Resolving user input with ``resolve_offset``:
 from user input (CLI, config file, API request). It handles all three cases in
 one call: named module, custom dx/dy, or boresight (``None``)::
 
-    from fyst_pointing.primecam import resolve_offset
+    from fyst_trajectories.primecam import resolve_offset
 
     # Named module -> predefined InstrumentOffset
     offset = resolve_offset(module="i1")
@@ -209,7 +209,7 @@ Custom Offsets
 
 **From angular offsets (arcminutes)**::
 
-    from fyst_pointing import InstrumentOffset
+    from fyst_trajectories import InstrumentOffset
 
     offset = InstrumentOffset(dx=10.0, dy=5.0, name="MyDetector")
 
@@ -223,7 +223,7 @@ Custom Offsets
 
 **From physical focal plane coordinates (millimeters)**::
 
-    from fyst_pointing import InstrumentOffset, get_fyst_site
+    from fyst_trajectories import InstrumentOffset, get_fyst_site
 
     site = get_fyst_site()
 
@@ -255,8 +255,8 @@ Offset Calculation
 The library uses spherical trigonometry for all offset calculations, providing
 sub-milliarcsecond precision for both small and large offsets::
 
-    from fyst_pointing import InstrumentOffset
-    from fyst_pointing.offsets import boresight_to_detector
+    from fyst_trajectories import InstrumentOffset
+    from fyst_trajectories.offsets import boresight_to_detector
 
     # Works for any offset size (small or large)
     offset = InstrumentOffset(dx=180.0, dy=90.0, name="OuterRing")  # 3 degrees

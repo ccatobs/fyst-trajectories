@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fyst-pointing"
+name = "fyst-trajectories"
 version = "0.2.0"
-description = "Coordinate transformation and trajectory generation for FYST telescope pointing"
+description = "Coordinate transformation and trajectory generation for FYST telescope"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -56,17 +56,17 @@ dev = [
     "pre-commit>=3.0",
 ]
 all = [
-    "fyst-pointing[ephemeris,plotting,docs,dev]",
+    "fyst-trajectories[ephemeris,plotting,docs,dev]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/ccatobs/fyst-pointing"
-Documentation = "https://fyst-pointing.readthedocs.io/"
-Repository = "https://github.com/ccatobs/fyst-pointing"
-"Bug Tracker" = "https://github.com/ccatobs/fyst-pointing/issues"
+Homepage = "https://github.com/ccatobs/fyst-trajectories"
+Documentation = "https://fyst-trajectories.readthedocs.io/"
+Repository = "https://github.com/ccatobs/fyst-trajectories"
+"Bug Tracker" = "https://github.com/ccatobs/fyst-trajectories/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fyst_pointing"]
+packages = ["src/fyst_trajectories"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -82,7 +82,7 @@ markers = [
     "slow: marks tests as slow (run with --run-slow)",
 ]
 filterwarnings = [
-    "ignore::fyst_pointing.exceptions.PointingWarning",
+    "ignore::fyst_trajectories.exceptions.PointingWarning",
 ]
 
 [tool.ruff]

@@ -6,7 +6,7 @@ Basic Usage
 
 Get the FYST site configuration::
 
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     print(f"FYST is at {site.latitude}, {site.longitude}")
@@ -18,7 +18,7 @@ Convert RA/Dec to Az/El::
 
     from astropy.time import Time
 
-    from fyst_pointing import Coordinates, get_fyst_site
+    from fyst_trajectories import Coordinates, get_fyst_site
 
     site = get_fyst_site()
     coords = Coordinates(site)
@@ -30,7 +30,7 @@ Convert RA/Dec to Az/El::
 
 **Coordinate frame translation**::
 
-    from fyst_pointing import FRAME_ALIASES, normalize_frame
+    from fyst_trajectories import FRAME_ALIASES, normalize_frame
 
     # Translate common frame names to astropy equivalents
     astropy_frame = normalize_frame("J2000")    # Returns "icrs"
@@ -40,7 +40,7 @@ Convert RA/Dec to Az/El::
 
     from astropy.time import Time
 
-    from fyst_pointing import Coordinates, get_fyst_site
+    from fyst_trajectories import Coordinates, get_fyst_site
 
     coords = Coordinates(get_fyst_site())
 
@@ -62,7 +62,7 @@ For geometric (vacuum) coordinates without atmospheric refraction::
 
     from astropy.time import Time
 
-    from fyst_pointing import AtmosphericConditions, Coordinates, get_fyst_site
+    from fyst_trajectories import AtmosphericConditions, Coordinates, get_fyst_site
 
     site = get_fyst_site()
     coords = Coordinates(site, atmosphere=AtmosphericConditions.no_refraction())
@@ -84,8 +84,8 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import SiderealTrackConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import SiderealTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-01-15T02:00:00", scale="utc")
@@ -105,8 +105,8 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PlanetTrackConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PlanetTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T16:00:00", scale="utc")
@@ -121,8 +121,8 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
 **Constant elevation scan** (auto-computed from a field region --- recommended)::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_constant_el_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
 
     site = get_fyst_site()
 
@@ -138,8 +138,8 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
 **Constant elevation scan** (manual parameters --- for engineering or known az ranges)::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import ConstantElScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
 
@@ -164,8 +164,8 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -188,8 +188,8 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import DaisyScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import DaisyScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -210,14 +210,14 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
 **Convert trajectory for OCS /path endpoint**::
 
-    from fyst_pointing.trajectory_utils import to_path_format
+    from fyst_trajectories.trajectory_utils import to_path_format
 
     # List of [time, az, el, az_vel, el_vel]
     points = to_path_format(trajectory)
 
 **Print formatted summary**::
 
-    from fyst_pointing.trajectory_utils import print_trajectory
+    from fyst_trajectories.trajectory_utils import print_trajectory
 
     print_trajectory(trajectory)  # Shows first 5 and last 5 points
 
@@ -229,9 +229,9 @@ so the detector (not the boresight) tracks the target::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -255,13 +255,13 @@ so the detector (not the boresight) tracks the target::
 
 **Custom detector offset (from angular values)**::
 
-    from fyst_pointing import InstrumentOffset
+    from fyst_trajectories import InstrumentOffset
 
     offset = InstrumentOffset(dx=30.0, dy=15.0, name="CustomDetector")
 
 **Custom detector offset (from focal plane coordinates)**::
 
-    from fyst_pointing import InstrumentOffset, get_fyst_site
+    from fyst_trajectories import InstrumentOffset, get_fyst_site
 
     site = get_fyst_site()
 

@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing import InstrumentOffset
-from fyst_pointing.patterns import (
+from fyst_trajectories import InstrumentOffset
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     ConstantElScanPattern,
     DaisyScanConfig,
@@ -28,7 +28,7 @@ from fyst_pointing.patterns import (
     SiderealTrackPattern,
     TrajectoryBuilder,
 )
-from fyst_pointing.patterns.utils import compute_velocities
+from fyst_trajectories.patterns.utils import compute_velocities
 
 
 @pytest.fixture

@@ -10,7 +10,7 @@ import pytest
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
-from fyst_pointing import (
+from fyst_trajectories import (
     FRAME_ALIASES,
     SOLAR_SYSTEM_BODIES,
     AtmosphericConditions,

@@ -2,7 +2,7 @@
 
 import pytest
 
-from fyst_pointing.patterns import (
+from fyst_trajectories.patterns import (
     get_pattern,
     list_patterns,
 )

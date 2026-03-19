@@ -1,6 +1,6 @@
-"""Cross-validation tests comparing fyst-pointing against Skyfield.
+"""Cross-validation tests comparing fyst-trajectories against Skyfield.
 
-This module validates the coordinate transformations in fyst-pointing by
+This module validates the coordinate transformations in fyst-trajectories by
 comparing results against Skyfield, an independent Python library for
 high-precision astronomy calculations.
 
@@ -146,10 +146,10 @@ class TestRadecToAltazCrossValidation:
         skyfield_planets,
         fyst_topos,
     ):
-        """Test that fyst-pointing matches Skyfield for RA/Dec to Az/El.
+        """Test that fyst-trajectories matches Skyfield for RA/Dec to Az/El.
 
         This is the primary cross-validation test comparing coordinate
-        transformations between fyst-pointing (using astropy) and Skyfield.
+        transformations between fyst-trajectories (using astropy) and Skyfield.
         """
         for ra, dec, time_str, description in comparison_cases:
             obstime = Time(time_str, scale="utc")
@@ -385,7 +385,7 @@ class TestConsistencyAcrossTimescales:
 class TestProperMotionCrossValidation:
     """Cross-validate proper motion handling against Skyfield.
 
-    Compares fyst-pointing's radec_to_altaz_with_pm() against Skyfield's
+    Compares fyst-trajectories's radec_to_altaz_with_pm() against Skyfield's
     Star() object which natively handles proper motion propagation.
     """
 
@@ -521,7 +521,7 @@ class TestProperMotionCrossValidation:
 class TestRiseSetCrossValidation:
     """Cross-validate rise/set times against Skyfield (find_risings/find_settings).
 
-    fyst-pointing uses linear interpolation on a coarse grid; Skyfield
+    fyst-trajectories uses linear interpolation on a coarse grid; Skyfield
     uses root-finding. Both run without refraction (pressure=0).
     """
 
@@ -546,7 +546,7 @@ class TestRiseSetCrossValidation:
         horizon = 0.0
         start_time = Time("2026-03-15T00:00:00", scale="utc")
 
-        # fyst-pointing rise/set (uses pressure=0 internally)
+        # fyst-trajectories rise/set (uses pressure=0 internally)
         rise_ccat, set_ccat = coordinates.get_rise_set_times(
             ra,
             dec,
@@ -634,7 +634,7 @@ class TestRefractionIsolation:
     """Cross-validate atmospheric refraction corrections against Skyfield.
 
     Compares the refraction delta (with-atmosphere minus no-atmosphere)
-    between fyst-pointing and Skyfield. By comparing deltas rather than
+    between fyst-trajectories and Skyfield. By comparing deltas rather than
     absolute positions, systematic differences in coordinate transforms
     cancel out, isolating the refraction model agreement.
     """
@@ -656,8 +656,8 @@ class TestRefractionIsolation:
         At ~50 deg elevation with ~500 hPa pressure (FYST altitude),
         refraction shifts apparent position by ~0.007 deg.
         """
-        from fyst_pointing import Coordinates
-        from fyst_pointing.site import AtmosphericConditions
+        from fyst_trajectories import Coordinates
+        from fyst_trajectories.site import AtmosphericConditions
 
         # Typical conditions for Cerro Chajnantor (~5612m)
         atmo = AtmosphericConditions(pressure=500.0, temperature=270.0, relative_humidity=0.2)

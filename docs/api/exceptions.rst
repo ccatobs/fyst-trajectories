@@ -3,7 +3,7 @@ Exceptions and Warnings
 
 Custom exception hierarchy for graceful error handling.
 
-.. automodule:: fyst_pointing.exceptions
+.. automodule:: fyst_trajectories.exceptions
    :members:
    :undoc-members:
    :show-inheritance:
@@ -13,8 +13,8 @@ Usage Examples
 
 **Catch an unobservable target**::
 
-    from fyst_pointing import plan_pong_scan, FieldRegion, get_fyst_site
-    from fyst_pointing.exceptions import TargetNotObservableError
+    from fyst_trajectories import plan_pong_scan, FieldRegion, get_fyst_site
+    from fyst_trajectories.exceptions import TargetNotObservableError
     from astropy.time import Time
 
     try:
@@ -33,7 +33,7 @@ Usage Examples
 **Catch pointing warnings**::
 
     import warnings
-    from fyst_pointing.exceptions import PointingWarning
+    from fyst_trajectories.exceptions import PointingWarning
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")

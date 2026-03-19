@@ -1,20 +1,20 @@
-# fyst-pointing
+# fyst-trajectories
 
-Pointing library for the Fred Young Submillimeter Telescope (FYST).
+Trajectory generation library for the Fred Young Submillimeter Telescope (FYST).
 
 ## Installation
 
 ```bash
-pip install "fyst-pointing @ git+https://github.com/ccatobs/fyst-pointing.git"
+pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git"
 ```
 
-[PENDING] For usage documentation, see [fyst-pointing.readthedocs.io](https://fyst-pointing.readthedocs.io/).
+[PENDING] For usage documentation, see [fyst-trajectories.readthedocs.io](https://fyst-trajectories.readthedocs.io/).
 
 ## Development
 
 ```bash
-git clone https://github.com/ccatobs/fyst-pointing.git
-cd fyst-pointing
+git clone https://github.com/ccatobs/fyst-trajectories.git
+cd fyst-trajectories
 pip install -e ".[dev]"
 
 pytest tests/

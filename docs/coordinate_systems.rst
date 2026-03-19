@@ -1,7 +1,7 @@
 Coordinate Systems
 ==================
 
-fyst-pointing supports celestial and horizontal coordinate systems via astropy,
+fyst-trajectories supports celestial and horizontal coordinate systems via astropy,
 with ``FRAME_ALIASES`` for compatibility with telescope control systems.
 
 Frame Aliases
@@ -25,7 +25,7 @@ Frame Aliases
 
 **Usage**::
 
-    from fyst_pointing import FRAME_ALIASES, normalize_frame
+    from fyst_trajectories import FRAME_ALIASES, normalize_frame
 
     # Case-insensitive lookup
     astropy_frame = normalize_frame("J2000")    # Returns "icrs"
@@ -46,8 +46,8 @@ Pattern-generated trajectories track coordinate provenance:
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     # Use a specific time when target is observable
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -74,7 +74,7 @@ For high proper motion stars, use ``radec_to_altaz_with_pm()``::
 
     from astropy.time import Time
 
-    from fyst_pointing import Coordinates, get_fyst_site
+    from fyst_trajectories import Coordinates, get_fyst_site
 
     coords = Coordinates(get_fyst_site())
 

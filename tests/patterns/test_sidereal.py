@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.patterns import SiderealTrackConfig, SiderealTrackPattern
+from fyst_trajectories.patterns import SiderealTrackConfig, SiderealTrackPattern
 
 
 class TestSiderealTrackPattern:

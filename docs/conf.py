@@ -1,11 +1,11 @@
-"""Sphinx configuration for fyst-pointing documentation."""
+"""Sphinx configuration for fyst-trajectories documentation."""
 
 import os
 import sys
 
 sys.path.insert(0, os.path.abspath("../src"))
 
-project = "fyst-pointing"
+project = "fyst-trajectories"
 copyright = "[TBD]"
 author = "Graham Gibson"
 

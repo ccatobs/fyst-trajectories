@@ -5,7 +5,7 @@ Coordinate transformation utilities with solar system ephemeris.
 Atmospheric refraction is applied only when an explicit
 ``AtmosphericConditions`` is provided; the default is vacuum (no refraction).
 
-.. automodule:: fyst_pointing.coordinates
+.. automodule:: fyst_trajectories.coordinates
    :members:
    :undoc-members:
    :show-inheritance:
@@ -31,7 +31,7 @@ Frame Aliases
 
 ::
 
-    from fyst_pointing import FRAME_ALIASES, normalize_frame
+    from fyst_trajectories import FRAME_ALIASES, normalize_frame
 
     normalize_frame("J2000")    # "icrs"
     normalize_frame("galactic") # "galactic"
@@ -43,7 +43,7 @@ Usage Examples
 
     from astropy.time import Time
 
-    from fyst_pointing import Coordinates, get_fyst_site
+    from fyst_trajectories import Coordinates, get_fyst_site
 
     coords = Coordinates(get_fyst_site())
 
@@ -77,7 +77,7 @@ Usage Examples
    The list of supported solar system bodies is available as
    ``SOLAR_SYSTEM_BODIES``::
 
-       from fyst_pointing import SOLAR_SYSTEM_BODIES
+       from fyst_trajectories import SOLAR_SYSTEM_BODIES
        print(SOLAR_SYSTEM_BODIES)
        # ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', ...]
 
@@ -88,7 +88,7 @@ AltAzCoord
 in degrees.  ``el`` is available as a property alias for ``alt``.
 It is returned by several :class:`Coordinates` helper methods::
 
-    from fyst_pointing import AltAzCoord
+    from fyst_trajectories import AltAzCoord
 
     coord = AltAzCoord(az=180.0, alt=45.0)
     print(coord.az, coord.el)  # .el is an alias for .alt

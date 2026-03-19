@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.exceptions import PointingWarning
-from fyst_pointing.offsets import InstrumentOffset, apply_detector_offset
-from fyst_pointing.patterns import PlanetTrackConfig, PlanetTrackPattern
+from fyst_trajectories.exceptions import PointingWarning
+from fyst_trajectories.offsets import InstrumentOffset, apply_detector_offset
+from fyst_trajectories.patterns import PlanetTrackConfig, PlanetTrackPattern
 
 
 class TestPlanetTrackPattern:

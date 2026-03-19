@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.exceptions import ElevationBoundsError
-from fyst_pointing.patterns import LinearMotionConfig, LinearMotionPattern
+from fyst_trajectories.exceptions import ElevationBoundsError
+from fyst_trajectories.patterns import LinearMotionConfig, LinearMotionPattern
 
 # Fixed start time for deterministic tests.
 _START_TIME = Time("2026-03-15T04:00:00", scale="utc")

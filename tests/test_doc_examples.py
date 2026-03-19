@@ -8,25 +8,25 @@ it validates.
 import pytest
 from astropy.time import Time
 
-from fyst_pointing import (
+from fyst_trajectories import (
     Coordinates,
     InstrumentOffset,
     get_fyst_site,
     normalize_frame,
     print_trajectory,
 )
-from fyst_pointing.exceptions import (
+from fyst_trajectories.exceptions import (
     ElevationBoundsError,
     PointingWarning,
     TargetNotObservableError,
 )
-from fyst_pointing.offsets import (
+from fyst_trajectories.offsets import (
     apply_detector_offset,
     boresight_to_detector,
     compute_focal_plane_rotation,
     detector_to_boresight,
 )
-from fyst_pointing.patterns import (
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     DaisyScanConfig,
     PlanetTrackConfig,
@@ -34,7 +34,7 @@ from fyst_pointing.patterns import (
     SiderealTrackConfig,
     TrajectoryBuilder,
 )
-from fyst_pointing.primecam import (
+from fyst_trajectories.primecam import (
     PRIMECAM_I1,
     PRIMECAM_MODULES,
     get_primecam_offset,
@@ -59,7 +59,7 @@ def test_quickstart_get_site():
 
 def test_quickstart_radec_to_altaz():
     """Test RA/Dec to Az/El conversion from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     coords = Coordinates(site)
@@ -84,7 +84,7 @@ def test_quickstart_frame_translation():
 
 def test_quickstart_proper_motion():
     """Test proper motion support from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     coords = Coordinates(get_fyst_site())
 
@@ -104,7 +104,7 @@ def test_quickstart_proper_motion():
 
 def test_quickstart_sidereal_tracking():
     """Test sidereal tracking example from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     start_time = Time("2026-01-15T02:00:00", scale="utc")
@@ -125,7 +125,7 @@ def test_quickstart_sidereal_tracking():
 
 def test_quickstart_planet_tracking():
     """Test planet tracking example from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T16:00:00", scale="utc")
@@ -161,7 +161,7 @@ def test_quickstart_constant_el_scan():
 
 def test_quickstart_pong_scan():
     """Test pong scan example from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -189,7 +189,7 @@ def test_quickstart_pong_scan():
 
 def test_quickstart_daisy_scan():
     """Test daisy scan example from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -217,7 +217,7 @@ def test_quickstart_daisy_scan():
 
 def test_quickstart_to_path_format():
     """Test trajectory to path format conversion from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     start_time = Time("2026-01-15T02:00:00", scale="utc")
@@ -240,8 +240,8 @@ def test_quickstart_to_path_format():
 
 def test_quickstart_print_trajectory():
     """Test print_trajectory from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import SiderealTrackConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import SiderealTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-01-15T02:00:00", scale="utc")
@@ -261,8 +261,8 @@ def test_quickstart_print_trajectory():
 
 def test_quickstart_detector_offset():
     """Test instrument offset example from quickstart.rst."""
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -323,9 +323,9 @@ def test_quickstart_custom_offset_focal_plane():
 
 def test_pipeline_stage3_trajectory_generation():
     """Test Stage 3 trajectory generation from trajectory_examples.rst."""
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories.primecam import get_primecam_offset
 
     # Simulate scheduled block (from Stage 2)
     # Note: Using 22:00 UTC instead of 04:00 UTC because Crab Nebula is observable then
@@ -382,7 +382,7 @@ def test_pipeline_stage3_trajectory_generation():
 
 def test_pipeline_stage4_to_path_format():
     """Test Stage 4 to_path_format from trajectory_examples.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     site = get_fyst_site()
     # Use a time when the Crab Nebula (RA=83.6, Dec=+22) is above the horizon
@@ -417,8 +417,8 @@ def test_pipeline_stage4_to_path_format():
 
 def test_pipeline_error_target_not_observable():
     """Test target not observable error from trajectory_examples.rst."""
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -449,7 +449,7 @@ def test_pipeline_error_target_not_observable():
 
 def test_pipeline_error_elevation_bounds():
     """Test elevation bounds error from trajectory_examples.rst."""
-    from fyst_pointing.patterns import ConstantElScanConfig, TrajectoryBuilder
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
 
@@ -483,8 +483,8 @@ def test_pipeline_error_elevation_bounds():
 
 def test_offsets_quick_example():
     """Test quick example from instrument_offsets.rst."""
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -558,8 +558,8 @@ def test_offsets_detector_to_boresight():
 
 def test_offsets_apply_detector_offset():
     """Test apply_detector_offset from instrument_offsets.rst."""
-    from fyst_pointing import InstrumentOffset, get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import InstrumentOffset, get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -673,7 +673,7 @@ def test_coordsys_frame_aliases():
 
 def test_coordsys_trajectory_metadata():
     """Test trajectory coordinate fields from coordinate_systems.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     # Use a specific time when target is observable
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -706,7 +706,7 @@ def test_coordsys_trajectory_metadata():
 
 def test_coordsys_proper_motion():
     """Test proper motion from coordinate_systems.rst."""
-    from fyst_pointing import get_fyst_site
+    from fyst_trajectories import get_fyst_site
 
     coords = Coordinates(get_fyst_site())
 

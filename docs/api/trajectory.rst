@@ -4,7 +4,7 @@ Trajectory Container
 Container for telescope trajectory data with time-stamped position and
 velocity setpoints for Az/El axes.
 
-.. automodule:: fyst_pointing.trajectory
+.. automodule:: fyst_trajectories.trajectory
    :members:
    :undoc-members:
    :show-inheritance:
@@ -40,7 +40,7 @@ Scan Flags
 
 Each trajectory sample can be classified with a scan flag indicating
 whether it is science data or a turnaround.  Three constants are
-exported from ``fyst_pointing``:
+exported from ``fyst_trajectories``:
 
 - ``SCAN_FLAG_UNCLASSIFIED`` (0) -- default when no classification is available.
 - ``SCAN_FLAG_SCIENCE`` (1) -- science-quality samples.
@@ -50,7 +50,7 @@ The ``science_mask`` property returns a boolean mask that is ``True``
 for science samples, making it easy to filter trajectory data::
 
     import numpy as np
-    from fyst_pointing import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
+    from fyst_trajectories import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
     # After generating a CE trajectory:
     traj = pattern.generate(site, duration=3600.0, start_time=t0)
@@ -70,7 +70,7 @@ Usage Examples
 **Manual creation**::
 
     import numpy as np
-    from fyst_pointing import Trajectory
+    from fyst_trajectories import Trajectory
 
     trajectory = Trajectory(
         times=np.array([0, 1, 2, 3, 4]),
@@ -84,8 +84,8 @@ Usage Examples
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     start_time = Time("2026-03-15T04:00:00", scale="utc")
 
@@ -107,7 +107,7 @@ Usage Examples
 
 **Export**::
 
-    from fyst_pointing.trajectory_utils import to_path_format, to_arrays
+    from fyst_trajectories.trajectory_utils import to_path_format, to_arrays
 
     # For OCS /path endpoint (preferred: free function)
     points = to_path_format(trajectory)
@@ -128,7 +128,7 @@ Usage Examples
 
     from astropy.time import Time
 
-    from fyst_pointing.trajectory_utils import get_absolute_times
+    from fyst_trajectories.trajectory_utils import get_absolute_times
 
     trajectory.start_time = Time("2026-03-15T04:00:00", scale="utc")
 
@@ -140,8 +140,8 @@ Usage Examples
 
 **Validation**::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.trajectory_utils import validate_trajectory
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.trajectory_utils import validate_trajectory
 
     site = get_fyst_site()
 
@@ -153,7 +153,7 @@ Usage Examples
 
 **Print formatted summary**::
 
-    from fyst_pointing.trajectory_utils import print_trajectory
+    from fyst_trajectories.trajectory_utils import print_trajectory
 
     print_trajectory(trajectory)              # First 5 and last 5 points
     print_trajectory(trajectory, head=10)     # Customize head count
@@ -161,7 +161,7 @@ Usage Examples
 
 **Plot trajectory**::
 
-    from fyst_pointing.trajectory_utils import plot_trajectory
+    from fyst_trajectories.trajectory_utils import plot_trajectory
 
     # Display interactive plot
     fig = plot_trajectory(trajectory, show=True)

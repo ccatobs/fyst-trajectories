@@ -3,7 +3,7 @@
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.patterns import (
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     DaisyScanConfig,
     PlanetTrackConfig,

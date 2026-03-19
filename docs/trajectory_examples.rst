@@ -11,8 +11,8 @@ Setup
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -31,7 +31,7 @@ Pattern generation returns a ``Trajectory`` containing:
 
 **Export for OCS**::
 
-    from fyst_pointing.trajectory_utils import to_path_format
+    from fyst_trajectories.trajectory_utils import to_path_format
 
     # List of [time, az, el, az_vel, el_vel]
     points = to_path_format(trajectory)
@@ -44,7 +44,7 @@ Pattern generation returns a ``Trajectory`` containing:
 
 **Print formatted summary**::
 
-    from fyst_pointing.trajectory_utils import print_trajectory
+    from fyst_trajectories.trajectory_utils import print_trajectory
 
     print_trajectory(trajectory)              # First 5 and last 5 points
     print_trajectory(trajectory, head=10)     # First 10 and last 5 points
@@ -57,8 +57,8 @@ Track a fixed RA/Dec position::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import SiderealTrackConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import SiderealTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-01-15T02:00:00", scale="utc")
@@ -79,8 +79,8 @@ Track solar system bodies using astropy ephemeris::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PlanetTrackConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PlanetTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T16:00:00", scale="utc")
@@ -98,12 +98,12 @@ Supported bodies: mercury, venus, mars, jupiter, saturn, uranus, neptune, moon, 
 Constant Elevation Scan
 -----------------------
 
-For field-based observations, :func:`~fyst_pointing.planning.plan_constant_el_scan`
+For field-based observations, :func:`~fyst_trajectories.planning.plan_constant_el_scan`
 is the recommended approach. It auto-computes the azimuth range, observation
 duration, and number of scans from the field geometry::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.planning import FieldRegion, plan_constant_el_scan
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
 
     site = get_fyst_site()
 
@@ -121,8 +121,8 @@ duration, and number of scans from the field geometry::
 For manual control (engineering tests, known azimuth ranges), use
 ``ConstantElScanConfig`` + ``TrajectoryBuilder`` directly::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import ConstantElScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
 
@@ -151,8 +151,8 @@ triangle waves::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PongScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -183,8 +183,8 @@ Constant-velocity petal pattern for point sources::
 
     from astropy.time import Time
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import DaisyScanConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import DaisyScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     start_time = Time("2026-01-15T02:00:00", scale="utc")
@@ -213,8 +213,8 @@ Linear Motion
 
 Constant velocity motion in Az/El::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import LinearMotionConfig, TrajectoryBuilder
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import LinearMotionConfig, TrajectoryBuilder
 
     site = get_fyst_site()
 
@@ -236,6 +236,25 @@ Constant velocity motion in Az/El::
 ACU Upload
 ----------
 
+In practice, the PCS ACU agent handles the integration between fyst-trajectories
+and the telescope hardware. The agent's ``execute_scan()`` task receives scan
+parameters from the OCS scheduler, uses fyst-trajectories to compute the
+trajectory, and passes the result to ``aculib`` for upload to the TCS::
+
+    OCS Scheduler --[scan config]--> agent.py execute_scan()
+                                        |
+                                        v
+                                    fyst-trajectories  (trajectory planning)
+                                        |
+                                        v
+                                    aculib.scan_pattern()  (HTTP client)
+                                        |
+                                        v
+                                    TCS (Go server) --> ACU Hardware
+
+fyst-trajectories is a library dependency of the PCS agent. It is **not** an
+OCS agent itself.
+
 **Production (via aculib / PCS agent):**
 
 Complete example tracking Jupiter and uploading to the TCS via ``aculib``. The
@@ -246,10 +265,10 @@ and logging::
 
     from pcs.agents.acu_interface.aculib import observatory_control_system
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.patterns import PlanetTrackConfig, TrajectoryBuilder
-    from fyst_pointing.primecam import resolve_offset
-    from fyst_pointing.trajectory_utils import to_path_format
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PlanetTrackConfig, TrajectoryBuilder
+    from fyst_trajectories.primecam import resolve_offset
+    from fyst_trajectories.trajectory_utils import to_path_format
 
     # Connect to TCS
     tcs = observatory_control_system(
@@ -282,13 +301,87 @@ and logging::
     }
     tcs.scan_pattern(payload)
 
+Inside the PCS agent, each scan task follows a 4-step pattern:
+
+1. Acquire ``self.azel_lock`` (exclusive telescope access)
+2. Call ``plan_*()`` or ``TrajectoryBuilder.build()`` (fyst-trajectories generates trajectory)
+3. Format with ``to_path_format()`` into ``{start_time, coordsys, points}``
+4. POST via ``tcs.scan_pattern(data)``
+
+Here is a realistic ``execute_scan()`` example using ``plan_pong_scan``::
+
+    # Inside ACUAgent.execute_pong_scan() -- an OCS task
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site, resolve_offset
+    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
+    from fyst_trajectories.trajectory_utils import to_path_format
+
+    site = get_fyst_site()
+
+    # Parameters arrive from the OCS scheduler via RPC
+    field = FieldRegion(
+        ra_center=params["ra_center"],
+        dec_center=params["dec_center"],
+        width=params["width"],
+        height=params["height"],
+    )
+    offset = resolve_offset(module=params.get("detector"))
+
+    block = plan_pong_scan(
+        field=field,
+        velocity=params.get("velocity", 0.5),
+        spacing=params.get("spacing", 0.1),
+        num_terms=4,
+        site=site,
+        start_time=Time.now(),
+        detector_offset=offset,
+    )
+
+    # Format and upload
+    data = {
+        "start_time": float(block.trajectory.start_time.unix),
+        "coordsys": "Horizon",
+        "points": to_path_format(block.trajectory),
+    }
+    tcs = self._get_tcs_client()
+    tcs.scan_pattern(data)
+
+**Planning tools use the same library:**
+
+The planning and simulation tools (e.g., hitmap generation, integration time
+estimation) import the same ``fyst_trajectories`` library. This guarantees that
+the trajectories used for observation planning match exactly what the telescope
+executes::
+
+    # In a planning notebook or scan_patterns analysis script
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
+
+    site = get_fyst_site()
+    field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
+
+    block = plan_pong_scan(
+        field=field,
+        velocity=0.5,
+        spacing=0.1,
+        num_terms=4,
+        site=site,
+        start_time="2026-03-15T04:00:00",
+    )
+
+    # Same trajectory object -- use for hitmap simulation
+    trajectory = block.trajectory
+    print(f"Simulating {trajectory.n_points} points over {trajectory.duration:.0f}s")
+    # ... feed trajectory.az, trajectory.el into coverage analysis ...
+
 **Direct HTTP (testing / debugging only):**
 
 For quick local testing without the PCS agent::
 
     import requests
 
-    from fyst_pointing.trajectory_utils import to_path_format
+    from fyst_trajectories.trajectory_utils import to_path_format
 
     payload = {
         "start_time": trajectory.start_time.unix,
@@ -324,7 +417,7 @@ Pattern Selection
 .. tip::
 
    For field-based constant-elevation observations, use
-   :func:`~fyst_pointing.planning.plan_constant_el_scan` instead of manually
+   :func:`~fyst_trajectories.planning.plan_constant_el_scan` instead of manually
    constructing ``ConstantElScanConfig``. It auto-computes the azimuth range,
    duration, and number of scans from a ``FieldRegion``. See :doc:`planning`.
 
@@ -338,8 +431,8 @@ due to Earth's rotation.
 
     from astropy.time import Time
 
-    from fyst_pointing import Coordinates, get_fyst_site
-    from fyst_pointing.patterns import ConstantElScanConfig, TrajectoryBuilder
+    from fyst_trajectories import Coordinates, get_fyst_site
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
     coords = Coordinates(site)
@@ -371,10 +464,10 @@ due to Earth's rotation.
 
     from astropy.time import Time
 
-    from fyst_pointing import Coordinates, get_fyst_site
-    from fyst_pointing.offsets import compute_focal_plane_rotation, detector_to_boresight
-    from fyst_pointing.patterns import ConstantElScanConfig, TrajectoryBuilder
-    from fyst_pointing.primecam import get_primecam_offset
+    from fyst_trajectories import Coordinates, get_fyst_site
+    from fyst_trajectories.offsets import compute_focal_plane_rotation, detector_to_boresight
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
+    from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
     coords = Coordinates(site)
@@ -425,7 +518,7 @@ determined at runtime, you can use the registry functions::
 
     from astropy.time import Time
 
-    from fyst_pointing import list_patterns, get_pattern, get_fyst_site
+    from fyst_trajectories import list_patterns, get_pattern, get_fyst_site
 
     # List available pattern names
     print(list_patterns())
@@ -436,7 +529,7 @@ determined at runtime, you can use the registry functions::
     PatternClass = get_pattern(pattern_name)
 
     # Instantiate and generate
-    from fyst_pointing.patterns import PongScanConfig
+    from fyst_trajectories.patterns import PongScanConfig
 
     site = get_fyst_site()
     start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -447,9 +540,9 @@ determined at runtime, you can use the registry functions::
     pattern = PatternClass(ra=180.0, dec=-30.0, config=config)
     trajectory = pattern.generate(site, duration=300.0, start_time=start_time)
 
-For most use cases, the planning functions (:func:`~fyst_pointing.planning.plan_pong_scan`,
-:func:`~fyst_pointing.planning.plan_constant_el_scan`,
-:func:`~fyst_pointing.planning.plan_daisy_scan`) are the recommended approach for
+For most use cases, the planning functions (:func:`~fyst_trajectories.planning.plan_pong_scan`,
+:func:`~fyst_trajectories.planning.plan_constant_el_scan`,
+:func:`~fyst_trajectories.planning.plan_daisy_scan`) are the recommended approach for
 field observations. ``TrajectoryBuilder`` with config objects (shown above) is
 preferred for engineering tests, manual parameter overrides, and patterns without
 planning functions (sidereal, planet, linear).

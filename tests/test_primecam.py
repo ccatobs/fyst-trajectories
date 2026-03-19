@@ -8,8 +8,8 @@ y = r*sin(theta)) and cross-validates angular separations against scan_patterns.
 import numpy as np
 import pytest
 
-from fyst_pointing.offsets import InstrumentOffset
-from fyst_pointing.primecam import (
+from fyst_trajectories.offsets import InstrumentOffset
+from fyst_trajectories.primecam import (
     INNER_RING_RADIUS_MM,
     PRIMECAM_CENTER,
     PRIMECAM_I1,
@@ -22,7 +22,7 @@ from fyst_pointing.primecam import (
     get_primecam_offset,
     resolve_offset,
 )
-from fyst_pointing.site import get_fyst_site
+from fyst_trajectories.site import get_fyst_site
 
 # Expected angular distance of inner ring from center in arcminutes.
 # 461.3 mm * 13.89 arcsec/mm / 60 = 106.79 arcmin = 1.78 deg

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing import (
+from fyst_trajectories import (
     SCAN_FLAG_SCIENCE,
     SCAN_FLAG_TURNAROUND,
     SCAN_FLAG_UNCLASSIFIED,
@@ -15,9 +15,9 @@ from fyst_pointing import (
     get_fyst_site,
     print_trajectory,
 )
-from fyst_pointing.exceptions import AzimuthBoundsError
-from fyst_pointing.patterns import TrajectoryMetadata
-from fyst_pointing.trajectory_utils import _format_trajectory
+from fyst_trajectories.exceptions import AzimuthBoundsError
+from fyst_trajectories.patterns import TrajectoryMetadata
+from fyst_trajectories.trajectory_utils import _format_trajectory
 
 
 class TestTrajectory:

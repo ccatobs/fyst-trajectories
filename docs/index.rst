@@ -1,5 +1,5 @@
-fyst-pointing
-=============
+fyst-trajectories
+==================
 
 Pointing and trajectory generation for the FYST (Fred Young Submillimeter
 Telescope).  Wraps astropy with FYST-specific site coordinates, telescope

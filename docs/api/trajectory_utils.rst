@@ -4,7 +4,7 @@ Trajectory Utilities
 Utility functions for working with ``Trajectory`` objects. These free functions
 are the primary API for trajectory operations.
 
-.. automodule:: fyst_pointing.trajectory_utils
+.. automodule:: fyst_trajectories.trajectory_utils
    :members:
    :undoc-members:
    :show-inheritance:
@@ -14,15 +14,15 @@ Common Operations
 
 **Validation**::
 
-    from fyst_pointing import get_fyst_site
-    from fyst_pointing.trajectory_utils import validate_trajectory
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.trajectory_utils import validate_trajectory
 
     site = get_fyst_site()
     validate_trajectory(trajectory, site)  # Raises if out of bounds, warns if dynamics exceeded
 
 **Export formats**::
 
-    from fyst_pointing.trajectory_utils import to_path_format, to_arrays
+    from fyst_trajectories.trajectory_utils import to_path_format, to_arrays
 
     # For OCS /path endpoint
     points = to_path_format(trajectory)
@@ -35,14 +35,14 @@ Common Operations
 
     from astropy.time import Time
 
-    from fyst_pointing.trajectory_utils import get_absolute_times
+    from fyst_trajectories.trajectory_utils import get_absolute_times
 
     trajectory.start_time = Time("2026-03-15T04:00:00", scale="utc")
     abs_times = get_absolute_times(trajectory)  # Returns Time array
 
 **Visualization**::
 
-    from fyst_pointing.trajectory_utils import plot_trajectory, print_trajectory
+    from fyst_trajectories.trajectory_utils import plot_trajectory, print_trajectory
 
     # Print formatted table
     print_trajectory(trajectory)              # First 5 and last 5 points
@@ -67,15 +67,15 @@ Validation Functions
 
 Low-level validation utilities:
 
-.. autofunction:: fyst_pointing.trajectory_utils.validate_trajectory_bounds
+.. autofunction:: fyst_trajectories.trajectory_utils.validate_trajectory_bounds
    :no-index:
 
-.. autofunction:: fyst_pointing.trajectory_utils.validate_trajectory_dynamics
+.. autofunction:: fyst_trajectories.trajectory_utils.validate_trajectory_dynamics
    :no-index:
 
 **Example usage**::
 
-    from fyst_pointing.trajectory_utils import (
+    from fyst_trajectories.trajectory_utils import (
         validate_trajectory_bounds,
         validate_trajectory_dynamics,
     )
@@ -86,13 +86,13 @@ Low-level validation utilities:
     # Check only dynamics (emits warning if limits exceeded)
     validate_trajectory_dynamics(site, az_array, el_array, times_array)
 
-.. autofunction:: fyst_pointing.trajectory_utils.validate_sun_avoidance
+.. autofunction:: fyst_trajectories.trajectory_utils.validate_sun_avoidance
    :no-index:
 
 **Sun avoidance validation**::
 
-    from fyst_pointing import get_fyst_site, validate_sun_avoidance
-    from fyst_pointing.trajectory_utils import get_absolute_times
+    from fyst_trajectories import get_fyst_site, validate_sun_avoidance
+    from fyst_trajectories.trajectory_utils import get_absolute_times
 
     site = get_fyst_site()
     # trajectory must have start_time set

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.patterns import PongScanConfig, PongScanPattern
+from fyst_trajectories.patterns import PongScanConfig, PongScanPattern
 
 
 class TestPongScanPattern:

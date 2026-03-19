@@ -6,7 +6,7 @@ are rejected with appropriate error messages.
 
 import pytest
 
-from fyst_pointing.patterns import (
+from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     DaisyScanConfig,
     PlanetTrackConfig,

@@ -1,4 +1,4 @@
-"""Pytest fixtures for fyst-pointing tests.
+"""Pytest fixtures for fyst-trajectories tests.
 
 Notes
 -----
@@ -10,7 +10,7 @@ warnings or degraded accuracy, update the test dates forward.
 
 import pytest
 
-from fyst_pointing import Coordinates, get_fyst_site
+from fyst_trajectories import Coordinates, get_fyst_site
 
 
 def pytest_addoption(parser):

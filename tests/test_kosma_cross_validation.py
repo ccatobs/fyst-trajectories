@@ -1,9 +1,9 @@
-"""Cross-validation tests between fyst-pointing and KOSMA focal plane model.
+"""Cross-validation tests between fyst-trajectories and KOSMA focal plane model.
 
-This module compares the fyst-pointing spherical offset model against the
+This module compares the fyst-trajectories spherical offset model against the
 KOSMA flat-projection focal plane model extracted from
 ``tests_with_focalplane.py``. The KOSMA model uses flat-plane trigonometry
-(2D rotation + linear mm-to-arcsec conversion), while fyst-pointing uses
+(2D rotation + linear mm-to-arcsec conversion), while fyst-trajectories uses
 exact spherical trigonometry (great-circle offsets).
 
 The two models should agree closely for small offsets (< 1 degree) and
@@ -22,13 +22,13 @@ import math
 import pytest
 from astropy.time import Time
 
-from fyst_pointing.coordinates import Coordinates
-from fyst_pointing.offsets import (
+from fyst_trajectories.coordinates import Coordinates
+from fyst_trajectories.offsets import (
     InstrumentOffset,
     boresight_to_detector,
     compute_focal_plane_rotation,
 )
-from fyst_pointing.site import (
+from fyst_trajectories.site import (
     AxisLimits,
     Site,
     SunAvoidanceConfig,
@@ -229,7 +229,7 @@ class TestKOSMAParallacticAngleRotation:
     """Cross-validate rotation with non-zero parallactic angle.
 
     KOSMA's full rotation: rho = nasmyth_sign * el + instrument_rotation + tel_angle_focal_plane
-    fyst-pointing's:       rho = nasmyth_sign * el + instrument_rotation + parallactic_angle
+    fyst-trajectories's:       rho = nasmyth_sign * el + instrument_rotation + parallactic_angle
 
     Where tel_angle_focal_plane in KOSMA corresponds to the parallactic angle.
     Since the rotation is pure addition, the two should match exactly.
@@ -413,7 +413,7 @@ class TestKOSMACrossValidationSmallOffsets:
     """Cross-validate offset projection for small offsets.
 
     For small offsets (< ~0.5 degrees), the KOSMA flat-projection and
-    the fyst-pointing spherical model should agree to within a few
+    the fyst-trajectories spherical model should agree to within a few
     arcseconds. The flat-plane error scales as offset^3.
     """
 
@@ -444,7 +444,7 @@ class TestKOSMACrossValidationSmallOffsets:
             port="Right",
         )
 
-        # fyst-pointing model: spherical projection
+        # fyst-trajectories model: spherical projection
         # Use from_focal_plane to convert mm -> arcmin via plate scale
         offset = InstrumentOffset.from_focal_plane(
             x_mm=ref_x_mm,
@@ -533,7 +533,7 @@ class TestKOSMACrossValidationLargeOffsets:
             port="Right",
         )
 
-        # fyst-pointing spherical result using from_focal_plane
+        # fyst-trajectories spherical result using from_focal_plane
         offset = InstrumentOffset.from_focal_plane(
             x_mm=offset_mm,
             y_mm=0.0,
