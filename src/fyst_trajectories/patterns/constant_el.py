@@ -1,7 +1,7 @@
 """Constant elevation scan pattern.
 
 Scans back and forth in azimuth at a fixed elevation using a
-trapezoidal velocity profile with smooth turnarounds.
+quintic polynomial velocity profile with smooth turnarounds.
 """
 
 import warnings
@@ -16,6 +16,7 @@ from ..trajectory_utils import validate_trajectory_bounds
 from .base import AltAzPattern, TrajectoryMetadata
 from .configs import ConstantElScanConfig
 from .registry import register_pattern
+from .turnarounds import quintic_turnaround
 
 
 @register_pattern("constant_el")
@@ -23,13 +24,13 @@ class ConstantElScanPattern(AltAzPattern):
     """Constant elevation scan pattern.
 
     Generates a trajectory that scans back and forth in azimuth at
-    a fixed elevation, using a trapezoidal velocity profile with
-    smooth acceleration-limited turnarounds.
+    a fixed elevation, using a quintic polynomial velocity profile
+    for smooth turnarounds.
 
-    The velocity profile ensures physically realistic motion that
-    respects the telescope's acceleration limits. For small throws
-    where full cruise speed cannot be reached, a triangular velocity
-    profile is used instead.
+    The quintic turnaround has zero acceleration at the cruise/turn
+    boundaries, providing C2 continuity. The peak acceleration is
+    1.5x the average acceleration (``az_accel``), and turnaround
+    overshoot is 25% larger than the linear (trapezoidal) profile.
 
     Note: The first scan leg begins at full cruise speed. Initial
     ramp-up from rest is not modeled.
@@ -162,23 +163,24 @@ class ConstantElScanPattern(AltAzPattern):
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute positions, velocities, and scan flags for a back-and-forth scan.
 
-        Uses a trapezoidal velocity profile with smooth turnarounds.
-        All points are computed simultaneously using NumPy vectorized operations.
+        Uses a quintic polynomial turnaround profile. Turnarounds
+        happen outside the science region so that every sample within
+        ``[az_min, az_max]`` is at constant cruise velocity.
 
         Parameters
         ----------
         times : np.ndarray
             Time array in seconds from start.
         az_min : float
-            Minimum azimuth bound in degrees.
+            Minimum azimuth bound (science region) in degrees.
         az_max : float
-            Maximum azimuth bound in degrees.
+            Maximum azimuth bound (science region) in degrees.
         az_speed : float
             Scan speed in azimuth coordinate degrees/second
             (not on-sky).
         az_accel : float
-            Acceleration in azimuth coordinate degrees/second^2
-            (not on-sky).
+            Average acceleration in azimuth coordinate degrees/second^2
+            (not on-sky). Peak acceleration is 1.5x this value.
         start_increasing : bool
             If True, start scanning toward increasing azimuth.
 
@@ -192,119 +194,70 @@ class ConstantElScanPattern(AltAzPattern):
             Per-sample scan flag (1 = science, 2 = turnaround).
         """
         az_throw = az_max - az_min
-        t_half_turn = az_speed / az_accel
-        d_half_turn = (az_speed**2) / (2 * az_accel)
-        d_cruise = az_throw - 2 * d_half_turn
+        # Quintic turnaround: T = 2*v/a_avg, d = 5*v^2/(8*a_avg)
+        t_turnaround = 2.0 * az_speed / az_accel
+        d_half_turn = 5.0 * az_speed**2 / (8.0 * az_accel)
 
-        positions = np.empty_like(times)
-        velocities = np.empty_like(times)
+        # Cruise covers the full science region, turnarounds are outside
+        d_cruise = az_throw
+        motion_min = az_min - d_half_turn
+        motion_max = az_max + d_half_turn
 
         dir_fwd = 1.0 if start_increasing else -1.0
         dir_rev = -dir_fwd
-        pos_fwd = az_min if start_increasing else az_max
-        pos_rev = az_max if start_increasing else az_min
+        pos_fwd = motion_min if start_increasing else motion_max
+        pos_rev = motion_max if start_increasing else motion_min
 
         scan_flag = np.empty(len(times), dtype=np.int8)
 
-        if d_cruise < 0:
-            # Triangular velocity profile — no cruise phase, all turnaround
-            v_peak = np.sqrt(az_accel * az_throw)
-            t_half_turn_actual = v_peak / az_accel
-            t_half_cycle = 2 * t_half_turn_actual
-            cycle_time = 2 * t_half_cycle
+        # Quintic velocity profile: cruise + single turnaround phase
+        t_cruise_time = d_cruise / az_speed
+        t_half_cycle = t_cruise_time + t_turnaround
+        cycle_time = 2.0 * t_half_cycle
 
-            t_in_cycle = times % cycle_time
+        t_in_cycle = times % cycle_time
 
-            # Determine which half of the cycle we're in
-            in_first_half = t_in_cycle < t_half_cycle
-            t_in_half = np.where(in_first_half, t_in_cycle, t_in_cycle - t_half_cycle)
-            direction = np.where(in_first_half, dir_fwd, dir_rev)
-            start_pos = np.where(in_first_half, pos_fwd, pos_rev)
+        in_first_half = t_in_cycle < t_half_cycle
+        t_in_half = np.where(in_first_half, t_in_cycle, t_in_cycle - t_half_cycle)
+        direction = np.where(in_first_half, dir_fwd, dir_rev)
+        start_pos = np.where(in_first_half, pos_fwd, pos_rev)
 
-            # Accelerating phase vs decelerating phase
-            in_accel = t_in_half < t_half_turn_actual
-            t_decel = t_in_half - t_half_turn_actual
+        # Two phases per half-cycle: cruise, then quintic turnaround
+        in_cruise = t_in_half < t_cruise_time
 
-            # Accelerating phase
-            vel_accel = direction * az_accel * t_in_half
-            disp_accel = 0.5 * az_accel * t_in_half**2
+        # Cruise phase
+        vel_cruise = direction * az_speed
+        pos_cruise = start_pos + direction * az_speed * t_in_half
 
-            # Decelerating phase
-            d_accel_phase = 0.5 * az_accel * t_half_turn_actual**2
-            d_decel_phase = v_peak * t_decel - 0.5 * az_accel * t_decel**2
-            vel_decel = direction * (v_peak - az_accel * t_decel)
-            disp_decel = d_accel_phase + d_decel_phase
+        # Quintic turnaround phase
+        t_turn = t_in_half - t_cruise_time
+        turn_offset, turn_vel = quintic_turnaround(t_turn, az_speed, t_turnaround)
+        pos_turn = start_pos + direction * (d_cruise + turn_offset)
+        vel_turn = direction * turn_vel
 
-            velocities = np.where(in_accel, vel_accel, vel_decel)
-            displacement = np.where(in_accel, disp_accel, disp_decel)
-            positions = start_pos + direction * displacement
+        velocities = np.where(in_cruise, vel_cruise, vel_turn)
+        positions = np.where(in_cruise, pos_cruise, pos_turn)
 
-            # Triangular profile never reaches cruise speed — all turnaround
-            scan_flag[:] = SCAN_FLAG_TURNAROUND
+        # Cruise samples within science region are science,
+        # everything else (including cruise samples in overscan) is turnaround
+        scan_flag[:] = SCAN_FLAG_TURNAROUND
+        in_science = in_cruise & (positions >= az_min) & (positions <= az_max)
+        scan_flag[in_science] = SCAN_FLAG_SCIENCE
 
-        else:
-            # Trapezoidal velocity profile
-            t_turnaround = 2 * t_half_turn
-            t_cruise_time = d_cruise / az_speed
-            t_half_cycle = t_cruise_time + t_turnaround
-            cycle_time = 2 * t_half_cycle
-
-            t_in_cycle = times % cycle_time
-
-            in_first_half = t_in_cycle < t_half_cycle
-            t_in_half = np.where(in_first_half, t_in_cycle, t_in_cycle - t_half_cycle)
-            direction = np.where(in_first_half, dir_fwd, dir_rev)
-            start_pos = np.where(in_first_half, pos_fwd, pos_rev)
-
-            # Three phases: cruise, decelerate, accelerate (reverse)
-            in_cruise = t_in_half < t_cruise_time
-            in_decel = (~in_cruise) & (t_in_half < t_cruise_time + t_half_turn)
-            # Remaining points are in accelerate-reverse phase (handled by else in np.where)
-
-            # Cruise phase
-            vel_cruise = direction * az_speed
-            pos_cruise = start_pos + direction * az_speed * t_in_half
-
-            # Decelerate phase: position = start_pos + direction * (d_cruise + d_d)
-            # d_d is the distance traveled since deceleration started
-            t_d = t_in_half - t_cruise_time
-            vel_decel = direction * (az_speed - az_accel * t_d)
-            d_d = az_speed * t_d - 0.5 * az_accel * t_d**2
-            pos_decel = start_pos + direction * (d_cruise + d_d)
-
-            # Accelerate reverse phase: anchored at the turning point
-            # turning_point = start_pos + direction * (d_cruise + d_half_turn)
-            t_a = t_in_half - t_cruise_time - t_half_turn
-            vel_accel_rev = -direction * az_accel * t_a
-            d_a = 0.5 * az_accel * t_a**2
-            turning_point = start_pos + direction * (d_cruise + d_half_turn)
-            pos_accel_rev = turning_point - direction * d_a
-
-            velocities = np.where(
-                in_cruise, vel_cruise, np.where(in_decel, vel_decel, vel_accel_rev)
-            )
-            positions = np.where(
-                in_cruise, pos_cruise, np.where(in_decel, pos_decel, pos_accel_rev)
-            )
-
-            # Cruise = science, decel + accel-reverse = turnaround
-            scan_flag[:] = SCAN_FLAG_TURNAROUND
-            scan_flag[in_cruise] = SCAN_FLAG_SCIENCE
-
-        # Diagnostic: warn if positions exceed bounds by more than floating-point noise
+        # Positions intentionally exceed [az_min, az_max].
+        # Clip only floating-point noise beyond the expected motion range.
         pos_min = positions.min()
         pos_max = positions.max()
-        overshoot = max(az_min - pos_min, pos_max - az_max)
+        overshoot = max(motion_min - pos_min, pos_max - motion_max)
         if overshoot > 0.01:
             warnings.warn(
-                f"Scan positions exceed bounds by {overshoot:.4f} deg "
+                f"Scan positions exceed motion range by {overshoot:.4f} deg "
                 f"(positions [{pos_min:.4f}, {pos_max:.4f}], "
-                f"bounds [{az_min:.4f}, {az_max:.4f}]). "
+                f"motion range [{motion_min:.4f}, {motion_max:.4f}]). "
                 "Check scan parameters for consistency.",
                 category=PointingWarning,
                 stacklevel=2,
             )
-        # Clip only floating-point noise (< 0.01 deg)
-        positions = np.clip(positions, az_min, az_max)
+        positions = np.clip(positions, motion_min, motion_max)
 
         return positions, velocities, scan_flag

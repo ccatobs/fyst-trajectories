@@ -52,7 +52,7 @@ class TestConstantElScanPattern:
         )
 
     def test_azimuth_range(self, site):
-        """Test that azimuth stays within scan bounds."""
+        """Test that azimuth extends beyond science bounds."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -63,11 +63,16 @@ class TestConstantElScanPattern:
             n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
+        d_half_turn = 5 * config.az_speed**2 / (8 * config.az_accel)
 
         trajectory = pattern.generate(site, duration=120.0, start_time=None)
 
-        assert trajectory.az.min() >= 100.0 - 0.05
-        assert trajectory.az.max() <= 150.0 + 0.05
+        # With overscan, positions extend beyond science bounds by d_half_turn
+        assert trajectory.az.min() >= 100.0 - d_half_turn - 0.05
+        assert trajectory.az.max() <= 150.0 + d_half_turn + 0.05
+        # But should actually reach the overscan zones
+        assert trajectory.az.min() < 100.0
+        assert trajectory.az.max() > 150.0
 
     def test_velocity_bounds(self, site):
         """Test that velocities don't exceed limits."""
@@ -103,12 +108,14 @@ class TestConstantElScanPattern:
             n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
+        d_half_turn = 5 * config.az_speed**2 / (8 * config.az_accel)
 
         trajectory = pattern.generate(site, duration=60.0, start_time=None)
 
         assert trajectory.n_points > 0
-        assert trajectory.az.min() >= 120.0 - 0.05
-        assert trajectory.az.max() <= 180.0 + 0.05
+        # With overscan, positions extend beyond science bounds
+        assert trajectory.az.min() >= 120.0 - d_half_turn - 0.05
+        assert trajectory.az.max() <= 180.0 + d_half_turn + 0.05
 
     def test_metadata(self, site):
         """Test that metadata is correctly populated."""
@@ -155,7 +162,8 @@ class TestTurnaroundBehavior:
         dt = np.diff(trajectory.times)
         acceleration = dv / dt
 
-        assert np.abs(acceleration).max() <= 1.1
+        # Quintic turnaround has peak acceleration of 1.5x the average
+        assert np.abs(acceleration).max() <= 1.5 * 1.1
 
     def test_velocity_passes_through_zero(self, site):
         """Test that velocity passes through zero at turnarounds."""
@@ -180,8 +188,8 @@ class TestTurnaroundBehavior:
             v_near_turnaround = min(abs(trajectory.az_vel[idx]), abs(trajectory.az_vel[idx + 1]))
             assert v_near_turnaround < 0.5
 
-    def test_trapezoidal_velocity_profile(self, site):
-        """Test that velocity profile is trapezoidal."""
+    def test_cruise_velocity_profile(self, site):
+        """Test that cruise segments reach full speed."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -200,8 +208,8 @@ class TestTurnaroundBehavior:
 
         assert np.abs(trajectory.az_vel).max() <= 2.01
 
-    def test_small_throw_triangular_profile(self, site):
-        """Test that small throws use triangular velocity profile."""
+    def test_small_throw_reaches_cruise(self, site):
+        """Even small throws reach full cruise speed with overscan."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -215,8 +223,9 @@ class TestTurnaroundBehavior:
 
         trajectory = pattern.generate(site, duration=30.0, start_time=None)
 
-        assert np.abs(trajectory.az_vel).max() < 2.0
-        assert np.abs(trajectory.az_vel).max() < 1.5
+        # With overscan, the cruise covers the full 2-degree science region
+        at_cruise = np.abs(np.abs(trajectory.az_vel) - 2.0) < 0.1
+        assert np.sum(at_cruise) > 0
 
 
 class TestEdgeCases:
@@ -293,9 +302,10 @@ class TestConstantElPropertyBased:
         """Test invariants hold for random valid parameters.
 
         Invariants checked:
-        - All positions within [az_start, az_stop] bounds (within tolerance)
+        - All positions within motion range (science + overscan, within tolerance)
         - All velocities <= az_speed (within tolerance)
-        - Trajectory starts at az_start
+        - Trajectory starts at the overscan edge (az_start - d_half_turn for
+          start_increasing, or az_start + d_half_turn otherwise)
         - Duration matches requested duration
         """
         az_stop = az_start + az_throw
@@ -314,13 +324,14 @@ class TestConstantElPropertyBased:
 
         az_min = min(az_start, az_stop)
         az_max = max(az_start, az_stop)
+        d_half_turn = 5 * az_speed**2 / (8 * az_accel)
 
-        # All positions within bounds (with 0.05 deg tolerance)
-        assert trajectory.az.min() >= az_min - 0.05, (
-            f"Position {trajectory.az.min():.4f} below bound {az_min}"
+        # All positions within motion range (science + overscan, with tolerance)
+        assert trajectory.az.min() >= az_min - d_half_turn - 0.05, (
+            f"Position {trajectory.az.min():.4f} below motion bound {az_min - d_half_turn}"
         )
-        assert trajectory.az.max() <= az_max + 0.05, (
-            f"Position {trajectory.az.max():.4f} above bound {az_max}"
+        assert trajectory.az.max() <= az_max + d_half_turn + 0.05, (
+            f"Position {trajectory.az.max():.4f} above motion bound {az_max + d_half_turn}"
         )
 
         # All velocities bounded by configured speed (5% tolerance)
@@ -328,9 +339,10 @@ class TestConstantElPropertyBased:
             f"Velocity {np.abs(trajectory.az_vel).max():.4f} exceeds speed {az_speed}"
         )
 
-        # Trajectory starts at az_start
-        assert trajectory.az[0] == pytest.approx(az_start, abs=0.05), (
-            f"Start position {trajectory.az[0]:.4f} != {az_start}"
+        # Trajectory starts at the overscan edge
+        expected_start = az_start - d_half_turn if az_start < az_stop else az_start + d_half_turn
+        assert trajectory.az[0] == pytest.approx(expected_start, abs=0.05), (
+            f"Start position {trajectory.az[0]:.4f} != {expected_start}"
         )
 
         # Duration matches requested
@@ -375,28 +387,40 @@ class TestScanFlags:
         assert mask.sum() > 0
         assert (~mask).sum() > 0
 
-    def test_ce_turnaround_at_edges(self, site):
-        """Turnaround flags should appear near azimuth extremes."""
+    def test_ce_turnaround_outside_science(self, site):
+        """With overscan, turnaround samples should be outside science bounds."""
         trajectory = self._make_trajectory(site)
 
-        az_min = trajectory.az.min()
-        az_max = trajectory.az.max()
-        az_range = az_max - az_min
+        az_min = 100.0  # science region boundaries from _make_trajectory
+        az_max = 150.0
 
-        # Samples near the edges (within 10% of range) should be turnaround
-        near_min = trajectory.az < az_min + 0.1 * az_range
-        near_max = trajectory.az > az_max - 0.1 * az_range
-        near_edges = near_min | near_max
+        # All samples outside the science region should be turnaround
+        outside_science = (trajectory.az < az_min) | (trajectory.az > az_max)
+        if outside_science.sum() > 0:
+            assert np.all(trajectory.scan_flag[outside_science] == SCAN_FLAG_TURNAROUND)
 
-        # At least some edge samples should be flagged as turnaround
-        turnaround_at_edges = near_edges & (trajectory.scan_flag == SCAN_FLAG_TURNAROUND)
-        assert turnaround_at_edges.sum() > 0
+        # All science-flagged samples should be within science bounds
+        science_mask = trajectory.scan_flag == SCAN_FLAG_SCIENCE
+        if science_mask.sum() > 0:
+            assert trajectory.az[science_mask].min() >= az_min - 0.01
+            assert trajectory.az[science_mask].max() <= az_max + 0.01
 
-    def test_triangular_profile_all_turnaround(self, site):
-        """Small throws with triangular profile should be all turnaround."""
-        trajectory = self._make_trajectory(
-            site, az_start=100.0, az_stop=102.0, az_speed=2.0, az_accel=1.0
-        )
+    def test_overscan_science_at_cruise_velocity(self, site):
+        """With overscan, all samples in the science region should be at cruise velocity."""
+        trajectory = self._make_trajectory(site)
+        az_speed = 2.0  # from _make_trajectory
 
-        assert trajectory.scan_flag is not None
-        assert np.all(trajectory.scan_flag == SCAN_FLAG_TURNAROUND)
+        science_mask = trajectory.scan_flag == SCAN_FLAG_SCIENCE
+        assert science_mask.sum() > 0
+
+        # All science samples should be at cruise speed (within 5% tolerance)
+        science_speeds = np.abs(trajectory.az_vel[science_mask])
+        assert np.all(science_speeds > az_speed * 0.95)
+
+    def test_overscan_extends_beyond_science(self, site):
+        """With overscan, the trajectory should extend beyond the science region."""
+        trajectory = self._make_trajectory(site)
+
+        # Science region is [100, 150] from _make_trajectory defaults
+        assert trajectory.az.min() < 100.0
+        assert trajectory.az.max() > 150.0
