@@ -50,12 +50,6 @@ dev = [
     "ruff>=0.9",
     "skyfield>=1.45",
     "hypothesis>=6.0",
-    # scan_patterns (pip install -e ../scan_patterns) provides the 'scanning'
-    # package used by cross-validation tests in test_scan_patterns_cross_validation.py.
-    # Install manually: it is not published on PyPI.
-    # pandas and scipy are runtime dependencies of the scanning package.
-    "pandas>=1.3",
-    "scipy>=1.9",
     "pre-commit>=3.0",
 ]
 all = [
