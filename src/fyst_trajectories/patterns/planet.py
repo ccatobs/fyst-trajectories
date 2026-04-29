@@ -1,7 +1,4 @@
-"""Planet tracking pattern.
-
-Tracks a solar system body as it moves across the sky.
-"""
+"""Planet tracking pattern."""
 
 import dataclasses
 from typing import ClassVar
@@ -24,16 +21,11 @@ from .utils import compute_velocities, normalize_azimuth, wrap_bounds_error
 class PlanetTrackPattern(AltAzPattern):
     """Planet tracking pattern.
 
-    Generates a trajectory that tracks a solar system body as it
-    moves across the sky. The body position is computed from ephemeris
-    at each time step, so no RA/Dec center is needed.
-
-    This pattern extends AltAzPattern because it works directly with
-    body ephemeris rather than fixed RA/Dec coordinates. Unlike most
+    Extends :class:`AltAzPattern` because it works directly with body
+    ephemeris rather than fixed RA/Dec coordinates. Unlike most
     AltAzPattern subclasses, ``start_time`` is *required* here (for
-    ephemeris lookup) and ``generate()`` raises ``ValueError`` if it
-    is None. This is an intentional deviation from the AltAzPattern
-    contract where ``start_time`` is typically optional.
+    ephemeris lookup) and ``generate()`` raises ``ValueError`` if it is
+    None.
 
     Parameters
     ----------

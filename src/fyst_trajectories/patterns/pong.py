@@ -1,8 +1,5 @@
 """Pong (curvy box) scan pattern.
 
-The Pong pattern is a closed-path scan optimized for uniformly covering
-rectangular regions using Fourier-approximated triangle waves.
-
 See "Scan Mode Strategies for SCUBA-2" (SCUBA-2 Project SC2/ANA/S210/005,
 Scott & Van Engelen 2005) for algorithm details.
 """
@@ -163,10 +160,6 @@ def compute_pong_period(config: PongScanConfig) -> tuple[float, int, int]:
 @register_pattern("pong", config=PongScanConfig)
 class PongScanPattern(CelestialPattern):
     """Pong scan pattern for uniform rectangular coverage.
-
-    The Pong pattern uses Fourier-approximated triangle waves to
-    oscillate in x and y with carefully chosen periods that ensure
-    complete coverage before the pattern repeats.
 
     Parameters
     ----------

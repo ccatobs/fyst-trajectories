@@ -1823,3 +1823,134 @@ def test_print_trajectory_tail_none():
 
     # Should print only the first 5 points (tail=None means "skip tail").
     print_trajectory(trajectory, tail=None)
+
+
+# ============================================================================
+# retune_events.rst examples
+# ============================================================================
+
+
+def _build_tiny_trajectory_for_retune_docs():
+    """Build a minimal trajectory that is long enough for the doc examples."""
+    import numpy as np
+
+    from fyst_trajectories import Trajectory
+
+    # A simple 1000-second fixed-position trajectory is sufficient for
+    # exercising ``inject_retune`` in both modes and writing an ECSV
+    # round-trip; no pattern machinery is needed.
+    times = np.arange(0.0, 1001.0, 0.5)
+    return Trajectory(
+        times=times,
+        az=np.full_like(times, 100.0),
+        el=np.full_like(times, 50.0),
+        az_vel=np.zeros_like(times),
+        el_vel=np.zeros_like(times),
+    )
+
+
+def test_retune_events_uniform_mode():
+    """Uniform-cadence example from retune_events.rst."""
+    from fyst_trajectories import inject_retune
+
+    traj = _build_tiny_trajectory_for_retune_docs()
+    retuned = inject_retune(
+        traj,
+        retune_interval=300.0,
+        retune_duration=5.0,
+    )
+    assert len(retuned.retune_events) > 0
+
+
+def test_retune_events_event_list_mode():
+    """Event-list example from retune_events.rst."""
+    from fyst_trajectories import RetuneEvent, inject_retune
+
+    traj = _build_tiny_trajectory_for_retune_docs()
+    events = [
+        RetuneEvent(t_start=30.0, duration=5.0),
+        RetuneEvent(t_start=300.0, duration=5.0),
+        RetuneEvent(t_start=600.0, duration=5.0),
+    ]
+    retuned = inject_retune(traj, retune_events=events)
+    assert retuned.retune_events == tuple(events)
+
+
+def test_retune_events_csv_parse_snippet(tmp_path):
+    """CSV-parsing snippet from retune_events.rst."""
+    import csv
+
+    from fyst_trajectories import RetuneEvent, inject_retune
+
+    csv_path = tmp_path / "retunes.csv"
+    csv_path.write_text(
+        "t_start_s,duration_s,module_index\n30.0,5.0,0\n300.0,5.0,0\n600.0,8.0,0\n",
+        encoding="ascii",
+    )
+
+    with open(csv_path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        events = [
+            RetuneEvent(
+                t_start=float(row["t_start_s"]),
+                duration=float(row["duration_s"]),
+            )
+            for row in reader
+        ]
+    assert len(events) == 3
+
+    traj = _build_tiny_trajectory_for_retune_docs()
+    retuned = inject_retune(traj, retune_events=events)
+    assert retuned.retune_events == tuple(events)
+
+
+def test_retune_events_ecsv_round_trip(tmp_path):
+    """ECSV round-trip example from retune_events.rst.
+
+    Attach a list of ``RetuneEvent`` to the first block's metadata,
+    write the timeline, read it back, and verify the decoded tuple
+    matches (modulo ``RetuneEvent`` equality).
+    """
+    from fyst_trajectories import RetuneEvent, get_fyst_site
+    from fyst_trajectories.overhead import (
+        CalibrationPolicy,
+        ObservingPatch,
+        OverheadModel,
+        generate_timeline,
+        read_timeline,
+        write_timeline,
+    )
+
+    site = get_fyst_site()
+    patches = [
+        ObservingPatch(
+            name="Deep56",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=40.0,
+            height=10.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=50.0,
+        ),
+    ]
+    timeline = generate_timeline(
+        patches=patches,
+        site=site,
+        start_time="2026-06-15T02:00:00",
+        end_time="2026-06-15T03:00:00",
+        overhead_model=OverheadModel(),
+        calibration_policy=CalibrationPolicy(),
+    )
+    events = [
+        RetuneEvent(t_start=30.0, duration=5.0),
+        RetuneEvent(t_start=300.0, duration=5.0),
+    ]
+    timeline.blocks[0].metadata["retune_events"] = events
+
+    out = tmp_path / "night.ecsv"
+    write_timeline(timeline, out)
+
+    loaded = read_timeline(out)
+    loaded_events = loaded.blocks[0].metadata["retune_events"]
+    assert loaded_events == tuple(events)

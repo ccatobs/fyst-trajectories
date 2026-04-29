@@ -51,11 +51,8 @@ Supported ``scan_type`` values: ``"constant_el"``, ``"pong"``, ``"daisy"``.
 Custom CalibrationPolicy
 ------------------------
 
-Control how often calibrations are injected. The default
-``pointing_cadence`` is ``3600.0`` s (1 hr); the example below
-tightens it to 1800 s as a *commissioning override* suitable for
-early operations when pointing drift is still being characterised.
-See :doc:`overhead_model` for all available cadence parameters.
+Override the default cadences and durations. See :doc:`overhead_model`
+for all available fields.
 
 ::
 

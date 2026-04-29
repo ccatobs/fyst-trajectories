@@ -75,46 +75,8 @@ schedule in to cadence-driven beam mapping using the same
     # Beam map every 6 hours using the configured planet targets.
     policy = CalibrationPolicy(beam_map_cadence=21600.0)
 
-Beam maps and planet calibrations are conceptually distinct: a planet
-calibration is a brief cross-scan for a flux-density or pointing
-update, whereas a beam map is a longer raster intended to characterise
-the optical PSF. The two share planet-target visibility checking but
-have independent cadences and durations.
+Beam maps and planet calibrations share planet-target visibility checking
+but have independent cadences and durations.
 
 Default values are commissioning-era placeholders that should be
-confirmed by the instrument team. During commissioning, when
-pointing model coefficients are still being characterised, a
-tighter 30-minute cadence (``pointing_cadence=1800.0``) may be
-appropriate.
-
-Customizing for Different Strategies
--------------------------------------
-
-**Quick commissioning** (frequent calibrations)::
-
-    from fyst_trajectories.overhead import CalibrationPolicy, OverheadModel
-
-    commissioning_policy = CalibrationPolicy(
-        retune_cadence=0.0,
-        pointing_cadence=900.0,    # every 15 min
-        focus_cadence=1800.0,      # every 30 min
-        skydip_cadence=3600.0,     # hourly
-    )
-
-    commissioning_overhead = OverheadModel(
-        max_scan_duration=600.0,   # short scans
-    )
-
-**Deep survey** (maximize science time)::
-
-    survey_policy = CalibrationPolicy(
-        retune_cadence=0.0,
-        pointing_cadence=7200.0,   # every 2 hours
-        focus_cadence=14400.0,     # every 4 hours
-        skydip_cadence=21600.0,    # every 6 hours
-    )
-
-    survey_overhead = OverheadModel(
-        max_scan_duration=3600.0,  # full hour scans
-        min_scan_duration=120.0,   # accept 2-min scans
-    )
+confirmed by the instrument team.

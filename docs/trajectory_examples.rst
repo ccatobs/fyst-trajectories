@@ -148,8 +148,7 @@ For manual control (engineering tests, known azimuth ranges),
 Pong Scan
 ---------
 
-Curvy box pattern for uniform rectangular coverage using Fourier-approximated
-triangle waves::
+::
 
     from astropy.time import Time
 
@@ -181,7 +180,7 @@ triangle waves::
 Daisy Scan
 ----------
 
-Constant-velocity petal pattern for point sources::
+::
 
     from astropy.time import Time
 
@@ -308,29 +307,6 @@ The planning and simulation pipelines import the same library, so
 trajectories used for coverage analysis match what the telescope executes
 at runtime.
 
-Pattern Selection
------------------
-
-+-------------------+------------------------+--------------------------------+
-| Pattern           | Use Case               | Key Parameters                 |
-+===================+========================+================================+
-| ``sidereal``      | Track celestial RA/Dec | ``ra``, ``dec``                |
-+-------------------+------------------------+--------------------------------+
-| ``planet``        | Track solar system     | ``body``                       |
-+-------------------+------------------------+--------------------------------+
-| ``pong``          | Wide-field mapping     | ``width``, ``height``,         |
-|                   |                        | ``spacing``, ``velocity``      |
-+-------------------+------------------------+--------------------------------+
-| ``daisy``         | Point sources          | ``radius``, ``velocity``,      |
-|                   |                        | ``turn_radius``                |
-+-------------------+------------------------+--------------------------------+
-| ``constant_el``   | Drift scans            | ``az_start``, ``az_stop``,     |
-|                   |                        | ``elevation``                  |
-+-------------------+------------------------+--------------------------------+
-| ``linear``        | Testing                | ``az_velocity``,               |
-|                   |                        | ``el_velocity``                |
-+-------------------+------------------------+--------------------------------+
-
 .. tip::
 
    For field-based constant-elevation observations, use
@@ -456,10 +432,3 @@ determined at runtime, you can use the registry functions::
     )
     pattern = PatternClass(ra=180.0, dec=-30.0, config=config)
     trajectory = pattern.generate(site, duration=300.0, start_time=start_time)
-
-For most use cases, the planning functions (:func:`~fyst_trajectories.planning.plan_pong_scan`,
-:func:`~fyst_trajectories.planning.plan_constant_el_scan`,
-:func:`~fyst_trajectories.planning.plan_daisy_scan`) are the recommended approach for
-field observations. ``TrajectoryBuilder`` with config objects (shown above) is
-preferred for engineering tests, manual parameter overrides, and patterns without
-planning functions (sidereal, planet, linear).

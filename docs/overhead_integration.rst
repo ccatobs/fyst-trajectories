@@ -47,11 +47,6 @@ overhead subpackage is Layer B.
 Where the Subpackage Fits
 -------------------------
 
-Today the subpackage is used standalone for **survey-planning simulations**:
-you hand-craft an ``ObservingPatch`` list, call ``generate_timeline``, and
-inspect the efficiency / per-patch breakdown before committing to a survey
-strategy. Nothing about that workflow requires Layer A or Layer C.
-
 The longer-term integration picture looks like this::
 
    Astronomer                Layer A                    Layer B                     Layer C                  Hardware
@@ -116,27 +111,13 @@ that proposal authors do not need to invent cadence numbers themselves.
 hides physical assumptions and should be avoided outside of quick
 exploratory scripts.
 
-When to Use the Subpackage Directly
-------------------------------------
+.. note::
 
-The overhead subpackage is appropriate when:
-
-* **Running a survey-planning simulation** -- estimate efficiency, map
-  coverage, compare scan strategies. This is the primary use case today.
-* **Forecasting wall-clock duration for a proposal** -- "I need 40 hours on
-  Deep56 -- how many observing nights does that cost once retunes and
-  calibrations are accounted for?"
-* **Validating a Layer-A scheduler output** -- convert a visibility-optimal
-  patch order into a realistic timeline and check whether the implied
-  efficiency meets requirements.
-* **Producing a TOAST-compatible schedule** -- the ECSV writer emits
-  TOAST canonical column names, so the same file can drive TOAST map-making
-  simulations downstream (see :doc:`overhead_io`).
-
-The overhead subpackage should **not** be called from a live observing
-loop. At execution time the orchestrator should read a pre-computed
-ECSV, then regenerate motion arrays from the stored ``ScanBlock``
-metadata -- not re-run the scheduler mid-night.
+   The overhead subpackage is a planning-time tool and should **not** be
+   called from a live observing loop. At execution time the orchestrator
+   should read a pre-computed ECSV, then regenerate motion arrays from
+   the stored ``ScanBlock`` metadata -- not re-run the scheduler
+   mid-night.
 
 Related Reading
 ---------------

@@ -17,6 +17,7 @@ from ..site import (
     TelescopeLimits,
     get_fyst_site,
 )
+from ..trajectory import RetuneEvent
 from .models import (
     CalibrationPolicy,
     EmptyBlockMetadata,
@@ -32,6 +33,59 @@ __all__ = [
     "read_timeline",
     "write_timeline",
 ]
+
+
+# Metadata key used for per-block retune event provenance. When a block's
+# ``metadata`` carries this key (value: a sequence of
+# :class:`~fyst_trajectories.trajectory.RetuneEvent`), the ECSV writer
+# encodes it inside the per-block JSON column as a list of
+# ``[t_start, duration]`` float pairs. The reader decodes it back into a
+# tuple of :class:`RetuneEvent`. This reuses the existing
+# ``block_meta_json`` extra-payload channel — see the JSON encoding/decoding
+# helpers below — rather than adding a sidecar table or new columns.
+_RETUNE_EVENTS_META_KEY = "retune_events"
+
+
+def _encode_retune_events_for_json(meta: dict) -> dict:
+    """Return a shallow copy of ``meta`` with ``retune_events`` JSON-encoded.
+
+    If ``meta`` does not carry the ``retune_events`` key, the input is
+    returned unchanged. Otherwise the value (expected to be an iterable of
+    :class:`RetuneEvent`) is converted to a list of ``[t_start, duration]``
+    float pairs. Any other JSON-native value is passed through verbatim so
+    callers can construct retune-events entries by hand if they prefer
+    plain Python types.
+    """
+    if _RETUNE_EVENTS_META_KEY not in meta:
+        return meta
+    encoded: list[list[float]] = []
+    for ev in meta[_RETUNE_EVENTS_META_KEY]:
+        if isinstance(ev, RetuneEvent):
+            encoded.append([float(ev.t_start), float(ev.duration)])
+        else:
+            # Allow pre-encoded list/tuple payloads to pass through. This
+            # keeps the writer robust against callers who already encoded.
+            encoded.append([float(ev[0]), float(ev[1])])
+    out = dict(meta)
+    out[_RETUNE_EVENTS_META_KEY] = encoded
+    return out
+
+
+def _decode_retune_events_from_json(extra: dict) -> dict:
+    """Return ``extra`` with a JSON-encoded ``retune_events`` turned into a tuple.
+
+    If the key is absent, the input is returned unchanged. Otherwise the
+    list of ``[t_start, duration]`` pairs is converted into a tuple of
+    :class:`RetuneEvent` instances so consumers see the same type that
+    ``Trajectory.retune_events`` exposes.
+    """
+    if _RETUNE_EVENTS_META_KEY not in extra:
+        return extra
+    raw = extra[_RETUNE_EVENTS_META_KEY]
+    decoded = tuple(RetuneEvent(t_start=float(item[0]), duration=float(item[1])) for item in raw)
+    extra = dict(extra)
+    extra[_RETUNE_EVENTS_META_KEY] = decoded
+    return extra
 
 
 def write_timeline(
@@ -76,6 +130,9 @@ def write_timeline(
         # columns therefore carry the "from"/"to" azimuths directly and may
         # not satisfy azmin <= azmax — consumers that rely on ordered bounds
         # must filter on block_type first.
+        # Encode any RetuneEvent payload into JSON-native shape before
+        # dumping the extra-metadata column.
+        meta_for_json = _encode_retune_events_for_json(dict(meta))
         rows.append(
             {
                 "start_time": block.t_start.iso,
@@ -99,7 +156,7 @@ def write_timeline(
                 "block_meta_json": json.dumps(
                     {
                         k: v
-                        for k, v in meta.items()
+                        for k, v in meta_for_json.items()
                         if k
                         not in (
                             "ra_center",
@@ -275,9 +332,13 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
             block_meta = empty_meta
         # Merge any extra per-block metadata stored in block_meta_json.
         # For calibration blocks this is where ``cal_type``/``target`` live.
+        # The retune-events payload (if present) is decoded back into a
+        # tuple of :class:`RetuneEvent` here, mirroring the encoding
+        # performed by ``write_timeline``.
         if "block_meta_json" in table.colnames:
             extra = json.loads(str(row["block_meta_json"]))
             if extra:
+                extra = _decode_retune_events_from_json(extra)
                 # ``block_meta`` is runtime-``dict``; ``.update`` stays
                 # legal across all union variants.
                 block_meta.update(extra)  # type: ignore[typeddict-item]

@@ -62,27 +62,6 @@ Plan a constant-elevation scan over a field with auto-computed timing::
     print(block.summary)
     print(f"Duration: {block.duration:.0f}s")
 
-When to Use What
-----------------
-
-+----------------------------+-----------------------------------+---------------------------+
-| Function                   | Use case                          | Key inputs                |
-+============================+===================================+===========================+
-| ``plan_pong_scan``         | Area surveys, wide-field mapping  | FieldRegion, velocity,    |
-|                            | (e.g., Stripe 82, E-CDF-S)        | spacing, start_time       |
-+----------------------------+-----------------------------------+---------------------------+
-| ``plan_constant_el_scan``  | Field-based CE scans with         | FieldRegion, elevation,   |
-|                            | auto-computed timing and azimuth  | velocity, start_time      |
-+----------------------------+-----------------------------------+---------------------------+
-| ``plan_daisy_scan``        | Point-source observations,        | RA/Dec, radius, velocity, |
-|                            | calibrator measurements           | duration, start_time      |
-+----------------------------+-----------------------------------+---------------------------+
-| ``TrajectoryBuilder``      | Sidereal tracking, planet         | Pattern config, duration, |
-|                            | tracking, linear motion, or any   | start_time                |
-|                            | case where you already know the   |                           |
-|                            | exact config parameters           |                           |
-+----------------------------+-----------------------------------+---------------------------+
-
 Field Regions
 -------------
 
@@ -91,16 +70,15 @@ by its center coordinates and angular extent::
 
     from fyst_trajectories.planning import FieldRegion
 
-    # Stripe 82 CMB field: 60 deg RA x 14 deg Dec
-    cmb_field = FieldRegion(
-        ra_center=0.0,     # deg (0h RA)
+    field = FieldRegion(
+        ra_center=0.0,     # deg
         dec_center=-2.0,   # deg
         width=60.0,        # RA extent in degrees
         height=14.0,       # Dec extent in degrees
     )
 
     # Dec boundaries are computed automatically
-    print(f"Dec range: [{cmb_field.dec_min}, {cmb_field.dec_max}]")
+    print(f"Dec range: [{field.dec_min}, {field.dec_max}]")
     # Dec range: [-9.0, 5.0]
 
 Planning a Pong Scan
@@ -160,64 +138,15 @@ With a detector offset (for off-axis PrimeCam modules)::
         detector_offset=offset,
     )
 
-**Real-world example: Stripe 82 / Deep56 survey**
-
-This example reproduces the two-field Stripe 82 survey configuration::
-
-    import numpy as np
-    from astropy.time import Time, TimeDelta
-    import astropy.units as u
-
-    from fyst_trajectories import (
-        AtmosphericConditions,
-        Coordinates,
-        get_fyst_site,
-    )
-    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
-
-    site = get_fyst_site()
-    coords = Coordinates(site, atmosphere=AtmosphericConditions.for_fyst())
-
-    # CMB field: RA 23h-3h, Dec -9 to +5
-    cmb_field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
-
-    # Find when field center reaches el=50 (rising side)
-    search_start = Time("2026-03-15T00:00:00", scale="utc")
-    dt = np.arange(0, 24 * 3600, 60)
-    times = search_start + TimeDelta(dt * u.s)
-    _, el = coords.radec_to_altaz(
-        np.full(len(times), 0.0), np.full(len(times), -2.0), times,
-    )
-    crossing = np.where(np.diff((el >= 50.0).astype(int)))[0][0]
-    start_cmb = times[crossing]
-
-    cmb_block = plan_pong_scan(
-        field=cmb_field,
-        velocity=0.5,
-        spacing=0.25,
-        num_terms=4,
-        site=site,
-        start_time=start_cmb,
-        timestep=0.5,
-    )
-    print(cmb_block.summary)
-
 Multi-Rotation Pong Tiling
 --------------------------
 
-A single Pong scan covers a square footprint, leaving more samples
-near the corners than the centre. Combining multiple rotations spaced
-by ``180° / n_rotations`` converts the square coverage into a uniform
-circle, rapidly evening out per-pixel exposure across the full Pong
-footprint.
-
-:func:`~fyst_trajectories.planning.plan_pong_rotation_sequence` is a
-one-line helper that returns ``n_rotations`` copies of a base
-:class:`~fyst_trajectories.patterns.PongScanConfig` with the
-``angle`` field overridden to a uniform sequence. Each returned
-config is then passed individually through
-:func:`~fyst_trajectories.planning.plan_pong_scan` (typically wrapped
-in an outer scheduling layer that picks per-rotation start times)::
+:func:`~fyst_trajectories.planning.plan_pong_rotation_sequence` returns
+``n_rotations`` copies of a base
+:class:`~fyst_trajectories.patterns.PongScanConfig` with the ``angle``
+field overridden to a uniform ``180° / n_rotations`` sequence. Each
+returned config is passed individually through
+:func:`~fyst_trajectories.planning.plan_pong_scan`::
 
     from astropy.time import Time, TimeDelta
 
@@ -256,20 +185,12 @@ in an outer scheduling layer that picks per-rotation start times)::
         )
         blocks.append(block)
 
-The right number of rotations depends on the science goal (more
-rotations give smoother circular coverage at the cost of total
-integration time); 8--11 is a common range for single-dish surveys.
-
 Planning a Constant-Elevation Scan
 -----------------------------------
 
-:func:`~fyst_trajectories.planning.plan_constant_el_scan` is the **recommended way**
-to plan a constant-elevation scan over a known field. It auto-computes the azimuth
-range, observation duration, and number of scans from the field geometry and
-celestial timing -- the same algorithm used by the FYST scan strategy planning
-tools.
-
-Given a field region, target elevation, and approximate start time, it:
+:func:`~fyst_trajectories.planning.plan_constant_el_scan` auto-computes
+the azimuth range, observation duration, and number of scans from a
+``FieldRegion``, target elevation, and approximate start time:
 
 1. Finds when the RA edges of the field cross the target elevation (determines
    start/end time and total duration).
@@ -317,9 +238,8 @@ With a detector offset::
 Planning a Daisy Scan
 ---------------------
 
-:func:`~fyst_trajectories.planning.plan_daisy_scan` plans a Daisy (constant-velocity
-petal) scan for point-source observations. Unlike Pong and CES scans, the Daisy
-scan takes a single RA/Dec position rather than a ``FieldRegion``::
+:func:`~fyst_trajectories.planning.plan_daisy_scan` takes a single RA/Dec
+position rather than a ``FieldRegion``::
 
     from astropy.time import Time
 
@@ -329,8 +249,8 @@ scan takes a single RA/Dec position rather than a ``FieldRegion``::
     site = get_fyst_site()
 
     block = plan_daisy_scan(
-        ra=83.633,               # Crab Nebula RA
-        dec=22.014,              # Crab Nebula Dec
+        ra=83.633,
+        dec=22.014,
         radius=0.5,             # characteristic radius R0 (degrees)
         velocity=0.3,           # scan velocity (deg/s)
         turn_radius=0.2,        # curvature radius for turns (degrees)

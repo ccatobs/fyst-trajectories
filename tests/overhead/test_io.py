@@ -766,3 +766,139 @@ class TestCalibrationBlockMetadataRoundTrip:
 
         assert len(loaded.blocks) == 1
         assert loaded.blocks[0].metadata == {}
+
+
+class TestRetuneEventsRoundTrip:
+    """Round-2: ``retune_events`` carried on science block metadata round-trips.
+
+    ``Trajectory.retune_events`` is the canonical home for event-level
+    retune provenance, but :class:`TimelineBlock` does not contain a
+    :class:`Trajectory`. The existing ``block_meta_json`` extra-payload
+    channel is reused to carry a per-block ``retune_events`` list for
+    ECSV round-trip. Encoding is a list of ``[t_start, duration]`` float
+    pairs; on read it decodes back into a tuple of
+    :class:`~fyst_trajectories.RetuneEvent` instances.
+    """
+
+    def test_retune_events_round_trip_via_science_block_metadata(self, tmp_path):
+        """Science block carrying ``retune_events`` survives write/read."""
+        from fyst_trajectories import RetuneEvent
+
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+
+        events = (
+            RetuneEvent(t_start=30.0, duration=5.0),
+            RetuneEvent(t_start=120.0, duration=3.0),
+            RetuneEvent(t_start=200.0, duration=8.0),
+        )
+
+        blocks = [
+            TimelineBlock(
+                t_start=t0,
+                t_stop=t0 + TimeDelta(1800, format="sec"),
+                block_type="science",
+                patch_name="retune_field",
+                az_start=120.0,
+                az_end=240.0,
+                elevation=50.0,
+                scan_index=0,
+                rising=True,
+                scan_type="pong",
+                metadata={
+                    "ra_center": 180.0,
+                    "dec_center": -30.0,
+                    "width": 4.0,
+                    "height": 4.0,
+                    "velocity": 0.5,
+                    "scan_params": {"spacing": 0.1, "num_terms": 4},
+                    "retune_events": events,
+                },
+            ),
+        ]
+
+        timeline = ObservingTimeline(
+            blocks=blocks,
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(1800, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+
+        path = tmp_path / "retune_events_rt.ecsv"
+        write_timeline(timeline, path)
+        loaded = read_timeline(path)
+
+        assert len(loaded.blocks) == 1
+        loaded_events = loaded.blocks[0].metadata["retune_events"]
+        # Same type (tuple of RetuneEvent), same ordering, same values.
+        assert isinstance(loaded_events, tuple)
+        assert len(loaded_events) == 3
+        for orig, got in zip(events, loaded_events):
+            assert isinstance(got, RetuneEvent)
+            assert got.t_start == pytest.approx(orig.t_start)
+            assert got.duration == pytest.approx(orig.duration)
+
+    def test_block_without_retune_events_roundtrips_clean(self, tmp_path):
+        """Blocks without retune_events do not acquire a phantom key on round-trip."""
+        timeline = _make_test_timeline()
+        path = tmp_path / "no_retune.ecsv"
+        write_timeline(timeline, path)
+        loaded = read_timeline(path)
+        for b in loaded.blocks:
+            assert "retune_events" not in b.metadata
+
+    def test_pre_encoded_retune_events_passthrough(self, tmp_path):
+        """Writer accepts ``[t_start, duration]`` pairs in addition to ``RetuneEvent``.
+
+        This is the documented robustness path for callers who construct
+        block metadata from JSON or other plain-Python sources without
+        materialising ``RetuneEvent`` instances. Round-trip must produce
+        canonical ``RetuneEvent`` tuples regardless of input shape.
+        """
+        from fyst_trajectories import RetuneEvent
+
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+
+        # Caller-supplied pre-encoded payload: list of [t_start, duration] pairs.
+        pre_encoded = [[30.0, 5.0], [120.0, 3.0]]
+
+        blocks = [
+            TimelineBlock(
+                t_start=t0,
+                t_stop=t0 + TimeDelta(1800, format="sec"),
+                block_type="science",
+                patch_name="retune_field",
+                az_start=120.0,
+                az_end=240.0,
+                elevation=50.0,
+                scan_index=0,
+                rising=True,
+                scan_type="pong",
+                metadata={"retune_events": pre_encoded},
+            ),
+        ]
+
+        timeline = ObservingTimeline(
+            blocks=blocks,
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(1800, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+
+        path = tmp_path / "pre_encoded_rt.ecsv"
+        write_timeline(timeline, path)
+        loaded = read_timeline(path)
+
+        loaded_events = loaded.blocks[0].metadata["retune_events"]
+        assert isinstance(loaded_events, tuple)
+        assert len(loaded_events) == 2
+        assert all(isinstance(e, RetuneEvent) for e in loaded_events)
+        assert loaded_events[0].t_start == pytest.approx(30.0)
+        assert loaded_events[0].duration == pytest.approx(5.0)
+        assert loaded_events[1].t_start == pytest.approx(120.0)
+        assert loaded_events[1].duration == pytest.approx(3.0)

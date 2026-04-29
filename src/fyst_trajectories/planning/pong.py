@@ -163,12 +163,7 @@ def plan_pong_rotation_sequence(
     config: PongScanConfig,
     n_rotations: int,
 ) -> list[PongScanConfig]:
-    """Generate a sequence of evenly spaced Pong rotations for uniform coverage.
-
-    A single Pong scan covers a square footprint, leaving more samples
-    near the corners than the centre. Combining multiple rotations spaced
-    by ``180° / n_rotations`` converts the square coverage into a uniform
-    circle.
+    """Generate a sequence of evenly spaced Pong rotations.
 
     Returns ``n_rotations`` copies of ``config`` with ``angle_i = i *
     180 / n_rotations`` (the Pong pattern is invariant under 180°
@@ -181,10 +176,7 @@ def plan_pong_rotation_sequence(
         Base Pong configuration. Its ``angle`` field is ignored; the
         returned configs override it with the rotation sequence.
     n_rotations : int
-        Number of rotations to emit. Must be at least 1. 8--11 is a
-        common range for single-dish surveys; the right number depends
-        on the science goals (more rotations = smoother circular
-        coverage at the cost of total integration time).
+        Number of rotations to emit. Must be at least 1.
 
     Returns
     -------

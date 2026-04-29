@@ -1,8 +1,4 @@
-"""Sidereal tracking pattern.
-
-Tracks a fixed RA/Dec position as it moves across the sky
-due to Earth's rotation.
-"""
+"""Sidereal tracking pattern."""
 
 import numpy as np
 from astropy import units as u
@@ -21,9 +17,6 @@ from .utils import compute_velocities, normalize_azimuth, wrap_bounds_error
 @register_pattern("sidereal", config=SiderealTrackConfig)
 class SiderealTrackPattern(CelestialPattern):
     """Sidereal tracking pattern.
-
-    Generates a trajectory that tracks a celestial position as it
-    moves across the sky due to Earth's rotation.
 
     Parameters
     ----------

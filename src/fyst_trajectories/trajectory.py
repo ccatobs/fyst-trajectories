@@ -55,6 +55,7 @@ Print trajectory summary:
 >>> print_trajectory(trajectory, head=3, tail=2)
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +69,44 @@ SCAN_FLAG_UNCLASSIFIED: int = 0
 SCAN_FLAG_SCIENCE: int = 1
 SCAN_FLAG_TURNAROUND: int = 2
 SCAN_FLAG_RETUNE: int = 3
+
+
+@dataclass(frozen=True)
+class RetuneEvent:
+    """A single retune event in trajectory-relative seconds.
+
+    Parameters
+    ----------
+    t_start : float
+        Seconds from the trajectory start (i.e. ``trajectory.times[0]``).
+        Must be finite and non-negative. Events past ``trajectory.times[-1]``
+        are skipped with a :class:`~fyst_trajectories.exceptions.PointingWarning`.
+    duration : float
+        Wall-clock duration of the event in seconds. Must be positive.
+        Events that would extend past the trajectory end are clipped to
+        the trajectory end (matching the uniform-cadence path's behaviour).
+
+    Notes
+    -----
+    The minimal two-field shape is deliberate. See
+    ``docs/reviews/methodology_audit.md`` and Q-9..Q-13 in
+    ``docs/reviews/fyst_team_questions.md`` for the research basis.
+    Per-module staggering is the caller's composition: invoke
+    :func:`~fyst_trajectories.trajectory_utils.inject_retune` once per
+    module with a different event list rather than embedding module
+    identity in the event.
+    """
+
+    t_start: float
+    duration: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.t_start):
+            raise ValueError(f"t_start must be finite, got {self.t_start}")
+        if self.t_start < 0:
+            raise ValueError(f"t_start must be non-negative, got {self.t_start}")
+        if not math.isfinite(self.duration) or self.duration <= 0:
+            raise ValueError(f"duration must be positive, got {self.duration}")
 
 
 @dataclass
@@ -105,6 +144,13 @@ class Trajectory:
         Per-sample scan phase flag. Values follow the SO ACU convention:
         0 = unclassified, 1 = constant-velocity science sweep,
         2 = turnaround. None means no flagging info is available.
+    retune_events : tuple of RetuneEvent, optional
+        Event-level provenance for the :data:`SCAN_FLAG_RETUNE` entries in
+        ``scan_flag``. Populated by
+        :func:`~fyst_trajectories.trajectory_utils.inject_retune` for both
+        the uniform-cadence and explicit event-list code paths. Empty tuple
+        (the default) means no retune events have been injected. See
+        :class:`RetuneEvent`.
 
     Attributes
     ----------
@@ -132,6 +178,7 @@ class Trajectory:
     coordsys: str | None = None
     epoch: str | None = None
     scan_flag: np.ndarray | None = None
+    retune_events: tuple[RetuneEvent, ...] = ()
 
     def __post_init__(self) -> None:
         n = len(self.times)

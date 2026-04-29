@@ -30,12 +30,7 @@ def plan_daisy_scan(
     detector_offset: "InstrumentOffset | None" = None,
     atmosphere: AtmosphericConditions | None = None,
 ) -> ScanBlock:
-    """Plan a Daisy scan for point-source observations.
-
-    Configures a Daisy (constant-velocity petal) scan centered on a single
-    RA/Dec position. Unlike Pong scans which cover rectangular fields,
-    Daisy scans repeatedly cross the central source for optimal point-source
-    sensitivity.
+    """Plan a Daisy scan centered on a single RA/Dec position.
 
     Parameters
     ----------

@@ -1,9 +1,5 @@
 """Daisy (Constant Velocity petal) scan pattern.
 
-The Daisy pattern is a constant-velocity pattern optimized for point sources.
-The telescope moves in curved petal-shaped paths that repeatedly cross
-the center of the field, ensuring good coverage of the central region.
-
 See "CV Daisy - JCMT small area scanning pattern" (JCMT TCS/UN/005)
 for algorithm details.
 
@@ -190,10 +186,6 @@ else:
 @register_pattern("daisy", config=DaisyScanConfig)
 class DaisyScanPattern(CelestialPattern):
     """Daisy scan pattern for point source observations.
-
-    The Daisy pattern moves in curved petal-shaped paths that repeatedly
-    cross the center of the field. It is optimized for point source
-    observations with good central coverage.
 
     Parameters
     ----------

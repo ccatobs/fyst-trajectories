@@ -32,6 +32,7 @@ estimates. A few concerns deliberately live outside its scope:
    trajectory_examples
    instrument_offsets
    planning
+   retune_events
    api/index
 
 .. toctree::

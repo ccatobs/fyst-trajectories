@@ -51,7 +51,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -154,6 +154,7 @@ from .trajectory import (
     SCAN_FLAG_SCIENCE,
     SCAN_FLAG_TURNAROUND,
     SCAN_FLAG_UNCLASSIFIED,
+    RetuneEvent,
     Trajectory,
 )
 from .trajectory_utils import (
@@ -161,6 +162,7 @@ from .trajectory_utils import (
     inject_retune,
     plot_trajectory,
     print_trajectory,
+    sample_retune_events,
     to_arrays,
     to_path_format,
     validate_sun_avoidance,
@@ -220,6 +222,8 @@ __all__ = [
     "SCAN_FLAG_RETUNE",
     "print_trajectory",
     "inject_retune",
+    "RetuneEvent",
+    "sample_retune_events",
     "validate_sun_avoidance",
     "validate_trajectory",
     "validate_trajectory_bounds",

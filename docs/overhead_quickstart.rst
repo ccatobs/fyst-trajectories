@@ -4,14 +4,11 @@ Overhead Quickstart
 Basic Usage
 -----------
 
-Generate an 8-hour observing timeline with 2 patches. The example below
-sets every ``OverheadModel`` and ``CalibrationPolicy`` field explicitly
-so each physical assumption is visible; ``generate_timeline`` also works
-without the ``overhead_model`` / ``calibration_policy`` arguments and
-falls back to the defaults shown here. (The same defaults are used to
-fill in any field absent from a stored ECSV file's header metadata, so
-the in-code defaults and the I/O fallbacks cannot drift apart — see
-:doc:`overhead_io`.)
+Generate an 8-hour observing timeline with 2 patches.
+``generate_timeline`` also works without the ``overhead_model`` /
+``calibration_policy`` arguments and falls back to the defaults shown
+here (the same defaults used to fill in any field absent from a stored
+ECSV file's header metadata — see :doc:`overhead_io`).
 ::
 
     from fyst_trajectories import get_fyst_site
