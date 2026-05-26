@@ -1,10 +1,9 @@
-"""Tests for ElevationConstraint default bounds (Eng-12).
+"""Tests for ElevationConstraint default bounds.
 
 Verifies that :class:`ElevationConstraint` constructed without arguments
 matches the FYST telescope elevation limits (``FYST_EL_MIN = 20``,
 ``FYST_EL_MAX = 90``) rather than the historical more-restrictive
-defaults of ``el_min=30.0, el_max=70.0``. See
-``docs/reviews/final_review.md`` Eng-12 for background.
+defaults of ``el_min=30.0, el_max=70.0``.
 """
 
 import pytest

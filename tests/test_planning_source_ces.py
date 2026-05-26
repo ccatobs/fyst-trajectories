@@ -1,0 +1,960 @@
+"""Tests for :func:`fyst_trajectories.plan_source_ces`.
+
+Exercises the source-tracking constant-elevation planner end-to-end
+using real astronomy (FYST site, real planet ephemerides, real UTC
+dates). Mocking is restricted to the optimiser and to forcing a
+convergence-failure code path; the underlying coordinate transforms
+and footprint geometry are exercised against astropy throughout.
+"""
+
+from __future__ import annotations
+
+import warnings
+
+import numpy as np
+import pytest
+from astropy import units as u
+from astropy.time import Time, TimeDelta
+
+import fyst_trajectories.planning.source_ces as _source_ces_module
+from fyst_trajectories import (
+    FYST_AZ_MAX_VELOCITY,
+    MODULE_FOV_RADIUS_DEG,
+    PRIMECAM_MODULES,
+    ArrayFootprint,
+    AzimuthBoundsError,
+    Coordinates,
+    InstrumentOffset,
+    PointingWarning,
+    ScanBlock,
+    SourceCESComputedParams,
+    TargetNotObservableError,
+    boresight_to_detector,
+    compute_focal_plane_rotation,
+    compute_source_ces_params,
+    get_primecam_offset,
+    plan_source_ces,
+)
+from fyst_trajectories.planning._types import _SCAN_TYPE_TO_KEYS
+
+# Constants used across multiple tests. These dates and elevations were
+# picked from a sweep over 2026 to give well-behaved Jupiter/sidereal
+# arcs at FYST.
+_JUPITER_NIGHT = Time("2026-03-15T00:00:00", scale="utc")
+_FULL_PRIMECAM_MODULES = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+
+
+def _full_primecam_block(site, **overrides):
+    """Build a full-PrimeCam Jupiter-rising CES block (test convenience)."""
+    kwargs = dict(
+        body="jupiter",
+        footprint=_FULL_PRIMECAM_MODULES,
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    kwargs.update(overrides)
+    return plan_source_ces(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Happy-path tests
+# ---------------------------------------------------------------------------
+
+
+def test_jupiter_rising_full_primecam(site):
+    """Full PrimeCam Jupiter-rising CES returns a usable ScanBlock."""
+    block = _full_primecam_block(site)
+
+    assert isinstance(block, ScanBlock)
+    cp = block.computed_params
+    assert cp["mode"] == "rising"
+    assert cp["el_bore"] == pytest.approx(35.0)
+    assert cp["duration"] > 0
+    assert cp["n_scans"] >= 1
+
+    # Constant elevation: the underlying ConstantEl pattern holds el
+    # fixed to within numerical noise.
+    assert np.allclose(block.trajectory.el, 35.0, atol=1e-6)
+
+    # v_az is finite and well below the FYST hardware limit.
+    assert np.isfinite(cp["v_az"])
+    assert abs(cp["v_az"]) < FYST_AZ_MAX_VELOCITY
+
+    # Trajectory azimuth velocity stays within axis limits.
+    assert np.all(np.isfinite(block.trajectory.az_vel))
+    assert np.all(np.abs(block.trajectory.az_vel) <= FYST_AZ_MAX_VELOCITY)
+
+    # Summary mentions the source and mode.
+    assert "Jupiter" in block.summary
+    assert "rising" in block.summary
+
+
+def test_sidereal_setting_single_module(site):
+    """Sidereal target on a non-centered module (PrimeCam-I1)."""
+    block = plan_source_ces(
+        ra=180.0,
+        dec=-30.0,
+        footprint="i1",
+        el_bore=40.0,
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="setting",
+        site=site,
+    )
+
+    cp = block.computed_params
+    assert cp["mode"] == "setting"
+
+    # PrimeCam-I1 lives at dy = -106.8 arcmin, so the boresight az that
+    # places the I1 detector on the source must differ from the source
+    # az (which would be the az_bore for a centred footprint).
+    # Sanity-check: az_throw is positive and finite.
+    assert cp["az_throw"] > 0
+    assert np.isfinite(cp["az_start"])
+
+
+def test_explicit_window_auto_mode_detect(site):
+    """When ``window`` is given and no ``mode``, the planner auto-detects."""
+    # Window straddles a Jupiter rising arc identified empirically above.
+    t1 = Time("2026-03-15T21:00:00", scale="utc")
+    t2 = t1 + TimeDelta(2 * 3600 * u.s)
+    block = plan_source_ces(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        window=(t1, t2),
+        site=site,
+    )
+    assert block.computed_params["mode"] == "rising"
+
+
+def test_v_az_override_skips_optimisation(site, monkeypatch):
+    """Passing ``v_az`` short-circuits the optimiser."""
+    called = {"n": 0}
+
+    real_minimize = _source_ces_module.minimize
+
+    def _spy(*args, **kwargs):
+        called["n"] += 1
+        return real_minimize(*args, **kwargs)
+
+    monkeypatch.setattr("fyst_trajectories.planning.source_ces.minimize", _spy)
+
+    block = _full_primecam_block(site, v_az=0.005)
+
+    assert called["n"] == 0
+    assert block.computed_params["v_az"] == pytest.approx(0.005)
+
+
+def test_explicit_array_footprint(site):
+    """A user-supplied ``ArrayFootprint`` is accepted as-is."""
+    fp = ArrayFootprint(
+        center_xi_deg=0.0,
+        center_eta_deg=0.0,
+        cover_xi_deg=np.array([-0.1, 0.1, 0.1, -0.1]),
+        cover_eta_deg=np.array([-0.1, -0.1, 0.1, 0.1]),
+    )
+    block = plan_source_ces(
+        body="jupiter",
+        footprint=fp,
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+
+    # The cover polygon (4 vertices) flows through the planner; throw
+    # is bounded by the source pass duration and the cover extent.
+    assert block.computed_params["az_throw"] > 0
+
+
+def test_computed_params_schema(site):
+    """computed_params matches the SourceCESComputedParams schema exactly."""
+    block = _full_primecam_block(site)
+    assert set(block.computed_params) == set(SourceCESComputedParams.__required_keys__)
+
+
+def test_source_ces_not_in_overhead_dispatch_table():
+    """source_ces is intentionally not registered with the overhead-side dispatcher.
+
+    The boundary is documented next to ``_SCAN_TYPE_TO_KEYS`` in
+    ``planning/_types.py``. plan_source_ces self-validates against
+    ``SourceCESComputedParams.__required_keys__`` directly. If this
+    test ever needs updating, also wire source_ces through
+    ``overhead/simulation.py:_generate_trajectory_for_block`` and
+    ``overhead/models.py:ObservingPatch.__post_init__`` — otherwise
+    the dispatch table will lie about what scan types the overhead
+    simulator actually supports.
+    """
+    assert "source_ces" not in _SCAN_TYPE_TO_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Error / partial-coverage paths
+# ---------------------------------------------------------------------------
+
+
+def test_source_below_el_bore_raises(site):
+    """A southern source that never reaches a high el_bore raises."""
+    # Dec = -85 deg is below FYST's horizon for el_bore = 50 (FYST is
+    # at lat -23, so the southern circumpolar cap is dec < -67).
+    with pytest.raises(TargetNotObservableError):
+        plan_source_ces(
+            ra=0.0,
+            dec=-85.0,
+            footprint="c",
+            el_bore=50.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_partial_coverage_allow_true_warns(site):
+    """``allow_partial=True`` downgrades partial-cover error to a warning."""
+    # Sidereal source at dec=-50 culminates at el ≈ 90 − |−50 − (−23)| = 63°
+    # from FYST (lat = −23°). With a 1°-radius circular cover centred on
+    # el_bore=62.5°, ``el_cover_max = 63.5°`` exceeds the source's
+    # ``el_src_max ≈ 63°`` — a textbook partial-coverage scenario where
+    # the cover cap is just out of reach but the az track stays well
+    # inside FYST limits.
+    theta = np.linspace(0.0, 2.0 * np.pi, 50, endpoint=False)
+    R = 1.0
+    fp = ArrayFootprint(
+        center_xi_deg=0.0,
+        center_eta_deg=0.0,
+        cover_xi_deg=R * np.cos(theta),
+        cover_eta_deg=R * np.sin(theta),
+    )
+
+    with pytest.raises(TargetNotObservableError):
+        plan_source_ces(
+            ra=180.0,
+            dec=-50.0,
+            footprint=fp,
+            el_bore=62.5,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+            allow_partial=False,
+        )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        block = plan_source_ces(
+            ra=180.0,
+            dec=-50.0,
+            footprint=fp,
+            el_bore=62.5,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+            allow_partial=True,
+        )
+    assert isinstance(block, ScanBlock)
+    assert any(
+        issubclass(w.category, PointingWarning) and "does not cover the footprint" in str(w.message)
+        for w in caught
+    )
+
+
+def test_sun_avoidance_warns_not_raises(site):
+    """A planet near the Sun emits a PointingWarning but still returns."""
+    # Mercury on 2026-05-15 lies inside FYST's 45 deg sun exclusion at
+    # mid-Chilean-day (verified by hand).
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        block = plan_source_ces(
+            body="mercury",
+            footprint="c",
+            el_bore=40.0,
+            night=Time("2026-05-15T00:00:00", scale="utc"),
+            mode="rising",
+            site=site,
+        )
+
+    assert isinstance(block, ScanBlock)
+    assert any(issubclass(w.category, PointingWarning) and "Sun" in str(w.message) for w in caught)
+
+
+def test_convergence_failure_falls_back(site, monkeypatch):
+    """A non-converging optimiser triggers the median-az-speed fallback."""
+
+    class _BadResult:
+        success = False
+        x = np.array([0.0])
+
+    def _bad_minimize(*_args, **_kwargs):
+        return _BadResult()
+
+    monkeypatch.setattr("fyst_trajectories.planning.source_ces.minimize", _bad_minimize)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        block = _full_primecam_block(site)
+
+    assert isinstance(block, ScanBlock)
+    assert any(
+        issubclass(w.category, PointingWarning) and "did not converge" in str(w.message)
+        for w in caught
+    )
+    # Fallback v_az = median source az speed, which is finite.
+    assert np.isfinite(block.computed_params["v_az"])
+
+
+def test_az_branch_wraps(site):
+    """``az_branch`` re-expresses az_start in the chosen half-turn branch."""
+    # Branch 180° → az_start ∈ [0, 360). Jupiter's natural az (~36°) is
+    # already in this branch so the wrap is a no-op for the start value;
+    # we still verify the branch is honoured.
+    block = _full_primecam_block(site, az_branch=180.0)
+    az_start = block.computed_params["az_start"]
+    assert 0.0 <= az_start < 360.0
+
+    # Branch 0° → az_start ∈ [-180, 180). Same input (~36°) stays put.
+    block = _full_primecam_block(site, az_branch=0.0)
+    az_start = block.computed_params["az_start"]
+    assert -180.0 <= az_start < 180.0
+
+    # The wrap math for ``az_branch=-180`` produces az_start ∈ [-360, 0),
+    # which falls outside FYST's [-180, 360] hardware limits — the
+    # post-build bounds check correctly rejects it with
+    # AzimuthBoundsError. This pins both the wrap algebra and the
+    # downstream safety net.
+    from fyst_trajectories.exceptions import AzimuthBoundsError
+
+    with pytest.raises(AzimuthBoundsError):
+        _full_primecam_block(site, az_branch=-180.0)
+
+
+# ---------------------------------------------------------------------------
+# Argument validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param(dict(body="jupiter", ra=180.0, dec=-30.0), id="both-body-and-radec"),
+        pytest.param(dict(), id="neither-body-nor-radec"),
+        pytest.param(
+            dict(
+                body="jupiter",
+                window=(_JUPITER_NIGHT, _JUPITER_NIGHT + TimeDelta(1 * u.hour)),
+                night=_JUPITER_NIGHT,
+                mode="rising",
+            ),
+            id="both-window-and-night",
+        ),
+        pytest.param(dict(body="jupiter"), id="neither-window-nor-night"),
+        pytest.param(dict(body="jupiter", night=_JUPITER_NIGHT), id="night-without-mode"),
+        pytest.param(
+            dict(body="jupiter", night=_JUPITER_NIGHT, mode="upwards"),
+            id="invalid-mode-string",
+        ),
+    ],
+)
+def test_invalid_arg_combos_raise_value_error(site, kwargs):
+    """Invalid keyword combinations raise ValueError before any astronomy runs."""
+    full = dict(footprint="c", el_bore=40.0, site=site)
+    full.update(kwargs)
+    with pytest.raises(ValueError):
+        plan_source_ces(**full)
+
+
+def test_invalid_footprint_type_raises(site):
+    """Footprints that are neither InstrumentOffset/str/sequence/ArrayFootprint reject."""
+    with pytest.raises(TypeError):
+        plan_source_ces(
+            body="jupiter",
+            footprint=42,  # type: ignore[arg-type]
+            el_bore=35.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_empty_footprint_sequence_raises(site):
+    """An empty footprint sequence raises ValueError."""
+    with pytest.raises(ValueError):
+        plan_source_ces(
+            body="jupiter",
+            footprint=[],
+            el_bore=35.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_single_module_footprint_inscribes_module_fov_radius():
+    """A single-module footprint's cover vertices lie at MODULE_FOV_RADIUS_DEG."""
+    from fyst_trajectories.planning.source_ces import _resolve_footprint
+
+    fp = _resolve_footprint("c")
+    radii = np.hypot(
+        fp.cover_xi_deg - fp.center_xi_deg,
+        fp.cover_eta_deg - fp.center_eta_deg,
+    )
+    assert np.allclose(radii, MODULE_FOV_RADIUS_DEG)
+
+
+def test_invalid_offset_type_in_sequence(site):
+    """A sequence with mixed types raises TypeError."""
+    with pytest.raises(TypeError):
+        plan_source_ces(
+            body="jupiter",
+            footprint=[InstrumentOffset(dx=0.0, dy=0.0), "not_an_offset"],  # type: ignore[list-item]
+            el_bore=35.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_boresight_rot_changes_az_bore_for_off_centre_footprint(site):
+    """Non-zero ``boresight_rot`` shifts the recovered ``az_start`` for an off-centre module."""
+    # Use module I1 (centre offset = (0.0, -106.8 arcmin) ≈ (0.0, -1.78°))
+    # so the boresight recovery exercises the spherical inverse and is
+    # actually sensitive to focal-plane rotation. Compare az_start
+    # between boresight_rot=None (treated as 0) and boresight_rot=30.
+    common = dict(
+        ra=180.0,
+        dec=-30.0,
+        footprint="i1",
+        el_bore=40.0,
+        night=_JUPITER_NIGHT,
+        mode="setting",
+        site=site,
+    )
+    block_zero = plan_source_ces(**common, boresight_rot=None)
+    block_rot = plan_source_ces(**common, boresight_rot=30.0)
+
+    az_zero = block_zero.computed_params["az_start"]
+    az_rot = block_rot.computed_params["az_start"]
+    # The 30° boresight rotation should shift az_start by well more than
+    # 0.1° for an off-centre module — anything tighter than that would
+    # mean the parameter has no observable effect on the geometry.
+    assert abs(az_rot - az_zero) > 0.1, (
+        f"boresight_rot did not affect az_start: {az_rot=} vs {az_zero=}"
+    )
+
+
+def test_proper_motion_path_runs(site):
+    """A non-zero proper-motion call exercises the per-time PM loop."""
+    # Large PM (1000 mas/yr ≈ 0.28"/yr per RA, well above Barnard's Star)
+    # so the displacement at the planning epoch is unambiguously
+    # different from the no-PM case.
+    common = dict(
+        ra=180.0,
+        dec=-30.0,
+        footprint="c",
+        el_bore=40.0,
+        night=_JUPITER_NIGHT,
+        mode="setting",
+        site=site,
+    )
+    ref = Time("2000-01-01T00:00:00", scale="utc")
+    block_pm = plan_source_ces(
+        **common,
+        pm_ra=1000.0,
+        pm_dec=500.0,
+        ref_epoch=ref,
+    )
+    block_nopm = plan_source_ces(**common)
+
+    assert isinstance(block_pm, ScanBlock)
+    # The PM loop and the vectorised no-PM path produce different az
+    # solutions for the same source at the same epoch.
+    assert (
+        block_pm.computed_params["az_start"] != block_nopm.computed_params["az_start"]
+        or block_pm.computed_params["az_throw"] != block_nopm.computed_params["az_throw"]
+    )
+
+
+def test_array_footprint_from_array_info_round_trip():
+    """``ArrayFootprint.from_array_info`` round-trips a small SO-style dict."""
+    # Use degree-units input for an easy comparison; verify the produced
+    # arrays match the input numerically.
+    cover_xi_deg = np.array([-0.1, 0.1, 0.1, -0.1])
+    cover_eta_deg = np.array([-0.1, -0.1, 0.1, 0.1])
+    info = {
+        "center": (0.05, -0.05),
+        "cover": (cover_xi_deg, cover_eta_deg),
+    }
+    fp = ArrayFootprint.from_array_info(info, units="deg")
+    assert fp.center_xi_deg == pytest.approx(0.05)
+    assert fp.center_eta_deg == pytest.approx(-0.05)
+    np.testing.assert_allclose(fp.cover_xi_deg, cover_xi_deg)
+    np.testing.assert_allclose(fp.cover_eta_deg, cover_eta_deg)
+
+    # And the radian path applies the rad2deg scaling.
+    info_rad = {
+        "center": (np.deg2rad(0.05), np.deg2rad(-0.05)),
+        "cover": (np.deg2rad(cover_xi_deg), np.deg2rad(cover_eta_deg)),
+    }
+    fp_rad = ArrayFootprint.from_array_info(info_rad, units="rad")
+    assert fp_rad.center_xi_deg == pytest.approx(0.05)
+    np.testing.assert_allclose(fp_rad.cover_xi_deg, cover_xi_deg)
+
+
+# ---------------------------------------------------------------------------
+# compute_source_ces_params (params-only sibling)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_params_matches_plan_block(site):
+    """compute_source_ces_params returns the same scalars as plan_source_ces."""
+    kwargs = dict(
+        body="jupiter",
+        footprint=_FULL_PRIMECAM_MODULES,
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    params = compute_source_ces_params(**kwargs)
+    block = plan_source_ces(**kwargs, timestep=0.1)
+
+    assert set(params) == set(SourceCESComputedParams.__required_keys__)
+    # All scalar invariants must match between the two paths.
+    for key in SourceCESComputedParams.__required_keys__:
+        expected = block.computed_params[key]
+        actual = params[key]
+        if isinstance(expected, float):
+            assert actual == pytest.approx(expected), f"mismatch on key {key!r}"
+        else:
+            assert actual == expected, f"mismatch on key {key!r}"
+
+
+def test_compute_params_no_trajectory_built(site, monkeypatch):
+    """compute_source_ces_params must NOT call the trajectory builder."""
+
+    def _explode(*_args, **_kwargs):
+        raise AssertionError("trajectory builder must not be called in params-only path")
+
+    monkeypatch.setattr(
+        "fyst_trajectories.planning.source_ces._build_altaz_trajectory",
+        _explode,
+    )
+
+    params = compute_source_ces_params(
+        body="jupiter",
+        footprint=_FULL_PRIMECAM_MODULES,
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    # Sanity: the function returned a populated dict, not a placeholder.
+    assert params["el_bore"] == pytest.approx(35.0)
+    assert params["mode"] == "rising"
+
+
+def test_compute_params_az_envelope_validation(site, monkeypatch):
+    """An out-of-range envelope raises AzimuthBoundsError before any trajectory work."""
+
+    # If the envelope check ever fell through, the patched builder would fire.
+    def _explode(*_args, **_kwargs):
+        raise AssertionError(
+            "trajectory builder must not run when envelope is already out of range"
+        )
+
+    monkeypatch.setattr(
+        "fyst_trajectories.planning.source_ces._build_altaz_trajectory",
+        _explode,
+    )
+
+    # Pick a v_az override that, multiplied by the source-pass duration,
+    # pushes the envelope past the FYST azimuth max (360 deg). The source-
+    # pass duration for a centred footprint at el_bore=35 is on the order
+    # of tens of seconds; v_az=10 deg/s drives the drift-extended endpoint
+    # past 360 quickly.
+    with pytest.raises(AzimuthBoundsError):
+        compute_source_ces_params(
+            body="jupiter",
+            footprint="c",
+            el_bore=35.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+            v_az=10.0,
+        )
+
+
+def test_compute_params_v_az_override(site):
+    """Explicit v_az is passed through to the returned params unchanged."""
+    params = compute_source_ces_params(
+        body="jupiter",
+        footprint=_FULL_PRIMECAM_MODULES,
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+        v_az=0.005,
+    )
+    assert params["v_az"] == 0.005
+
+
+def test_compute_params_raises_target_not_observable(site):
+    """A southern source that never reaches el_bore raises TargetNotObservableError."""
+    with pytest.raises(TargetNotObservableError):
+        compute_source_ces_params(
+            ra=0.0,
+            dec=-85.0,
+            footprint="c",
+            el_bore=50.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_compute_params_no_timestep_kwarg(site):
+    """compute_source_ces_params must reject the trajectory-only ``timestep`` kwarg."""
+    import inspect
+
+    sig = inspect.signature(compute_source_ces_params)
+    assert "timestep" not in sig.parameters
+
+    with pytest.raises(TypeError):
+        compute_source_ces_params(
+            body="jupiter",
+            footprint="c",
+            el_bore=35.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+            timestep=0.1,  # type: ignore[call-arg]
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slow / cross-validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(
+    reason=(
+        "schedlib not pip-installable (so3g has no PyPI wheel); "
+        "manual cross-check procedure documented in this test's docstring."
+    )
+)
+def test_cross_validate_so_make_source_ces():
+    """Cross-validate against ``schedlib.source.make_source_ces``.
+
+    Kept as a scaffold for a manual cross-validation procedure (the SO
+    xi/eta convention parity is a known open question that this test
+    is designed to settle once ``schedlib`` is installable in CI).
+
+    Procedure (when running on Linux with so3g installed):
+
+    1. Install ``pip install -e
+       git+https://github.com/simonsobs/scheduler@v0.4.0#egg=schedlib``.
+    2. Invoke ``schedlib.source.make_source_ces(
+       source='jupiter', array_info=<dict equivalent to ArrayFootprint>,
+       el_bore=35.0, t=<unix timestamp>, boresight_rot=0.0, mode='rising',
+       horizon=15)`` and compare ``az_drift, az_start, az_stop, t0, t1``
+       against the matching ``plan_source_ces`` ``computed_params``.
+    3. Expected agreement: az_drift to ~0.1 mdeg/s, az_start/stop to
+       ~0.1 deg (driven by az_padding choice).
+
+    Discrepancies in az_start/stop larger than ``az_padding`` indicate a
+    bug in either the SO PyEphem ephemeris or our astropy + offsets
+    geometry — both are worth investigating.
+    """
+    raise NotImplementedError(
+        "Manual cross-validation only; see docstring for the schedlib invocation."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tier-1 integration smoke tests
+#
+# These two tests are the local stand-in for the schedlib cross-validation
+# (test_cross_validate_so_make_source_ces above) — they do not need
+# schedlib + so3g installed but they verify the same end-to-end property:
+# the planner's trajectory + cover geometry actually places the source on
+# the focal-plane footprint at the times it claims to. They sit at the
+# integration layer (planner output × Coordinates × offset math) and would
+# catch the high-impact class of bug — xi/eta sign convention, focal-plane
+# rotation sign, drift-rate solve, off-centre boresight recovery — that a
+# schedlib parity check would catch.
+# ---------------------------------------------------------------------------
+
+
+def test_source_lies_inside_swept_cover_along_trajectory(site):
+    """Verify the source lies inside the *swept* cover over the source pass.
+
+    For a full-PrimeCam Jupiter-rising CES, sample the source-pass window
+    ``[t0, t1]`` from ``computed_params`` at 20 uniform times. At each time,
+    recover the commanded boresight (az, el) from the trajectory and project
+    the 350 cover-polygon vertices to on-sky (az, el) through that boresight.
+    Take the UNION of all projected covers across all sample times — this is
+    the on-sky footprint actually swept by the array while the source is
+    crossing it. Assert that the source's instantaneous (az, el) at *each*
+    sample time lies inside the convex hull of that swept union.
+
+    The integration property being verified is: "the source's track over
+    [t0, t1] lies inside the union of all swept covers" — the actual
+    coverage claim of a back-and-forth CES. Two important geometric notes:
+
+    * Per-instant containment is the wrong check: in a multi-leg CES the
+      boresight oscillates and the instantaneous cover need not contain
+      the source at every leg endpoint — only the swept union must.
+    * We sample within ``[t0, t1]``, NOT over the full trajectory duration.
+      The trajectory continues to scan after ``t1`` because ``n_scans`` is
+      rounded up; the source genuinely exits the cover at ``t1`` by design,
+      and sampling past ``t1`` is uninformative.
+
+    This would FAIL if:
+
+    * xi/eta sign convention is wrong (swept envelope rotated 90° on sky);
+    * boresight_rot sign is wrong (swept envelope rotated wrong direction);
+    * the drift solve gave wrong v_az (source drifts out of the swept
+      envelope over time);
+    * az_bore recovery is wrong for off-centre cases (the swept envelope
+      misses the source entirely).
+
+    For the centred full-PrimeCam case we additionally require the source
+    to sit near the swept-envelope centroid at the trajectory midpoint —
+    a tighter check that catches systematic offsets the convex-hull
+    containment test would tolerate.
+    """
+    from scipy.spatial import ConvexHull, Delaunay, QhullError
+
+    block = _full_primecam_block(site)
+    traj = block.trajectory
+    cp = block.computed_params
+    el_bore = float(cp["el_bore"])
+
+    coords = Coordinates(site)
+
+    assert traj.start_time is not None, "source-CES trajectory must carry start_time"
+    t_start = traj.start_time
+
+    # 20 uniform samples within the *source-pass* window [t0, t1].
+    # NOTE: the trajectory's actual duration extends beyond t1 because
+    # ``n_scans`` is rounded up (the back-and-forth CES continues to scan
+    # after the source has left the cover). Sampling beyond t1 is
+    # uninformative — the source is genuinely outside the cover there
+    # by design.
+    t0_iso = cp["t0_iso"]
+    t1_iso = cp["t1_iso"]
+    t0_rel = (Time(t0_iso) - t_start).to_value(u.s)
+    t1_rel = (Time(t1_iso) - t_start).to_value(u.s)
+    n_samples = 20
+    t_secs_samples = np.linspace(t0_rel, t1_rel, n_samples)
+    sample_times = t_start + TimeDelta(t_secs_samples * u.s)
+
+    # The footprint that flowed into the planner — re-resolve here so the
+    # test is self-contained.
+    from fyst_trajectories.planning.source_ces import _resolve_footprint
+
+    fp = _resolve_footprint(_FULL_PRIMECAM_MODULES)
+    assert fp.cover_xi_deg.size == 350  # 7 modules × 50 vertices
+
+    # Buffer (degrees) added to the convex-hull containment test. The
+    # planner uses a single parallactic angle for the whole window (the
+    # PA at t_at_el_bore); over a ~30 min Jupiter pass at FYST the PA
+    # drifts by a couple of degrees, which slightly rotates the actual
+    # swept cover relative to the planner's idealisation. 0.1° is well
+    # below the per-leg az_padding (0.5°).
+    HULL_BUFFER_DEG = 0.1
+
+    # Pass 1: collect the swept cover (union of all projected covers).
+    swept_az = []
+    swept_el = []
+    source_pts = []  # (src_az, src_el) at each sample time
+    bore_pts = []  # (bore_az, bore_el) at each sample time, for diagnostics
+
+    for t_k_sec, t_k in zip(t_secs_samples, sample_times):
+        src_az_k, src_el_k = coords.get_body_altaz("jupiter", t_k)
+        src_az_k = float(src_az_k)
+        src_el_k = float(src_el_k)
+        source_pts.append((src_az_k, src_el_k))
+
+        bore_az = float(np.interp(t_k_sec, traj.times, traj.az))
+        bore_el = float(np.interp(t_k_sec, traj.times, traj.el))
+        bore_pts.append((bore_az, bore_el))
+
+        # Field rotation at t_k. Use the source's instantaneous RA/Dec
+        # so the PA is correct for this sample.
+        src_ra_k, src_dec_k = coords.get_body_radec("jupiter", t_k)
+        pa_k = float(coords.get_parallactic_angle(src_ra_k, src_dec_k, t_k))
+        fp_rot_k = float(
+            compute_focal_plane_rotation(
+                el=el_bore,
+                site=site,
+                offset=InstrumentOffset(dx=0.0, dy=0.0),
+                parallactic_angle=pa_k,
+            )
+        )  # boresight_rot defaulted to 0 for this case.
+
+        # Project all 350 cover vertices through the boresight.
+        for xi_deg, eta_deg in zip(fp.cover_xi_deg, fp.cover_eta_deg):
+            vertex_offset = InstrumentOffset(dx=xi_deg * 60.0, dy=eta_deg * 60.0)
+            az_v, el_v = boresight_to_detector(
+                az=bore_az,
+                el=bore_el,
+                offset=vertex_offset,
+                field_rotation=fp_rot_k,
+            )
+            swept_az.append(float(az_v))
+            swept_el.append(float(el_v))
+
+    swept_points = np.column_stack([swept_az, swept_el])
+    try:
+        swept_hull = ConvexHull(swept_points)
+    except QhullError as exc:  # pragma: no cover - geometric guard
+        raise AssertionError(f"Swept cover polygon degenerate: {exc}") from exc
+    swept_vertices = swept_points[swept_hull.vertices]
+
+    # Inflate the swept hull by pushing each vertex outward
+    # HULL_BUFFER_DEG along its own centroid-to-vertex unit normal. This
+    # uniform-thickness expansion is robust for elongated polygons (the
+    # swept cover is wide in az, narrow in el) where centroid-relative
+    # scaling would inflate the long axis far more than the short axis.
+    swept_centroid = swept_vertices.mean(axis=0)
+    vecs = swept_vertices - swept_centroid
+    unit = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+    inflated = swept_vertices + HULL_BUFFER_DEG * unit
+    swept_tri = Delaunay(inflated)
+
+    # Pass 2: assert each source position lies inside the swept hull.
+    for (src_az_k, src_el_k), (bore_az, bore_el), t_k in zip(source_pts, bore_pts, sample_times):
+        source_point = np.array([src_az_k, src_el_k])
+        assert swept_tri.find_simplex(source_point) >= 0, (
+            f"source ({src_az_k:.4f}, {src_el_k:.4f}) lies outside the swept "
+            f"cover at t_k={t_k.iso} (boresight=({bore_az:.4f}, {bore_el:.4f}))"
+        )
+
+    # Centred-case sanity: at the trajectory midpoint, the source should
+    # sit near the swept-envelope centroid (within half the median cover
+    # radius). This catches systematic offsets — e.g. an xi/eta swap that
+    # still produces a containing hull but shifts the source consistently
+    # to one side.
+    mid_idx = len(source_pts) // 2
+    mid_src = np.array(source_pts[mid_idx])
+    median_radius = float(np.median(np.linalg.norm(swept_vertices - swept_centroid, axis=1)))
+    d_mid = float(np.linalg.norm(mid_src - swept_centroid))
+    assert d_mid < 0.5 * median_radius, (
+        f"source at trajectory midpoint is not near swept-cover centroid: "
+        f"d_mid={d_mid:.4f} deg, median radius={median_radius:.4f} deg"
+    )
+
+
+def test_off_centre_module_lands_on_source_during_pass(site):
+    """Verify off-centre az_bore recovery places the I1 module on the source.
+
+    For a single-module (PrimeCam-I1, dy = −106.8 arcmin off-axis) sidereal
+    source CES, scan along the planned trajectory and find the time at
+    which the forward-projected I1 module position is closest to the
+    source's instantaneous (az, el). Assert that the minimum miss
+    distance is sub-arcmin.
+
+    Important geometric note: the planner's reference time
+    ``t_at_el_bore`` (when the source's elevation equals ``el_bore``)
+    is NOT, in general, inside the trajectory window for an off-centre
+    footprint. The cover is offset below the boresight by the module's
+    ``dy``, so projected from a boresight at ``el_bore=40``° the cover
+    sits at lower elevations. The trajectory window
+    ``[t0, t1]`` is bounded by the source el span overlapping the cover
+    el span, which for I1 puts source el ≈ 41 (above el_bore=40) during
+    the actual scan. The I1 module's centre lands on the source somewhere
+    near the trajectory midpoint, NOT at ``t_at_el_bore``.
+
+    This test catches the case where the planner's Step-6 spherical
+    inverse (:func:`detector_to_boresight`) silently fails and falls back
+    to ``az_bore = source_az`` — which is *wrong* for any off-centre
+    footprint (the I1 module would then sit ~1.8° away from the source,
+    not on it).
+    """
+    # Sidereal source, off-centre module. Match the existing
+    # test_sidereal_setting_single_module setup so the geometry is known.
+    ra_deg = 180.0
+    dec_deg = -30.0
+    el_bore = 40.0
+    night = Time("2026-03-15T00:00:00", scale="utc")
+
+    block = plan_source_ces(
+        ra=ra_deg,
+        dec=dec_deg,
+        footprint="i1",
+        el_bore=el_bore,
+        night=night,
+        mode="setting",
+        site=site,
+    )
+    traj = block.trajectory
+    cp = block.computed_params
+    coords = Coordinates(site)
+    i1_offset = get_primecam_offset("i1")
+
+    assert traj.start_time is not None
+
+    # Walk the trajectory at a moderate cadence (~100 samples) and
+    # find the time at which the projected I1 module position is closest
+    # to the source. By symmetry this is near the trajectory midpoint;
+    # we don't hardcode "midpoint" because the back-and-forth scan
+    # pattern means the boresight crosses the source-track multiple
+    # times, but the *closest-approach* is the canonical pinch-point
+    # where the planner's az_bore-recovery is tested.
+    n_walk = 100
+    t_walk_sec = np.linspace(traj.times[0], traj.times[-1], n_walk)
+    misses_deg = np.empty(n_walk)
+    diagnostics = []
+    for k, t_k_sec in enumerate(t_walk_sec):
+        t_k = traj.start_time + TimeDelta(t_k_sec * u.s)
+        src_az_k, src_el_k = coords.radec_to_altaz(ra_deg, dec_deg, t_k)
+        src_az_k = float(src_az_k)
+        src_el_k = float(src_el_k)
+        bore_az = float(np.interp(t_k_sec, traj.times, traj.az))
+        bore_el = float(np.interp(t_k_sec, traj.times, traj.el))
+        pa_k = float(coords.get_parallactic_angle(ra_deg, dec_deg, t_k))
+        fp_rot_k = float(
+            compute_focal_plane_rotation(
+                el=el_bore,
+                site=site,
+                offset=InstrumentOffset(dx=0.0, dy=0.0),
+                parallactic_angle=pa_k,
+            )
+        )  # boresight_rot defaulted to None → treated as 0.
+        det_az, det_el = boresight_to_detector(
+            az=bore_az,
+            el=bore_el,
+            offset=i1_offset,
+            field_rotation=fp_rot_k,
+        )
+        det_az = float(det_az)
+        det_el = float(det_el)
+        miss_deg = float(
+            np.hypot(
+                (det_az - src_az_k) * np.cos(np.deg2rad(src_el_k)),
+                det_el - src_el_k,
+            )
+        )
+        misses_deg[k] = miss_deg
+        diagnostics.append((t_k.iso, src_az_k, src_el_k, bore_az, bore_el, det_az, det_el))
+
+    k_best = int(np.argmin(misses_deg))
+    best_miss = float(misses_deg[k_best])
+
+    # Tolerance: the closed-form spherical inverse converges to sub-µdeg
+    # but the planner uses a single parallactic angle (the PA at
+    # ``t_at_el_bore``) for the whole-pass cover projection; the actual
+    # PA at the closest-approach time differs by ~0.5°, which rotates the
+    # cover and shifts the I1-vs-source miss by a few arcmin. 6 arcmin
+    # is well below the I1 module's 0.41° (24.6 arcmin) FOV radius —
+    # well inside the module — and four orders of magnitude smaller
+    # than the dy offset (107 arcmin) a true az_bore-recovery bug
+    # would expose (the planner would fall back to ``az_bore =
+    # source_az``, missing by the full ``dy``).
+    TOL_ARCMIN = 6.0
+    assert best_miss * 60.0 < TOL_ARCMIN, (
+        f"I1 module never lands on source: closest approach {best_miss * 60:.2f} arcmin "
+        f"at sample {k_best}/{n_walk} (t={diagnostics[k_best][0]}). "
+        f"diagnostics={diagnostics[k_best]}. computed_params={dict(cp)}"
+    )

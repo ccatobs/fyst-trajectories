@@ -6,8 +6,6 @@ itself. This file adds an independent reference: the IAU SOFA / ERFA
 package). Agreement to better than 0.01° validates the
 ``arctan2(sin H, cos δ tan φ − sin δ cos H)`` implementation in
 ``coordinates.py``.
-
-Audit reference: docs/reviews/methodology_audit.md Per-Area B Finding 3.
 """
 
 import erfa

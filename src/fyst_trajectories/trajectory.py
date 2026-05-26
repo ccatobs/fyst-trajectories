@@ -88,10 +88,10 @@ class RetuneEvent:
 
     Notes
     -----
-    The minimal two-field shape is deliberate. See
-    ``docs/reviews/methodology_audit.md`` and Q-9..Q-13 in
-    ``docs/reviews/fyst_team_questions.md`` for the research basis.
-    Per-module staggering is the caller's composition: invoke
+    The minimal two-field shape is deliberate -- no public KID-camera
+    retune log has been published, so the dataclass captures only the
+    fields every event must have. Per-module staggering is the caller's
+    composition: invoke
     :func:`~fyst_trajectories.trajectory_utils.inject_retune` once per
     module with a different event list rather than embedding module
     identity in the event.

@@ -12,7 +12,7 @@ from astropy import units as u
 from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
-from ..exceptions import PointingWarning
+from ..exceptions import PointingError, PointingWarning
 from ._types import FieldRegion
 
 
@@ -281,3 +281,151 @@ def _compute_ce_az_range(
         az_arr = ((az_arr - median + 180.0) % 360.0) - 180.0 + median
 
     return float(az_arr.min()) - padding, float(az_arr.max()) + padding
+
+
+def _compute_ce_duration_from_lsa(
+    lsa_window: "tuple[float, float] | list[float]",
+    coords_obj: Coordinates,
+    base_search_time: Time,
+    max_search_hours: float = 12.0,
+    step_seconds: float = 30.0,
+) -> tuple[Time, Time, float]:
+    """Compute scan start/end from a Local Sidereal Angle window.
+
+    Searches forward from ``base_search_time`` for the first time at which
+    Local Sidereal Time (in degrees) crosses ``lsa_window[0]`` in the
+    increasing direction. The end time is fixed at ``t_start +
+    (max_lsa - min_lsa) mod 360 / 15`` hours, so the scan spans exactly
+    the requested LSA window.
+
+    Wrap-around windows (``max_lsa < min_lsa``) are handled explicitly:
+    the duration is computed modulo 360°, so ``(310, 10)`` is a
+    60°/15 = 4 hour scan crossing the LST = 0/360 boundary.
+
+    Mirrors the legacy ``get_dur`` LSA branch in
+    ``primecam_scan_patterns.py`` but parametrises the search anchor
+    (the legacy hardcoded ``2022-09-21``) and raises structured errors
+    rather than calling ``exit(1)``. The wrap-aware straddle detection
+    here improves on the legacy implementation, which silently failed
+    when ``min_lsa`` sat on or near the LST = 0/360 boundary.
+
+    Parameters
+    ----------
+    lsa_window : tuple or list of (min_lsa, max_lsa)
+        Local Sidereal Angle window in degrees. Both endpoints must lie
+        in ``[0, 360)`` and must not be equal. ``max_lsa < min_lsa``
+        means the window wraps through LSA = 0/360. Accepts a list as
+        well as a tuple so callers can pass a value that has
+        round-tripped through ECSV/JSON serialisation (which converts
+        tuples to lists).
+    coords_obj : Coordinates
+        Coordinate transformer for the site (used for ``get_lst`` and
+        the underlying ``EarthLocation``).
+    base_search_time : Time
+        Earliest time at which to start searching.
+    max_search_hours : float, optional
+        Maximum search horizon in hours. Default is 12.0. Must be
+        positive.
+    step_seconds : float, optional
+        Time step for the search in seconds. Default is 30.0.
+
+    Returns
+    -------
+    start_time : Time
+        First time at or after ``base_search_time`` at which LST passes
+        through ``min_lsa`` in the increasing direction.
+    end_time : Time
+        ``start_time`` plus the LSA-derived duration.
+    duration_seconds : float
+        Duration of the window in seconds.
+
+    Raises
+    ------
+    ValueError
+        If ``min_lsa == max_lsa`` (zero-duration window), either
+        endpoint is outside ``[0, 360)``, or ``max_search_hours`` is
+        not positive.
+    PointingError
+        If no increasing crossing of ``min_lsa`` is found within
+        ``max_search_hours`` of ``base_search_time``.
+
+    Notes
+    -----
+    Uses ``sidereal_time('apparent')`` (via
+    :meth:`Coordinates.get_lst`), consistent with the rest of the
+    fyst-trajectories pipeline. The legacy ``get_dur`` in
+    ``primecam_scan_patterns.py`` uses ``sidereal_time('mean')``; the
+    two differ by at most the equation of the equinoxes (~20 arcsec
+    ≈ 1.3 s of time), well below operationally relevant precision for
+    LSA-window scheduling.
+    """
+    min_lsa, max_lsa = float(lsa_window[0]), float(lsa_window[1])
+    if not (0.0 <= min_lsa < 360.0) or not (0.0 <= max_lsa < 360.0):
+        raise ValueError(f"lsa_window endpoints must lie in [0, 360); got ({min_lsa}, {max_lsa})")
+    if min_lsa == max_lsa:
+        raise ValueError(
+            f"lsa_window has equal endpoints ({min_lsa}); refusing zero-duration window"
+        )
+    if max_search_hours <= 0:
+        raise ValueError(
+            f"max_search_hours must be positive, got {max_search_hours}; "
+            f"cannot search for LSA crossings in a non-positive horizon"
+        )
+
+    duration_deg = (max_lsa - min_lsa) % 360.0
+    duration_hours = duration_deg / 15.0
+    duration_seconds = duration_hours * 3600.0
+
+    dt_sec = np.arange(0.0, max_search_hours * 3600.0, step_seconds)
+    search_times = base_search_time + TimeDelta(dt_sec * u.s)
+    lsa = np.asarray(coords_obj.get_lst(search_times))
+
+    # Unwrap LSA into a monotonic series so straddle detection works
+    # uniformly when ``min_lsa`` sits at or near the LST = 0/360
+    # boundary. With wrapped samples (e.g. 359.9 → 0.1) and ``min_lsa
+    # = 0``, the naive product test ``(lsa - 0) * (lsa_next - 0)`` is
+    # positive at the wrap edge, producing a silent miss. ``np.unwrap``
+    # turns 359.9 → 360.1 → ..., and LST is monotonically increasing in
+    # time, so the unwrapped series stays monotonic.
+    lsa_unwrapped = np.unwrap(np.deg2rad(lsa)) * 180.0 / np.pi
+    # The smallest ``target = min_lsa + 360*k`` that lies at or after
+    # the first sample is the only candidate crossing within the
+    # horizon (LST advances ~15°/h; even a 24-hour search covers only
+    # one full wrap, so the *first* increasing crossing of ``min_lsa``
+    # is uniquely determined by this offset).
+    k = math.ceil((lsa_unwrapped[0] - min_lsa) / 360.0)
+    target = min_lsa + 360.0 * k
+    if target > lsa_unwrapped[-1]:
+        raise PointingError(
+            f"lsa_window min_lsa={min_lsa}° not reached in increasing direction within "
+            f"{max_search_hours} h of {base_search_time.iso}. "
+            f"LSA swept {lsa[0]:.1f}° -> {lsa[-1]:.1f}°."
+        )
+
+    # Find the [idx, idx+1] bracket that contains ``target``.
+    idx = int(np.searchsorted(lsa_unwrapped, target, side="right")) - 1
+    # Clamp into [0, len-2] for safety; ``target <= lsa_unwrapped[-1]``
+    # guarantees ``idx+1`` is in range, but ``target == lsa_unwrapped[0]``
+    # would yield ``idx == -1``.
+    idx = max(0, min(idx, len(lsa_unwrapped) - 2))
+    lsa_left = lsa_unwrapped[idx]
+    lsa_right = lsa_unwrapped[idx + 1]
+    # ``lsa_right > lsa_left`` is guaranteed by monotonicity of the
+    # unwrapped LST series (denom > 0 strictly).
+    frac = (target - lsa_left) / (lsa_right - lsa_left)
+    t_start = search_times[idx] + TimeDelta(frac * step_seconds * u.s)
+    t_end = t_start + TimeDelta(duration_seconds * u.s)
+
+    # Absolute threshold: LSA-window duration is independent of the
+    # search horizon, so the warning should reflect operational scale
+    # (sustained ~6 h pointing is unusually long for a single CE block)
+    # rather than couple to ``max_search_hours``.
+    if duration_hours > 6.0:
+        warnings.warn(
+            f"LSA-derived duration {duration_hours:.1f}h is unusually long for a single "
+            f"CE block. Check lsa_window={lsa_window}.",
+            PointingWarning,
+            stacklevel=2,
+        )
+
+    return t_start, t_end, duration_seconds

@@ -2,14 +2,17 @@
 
 import numpy as np
 import pytest
+from astropy import units as u
 from astropy.time import Time
 
 from fyst_trajectories.coordinates import Coordinates
+from fyst_trajectories.exceptions import PointingError, PointingWarning
 from fyst_trajectories.patterns.configs import ConstantElScanConfig
 from fyst_trajectories.planning import FieldRegion, ScanBlock, plan_constant_el_scan
 from fyst_trajectories.planning._ce_geometry import (
     _compute_ce_az_range,
     _compute_ce_duration,
+    _compute_ce_duration_from_lsa,
 )
 
 
@@ -157,9 +160,8 @@ class TestCEGeometryWrapHandling:
     """Regression tests for the RA = 0 / az = 0/360 wrap handling.
 
     Both bugs were documented in ``_ce_geometry.py`` as known edge cases.
-    The audit (``docs/reviews/methodology_audit.md`` Per-Area C Finding 1)
-    flagged the azimuth-wrap case as plausible at FYST's −23° latitude
-    for sources that transit through north (dec ≳ +20°).
+    The azimuth-wrap case is plausible at FYST's −23° latitude for
+    sources that transit through north (dec ≳ +20°).
     """
 
     def test_az_range_handles_north_transit(self, site):
@@ -270,3 +272,571 @@ class TestCEGeometryWrapHandling:
         )
         # az_throw must be small (matches field width plus temporal sweep)
         assert block.computed_params["az_throw"] < 30.0
+
+
+class TestPlanConstantElLsaWindow:
+    """Tests for the ``lsa_window`` kwarg on ``plan_constant_el_scan``.
+
+    Covers no-wrap, wrap-around, equal-endpoint validation, not-found
+    handling, the ``rising`` interaction, and backward compatibility of
+    the default ``None``.
+    """
+
+    @pytest.fixture
+    def deep56_field(self):
+        """Deep56-like field centred near RA = 0, dec ≈ -2°.
+
+        The full Deep56 patch from sourcelist_CE.csv spans 60° in RA
+        (23:00 → 03:00 wraps) and 14° in Dec, but a 60° physical field
+        would overflow the azimuth limits — the legacy LSA pipeline
+        sweeps the patch piecewise, not as a single 60°-wide raster.
+        For LSA-window unit tests we only need any FieldRegion that
+        coexists with the legal azimuth range; the LSA branch is
+        independent of field geometry.
+        """
+        return FieldRegion(ra_center=0.0, dec_center=-2.0, width=4.0, height=4.0)
+
+    @pytest.fixture
+    def deep56_search_time(self):
+        """Search anchor for Deep56 LSA tests."""
+        return Time("2026-09-15T00:00:00", scale="utc")
+
+    def test_lsa_window_no_wrap(self, site, deep56_field, deep56_search_time):
+        """A no-wrap window (22°, 82°) produces a 4-hour scan.
+
+        Duration = (82 - 22) / 15 = 4 h. The start lies between
+        ``start_time`` and ``start_time + max_search_hours``.
+        """
+        block = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            rising=True,
+            lsa_window=(22.0, 82.0),
+        )
+
+        assert block.duration > 0
+        # Reported obs_end - obs_start (from computed_params duration)
+        # tracks the LSA-derived 4-hour duration; the recomputed
+        # n_scans-driven ``actual_duration`` is allowed to differ by
+        # at most a leg/turnaround pair.
+        obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
+        obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
+        lsa_duration_h = (obs_end - obs_start).to_value(u.hour)
+        assert lsa_duration_h == pytest.approx(4.0, abs=1e-3)
+
+        # Start lies inside the search horizon.
+        assert obs_start >= deep56_search_time
+        assert obs_start <= deep56_search_time + 12.0 * u.hour
+
+    def test_lsa_window_with_wrap(self, site, deep56_field, deep56_search_time):
+        """A wrap-around window (310°, 10°) produces a 4-hour scan."""
+        block = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            rising=True,
+            lsa_window=(310.0, 10.0),
+        )
+
+        obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
+        obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
+        lsa_duration_h = (obs_end - obs_start).to_value(u.hour)
+        # (10 - 310) mod 360 / 15 = 60 / 15 = 4 h.
+        assert lsa_duration_h == pytest.approx(4.0, abs=1e-3)
+
+        # LST at obs_start should be very close to 310°.
+        coords = Coordinates(site)
+        lst_at_start = coords.get_lst(obs_start)
+        diff = (lst_at_start - 310.0 + 180.0) % 360.0 - 180.0
+        assert abs(diff) < 0.05  # 0.05° ≈ 12 s of sidereal time
+
+    def test_lsa_window_deep56_pattern(self, site, deep56_field, deep56_search_time):
+        """Exercise both Deep56 LSA configurations from sourcelist_CE.csv."""
+        block_rising = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            rising=True,
+            lsa_window=(310.0, 10.0),
+        )
+        block_setting = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            rising=False,
+            lsa_window=(22.0, 82.0),
+        )
+
+        # Both windows are 4 hours wide.
+        for block in (block_rising, block_setting):
+            obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
+            obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
+            assert (obs_end - obs_start).to_value(u.hour) == pytest.approx(4.0, abs=1e-3)
+
+        # The 22→82 setting window starts after the 310→10 rising window
+        # (both anchored at the same start_time; 310° comes up first, then 22°).
+        t_r = Time(block_rising.computed_params["start_time_iso"], scale="utc")
+        t_s = Time(block_setting.computed_params["start_time_iso"], scale="utc")
+        assert t_r < t_s
+
+    def test_lsa_window_equal_endpoints_raises(self, site, deep56_field, deep56_search_time):
+        """Equal endpoints produce a zero-duration window — refused."""
+        with pytest.raises(ValueError, match="zero-duration"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=deep56_search_time,
+                lsa_window=(45.0, 45.0),
+            )
+
+    def test_lsa_window_out_of_range_raises(self, site, deep56_field, deep56_search_time):
+        """Endpoints outside [0, 360) are rejected."""
+        with pytest.raises(ValueError, match=r"\[0, 360\)"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=deep56_search_time,
+                lsa_window=(-10.0, 30.0),
+            )
+
+    def test_lsa_window_not_found_raises(self, site, deep56_field):
+        """A tiny search horizon that never crosses min_lsa raises PointingError.
+
+        Pick a start_time where LST is just past 100° and search only
+        0.5 hours forward (≈ 7.5° of LSA travel) for a target of
+        100° — the increasing-direction crossing will already be in
+        the past.
+        """
+        coords = Coordinates(site)
+        # Find a time when LST = 100° + a small margin, so the next
+        # 0.5 h won't include an increasing crossing of 100°.
+        # Sample LST across a day; pick the first time LST > 100.5°
+        # (so the next 0.5 h spans LSA ~108°-115°, never re-crossing 100°).
+        anchor = Time("2026-09-15T00:00:00", scale="utc")
+        dt = np.arange(0, 24 * 3600, 30.0)
+        times = anchor + dt * u.s
+        lsa = np.asarray(coords.get_lst(times))
+        # First index where LSA is between 100.5 and 105 (just past 100°).
+        idx_arr = np.flatnonzero((lsa > 100.5) & (lsa < 105.0))
+        assert len(idx_arr) > 0
+        start_time = times[idx_arr[0]]
+
+        with pytest.raises(PointingError, match="not reached in increasing direction"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=start_time,
+                lsa_window=(100.0, 200.0),
+                max_search_hours=0.5,
+            )
+
+    def test_lsa_window_independent_of_rising(self, site, deep56_field, deep56_search_time):
+        """``rising`` does not affect LSA-derived start/end.
+
+        Different ``rising`` values should produce identical
+        ``obs_start`` / ``obs_end`` from the LSA branch (the flag only
+        feeds the azimuth-range computation, which is allowed to
+        change).
+        """
+        block_r = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            rising=True,
+            lsa_window=(22.0, 82.0),
+        )
+        block_s = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            rising=False,
+            lsa_window=(22.0, 82.0),
+        )
+
+        assert (
+            block_r.computed_params["start_time_iso"] == block_s.computed_params["start_time_iso"]
+        )
+        assert block_r.computed_params["end_time_iso"] == block_s.computed_params["end_time_iso"]
+
+    def test_lsa_window_none_preserves_legacy_behavior(self, site):
+        """Default ``lsa_window=None`` is byte-identical to omitting the kwarg.
+
+        Guards against accidental coupling between the new branch and
+        the existing elevation-crossing path.
+        """
+        ecdfs_field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
+        search_time = Time("2026-03-15T17:00:00", scale="utc")
+        block_default = plan_constant_el_scan(
+            field=ecdfs_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=search_time,
+            rising=True,
+            angle=170.0,
+        )
+        block_explicit_none = plan_constant_el_scan(
+            field=ecdfs_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=search_time,
+            rising=True,
+            angle=170.0,
+            lsa_window=None,
+        )
+
+        cp_default = block_default.computed_params
+        cp_explicit = block_explicit_none.computed_params
+        assert cp_default["start_time_iso"] == cp_explicit["start_time_iso"]
+        assert cp_default["end_time_iso"] == cp_explicit["end_time_iso"]
+        assert cp_default["az_start"] == cp_explicit["az_start"]
+        assert cp_default["az_stop"] == cp_explicit["az_stop"]
+        assert cp_default["n_scans"] == cp_explicit["n_scans"]
+        assert cp_default["duration"] == cp_explicit["duration"]
+        assert block_default.duration == block_explicit_none.duration
+        # Trajectory arrays should match byte-for-byte.
+        assert np.array_equal(block_default.trajectory.az, block_explicit_none.trajectory.az)
+        assert np.array_equal(block_default.trajectory.el, block_explicit_none.trajectory.el)
+
+    def test_lsa_window_at_lst_zero_crossing(self, site):
+        """``min_lsa = 0`` works when LST is currently just below 360°.
+
+        Regression for the wrap-edge straddle-detection bug: with a
+        ``min_lsa = 0`` and consecutive samples ``(359.9, 0.1)``, the
+        legacy ``(lsa - 0) * (lsa_next - 0) < 0`` product test fails
+        because both factors are positive (the 0/360 boundary is not a
+        true sign change in the wrapped-modulo representation). The
+        unwrapped LSA-series fix locates the crossing correctly and the
+        planner produces a valid 4-hour scan starting at LST ≈ 0°.
+
+        The field is positioned at RA = 60° so the LST = 0 crossing
+        doesn't place the field at meridian (which would put the field
+        near zenith for low |dec| and break the az-range computation).
+        """
+        # Find an anchor at which LST is currently ~358° so the first
+        # increasing crossing of 0° (== 360° unwrapped) lies within a
+        # short search horizon.
+        coords = Coordinates(site)
+        sample_anchor = Time("2026-09-15T00:00:00", scale="utc")
+        dt = np.arange(0, 24 * 3600, 30.0)
+        times = sample_anchor + dt * u.s
+        lsa = np.asarray(coords.get_lst(times))
+        # First index where LSA is in [358, 359.5] — gives ~2-7 minutes
+        # before the wrap crossing.
+        idx_arr = np.flatnonzero((lsa > 358.0) & (lsa < 359.5))
+        assert len(idx_arr) > 0
+        start_time = times[idx_arr[0]]
+
+        # Field at RA = 60°, dec = -25°: when LST crosses 0° the field
+        # is at HA = -60° (rising side), well clear of meridian/zenith.
+        field = FieldRegion(ra_center=60.0, dec_center=-25.0, width=4.0, height=4.0)
+
+        block = plan_constant_el_scan(
+            field=field,
+            elevation=30.0,
+            velocity=0.5,
+            site=site,
+            start_time=start_time,
+            lsa_window=(0.0, 60.0),
+        )
+
+        obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
+        obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
+        lsa_duration_h = (obs_end - obs_start).to_value(u.hour)
+        # (60 - 0) / 15 = 4 hours.
+        assert lsa_duration_h == pytest.approx(4.0, abs=1e-3)
+
+        # LST at obs_start should be very close to 0° (== 360°).
+        lst_at_start = coords.get_lst(obs_start)
+        diff = (lst_at_start - 0.0 + 180.0) % 360.0 - 180.0
+        assert abs(diff) < 0.05  # 0.05° ≈ 12 s of sidereal time
+
+    def test_lsa_window_min_just_above_zero(self, site):
+        """``min_lsa ≈ 0.0001`` is in the wrap dead-zone the legacy test missed.
+
+        With the legacy straddle test ``(lsa - 0.0001) * (lsa_next - 0.0001) < 0``,
+        consecutive samples like ``(359.9, 0.1)`` produce a negative product
+        only if both factors have opposite sign — but both are positive after
+        the ``% 360`` wrap. The unwrap fix recognises the crossing.
+
+        Uses the helper directly to keep the test focused on the
+        wrap-detection geometry (the end-to-end planner is exercised by
+        ``test_lsa_window_at_lst_zero_crossing``).
+        """
+        coords = Coordinates(site)
+        sample_anchor = Time("2026-09-15T00:00:00", scale="utc")
+        dt = np.arange(0, 24 * 3600, 30.0)
+        times = sample_anchor + dt * u.s
+        lsa = np.asarray(coords.get_lst(times))
+        idx_arr = np.flatnonzero((lsa > 358.0) & (lsa < 359.5))
+        assert len(idx_arr) > 0
+        base_time = times[idx_arr[0]]
+
+        t_start, t_end, duration = _compute_ce_duration_from_lsa(
+            lsa_window=(0.0001, 60.0001),
+            coords_obj=coords,
+            base_search_time=base_time,
+        )
+        assert duration == pytest.approx(4.0 * 3600.0, abs=1e-6)
+        # The crossing of LST = 0.0001° lies just past the wrap.
+        lst_at_start = coords.get_lst(t_start)
+        diff = (lst_at_start - 0.0001 + 180.0) % 360.0 - 180.0
+        assert abs(diff) < 0.05
+
+    def test_lsa_window_json_roundtrip(self, site, deep56_field, deep56_search_time):
+        """``lsa_window`` as a *list* (post-JSON shape) works through the dispatcher.
+
+        ECSV serialisation in :func:`fyst_trajectories.overhead.io.write_timeline`
+        passes ``scan_params`` through ``json.dumps``, which converts
+        Python tuples to JSON arrays. The corresponding ``json.loads`` on
+        read returns lists, so a round-tripped ``lsa_window`` is
+        ``[310.0, 10.0]`` (list), not the tuple form. The simulation
+        dispatcher must accept both and produce identical trajectories.
+        """
+        import json
+
+        from fyst_trajectories.overhead.models import ObservingPatch, TimelineBlock
+        from fyst_trajectories.overhead.simulation import _generate_trajectory_for_block
+
+        scan_params_tuple = {"lsa_window": (310.0, 10.0)}
+        # Simulate ECSV write → read: tuple becomes list via JSON.
+        scan_params_list = json.loads(json.dumps(scan_params_tuple))
+        assert isinstance(scan_params_list["lsa_window"], list)
+
+        patch_tuple = ObservingPatch(
+            name="deep56_tuple",
+            ra_center=deep56_field.ra_center,
+            dec_center=deep56_field.dec_center,
+            width=deep56_field.width,
+            height=deep56_field.height,
+            scan_type="constant_el",
+            velocity=0.5,
+            elevation=50.0,
+            scan_params=scan_params_tuple,
+        )
+        patch_list = ObservingPatch(
+            name="deep56_list",
+            ra_center=deep56_field.ra_center,
+            dec_center=deep56_field.dec_center,
+            width=deep56_field.width,
+            height=deep56_field.height,
+            scan_type="constant_el",
+            velocity=0.5,
+            elevation=50.0,
+            scan_params=scan_params_list,
+        )
+
+        # A 4-hour duration matches the LSA-derived window; az_start / az_end
+        # are placeholders for the SCIENCE block factory (the LSA-window
+        # branch recomputes both internally).
+        t_start = deep56_search_time
+        block_tuple = TimelineBlock.science(
+            patch=patch_tuple,
+            t_start=t_start,
+            duration=4.0 * 3600.0,
+            az_start=0.0,
+            az_end=10.0,
+            el=50.0,
+            site=site,
+            scan_index=0,
+        )
+        block_list = TimelineBlock.science(
+            patch=patch_list,
+            t_start=t_start,
+            duration=4.0 * 3600.0,
+            az_start=0.0,
+            az_end=10.0,
+            el=50.0,
+            site=site,
+            scan_index=0,
+        )
+
+        scan_tuple = _generate_trajectory_for_block(block_tuple, site)
+        scan_list = _generate_trajectory_for_block(block_list, site)
+
+        # Both should produce identical trajectories.
+        assert (
+            scan_tuple.computed_params["start_time_iso"]
+            == (scan_list.computed_params["start_time_iso"])
+        )
+        assert (
+            scan_tuple.computed_params["end_time_iso"]
+            == (scan_list.computed_params["end_time_iso"])
+        )
+        assert scan_tuple.computed_params["duration"] == scan_list.computed_params["duration"]
+        assert np.array_equal(scan_tuple.trajectory.az, scan_list.trajectory.az)
+
+    def test_lsa_window_narrow_window(self, site, deep56_field, deep56_search_time):
+        """A narrow 0.5° window produces a valid 2-minute scan."""
+        block = plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            lsa_window=(50.0, 50.5),
+        )
+        # 0.5° / 15 = 0.0333 h = 120 s.
+        obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
+        obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
+        assert (obs_end - obs_start).to_value(u.s) == pytest.approx(120.0, abs=1e-2)
+        # Trajectory has positive duration and a non-empty az array.
+        assert block.duration > 0
+        assert block.trajectory.az.size > 0
+
+    def test_lsa_window_invalid_max_search_hours(self, site, deep56_field, deep56_search_time):
+        """Non-positive ``max_search_hours`` is rejected up front."""
+        with pytest.raises(ValueError, match="max_search_hours"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=deep56_search_time,
+                lsa_window=(22.0, 82.0),
+                max_search_hours=0.0,
+            )
+        with pytest.raises(ValueError, match="max_search_hours"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=deep56_search_time,
+                lsa_window=(22.0, 82.0),
+                max_search_hours=-1.0,
+            )
+
+    def test_lsa_window_long_duration_warning(self, site, deep56_search_time):
+        """Sustained > 6 h LSA windows emit a ``PointingWarning``.
+
+        Exercises the helper directly: the warning is an
+        LSA-duration-only signal, independent of field geometry, and a
+        wide-enough planner call would also need its azimuth range to
+        fit inside telescope limits (a separate concern).
+        """
+        coords = Coordinates(site)
+        # 120° / 15 = 8 hours — past the 6 h threshold.
+        with pytest.warns(PointingWarning, match="long"):
+            _compute_ce_duration_from_lsa(
+                lsa_window=(22.0, 142.0),
+                coords_obj=coords,
+                base_search_time=deep56_search_time,
+                max_search_hours=24.0,
+            )
+
+    def test_lsa_window_sun_safety_recheck_invoked(
+        self, site, deep56_field, deep56_search_time, monkeypatch
+    ):
+        """``_check_field_sun_safety`` is called twice in the LSA branch.
+
+        The first call is at ``start_time`` (search anchor); the second
+        is at the LSA-resolved ``obs_start``. The two times should be
+        distinct in this scenario because the LSA window starts > 1 h
+        after ``deep56_search_time``.
+        """
+        from fyst_trajectories.planning import constant_el as ce_module
+
+        recorded: list[Time] = []
+        original = ce_module._check_field_sun_safety
+
+        def spy(ra, dec, t, s):
+            recorded.append(t)
+            return original(ra, dec, t, s)
+
+        monkeypatch.setattr(ce_module, "_check_field_sun_safety", spy)
+
+        plan_constant_el_scan(
+            field=deep56_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=deep56_search_time,
+            lsa_window=(22.0, 82.0),
+        )
+
+        assert len(recorded) == 2, f"expected 2 sun-safety calls, got {len(recorded)}"
+        # The two calls should be at distinct times (start_time vs.
+        # resolved obs_start, which is hours later for this window).
+        dt_sec = (recorded[1] - recorded[0]).to_value(u.s)
+        assert dt_sec > 60.0, (
+            f"obs_start should differ from start_time by minutes-to-hours, got {dt_sec} s"
+        )
+
+    def test_lsa_window_sun_safety_single_call_in_legacy_path(self, site, monkeypatch):
+        """Without ``lsa_window``, only one sun-safety call fires.
+
+        Guards the targeted-fix property: re-checking sun safety is
+        gated on the LSA branch (a regression that would also call the
+        check at obs_start in the elevation-crossing path is the kind
+        of surprise we want to catch early).
+        """
+        from fyst_trajectories.planning import constant_el as ce_module
+
+        recorded: list[Time] = []
+        original = ce_module._check_field_sun_safety
+
+        def spy(ra, dec, t, s):
+            recorded.append(t)
+            return original(ra, dec, t, s)
+
+        monkeypatch.setattr(ce_module, "_check_field_sun_safety", spy)
+
+        ecdfs_field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
+        plan_constant_el_scan(
+            field=ecdfs_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=Time("2026-03-15T17:00:00", scale="utc"),
+            rising=True,
+            angle=170.0,
+        )
+
+        assert len(recorded) == 1
+
+    def test_compute_ce_duration_from_lsa_zero_min_lsa(self, site):
+        """Helper-level regression: ``min_lsa = 0`` is detectable.
+
+        Direct unit test on the geometry helper, independent of the
+        planner. Mirrors ``test_lsa_window_at_lst_zero_crossing`` but
+        without the surrounding planner machinery.
+        """
+        coords = Coordinates(site)
+        sample_anchor = Time("2026-09-15T00:00:00", scale="utc")
+        dt = np.arange(0, 24 * 3600, 30.0)
+        times = sample_anchor + dt * u.s
+        lsa = np.asarray(coords.get_lst(times))
+        idx_arr = np.flatnonzero((lsa > 358.0) & (lsa < 359.5))
+        assert len(idx_arr) > 0
+        base_time = times[idx_arr[0]]
+
+        t_start, t_end, duration = _compute_ce_duration_from_lsa(
+            lsa_window=(0.0, 60.0),
+            coords_obj=coords,
+            base_search_time=base_time,
+        )
+        assert duration == pytest.approx(4.0 * 3600.0, abs=1e-6)
+        lst_at_start = coords.get_lst(t_start)
+        diff = (lst_at_start - 0.0 + 180.0) % 360.0 - 180.0
+        assert abs(diff) < 0.05

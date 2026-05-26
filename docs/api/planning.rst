@@ -10,8 +10,8 @@ into pattern configurations and trajectories.
    :undoc-members:
    :show-inheritance:
    :exclude-members: PongComputedParams, ConstantElComputedParams,
-                     DaisyComputedParams, ComputedParams,
-                     validate_computed_params
+                     DaisyComputedParams, SourceCESComputedParams,
+                     ComputedParams, validate_computed_params
 
 Computed Parameter Schemas
 --------------------------
@@ -28,4 +28,15 @@ Each planner function returns a :class:`ScanBlock` whose
 .. autoclass:: fyst_trajectories.planning.DaisyComputedParams
    :members:
 
+.. autoclass:: fyst_trajectories.planning.SourceCESComputedParams
+   :members:
+
 .. autofunction:: fyst_trajectories.planning.validate_computed_params
+
+.. note::
+
+   ``"source_ces"`` is intentionally not accepted by
+   ``validate_computed_params``. :func:`plan_source_ces` is
+   planner-only (its consumer is Simons Observatory's ``schedlib``,
+   not the in-tree overhead simulator) and self-validates against
+   :attr:`SourceCESComputedParams.__required_keys__` directly.

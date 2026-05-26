@@ -100,20 +100,25 @@ from .patterns import (
     register_pattern,
 )
 from .planning import (
+    ArrayFootprint,
     ComputedParams,
     ConstantElComputedParams,
     DaisyComputedParams,
     FieldRegion,
     PongComputedParams,
     ScanBlock,
+    SourceCESComputedParams,
+    compute_source_ces_params,
     plan_constant_el_scan,
     plan_daisy_scan,
     plan_pong_rotation_sequence,
     plan_pong_scan,
+    plan_source_ces,
     validate_computed_params,
 )
 from .plotting import plot_hit_map
 from .primecam import (
+    MODULE_FOV_RADIUS_DEG,
     PRIMECAM_CENTER,
     PRIMECAM_I1,
     PRIMECAM_I2,
@@ -263,16 +268,20 @@ __all__ = [
     # Pattern helpers
     "compute_pong_period",
     # Planning
+    "ArrayFootprint",
     "ComputedParams",
     "ConstantElComputedParams",
     "DaisyComputedParams",
     "FieldRegion",
     "PongComputedParams",
     "ScanBlock",
+    "SourceCESComputedParams",
     "plan_pong_scan",
     "plan_pong_rotation_sequence",
     "plan_constant_el_scan",
     "plan_daisy_scan",
+    "plan_source_ces",
+    "compute_source_ces_params",
     "validate_computed_params",
     # Instrument offsets
     "InstrumentOffset",
@@ -282,6 +291,7 @@ __all__ = [
     "compute_focal_plane_rotation",
     "get_primecam_offset",
     "resolve_offset",
+    "MODULE_FOV_RADIUS_DEG",
     "PRIMECAM_CENTER",
     "PRIMECAM_I1",
     "PRIMECAM_I2",

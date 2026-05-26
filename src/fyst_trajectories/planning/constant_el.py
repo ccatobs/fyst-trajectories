@@ -7,7 +7,11 @@ from astropy.time import Time
 from ..coordinates import Coordinates
 from ..patterns.configs import ConstantElScanConfig
 from ..site import AtmosphericConditions, Site
-from ._ce_geometry import _compute_ce_az_range, _compute_ce_duration
+from ._ce_geometry import (
+    _compute_ce_az_range,
+    _compute_ce_duration,
+    _compute_ce_duration_from_lsa,
+)
 from ._helpers import _build_altaz_trajectory
 from ._sun_safety import _check_field_sun_safety
 from ._types import ConstantElComputedParams, FieldRegion, ScanBlock, validate_computed_params
@@ -31,6 +35,7 @@ def plan_constant_el_scan(
     atmosphere: AtmosphericConditions | None = None,
     max_search_hours: float = 12.0,
     step_seconds: float = 30.0,
+    lsa_window: tuple[float, float] | list[float] | None = None,
 ) -> ScanBlock:
     """Plan a constant-elevation scan that covers a FieldRegion.
 
@@ -87,6 +92,24 @@ def plan_constant_el_scan(
     step_seconds : float, optional
         Time step in seconds for the elevation crossing search.
         Default is 30.0.
+    lsa_window : tuple of (min_lsa, max_lsa), optional
+        Local Sidereal Angle window in degrees. When supplied, the scan
+        ``start_time`` and ``duration`` are derived from this LSA window
+        rather than from RA-edge elevation crossings: the planner finds
+        the first time at or after ``start_time`` at which Local
+        Sidereal Time (in degrees) increases through ``min_lsa``, and
+        the scan runs for ``(max_lsa - min_lsa) mod 360 / 15`` hours.
+        Wrap-around windows where ``max_lsa < min_lsa`` are supported
+        (e.g. ``(310.0, 10.0)`` is a 60°/15 = 4 hour scan crossing the
+        LSA = 0/360 boundary). Both endpoints must lie in ``[0, 360)``
+        and must not be equal. ``rising`` is still honored — it
+        controls the azimuth-range computation (rising/setting half of
+        the field's transit) but does NOT affect the LSA-derived
+        ``obs_start`` / ``obs_end``. ``max_search_hours`` and
+        ``step_seconds`` still bound the search horizon. Use this for
+        operator-driven LSA-windowed scheduling (e.g. ACT/Deep56-style
+        constant-elevation patches). Default is ``None``, which
+        preserves the elevation-crossing behavior.
 
     Returns
     -------
@@ -99,14 +122,32 @@ def plan_constant_el_scan(
     ------
     ValueError
         If the elevation crossings cannot be found within the search
-        window.
+        window, or if ``lsa_window`` is supplied with equal endpoints
+        or values outside ``[0, 360)``.
+    PointingError
+        If ``lsa_window`` is supplied and LST never increases through
+        ``min_lsa`` within ``max_search_hours`` of ``start_time``.
     AzimuthBoundsError
         If the computed azimuth range exceeds telescope limits.
     ElevationBoundsError
         If the elevation exceeds telescope limits.
 
+    Notes
+    -----
+    Sun-safety pre-flight runs twice when ``lsa_window`` is supplied:
+    once at ``start_time`` (the search anchor) and once at the
+    resolved ``obs_start``. The LSA branch can delay the observation
+    by several hours relative to ``start_time``, during which the
+    Sun moves ~15°/hour — a field that is safely far from the Sun
+    at ``start_time`` may not be safe by the time the LSA window
+    opens. The elevation-crossing path runs the check only at
+    ``start_time`` because ``obs_start`` resolves within a typical
+    few-seconds search offset of the anchor.
+
     Examples
     --------
+    Elevation-crossing mode (the default):
+
     >>> from astropy.time import Time
     >>> from fyst_trajectories import get_fyst_site
     >>> from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
@@ -121,24 +162,57 @@ def plan_constant_el_scan(
     ...     rising=True,
     ...     angle=170.0,
     ... )
+
+    LSA-window mode (Deep56-style, 4-hour wrap-around window):
+
+    >>> deep56 = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    >>> block = plan_constant_el_scan(  # doctest: +SKIP
+    ...     field=deep56,
+    ...     elevation=50.0,
+    ...     velocity=0.5,
+    ...     site=site,
+    ...     start_time=Time("2026-09-15T00:00:00", scale="utc"),
+    ...     rising=True,
+    ...     lsa_window=(310.0, 10.0),
+    ... )
     """
     if isinstance(start_time, str):
         start_time = Time(start_time, scale="utc")
 
+    # Pre-flight sun-safety check at the *search anchor*. For the
+    # elevation-crossing path this is essentially the observation start
+    # (``obs_start`` resolves within seconds of ``start_time`` in the
+    # typical case). For the LSA-window path we re-check below once
+    # ``obs_start`` is known — the LSA branch can delay observation by
+    # hours, during which the Sun moves ~15°/h, so a field that is
+    # 50° from the Sun at ``start_time`` can be 5° from it at
+    # ``obs_start``.
     _check_field_sun_safety(field.ra_center, field.dec_center, start_time, site)
 
     coords_obj = Coordinates(site, atmosphere=atmosphere)
 
-    obs_start, obs_end, duration = _compute_ce_duration(
-        field,
-        angle,
-        elevation,
-        coords_obj,
-        start_time,
-        rising,
-        max_search_hours=max_search_hours,
-        step_seconds=step_seconds,
-    )
+    if lsa_window is not None:
+        obs_start, obs_end, duration = _compute_ce_duration_from_lsa(
+            lsa_window,
+            coords_obj,
+            start_time,
+            max_search_hours=max_search_hours,
+            step_seconds=step_seconds,
+        )
+        # Re-check sun safety at the resolved ``obs_start`` — see the
+        # comment above for the rationale.
+        _check_field_sun_safety(field.ra_center, field.dec_center, obs_start, site)
+    else:
+        obs_start, obs_end, duration = _compute_ce_duration(
+            field,
+            angle,
+            elevation,
+            coords_obj,
+            start_time,
+            rising,
+            max_search_hours=max_search_hours,
+            step_seconds=step_seconds,
+        )
 
     az_min, az_max = _compute_ce_az_range(field, angle, coords_obj, obs_start, obs_end, az_padding)
 

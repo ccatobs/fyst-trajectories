@@ -152,6 +152,7 @@ def _generate_trajectory_for_block(
             az_accel=ce_params.get("az_accel", 1.0),
             timestep=ce_params.get("timestep", 0.1),
             az_padding=ce_params.get("az_padding", 2.0),
+            lsa_window=ce_params.get("lsa_window"),
         )
     elif sblock.scan_type == "pong":
         pong_params = cast(PongScanParams, scan_params)

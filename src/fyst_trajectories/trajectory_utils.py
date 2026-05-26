@@ -986,8 +986,7 @@ def sample_retune_events(
     """Draw a retune event list from caller-supplied samplers.
 
     No canonical distribution is baked in because no public KID-camera
-    retune log has been published. See
-    ``docs/reviews/fyst_team_questions.md`` Q-10 and Q-11.
+    retune log has been published.
 
     Walks forward from ``t_start``, alternating draws from
     ``interval_sampler`` (gap until the next retune) and

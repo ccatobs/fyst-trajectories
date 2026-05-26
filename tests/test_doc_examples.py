@@ -1041,6 +1041,37 @@ def test_planning_plan_daisy_scan():
     assert block.trajectory.el.max() <= el_limits.max
 
 
+def test_planning_plan_source_ces():
+    """Test 'Source CES' worked example from planning.rst."""
+    from astropy.time import Time
+
+    from fyst_trajectories import PRIMECAM_MODULES, get_fyst_site
+    from fyst_trajectories.planning import plan_source_ces
+
+    site = get_fyst_site()
+    modules = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+
+    block = plan_source_ces(
+        body="jupiter",
+        footprint=modules,
+        el_bore=35.0,
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="rising",
+        site=site,
+    )
+
+    print(block.summary)
+    cp = block.computed_params
+    print(f"Source pass: {cp['t0_iso'][:19]} to {cp['t1_iso'][:19]}")
+    print(f"Az drift:    {cp['v_az']:+.5f} deg/s")
+    print(f"Az range:    [{cp['az_start']:.2f}, {cp['az_start'] + cp['az_throw']:.2f}] deg")
+
+    assert cp["mode"] == "rising"
+    assert cp["el_bore"] == pytest.approx(35.0)
+    assert cp["duration"] > 0
+    assert cp["n_scans"] >= 1
+
+
 def test_planning_inspect_scan_block():
     """Test 'Example of inspecting a scan block' from planning.rst."""
     from astropy.time import Time

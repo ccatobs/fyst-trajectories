@@ -86,6 +86,10 @@ use.
    * - Per-module retune
      - Disabled (all modules retune together)
      - ``inject_retune(n_modules=7, module_index=...)``
+   * - Per-module FOV radius (PrimeCam)
+     - 0.65°
+     - ``primecam.MODULE_FOV_RADIUS_DEG`` or pass an explicit
+       ``ArrayFootprint`` to ``plan_source_ces``
 
 Indices and tables
 ==================

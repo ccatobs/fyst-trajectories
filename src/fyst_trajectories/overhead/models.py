@@ -55,6 +55,18 @@ class CEScanParams(TypedDict, total=False):
         Extra azimuth padding on each side in degrees.
     timestep : float
         Trajectory time step in seconds.
+    lsa_window : tuple or list of (min_lsa, max_lsa)
+        Local Sidereal Angle window in degrees. When supplied, the
+        constant-elevation planner derives ``start_time`` / ``duration``
+        from the LSA window instead of from RA-edge elevation crossings.
+        Declared as ``tuple | list`` because ECSV round-trip serialises
+        through JSON, which converts tuples to lists — a value freshly
+        constructed in Python is typically a tuple, but a value
+        deserialised from a stored timeline is a list. The CE planner
+        accepts both via ``float(lsa_window[0])`` indexing. See
+        :func:`~fyst_trajectories.planning.plan_constant_el_scan`
+        for the full semantics (wrap-around handling, ``rising``
+        interaction, search horizon).
     """
 
     az_min: float
@@ -62,6 +74,7 @@ class CEScanParams(TypedDict, total=False):
     az_accel: float
     az_padding: float
     timestep: float
+    lsa_window: tuple[float, float] | list[float]
 
 
 class PongScanParams(TypedDict, total=False):

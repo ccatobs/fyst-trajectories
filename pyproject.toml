@@ -22,6 +22,7 @@ dependencies = [
     "astropy>=5.0",
     "numpy>=1.20",
     "pyyaml>=6.0",
+    "scipy>=1.9",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +31,6 @@ performance = [
 ]
 plotting = [
     "matplotlib>=3.5",
-    "scipy>=1.9",
 ]
 ephemeris = [
     "jplephem>=2.18",
@@ -39,9 +39,9 @@ overhead = [
     "healpy>=1.16",
 ]
 docs = [
-    "sphinx>=7.0",
+    "sphinx>=8,<9",
     "sphinx-rtd-theme>=2.0",
-    "sphinx-autodoc-typehints>=2.0",
+    "sphinx-autodoc-typehints>=3,<3.6",
     "matplotlib>=3.5",
 ]
 dev = [
