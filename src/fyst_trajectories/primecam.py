@@ -220,3 +220,65 @@ def resolve_offset(
         )
 
     return None
+
+
+def primecam_geometry_dict(
+    radius_deg: float = MODULE_FOV_RADIUS_DEG,
+    xi_offset_deg: float = 0.0,
+    eta_offset_deg: float = 0.0,
+) -> dict[str, dict[str, list[float] | float]]:
+    """Build a schedlib-style geometry dict for the PrimeCam modules.
+
+    Adapts :data:`PRIMECAM_MODULES` into the ``{name: {"center": [xi_deg,
+    eta_deg], "radius": deg}}`` schema that Simons Observatory's ``schedlib``
+    expects from a policy's ``make_geometry`` (the single source of truth for a
+    future ``schedlib/policies/fyst.py`` ``FYSTPolicy.make_geometry``). Each
+    module center is the :class:`~fyst_trajectories.offsets.InstrumentOffset`
+    cross-elevation/elevation offset (``xi = dx``, ``eta = dy``), converted from
+    arcminutes to degrees.
+
+    The duplicate ``"center"`` alias of ``"c"`` in :data:`PRIMECAM_MODULES` is
+    dropped, so the result has one slot per physical module -- ``"c"`` plus
+    ``"i1"``..``"i6"`` (seven entries). A duplicate would double the cover
+    polygon when schedlib merges queried slots.
+
+    Parameters
+    ----------
+    radius_deg : float, optional
+        Per-module on-sky FOV radius in degrees, applied to every slot.
+        Defaults to :data:`MODULE_FOV_RADIUS_DEG` (0.65).
+    xi_offset_deg, eta_offset_deg : float, optional
+        Global boresight offsets in degrees added to every module center,
+        mirroring schedlib's per-policy ``xi_offset`` / ``eta_offset``.
+        Default 0.0.
+
+    Returns
+    -------
+    dict
+        ``{name: {"center": [xi_deg, eta_deg], "radius": radius_deg}}`` with
+        seven entries (``"c"``, ``"i1"`` .. ``"i6"``).
+
+    Notes
+    -----
+    Centers and radius are in **degrees**, matching schedlib's
+    ``instrument.make_circular_cover`` (which takes degree inputs). The
+    ``xi``/``eta`` axes match
+    :class:`~fyst_trajectories.offsets.InstrumentOffset` ``dx``/``dy``
+    (cross-elevation / elevation).
+
+    Examples
+    --------
+    >>> geom = primecam_geometry_dict()
+    >>> sorted(geom)
+    ['c', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']
+    >>> geom["c"]["center"]
+    [0.0, 0.0]
+    """
+    return {
+        name: {
+            "center": [offset.dx_deg + xi_offset_deg, offset.dy_deg + eta_offset_deg],
+            "radius": radius_deg,
+        }
+        for name, offset in PRIMECAM_MODULES.items()
+        if name != "center"
+    }

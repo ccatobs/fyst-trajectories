@@ -442,6 +442,22 @@ def test_boresight_rot_changes_az_bore_for_off_centre_footprint(site):
     )
 
 
+def test_proper_motion_requires_ref_epoch(site):
+    """Non-zero proper motion without ref_epoch is rejected, not silently mis-propagated (C2)."""
+    with pytest.raises(ValueError, match="ref_epoch"):
+        compute_source_ces_params(
+            ra=83.6,
+            dec=22.0,
+            pm_ra=100.0,
+            pm_dec=-50.0,
+            footprint="c",
+            el_bore=45.0,
+            night=Time("2026-03-15T00:00:00", scale="utc"),
+            mode="rising",
+            site=site,
+        )
+
+
 def test_proper_motion_path_runs(site):
     """A non-zero proper-motion call exercises the per-time PM loop."""
     # Large PM (1000 mas/yr ≈ 0.28"/yr per RA, well above Barnard's Star)

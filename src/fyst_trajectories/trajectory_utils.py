@@ -298,7 +298,13 @@ def get_absolute_times(trajectory: Trajectory) -> Time:
     """
     if trajectory.start_time is None:
         raise ValueError("start_time not set; cannot compute absolute times")
-    return trajectory.start_time + TimeDelta(trajectory.times * u.s)
+    # ``times`` are seconds relative to the trajectory start; take them
+    # relative to ``times[0]`` so the first sample maps to ``start_time``
+    # even when the trajectory clock does not begin at 0.
+    relative = trajectory.times
+    if len(relative):
+        relative = relative - relative[0]
+    return trajectory.start_time + TimeDelta(relative * u.s)
 
 
 def validate_sun_avoidance(
@@ -448,10 +454,11 @@ def to_arrays(
 
 
 def to_path_format(trajectory: Trajectory) -> list[list[float]]:
-    """Convert trajectory to list format for /path endpoint.
+    """Convert trajectory to the ``points`` list for the Go TCS ``/path`` endpoint.
 
-    Converts the trajectory arrays into the format expected by the OCS
-    /path endpoint: a list of [time, az, el, az_vel, el_vel] points.
+    Converts the trajectory arrays into the ``points`` list the Go TCS
+    ``/path`` endpoint expects: a list of ``[t, az, el, az_vel, el_vel]``
+    rows, where ``t`` is **relative** seconds from the trajectory start.
 
     Parameters
     ----------
@@ -461,12 +468,30 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     Returns
     -------
     list
-        List of [time, az, el, az_vel, el_vel] points.
+        List of ``[t, az, el, az_vel, el_vel]`` rows. This is only the
+        ``points`` array -- the full request body also needs ``start_time``
+        and ``coordsys`` (see Notes).
+
+    Notes
+    -----
+    The Go TCS ``/path`` receiver requires a three-key JSON body and sets
+    ``DisallowUnknownFields``, so the body must be exactly
+    ``{"start_time": <abs Unix s>, "coordsys": "Horizon", "points": [...]}``:
+
+    - ``coordsys`` is **required** and must be ``"Horizon"`` -- these are
+      geometric az/el rows, and ICRS ``/path`` velocities are unimplemented
+      in Go TCS. Omitting ``coordsys`` or adding any extra key yields HTTP 400.
+    - ``points`` times are **relative** seconds; ``start_time`` is **absolute**
+      Unix seconds (``trajectory.start_time.unix``). Do not conflate the two.
 
     Examples
     --------
     >>> points = to_path_format(trajectory)
-    >>> data = {"start_time": trajectory.start_time.unix, "points": points}
+    >>> data = {
+    ...     "start_time": trajectory.start_time.unix,
+    ...     "coordsys": "Horizon",
+    ...     "points": points,
+    ... }
     """
     return np.column_stack(
         [
@@ -477,6 +502,64 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
             trajectory.el_vel,
         ]
     ).tolist()
+
+
+def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
+    """Assemble the full Go TCS ``/path`` request body for a trajectory.
+
+    Wraps :func:`to_path_format` with the two scalar keys the Go TCS
+    ``/path`` endpoint also requires, returning the exact three-key dict
+    ``{"start_time", "coordsys", "points"}``. Prefer this over assembling the
+    body by hand around :func:`to_path_format`: the Go TCS receiver sets
+    ``DisallowUnknownFields`` and switches on a required ``coordsys``, so a
+    body that omits ``coordsys`` (or adds an extra key) is rejected with
+    HTTP 400.
+
+    Parameters
+    ----------
+    trajectory : Trajectory
+        The trajectory to serialize. Must have ``start_time`` set.
+    coordsys : str, optional
+        Coordinate system for the points. Must be ``"Horizon"`` (default)
+        or ``"ICRS"``. Use ``"Horizon"`` for trajectory upload: the rows are
+        geometric az/el and ICRS ``/path`` velocities are unimplemented in
+        Go TCS.
+
+    Returns
+    -------
+    dict
+        ``{"start_time": <abs Unix s>, "coordsys": coordsys, "points": [...]}``,
+        ready to JSON-serialize and POST to Go TCS ``/path``. ``start_time``
+        is absolute Unix seconds; ``points`` times are relative seconds.
+
+    Raises
+    ------
+    ValueError
+        If ``coordsys`` is not ``"Horizon"`` or ``"ICRS"``, or if
+        ``trajectory.start_time`` is not set.
+
+    Warns
+    -----
+    PointingWarning
+        If ``coordsys="ICRS"`` -- Go TCS does not implement ICRS ``/path``
+        velocities, so such a body is unsafe for scanning.
+    """
+    if coordsys not in ("Horizon", "ICRS"):
+        raise ValueError(f"coordsys must be 'Horizon' or 'ICRS', got {coordsys!r}")
+    if trajectory.start_time is None:
+        raise ValueError("start_time not set; cannot build /path payload")
+    if coordsys == "ICRS":
+        warnings.warn(
+            "coordsys='ICRS' but Go TCS does not implement ICRS /path velocities; "
+            "use 'Horizon' for scanning trajectories.",
+            PointingWarning,
+            stacklevel=2,
+        )
+    return {
+        "start_time": float(trajectory.start_time.unix),
+        "coordsys": coordsys,
+        "points": to_path_format(trajectory),
+    }
 
 
 def plot_trajectory(trajectory: Trajectory, show: bool) -> "Figure":
@@ -772,7 +855,11 @@ def _inject_retune_events(
         if prefer_turnarounds and turnaround_starts:
             start = _snap_to_turnaround(start, turnaround_starts, turnaround_window)
         end = min(start + event.duration, t_end)
-        mask = (times >= start) & (times < end) & (scan_flag == SCAN_FLAG_SCIENCE)
+        # When the event is clipped to the trajectory end, include the final
+        # sample (``times < end`` would drop the science sample at exactly
+        # ``t_end``); otherwise keep the half-open upper bound.
+        upper = (times <= end) if end >= t_end else (times < end)
+        mask = (times >= start) & upper & (scan_flag == SCAN_FLAG_SCIENCE)
         scan_flag[mask] = SCAN_FLAG_RETUNE
 
     return dataclasses.replace(trajectory, scan_flag=scan_flag, retune_events=sorted_events)

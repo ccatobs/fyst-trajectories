@@ -406,6 +406,11 @@ def _compute_source_ces_core(
     if not has_body:
         if ra is None or dec is None:
             raise ValueError("must specify 'body' or both 'ra' and 'dec'")
+        if (pm_ra != 0.0 or pm_dec != 0.0) and ref_epoch is None:
+            raise ValueError(
+                "ref_epoch is required when pm_ra or pm_dec is non-zero "
+                "(proper motion needs a reference epoch to propagate from)"
+            )
 
     has_window = window is not None
     has_night = night is not None
@@ -766,6 +771,11 @@ def _compute_source_ces_core(
     az_stop = az_start + az_throw
 
     if az_branch is not None:
+        # Re-express az_start in the requested wrap branch. The shift is a
+        # multiple of 360 deg, so the commanded sweep points at the same sky
+        # (azimuth is periodic) and source coverage is preserved; an
+        # az_branch that pushes the swept window past the ACU az limits
+        # surfaces downstream as an AzimuthBoundsError, not as silent loss.
         az_start = (az_start - (az_branch - 180.0)) % 360.0 + (az_branch - 180.0)
         az_stop = az_start + az_throw
 
@@ -1207,21 +1217,7 @@ def plan_source_ces(
     -----
     The algorithm mirrors ``schedlib.source.make_source_ces`` (Simons
     Observatory) using astropy + numpy in place of ``so3g.proj``
-    quaternions. Two differences from SO worth knowing:
-
-    1. **Closed-form ``az_bore`` recovery.** For off-centre footprints
-       the boresight azimuth is recovered via the spherical inverse
-       (:func:`~fyst_trajectories.detector_to_boresight`) rather than
-       SO's Nelder-Mead solve.
-    2. **Robust monotonic-arc selection.** All monotonic sub-arcs of
-       the source's elevation trace are enumerated and the first
-       directional arc covering ``el_bore`` is chosen, instead of
-       picking the global ``argmin``/``argmax`` pair. This matters when
-       the search window straddles a culmination (e.g. a 24 h window
-       on a planet near opposition).
-
-    The Nelder-Mead solve is still used for the drift-rate (``v_az``)
-    objective.
+    quaternions.
 
     The cover-polygon projection uses the source's parallactic angle
     at ``t_at_el_bore`` (the moment the source reaches ``el_bore``)

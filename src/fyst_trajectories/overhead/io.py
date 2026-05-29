@@ -177,7 +177,8 @@ def write_timeline(
     table = Table(rows)
 
     table.meta["site_name"] = timeline.site.name
-    table.meta["telescope_name"] = "FYST"
+    table.meta["site_description"] = timeline.site.description
+    table.meta["telescope_name"] = timeline.site.name
     table.meta["site_lat"] = timeline.site.latitude
     table.meta["site_lon"] = timeline.site.longitude
     table.meta["site_alt"] = timeline.site.elevation
@@ -474,6 +475,7 @@ def _empty_row() -> dict:
 _KNOWN_META_KEYS = frozenset(
     {
         "site_name",
+        "site_description",
         "telescope_name",
         "site_lat",
         "site_lon",

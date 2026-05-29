@@ -11,6 +11,7 @@ import pytest
 from fyst_trajectories.offsets import InstrumentOffset
 from fyst_trajectories.primecam import (
     INNER_RING_RADIUS_MM,
+    MODULE_FOV_RADIUS_DEG,
     PRIMECAM_CENTER,
     PRIMECAM_I1,
     PRIMECAM_I2,
@@ -20,6 +21,7 @@ from fyst_trajectories.primecam import (
     PRIMECAM_I6,
     PRIMECAM_MODULES,
     get_primecam_offset,
+    primecam_geometry_dict,
     resolve_offset,
 )
 from fyst_trajectories.site import get_fyst_site
@@ -278,3 +280,50 @@ class TestResolveOffset:
         """resolve_offset(module='i1', dx=10.0) should raise ValueError (ambiguous)."""
         with pytest.raises(ValueError, match="Cannot specify both"):
             resolve_offset(module="i1", dx=10.0)
+
+
+class TestPrimecamGeometryDict:
+    """Tests for the schedlib-style geometry adapter (primecam_geometry_dict)."""
+
+    def test_seven_slots_and_center_alias_deduped(self):
+        """Returns 7 slots ('c' + i1..i6); the duplicate 'center' alias is dropped."""
+        geom = primecam_geometry_dict()
+        assert set(geom) == {"c", "i1", "i2", "i3", "i4", "i5", "i6"}
+        assert "center" not in geom
+
+    def test_center_module_at_origin(self):
+        """The 'c' module sits on the optical axis (0, 0)."""
+        geom = primecam_geometry_dict()
+        assert geom["c"]["center"] == pytest.approx([0.0, 0.0])
+
+    def test_default_radius_on_every_slot(self):
+        """Every slot carries the default per-module FOV radius."""
+        geom = primecam_geometry_dict()
+        for slot in geom.values():
+            assert slot["radius"] == pytest.approx(MODULE_FOV_RADIUS_DEG)
+
+    def test_radius_override(self):
+        """radius_deg overrides the per-slot radius."""
+        geom = primecam_geometry_dict(radius_deg=0.5)
+        assert all(slot["radius"] == pytest.approx(0.5) for slot in geom.values())
+
+    def test_centers_match_module_offsets_in_degrees(self):
+        """Each center is the module's (dx_deg, dy_deg) -> (xi, eta)."""
+        geom = primecam_geometry_dict()
+        for name in ("c", "i1", "i2", "i3", "i4", "i5", "i6"):
+            off = PRIMECAM_MODULES[name]
+            assert geom[name]["center"] == pytest.approx([off.dx_deg, off.dy_deg])
+
+    def test_i4_up_i1_down_in_elevation(self):
+        """I4 is at +eta (elevation up) and I1 at -eta, matching the ring geometry."""
+        geom = primecam_geometry_dict()
+        assert geom["i4"]["center"][1] > 0  # +y / +el
+        assert geom["i1"]["center"][1] < 0  # -y / -el
+
+    def test_boresight_offsets_shift_all_centers(self):
+        """Global xi/eta offsets shift every module center by the same amount."""
+        base = primecam_geometry_dict()
+        shifted = primecam_geometry_dict(xi_offset_deg=1.0, eta_offset_deg=-2.0)
+        for name in base:
+            assert shifted[name]["center"][0] == pytest.approx(base[name]["center"][0] + 1.0)
+            assert shifted[name]["center"][1] == pytest.approx(base[name]["center"][1] - 2.0)

@@ -816,6 +816,25 @@ class TestZeroVelocityGuard:
         )
 
 
+def test_event_clipped_to_end_flags_final_sample():
+    """A retune event clipped to the trajectory end flags the final science sample (C4)."""
+    times = np.arange(0.0, 11.0, 1.0)  # 0..10 s, 11 samples
+    n = len(times)
+    traj = Trajectory(
+        times=times,
+        az=np.zeros(n),
+        el=np.full(n, 45.0),
+        az_vel=np.zeros(n),
+        el_vel=np.zeros(n),
+    )
+    # Event starts at t=8 and outlasts the trajectory, so it clips to t_end=10;
+    # the sample at exactly t_end must still be flagged (was an off-by-one).
+    result = inject_retune(traj, retune_events=[RetuneEvent(t_start=8.0, duration=10.0)])
+    assert result.scan_flag[-1] == SCAN_FLAG_RETUNE
+    flagged = result.scan_flag[times >= 8.0]
+    assert (flagged == SCAN_FLAG_RETUNE).all()
+
+
 class TestRetuneEventDataclass:
     """Validation rules for the RetuneEvent dataclass itself."""
 

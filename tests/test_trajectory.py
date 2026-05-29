@@ -15,13 +15,14 @@ from fyst_trajectories import (
     get_fyst_site,
     print_trajectory,
 )
-from fyst_trajectories.exceptions import AzimuthBoundsError
+from fyst_trajectories.exceptions import AzimuthBoundsError, PointingWarning
 from fyst_trajectories.patterns import TrajectoryMetadata
 from fyst_trajectories.trajectory_utils import (
     _format_trajectory,
     get_absolute_times,
     to_arrays,
     to_path_format,
+    to_path_payload,
     validate_trajectory,
 )
 
@@ -147,6 +148,62 @@ class TestTrajectory:
         assert len(path) == 2
         assert path[0] == [0.0, 100.0, 45.0, 10.0, 1.0]
         assert path[1] == [1.0, 110.0, 46.0, 10.0, 1.0]
+
+    def _payload_traj(self, with_start_time=True):
+        """Build a small 2-point trajectory for /path payload tests."""
+        kwargs = dict(
+            times=np.array([0.0, 1.0]),
+            az=np.array([100.0, 110.0]),
+            el=np.array([45.0, 46.0]),
+            az_vel=np.array([10.0, 10.0]),
+            el_vel=np.array([1.0, 1.0]),
+        )
+        if with_start_time:
+            kwargs["start_time"] = Time("2026-05-28T00:00:00", scale="utc")
+        return Trajectory(**kwargs)
+
+    def test_to_path_payload(self):
+        """Test the full /path payload dict (start_time, coordsys, points)."""
+        traj = self._payload_traj()
+
+        payload = to_path_payload(traj)
+
+        assert set(payload) == {"start_time", "coordsys", "points"}
+        assert payload["coordsys"] == "Horizon"
+        assert payload["start_time"] == traj.start_time.unix
+        assert payload["points"] == to_path_format(traj)
+
+    def test_to_path_payload_rejects_unknown_coordsys(self):
+        """Test that an unsupported coordsys raises ValueError."""
+        with pytest.raises(ValueError, match="coordsys must be"):
+            to_path_payload(self._payload_traj(), coordsys="galactic")
+
+    def test_to_path_payload_requires_start_time(self):
+        """Test that a missing start_time raises ValueError."""
+        with pytest.raises(ValueError, match="start_time not set"):
+            to_path_payload(self._payload_traj(with_start_time=False))
+
+    def test_to_path_payload_warns_on_icrs(self):
+        """Test coordsys='ICRS' warns (Go TCS ICRS /path velocities unimplemented)."""
+        with pytest.warns(PointingWarning, match="ICRS"):
+            payload = to_path_payload(self._payload_traj(), coordsys="ICRS")
+        assert payload["coordsys"] == "ICRS"
+
+    def test_get_absolute_times_nonzero_origin(self):
+        """get_absolute_times maps the first sample to start_time even when times[0] != 0."""
+        t0 = Time("2026-05-28T00:00:00", scale="utc")
+        traj = Trajectory(
+            times=np.array([100.0, 101.0, 102.0]),  # clock does not start at 0
+            az=np.array([10.0, 11.0, 12.0]),
+            el=np.full(3, 45.0),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+            start_time=t0,
+        )
+        abs_times = get_absolute_times(traj)
+        # First sample == start_time (not start_time + 100 s); spacing preserved.
+        assert float((abs_times[0] - t0).sec) == pytest.approx(0.0, abs=1e-6)
+        assert float((abs_times[-1] - t0).sec) == pytest.approx(2.0, abs=1e-6)
 
     def test_array_length_mismatch_raises(self):
         """Test that mismatched array lengths raise ValueError."""

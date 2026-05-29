@@ -128,6 +128,7 @@ from .primecam import (
     PRIMECAM_I6,
     PRIMECAM_MODULES,
     get_primecam_offset,
+    primecam_geometry_dict,
     resolve_offset,
 )
 from .site import (
@@ -170,6 +171,7 @@ from .trajectory_utils import (
     sample_retune_events,
     to_arrays,
     to_path_format,
+    to_path_payload,
     validate_sun_avoidance,
     validate_trajectory,
     validate_trajectory_bounds,
@@ -236,6 +238,7 @@ __all__ = [
     "get_absolute_times",
     "to_arrays",
     "to_path_format",
+    "to_path_payload",
     "plot_trajectory",
     "plot_hit_map",
     # Pattern registry
@@ -290,6 +293,7 @@ __all__ = [
     "apply_detector_offset",
     "compute_focal_plane_rotation",
     "get_primecam_offset",
+    "primecam_geometry_dict",
     "resolve_offset",
     "MODULE_FOV_RADIUS_DEG",
     "PRIMECAM_CENTER",

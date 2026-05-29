@@ -349,6 +349,70 @@ class TestSiteReconstruction:
         assert loaded.site.longitude == pytest.approx(-70.0)
         assert loaded.site.elevation == pytest.approx(2500.0)
 
+    def test_site_description_round_trips_without_accumulation(self, tmp_path):
+        """C5: description round-trips, telescope_name reflects the site, no metadata leak."""
+        from fyst_trajectories.site import (
+            AxisLimits,
+            Site,
+            SunAvoidanceConfig,
+            TelescopeLimits,
+        )
+
+        custom_site = Site(
+            name="myobs",
+            description="My Test Observatory",
+            latitude=-30.0,
+            longitude=-70.0,
+            elevation=2500.0,
+            atmosphere=None,
+            telescope_limits=TelescopeLimits(
+                azimuth=AxisLimits(min=-180.0, max=360.0, max_velocity=3.0, max_acceleration=1.0),
+                elevation=AxisLimits(min=20.0, max=90.0, max_velocity=1.0, max_acceleration=0.5),
+            ),
+            sun_avoidance=SunAvoidanceConfig(
+                enabled=True, exclusion_radius=45.0, warning_radius=50.0
+            ),
+            nasmyth_port="right",
+            plate_scale=13.89,
+        )
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        timeline = ObservingTimeline(
+            blocks=[
+                TimelineBlock(
+                    t_start=t0,
+                    t_stop=t0 + TimeDelta(60, format="sec"),
+                    block_type="idle",
+                    patch_name="noop",
+                    az_start=180.0,
+                    az_end=180.0,
+                    elevation=50.0,
+                    scan_index=0,
+                )
+            ],
+            site=custom_site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(60, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        path = tmp_path / "desc_site.ecsv"
+        write_timeline(timeline, path)
+        loaded = read_timeline(path)
+
+        # Description now round-trips (was silently dropped before C5).
+        assert loaded.site.description == "My Test Observatory"
+        # telescope_name reflects the site, not a hardcoded "FYST".
+        assert Table.read(str(path), format="ascii.ecsv").meta["telescope_name"] == "myobs"
+        # site_description is structural, not leaked into user metadata.
+        assert "site_description" not in loaded.metadata
+
+        # Second write/read cycle: no metadata accumulation; description stable.
+        path2 = tmp_path / "desc_site2.ecsv"
+        write_timeline(loaded, path2)
+        loaded2 = read_timeline(path2)
+        assert loaded2.site.description == "My Test Observatory"
+        assert "site_description" not in loaded2.metadata
+
 
 class TestBoresightAngle:
     """F-4: boresight_angle round-trips through ECSV."""
