@@ -25,7 +25,6 @@ _CONST_EL_CONFIG = ConstantElScanConfig(
     elevation=45.0,
     az_speed=1.0,
     az_accel=0.5,
-    n_scans=1,
 )
 _DAISY_CONFIG = DaisyScanConfig(
     timestep=0.1,
@@ -60,13 +59,6 @@ class TestTrajectoryBuilder:
         assert trajectory.pattern_type == "pong"
         assert trajectory.center_ra == 180.0
         assert trajectory.center_dec == -30.0
-
-    def test_builder_constant_el(self, site):
-        """Test building a constant elevation scan."""
-        trajectory = TrajectoryBuilder(site).with_config(_CONST_EL_CONFIG).duration(30.0).build()
-
-        assert trajectory.n_points > 0
-        assert trajectory.pattern_type == "constant_el"
 
     def test_builder_with_start_time(self, site):
         """Test building trajectory with explicit start time."""
@@ -273,7 +265,6 @@ class TestBuilderBoundsValidation:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
 
         builder = TrajectoryBuilder(site).with_config(bad_config).duration(30.0)
@@ -295,7 +286,6 @@ class TestBuilderBoundsValidation:
             elevation=95.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
 
         builder = TrajectoryBuilder(site).with_config(bad_config).duration(30.0)

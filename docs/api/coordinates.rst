@@ -26,12 +26,13 @@ Frame Aliases
 +-------------------+----------------------------+
 | ``B1950``         | ``fk4``                    |
 +-------------------+----------------------------+
-| ``GALACTIC``      | ``galactic``               |
-+-------------------+----------------------------+
-| ``ECLIPTIC``      | ``geocentrictrueecliptic`` |
-+-------------------+----------------------------+
 | ``HORIZON``       | ``altaz``                  |
 +-------------------+----------------------------+
+
+Only spherical RA/Dec frames (``J2000``/``FK5``/``B1950``) work with the
+``radec_to_altaz`` / ``altaz_to_radec`` transform methods; ``GALACTIC`` and
+``ECLIPTIC`` are intentionally not aliased (they use ``l``/``b`` and
+``lon``/``lat`` and would raise).
 
 .. [#j2k] ``J2000`` is a label of convenience: this library maps it to
    ``icrs``, but ICRS and FK5(J2000) differ by ~22 mas (the IAU 1997
@@ -44,7 +45,7 @@ Frame Aliases
     from fyst_trajectories import FRAME_ALIASES, normalize_frame
 
     normalize_frame("J2000")    # "icrs"
-    normalize_frame("galactic") # "galactic"
+    normalize_frame("B1950")    # "fk4"
 
 Usage Examples
 --------------

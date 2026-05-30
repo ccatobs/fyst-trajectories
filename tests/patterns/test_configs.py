@@ -6,6 +6,7 @@ are rejected with appropriate error messages.
 
 import pytest
 
+from fyst_trajectories import PointingWarning
 from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     DaisyScanConfig,
@@ -48,7 +49,6 @@ class TestConstantElScanConfig:
                 elevation=45,
                 az_speed=-1.0,
                 az_accel=0.5,
-                n_scans=1,
             )
 
         with pytest.raises(ValueError, match="az_speed must be positive"):
@@ -59,7 +59,6 @@ class TestConstantElScanConfig:
                 elevation=45,
                 az_speed=0.0,
                 az_accel=0.5,
-                n_scans=1,
             )
 
     def test_invalid_az_accel(self):
@@ -72,7 +71,6 @@ class TestConstantElScanConfig:
                 elevation=45,
                 az_speed=1.0,
                 az_accel=-1.0,
-                n_scans=1,
             )
 
         with pytest.raises(ValueError, match="az_accel must be positive"):
@@ -83,31 +81,23 @@ class TestConstantElScanConfig:
                 elevation=45,
                 az_speed=1.0,
                 az_accel=0.0,
+            )
+
+    def test_n_scans_keyword_rejected(self):
+        """``n_scans`` was removed as a dead/false-contract field (see CHANGELOG).
+
+        Guard against accidental re-introduction: the constant-elevation scan
+        length is set by ``duration`` at generate time, never by a config field.
+        """
+        with pytest.raises(TypeError):
+            ConstantElScanConfig(
+                timestep=0.1,
+                az_start=0,
+                az_stop=10,
+                elevation=45,
+                az_speed=1.0,
+                az_accel=0.5,
                 n_scans=1,
-            )
-
-    def test_invalid_n_scans(self):
-        """Test that invalid n_scans raises."""
-        with pytest.raises(ValueError, match="n_scans must be at least 1"):
-            ConstantElScanConfig(
-                timestep=0.1,
-                az_start=0,
-                az_stop=10,
-                elevation=45,
-                az_speed=1.0,
-                az_accel=0.5,
-                n_scans=0,
-            )
-
-        with pytest.raises(ValueError, match="n_scans must be at least 1"):
-            ConstantElScanConfig(
-                timestep=0.1,
-                az_start=0,
-                az_stop=10,
-                elevation=45,
-                az_speed=1.0,
-                az_accel=0.5,
-                n_scans=-1,
             )
 
 
@@ -313,3 +303,70 @@ class TestPlanetTrackConfig:
         """Test that invalid body raises."""
         with pytest.raises(ValueError, match="Unknown body"):
             PlanetTrackConfig(timestep=0.1, body="pluto")
+
+
+class TestConfigWarnings:
+    """Advisory ``PointingWarning`` paths in config ``__post_init__`` routines.
+
+    These warn-on-unusual-value branches (and the constant-el
+    turnaround-exceeds-throw branch) had no regression guard -- a mutant
+    deleting them passed.
+    """
+
+    def test_constant_el_az_throw_warns(self):
+        with pytest.warns(PointingWarning, match="Azimuth throw"):
+            ConstantElScanConfig(
+                timestep=0.1,
+                az_start=0.0,
+                az_stop=40.0,
+                elevation=45.0,
+                az_speed=1.0,
+                az_accel=1.0,
+            )
+
+    def test_constant_el_speed_warns(self):
+        with pytest.warns(PointingWarning, match="Azimuth speed"):
+            ConstantElScanConfig(
+                timestep=0.1,
+                az_start=0.0,
+                az_stop=10.0,
+                elevation=45.0,
+                az_speed=6.0,
+                az_accel=3.0,
+            )
+
+    def test_constant_el_turnaround_exceeds_throw_warns(self):
+        # d_half_turn = 5*v^2/(8*a) = 5*4/(8*0.5) = 5.0 deg, well over the 2 deg throw.
+        with pytest.warns(PointingWarning, match="Turnaround distance"):
+            ConstantElScanConfig(
+                timestep=0.1,
+                az_start=0.0,
+                az_stop=2.0,
+                elevation=45.0,
+                az_speed=2.0,
+                az_accel=0.5,
+            )
+
+    def test_pong_width_warns(self):
+        with pytest.warns(PointingWarning, match="Scan width"):
+            PongScanConfig(
+                timestep=0.1,
+                width=40.0,
+                height=2.0,
+                spacing=0.1,
+                velocity=0.5,
+                num_terms=4,
+                angle=0.0,
+            )
+
+    def test_daisy_radius_warns(self):
+        with pytest.warns(PointingWarning, match="Daisy radius"):
+            DaisyScanConfig(
+                timestep=0.1,
+                radius=20.0,
+                velocity=0.5,
+                turn_radius=0.2,
+                avoidance_radius=0.0,
+                start_acceleration=0.5,
+                y_offset=0.0,
+            )

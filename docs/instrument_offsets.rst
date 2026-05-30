@@ -17,7 +17,7 @@ Quick Example
     from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T02:00:00", scale="utc")
 
     # Use predefined PrimeCam offset
     offset = get_primecam_offset("i1")
@@ -28,7 +28,7 @@ Quick Example
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
             timestep=0.1, width=1.0, height=1.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            velocity=0.2, num_terms=4, angle=0.0,
         ))
         .for_detector(offset)
         .duration(60.0)
@@ -116,14 +116,14 @@ Apply offset to entire trajectory with time-varying field rotation::
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T02:00:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(site)
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
             timestep=0.1, width=1.0, height=1.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            velocity=0.2, num_terms=4, angle=0.0,
         ))
         .duration(60.0)
         .starting_at(start_time)

@@ -22,20 +22,6 @@ from fyst_trajectories import (
 class TestRadecToAltaz:
     """Tests for RA/Dec to Az/El transformation."""
 
-    def test_zenith_at_transit(self, coordinates, site):
-        """Test that a source at site latitude reaches expected elevation at transit.
-
-        A source at the same declination as the site latitude should
-        reach ~90 degrees elevation at transit (meridian passage).
-        The maximum elevation for any source is 90 - |dec - lat|.
-        """
-        ra = 0.0
-        dec = site.latitude
-        obstime = Time("2026-06-15T12:00:00", scale="utc")
-
-        _az, el = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
-        assert -90 <= el <= 90
-
     def test_circumpolar_source(self, coordinates, site):
         """Test behavior for circumpolar sources.
 
@@ -96,7 +82,13 @@ class TestSolarSystemBodies:
     """Tests for solar system ephemeris calculations."""
 
     def test_get_body_altaz_array_time(self, coordinates):
-        """Test getting a body's Az/El with array of times."""
+        """Test getting a body's Az/El with array of times.
+
+        Beyond shape, pin the vectorised path to the scalar path at the first
+        sample and require continuous, non-zero motion across the 5-minute
+        window — a broken array path returning constants, garbage, or a
+        broadcast-misaligned result fails here.
+        """
         obstime = Time("2026-03-15T04:30:00", scale="utc")
         times = obstime + TimeDelta(np.arange(5) * 60 * u.s)
 
@@ -107,8 +99,23 @@ class TestSolarSystemBodies:
         assert len(az) == 5
         assert len(el) == 5
 
+        # Array path agrees with the scalar path at the shared first time.
+        az0, el0 = coordinates.get_body_altaz("mars", obstime=obstime)
+        assert az[0] == pytest.approx(az0, abs=1e-4)
+        assert el[0] == pytest.approx(el0, abs=1e-4)
+
+        # Physical sanity + genuine, smooth motion over the window.
+        assert np.all(np.isfinite(az)) and np.all(np.isfinite(el))
+        assert np.all((el >= -90.0) & (el <= 90.0))
+        assert np.ptp(el) > 0.0  # the body actually moved in elevation
+        assert np.all(np.abs(np.diff(el)) < 1.0)  # but smoothly (< 1 deg/min)
+
     def test_get_body_radec_array_time(self, coordinates):
-        """Test getting a body's RA/Dec with array of times."""
+        """Test getting a body's RA/Dec with array of times.
+
+        Pin the vectorised path to the scalar path at the first sample and
+        require physically valid RA/Dec across the window.
+        """
         obstime = Time("2026-03-15T04:30:00", scale="utc")
         times = obstime + TimeDelta(np.arange(5) * 60 * u.s)
 
@@ -118,6 +125,14 @@ class TestSolarSystemBodies:
         assert isinstance(dec, np.ndarray)
         assert len(ra) == 5
         assert len(dec) == 5
+
+        ra0, dec0 = coordinates.get_body_radec("mars", obstime=obstime)
+        assert ra[0] == pytest.approx(ra0, abs=1e-4)
+        assert dec[0] == pytest.approx(dec0, abs=1e-4)
+
+        assert np.all(np.isfinite(ra)) and np.all(np.isfinite(dec))
+        assert np.all((dec >= -90.0) & (dec <= 90.0))
+        assert np.all((ra >= 0.0) & (ra < 360.0))
 
     def test_invalid_body_altaz(self, coordinates):
         """Test error for invalid body name in get_body_altaz."""
@@ -238,17 +253,30 @@ class TestNormalizeFrame:
         assert normalize_frame("J2000") == "icrs"
         assert normalize_frame("FK5") == "fk5"
         assert normalize_frame("B1950") == "fk4"
-        assert normalize_frame("GALACTIC") == "galactic"
-        assert normalize_frame("ECLIPTIC") == "geocentrictrueecliptic"
         assert normalize_frame("HORIZON") == "altaz"
 
         assert normalize_frame("j2000") == "icrs"
         assert normalize_frame("fk5") == "fk5"
-        assert normalize_frame("galactic") == "galactic"
+        assert normalize_frame("b1950") == "fk4"
         assert normalize_frame("horizon") == "altaz"
 
-        expected_keys = {"J2000", "FK5", "B1950", "GALACTIC", "ECLIPTIC", "HORIZON"}
+        # L-5: only spherical RA/Dec frames are aliased.
+        expected_keys = {"J2000", "FK5", "B1950", "HORIZON"}
         assert set(FRAME_ALIASES.keys()) == expected_keys
+
+    def test_galactic_ecliptic_not_aliased(self):
+        """L-5: GALACTIC/ECLIPTIC are not aliased (they raise in the transforms).
+
+        They were dropped from ``FRAME_ALIASES`` because
+        ``radec_to_altaz``/``altaz_to_radec`` read ``ra``/``dec`` and would
+        reject ``l``/``b`` (galactic) or ``lon``/``lat`` (ecliptic) frames.
+        An unknown name still falls through to a plain lowercase.
+        """
+        assert "GALACTIC" not in FRAME_ALIASES
+        assert "ECLIPTIC" not in FRAME_ALIASES
+        # ECLIPTIC no longer maps to the astropy frame name; it just lowercases.
+        assert normalize_frame("ECLIPTIC") == "ecliptic"
+        assert normalize_frame("GALACTIC") == "galactic"  # lowercase fallback only
 
     def test_normalize_frame_invalid(self):
         """Test that unknown frames are lowercased for astropy compatibility."""
@@ -343,17 +371,20 @@ class TestGetParallacticAngle:
     """Tests for the get_parallactic_angle() method."""
 
     def test_at_meridian_near_zero(self, coordinates, site):
-        """Test that parallactic angle is near zero at meridian for moderate dec.
+        """Parallactic angle is near zero at the meridian for moderate dec.
 
-        When an object is on the meridian (HA=0), the parallactic angle
-        should be approximately zero (north is up).
+        On the meridian (HA~0) the PA is ~0 (north is up). ``RA = LST`` is only
+        an apparent-meridian proxy -- catalogue RA carries a small precession
+        offset -- so a dec well away from the site latitude keeps the source
+        clear of the ill-conditioned zenith where that offset is amplified.
         """
         obstime = Time("2026-06-15T12:00:00", scale="utc")
         lst = coordinates.get_lst(obstime=obstime)
 
-        # RA = LST places object at meridian
+        # RA = LST places the object near the meridian; dec well south of the
+        # latitude (-22.99) so it transits at a moderate elevation (~53 deg).
         ra = lst
-        dec = -30.0
+        dec = -60.0
 
         pa = coordinates.get_parallactic_angle(ra, dec, obstime=obstime)
         assert pa == pytest.approx(0, abs=1.0)
@@ -389,24 +420,33 @@ class TestGetParallacticAngle:
         assert isinstance(pa, np.ndarray)
         assert len(pa) == 4
 
-    def test_parallactic_angle_formula(self, coordinates, site):
-        """Test parallactic angle against direct formula calculation."""
+    def test_parallactic_angle_matches_altaz_form(self, coordinates, site):
+        """PA equals the IAU AltAz-form computed from the transformed Az/El.
+
+        ``get_parallactic_angle`` derives the parallactic angle from the
+        vacuum-transformed horizontal coordinates, not from ``HA = LST - RA``
+        (which would mix the apparent-equinox LST with the catalogue RA -- the
+        H-1 frame bias). This checks it equals the documented AltAz-form built
+        from the same transform.
+        """
         obstime = Time("2026-06-15T08:00:00", scale="utc")
         ra = 120.0
         dec = -40.0
 
         pa = coordinates.get_parallactic_angle(ra, dec, obstime=obstime)
 
-        ha = coordinates.get_hour_angle(ra, obstime=obstime)
-        ha_rad = np.deg2rad(ha)
-        dec_rad = np.deg2rad(dec)
+        az, el = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
+        az_rad = np.deg2rad(az)
+        el_rad = np.deg2rad(el)
         lat_rad = np.deg2rad(site.latitude)
 
-        numerator = np.sin(ha_rad)
-        denominator = np.cos(dec_rad) * np.tan(lat_rad) - np.sin(dec_rad) * np.cos(ha_rad)
+        numerator = -np.sin(az_rad) * np.cos(lat_rad)
+        denominator = np.sin(lat_rad) * np.cos(el_rad) - np.cos(lat_rad) * np.sin(el_rad) * np.cos(
+            az_rad
+        )
         expected = np.rad2deg(np.arctan2(numerator, denominator))
 
-        assert pa == pytest.approx(expected, abs=0.001)
+        assert pa == pytest.approx(expected, abs=1e-6)
 
 
 class TestNoRefraction:
@@ -638,3 +678,64 @@ class TestObservingWavelength:
         """no_refraction() should leave obswl=None (irrelevant when pressure=0)."""
         atmo = AtmosphericConditions.no_refraction()
         assert atmo.obswl is None
+
+
+class TestSunBoundaryParity:
+    """Section-6.8: sun predicates share the exclusion-radius boundary convention.
+
+    ``Coordinates.is_sun_safe`` and ``trajectory_utils.validate_sun_avoidance``
+    must agree on which side of ``exclusion_radius`` is unsafe. The validator
+    previously used a strict ``<`` while ``is_sun_safe`` used ``>``, so they
+    disagreed exactly at the boundary; both now use the conservative
+    ``sep <= radius`` convention. This pins their agreement just inside and
+    just outside the exclusion radius.
+    """
+
+    def test_is_sun_safe_and_validate_agree_across_boundary(self, site):
+        import warnings as _warnings
+
+        from astropy import units as u
+        from astropy.coordinates import SkyCoord
+        from astropy.time import TimeDelta
+
+        from fyst_trajectories.coordinates import Coordinates
+        from fyst_trajectories.trajectory_utils import validate_sun_avoidance
+
+        coords = Coordinates(site)
+        excl = site.sun_avoidance.exclusion_radius
+        t = Time("2026-03-15T16:30:00", scale="utc")  # ~local noon at FYST: sun well up
+        sun_az, sun_el = coords.get_sun_altaz(t)
+        assert sun_el > 0.0
+
+        # Offset along the meridian, in whichever direction keeps the target
+        # elevation inside [20, 90] so the position is genuinely observable.
+        pa = 180.0 if (sun_el + excl) > 88.0 else 0.0
+        sun = SkyCoord(sun_az * u.deg, sun_el * u.deg, frame="altaz")
+
+        for delta, expect_safe in [(-0.05, False), (0.05, True)]:
+            tgt = sun.directional_offset_by(pa * u.deg, (excl + delta) * u.deg)
+            az, el = float(tgt.az.deg), float(tgt.alt.deg)
+            assert 20.0 <= el <= 90.0
+
+            assert coords.is_sun_safe(az, el, t) == expect_safe
+
+            times = t + TimeDelta(np.array([0.0, 1.0]), format="sec")
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                validate_sun_avoidance(site, np.array([az, az]), np.array([el, el]), times)
+            flagged = any("EXCLUSION" in str(w.message) for w in caught)
+            assert flagged == (not expect_safe)
+
+        # Exactly at the exclusion radius: the constructed separation is
+        # float-fragile to a few ULP, so we assert the two predicates land on
+        # the *same* side together (the ``sep <= radius`` convention), not a
+        # fixed safe/unsafe value.
+        tgt = sun.directional_offset_by(pa * u.deg, excl * u.deg)
+        az, el = float(tgt.az.deg), float(tgt.alt.deg)
+        boundary_safe = coords.is_sun_safe(az, el, t)
+        times = t + TimeDelta(np.array([0.0, 1.0]), format="sec")
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            validate_sun_avoidance(site, np.array([az, az]), np.array([el, el]), times)
+        boundary_flagged = any("EXCLUSION" in str(w.message) for w in caught)
+        assert boundary_safe == (not boundary_flagged)

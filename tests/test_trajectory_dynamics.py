@@ -29,6 +29,10 @@ from fyst_trajectories.patterns import (
     TrajectoryBuilder,
 )
 from fyst_trajectories.patterns.utils import compute_velocities
+from fyst_trajectories.trajectory_utils import (
+    validate_trajectory_bounds,
+    validate_trajectory_dynamics,
+)
 
 
 @pytest.fixture
@@ -98,7 +102,6 @@ class TestVelocityMatchesDerivative:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=2,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(site, duration=120.0, start_time=start_time)
@@ -211,7 +214,6 @@ class TestVelocityContinuity:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(site, duration=200.0, start_time=start_time)
@@ -299,7 +301,6 @@ class TestAccelerationBounds:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(site, duration=200.0, start_time=start_time)
@@ -404,7 +405,6 @@ class TestPositionContinuity:
             elevation=45.0,
             az_speed=2.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
@@ -485,7 +485,6 @@ class TestAzimuthWrapAround:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
@@ -582,3 +581,135 @@ class TestBuilderDynamics:
         assert el_within_tol > 0.95, (
             f"Only {el_within_tol * 100:.1f}% of elevation points within tolerance"
         )
+
+
+class TestValidatorInputGuards:
+    """M-2: validators reject non-finite / non-monotonic input, not silently pass.
+
+    Without an explicit guard a NaN slips through every comparison (``NaN >
+    limit`` is ``False``), even the raising bounds gate, and duplicate timestamps
+    make ``np.gradient`` divide by zero. Both validators now raise instead.
+    """
+
+    def test_bounds_rejects_nan(self, site):
+        az = np.array([100.0, np.nan, 120.0])
+        el = np.array([45.0, 50.0, 55.0])
+        with pytest.raises(ValueError, match="[Nn]on-finite"):
+            validate_trajectory_bounds(site, az, el)
+
+    def test_bounds_rejects_inf(self, site):
+        az = np.array([100.0, 110.0, 120.0])
+        el = np.array([45.0, np.inf, 55.0])
+        with pytest.raises(ValueError, match="[Nn]on-finite"):
+            validate_trajectory_bounds(site, az, el)
+
+    def test_dynamics_rejects_nan_az(self, site):
+        times = np.arange(6) * 0.1
+        az = np.full(6, 120.0)
+        az[3] = np.nan
+        el = np.full(6, 45.0)
+        with pytest.raises(ValueError, match="[Nn]on-finite"):
+            validate_trajectory_dynamics(site, az, el, times)
+
+    def test_dynamics_rejects_inf_times(self, site):
+        times = np.arange(6) * 0.1
+        times[4] = np.inf
+        az = np.full(6, 120.0)
+        el = np.full(6, 45.0)
+        with pytest.raises(ValueError, match="[Nn]on-finite"):
+            validate_trajectory_dynamics(site, az, el, times)
+
+    def test_dynamics_rejects_duplicate_times(self, site):
+        times = np.array([0.0, 0.1, 0.1, 0.3, 0.4])  # not strictly increasing
+        az = np.full(5, 120.0)
+        el = np.full(5, 45.0)
+        with pytest.raises(ValueError, match="increasing"):
+            validate_trajectory_dynamics(site, az, el, times)
+
+    def test_dynamics_rejects_decreasing_times(self, site):
+        times = np.array([0.0, 0.1, 0.05, 0.3, 0.4])  # step goes backwards
+        az = np.full(5, 120.0)
+        el = np.full(5, 45.0)
+        with pytest.raises(ValueError, match="increasing"):
+            validate_trajectory_dynamics(site, az, el, times)
+
+
+class TestIntegralVelocityEqualsPosition:
+    """Section-6 hardening: the cumulative integral of velocity recovers position.
+
+    The constant-elevation bug was a velocity computed on a different grid from
+    its position; the Daisy M-1 bug was the same class (a stretched time grid
+    scaling every velocity). This asserts the inverse invariant --
+    ``cumtrapz(az_vel, times) ≈ az - az[0]`` (and the same for el) -- across
+    Daisy, Pong, and a source-CES block, generalizing the CE fix to all
+    patterns. A ~1% grid-scale velocity bias surfaces here as a ~1% relative
+    miss, well above the ~0.1% trapezoid/gradient round-trip floor.
+    """
+
+    @staticmethod
+    def _assert_integral_recovers_position(traj):
+        from scipy.integrate import cumulative_trapezoid
+
+        for pos, vel, name in [
+            (traj.az, traj.az_vel, "az"),
+            (traj.el, traj.el_vel, "el"),
+        ]:
+            recon = cumulative_trapezoid(vel, traj.times, initial=0.0)
+            err = float(np.max(np.abs(recon - (pos - pos[0]))))
+            excursion = float(pos.max() - pos.min())
+            tol = max(3e-3 * excursion, 1e-3)  # catch ~1% grid bias; pass ~0.1% floor
+            assert err < tol, (
+                f"{name}: integral(velocity) misses position by {err:.3e} deg "
+                f"(excursion {excursion:.3f} deg, tol {tol:.3e})"
+            )
+
+    def test_daisy_integral_recovers_position(self, site, start_time):
+        cfg = DaisyScanConfig(
+            timestep=0.05,
+            radius=0.5,
+            velocity=0.3,
+            turn_radius=0.2,
+            avoidance_radius=0.0,
+            start_acceleration=0.5,
+            y_offset=0.0,
+        )
+        traj = DaisyScanPattern(ra=180.0, dec=-30.0, config=cfg).generate(
+            site, duration=60.0, start_time=start_time
+        )
+        self._assert_integral_recovers_position(traj)
+
+    def test_pong_integral_recovers_position(self, site, start_time):
+        traj = (
+            TrajectoryBuilder(site)
+            .at(ra=180.0, dec=-30.0)
+            .with_config(
+                PongScanConfig(
+                    timestep=0.05,
+                    width=1.0,
+                    height=1.0,
+                    spacing=0.1,
+                    velocity=0.5,
+                    num_terms=4,
+                    angle=0.0,
+                )
+            )
+            .duration(60.0)
+            .starting_at(start_time)
+            .build()
+        )
+        self._assert_integral_recovers_position(traj)
+
+    def test_source_ces_integral_recovers_position(self, site):
+        from fyst_trajectories.planning import plan_source_ces
+        from fyst_trajectories.primecam import PRIMECAM_MODULES
+
+        modules = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+        block = plan_source_ces(
+            body="jupiter",
+            footprint=modules,
+            el_bore=35.0,
+            night=Time("2026-03-15T00:00:00", scale="utc"),
+            mode="rising",
+            site=site,
+        )
+        self._assert_integral_recovers_position(block.trajectory)

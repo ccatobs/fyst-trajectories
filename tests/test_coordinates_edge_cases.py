@@ -243,16 +243,20 @@ class TestParallacticAngleEdgeCases:
         assert np.isfinite(pa)
 
     def test_parallactic_angle_at_zenith_passage(self, coordinates, site):
-        """Test parallactic angle when source passes through zenith.
+        """Parallactic angle stays finite for a source passing near the zenith.
 
-        When hour angle is 0 and dec equals latitude, the source is at zenith
-        and parallactic angle should be 0 (or undefined).
+        A source at ``dec ~ latitude`` transits within a fraction of a degree
+        of the zenith, where the parallactic angle is ill-conditioned: it is
+        undefined exactly at the zenith and swings through 180 deg at transit.
+        The AltAz-form computation must remain finite -- it is **not** ~ 0 here
+        (the old HA-form only returned 0 by the ``atan2(0, 0)`` coincidence of
+        forming HA = LST - RA with RA = LST).
         """
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         lst = coordinates.get_lst(obstime)
         pa = coordinates.get_parallactic_angle(lst, site.latitude, obstime=obstime)
-        assert pa == pytest.approx(0.0, abs=1.0)
+        assert np.isfinite(pa)
 
 
 class TestFieldRotationEdgeCases:
@@ -266,10 +270,17 @@ class TestFieldRotationEdgeCases:
         assert np.isfinite(fr)
 
     def test_field_rotation_near_zenith(self, coordinates, site):
-        """Test field rotation for source near zenith."""
+        """Field rotation stays finite for a source transiting near the zenith.
+
+        With ``dec ~ latitude`` the source transits within a fraction of a
+        degree of the zenith, where the parallactic angle is ill-conditioned
+        (it is *not* ~ 0, so the field rotation is not ~ elevation either). The
+        robust near-zenith invariant is simply that the computation stays
+        finite -- it must not blow up to NaN/Inf at the singularity.
+        """
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
-        # At meridian (HA=0) near zenith: FR ~ elevation (90) + PA (0)
         lst = coordinates.get_lst(obstime)
         fr = coordinates.get_field_rotation(lst, site.latitude, obstime=obstime)
-        assert fr == pytest.approx(90.0, abs=5.0)
+
+        assert np.isfinite(fr)

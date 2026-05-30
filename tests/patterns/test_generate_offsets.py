@@ -158,12 +158,19 @@ class TestDaisyGenerateOffsets:
         assert len(times) > 0
 
     def test_times_span_duration(self, daisy_pattern):
-        """Test that times array spans the requested duration."""
+        """Times start at 0 and step uniformly at config.timestep up to ~duration.
+
+        The Daisy integrator samples at fixed ``timestep`` intervals, so the
+        last sample lands at ``duration - timestep`` (not exactly ``duration``),
+        and the grid must be uniform (M-1: no ``linspace`` stretch).
+        """
         duration = 60.0
+        timestep = daisy_pattern.config.timestep
         times, _, _ = daisy_pattern.generate_offsets(duration=duration)
 
         assert times[0] == pytest.approx(0.0)
-        assert times[-1] == pytest.approx(duration)
+        assert times[-1] == pytest.approx(duration - timestep)
+        assert np.allclose(np.diff(times), timestep, rtol=0, atol=1e-9)
 
     def test_offsets_in_reasonable_degree_range(self, daisy_pattern):
         """Test that offsets are in degrees with reasonable magnitude."""

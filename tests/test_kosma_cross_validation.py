@@ -175,162 +175,51 @@ def _make_site(nasmyth_port: str = "right") -> Site:
 
 
 class TestKOSMACrossValidationRotation:
-    """Cross-validate rotation angle computation between models.
+    """Cross-validate the additive rotation formula against KOSMA.
 
-    Both models should produce identical rotation angles since neither
-    involves projection approximations, it is purely additive.
+    ``compute_focal_plane_rotation`` returns ``nasmyth_sign * el +
+    instrument_rotation`` (plus parallactic angle when supplied) -- pure
+    addition, no projection. Re-deriving that sum across many elevations is
+    tautological (the old 12-case el sweep asserted ``a + b == a + b``); the
+    cross-validation that actually constrains the implementation is the
+    **nasmyth-sign table** (Right=+1, Left=-1, Cassegrain=0), so a single
+    elevation per port suffices. The elevation-dependent *projection* geometry
+    is cross-validated in :class:`TestKOSMAElevationDependentOffsets` below.
     """
 
-    @pytest.mark.parametrize("el", [20.0, 45.0, 60.0, 85.0])
-    def test_right_nasmyth_rotation_matches(self, el):
-        """Test that rotation = +1*el + inst_rot matches KOSMA rho."""
+    @pytest.mark.parametrize(
+        "port,expected_sign",
+        [("right", +1), ("left", -1), ("cassegrain", 0)],
+    )
+    def test_nasmyth_sign_table_matches_kosma(self, port, expected_sign):
+        """Each Nasmyth port applies KOSMA's angle_if sign to the elevation term."""
+        el = 45.0
         inst_rot = 10.0
-        site = _make_site("right")
+        site = _make_site(port)
         offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
 
         ccat_rot = compute_focal_plane_rotation(el, site, offset)
 
-        # KOSMA: rho = angle_if + instr_focal_plane_rotation
-        # For Right Nasmyth: angle_if = +el
-        kosma_rho = el + inst_rot
-
-        assert ccat_rot == pytest.approx(kosma_rho)
-
-    @pytest.mark.parametrize("el", [20.0, 45.0, 60.0, 85.0])
-    def test_left_nasmyth_rotation_matches(self, el):
-        """Test that rotation = -1*el + inst_rot matches KOSMA rho."""
-        inst_rot = 10.0
-        site = _make_site("left")
-        offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
-
-        ccat_rot = compute_focal_plane_rotation(el, site, offset)
-
-        # KOSMA: angle_if = -el for Left Nasmyth
-        kosma_rho = -el + inst_rot
-
-        assert ccat_rot == pytest.approx(kosma_rho)
-
-    @pytest.mark.parametrize("el", [20.0, 45.0, 60.0, 85.0])
-    def test_cassegrain_rotation_matches(self, el):
-        """Test that cassegrain rotation = inst_rot matches KOSMA rho."""
-        inst_rot = 10.0
-        site = _make_site("cassegrain")
-        offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
-
-        ccat_rot = compute_focal_plane_rotation(el, site, offset)
-
-        # KOSMA: angle_if = 0 for Cassegrain (flange_rotation=0)
-        kosma_rho = 0.0 + inst_rot
-
-        assert ccat_rot == pytest.approx(kosma_rho)
+        # KOSMA: rho = angle_if + instr_focal_plane_rotation, angle_if = sign*el.
+        assert ccat_rot == pytest.approx(expected_sign * el + inst_rot)
 
 
 class TestKOSMAParallacticAngleRotation:
-    """Cross-validate rotation with non-zero parallactic angle.
+    """Cross-validate the parallactic-angle term of the rotation formula.
 
-    KOSMA's full rotation: rho = nasmyth_sign * el + instrument_rotation + tel_angle_focal_plane
-    fyst-trajectories's:       rho = nasmyth_sign * el + instrument_rotation + parallactic_angle
-
-    Where tel_angle_focal_plane in KOSMA corresponds to the parallactic angle.
-    Since the rotation is pure addition, the two should match exactly.
+    KOSMA's ``tel_angle_focal_plane`` corresponds to fyst-trajectories's
+    parallactic angle, added on top of ``nasmyth_sign * el +
+    instrument_rotation``. As with the el sweep, re-deriving the additive sum
+    over many sky positions is tautological; one non-trivial geometry per port
+    pins the sign table and that the PA is added.
     """
-
-    # (RA, Dec) test cases spanning different hour angles and declinations.
-    # Chosen to produce a range of parallactic angles at the FYST site.
-    _CELESTIAL_CASES = [
-        # (ra, dec, description)
-        (180.0, -23.0, "near transit at FYST latitude"),
-        (90.0, -23.0, "far east of meridian"),
-        (270.0, -23.0, "far west of meridian"),
-        (180.0, -60.0, "high-dec source near transit"),
-        (120.0, 10.0, "northern source east of meridian"),
-    ]
 
     _OBSTIME = Time("2026-03-15T04:00:00", scale="utc")
 
     @pytest.mark.slow
-    @pytest.mark.parametrize(
-        "ra,dec,description",
-        _CELESTIAL_CASES,
-        ids=[c[2] for c in _CELESTIAL_CASES],
-    )
-    def test_rotation_formula_with_parallactic_angle(self, ra, dec, description):
-        """Total rotation with PA matches nasmyth_sign*el + inst_rot + pa."""
-        inst_rot = 10.0
-        site = _make_site("right")
-        coords = Coordinates(site)
-
-        _, el = coords.radec_to_altaz(ra, dec, self._OBSTIME)
-        pa = coords.get_parallactic_angle(ra, dec, self._OBSTIME)
-
-        offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
-        ccat_rot = compute_focal_plane_rotation(el, site, offset, parallactic_angle=pa)
-
-        # KOSMA: rho = angle_if + instr_focal_plane_rotation + tel_angle_focal_plane
-        # For Right Nasmyth: angle_if = +el, tel_angle_focal_plane = pa
-        kosma_rho = el + inst_rot + pa
-
-        assert ccat_rot == pytest.approx(kosma_rho)
-
-    @pytest.mark.slow
-    @pytest.mark.parametrize(
-        "ra,dec,description",
-        _CELESTIAL_CASES,
-        ids=[c[2] for c in _CELESTIAL_CASES],
-    )
-    def test_rotation_with_nonzero_offset(self, ra, dec, description):
-        """Rotation matches KOSMA formula even with non-zero focal plane offset."""
-        inst_rot = 5.0
-        site = _make_site("right")
-        coords = Coordinates(site)
-
-        _, el = coords.radec_to_altaz(ra, dec, self._OBSTIME)
-        pa = coords.get_parallactic_angle(ra, dec, self._OBSTIME)
-
-        offset = InstrumentOffset.from_focal_plane(
-            x_mm=5.0,
-            y_mm=3.0,
-            plate_scale=KOSMA_PLATE_SCALE,
-            instrument_rotation=inst_rot,
-        )
-
-        ccat_rot = compute_focal_plane_rotation(
-            el,
-            site,
-            offset,
-            parallactic_angle=pa,
-        )
-        kosma_rot = site.nasmyth_sign * el + inst_rot + pa
-
-        assert ccat_rot == pytest.approx(kosma_rot)
-
-    @pytest.mark.slow
-    def test_parallactic_angle_near_zero_at_transit(self):
-        """Parallactic angle is near zero at transit (HA ~ 0)."""
-        site = _make_site("right")
-        coords = Coordinates(site)
-
-        # Use a Dec near the site latitude so it transits near zenith.
-        # Find the RA that transits at the observation time.
-        lst = coords.get_lst(self._OBSTIME)
-        ra_at_transit = lst  # HA = LST - RA = 0 when RA = LST
-        dec = site.latitude  # transits near zenith
-
-        pa = coords.get_parallactic_angle(ra_at_transit, dec, self._OBSTIME)
-
-        # At transit, parallactic angle should be very close to zero
-        assert pa == pytest.approx(0.0, abs=1.0)
-
-    @pytest.mark.slow
-    @pytest.mark.parametrize(
-        "port,expected_sign",
-        [
-            ("right", +1),
-            ("left", -1),
-        ],
-    )
-    def test_parallactic_angle_with_both_ports(self, port, expected_sign):
-        """PA contribution is port-independent; port only affects el sign."""
+    @pytest.mark.parametrize("port,expected_sign", [("right", +1), ("left", -1)])
+    def test_parallactic_angle_added_per_port(self, port, expected_sign):
+        """PA is added on top of sign*el + inst_rot; the port only flips the el sign."""
         inst_rot = 7.0
         site = _make_site(port)
         coords = Coordinates(site)
@@ -338,13 +227,30 @@ class TestKOSMAParallacticAngleRotation:
         ra, dec = 120.0, -30.0
         _, el = coords.radec_to_altaz(ra, dec, self._OBSTIME)
         pa = coords.get_parallactic_angle(ra, dec, self._OBSTIME)
+        assert abs(pa) > 1.0  # the geometry genuinely exercises a non-zero PA
 
         offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
         ccat_rot = compute_focal_plane_rotation(el, site, offset, parallactic_angle=pa)
 
-        kosma_rho = expected_sign * el + inst_rot + pa
+        assert ccat_rot == pytest.approx(expected_sign * el + inst_rot + pa)
 
-        assert ccat_rot == pytest.approx(kosma_rho)
+    @pytest.mark.slow
+    def test_parallactic_angle_near_zero_at_transit(self):
+        """Parallactic angle is near zero at transit (HA ~ 0)."""
+        site = _make_site("right")
+        coords = Coordinates(site)
+
+        # RA = LST is an apparent-meridian proxy (HA ~ 0). Use a Dec well south
+        # of the latitude so the source transits at a moderate elevation
+        # (~53 deg), clear of the zenith where the parallactic angle is
+        # ill-conditioned and the proxy's small precession offset is amplified.
+        lst = coords.get_lst(self._OBSTIME)
+        ra_at_transit = lst
+        dec = -60.0
+
+        pa = coords.get_parallactic_angle(ra_at_transit, dec, self._OBSTIME)
+
+        assert pa == pytest.approx(0.0, abs=1.0)
 
 
 class TestKOSMAElevationDependentOffsets:

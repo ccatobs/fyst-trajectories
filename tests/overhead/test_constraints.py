@@ -72,14 +72,15 @@ class TestSunAvoidanceConstraint:
         assert score == 1.0
 
     def test_near_sun(self, patch, coords):
+        """A point at the Sun's position scores 0.0 (inside the exclusion angle)."""
         daytime = Time("2026-06-15T16:00:00", scale="utc")
         c = SunAvoidanceConstraint(min_angle=45.0)
         sun_az, sun_el = coords.get_sun_altaz(daytime)
-        if sun_el > 10.0:
-            score = c.score(patch, daytime, sun_az, sun_el, coords)
-            assert score == 0.0
-        else:
-            pytest.skip("Sun not above horizon at test time")
+        # Point the target AT the Sun: separation = 0 < min_angle. The score is a
+        # pure angular-separation check (it ignores horizon), so this is
+        # deterministic regardless of whether the Sun is currently up.
+        score = c.score(patch, daytime, sun_az, sun_el, coords)
+        assert score == 0.0
 
     def test_negative_angle(self):
         with pytest.raises(ValueError, match="non-negative"):
@@ -112,14 +113,13 @@ class TestMoonAvoidanceConstraint:
 
     def test_near_moon(self, patch, coords):
         """A point at the Moon's exact position scores 0.0."""
-        moon_up_time = Time("2026-06-15T18:00:00", scale="utc")
+        moon_time = Time("2026-06-15T18:00:00", scale="utc")
         c = MoonAvoidanceConstraint(min_angle=20.0)
-        moon_az, moon_el = coords.get_body_altaz("moon", moon_up_time)
-        if moon_el > 0.0:
-            score = c.score(patch, moon_up_time, moon_az, moon_el, coords)
-            assert score == 0.0
-        else:
-            pytest.skip("Moon below horizon at test time")
+        moon_az, moon_el = coords.get_body_altaz("moon", moon_time)
+        # Point the target AT the Moon: separation = 0 < min_angle. Like the Sun
+        # check, the score ignores horizon, so this is deterministic.
+        score = c.score(patch, moon_time, moon_az, moon_el, coords)
+        assert score == 0.0
 
     def test_negative_angle(self):
         with pytest.raises(ValueError, match="non-negative"):
@@ -130,12 +130,61 @@ class TestMinDurationConstraint:
     """Tests for MinDurationConstraint."""
 
     def test_sufficient_duration(self, patch, time, coords):
+        """A source observable for >= min_duration scores 1.0.
+
+        The previous ``if el > 30`` guard made this vacuous when the source was
+        low (it is el ~ 23 deg at the fixture time), so the score is computed
+        unconditionally now. The rejecting (setting-source) branch is covered by
+        ``test_setting_source_below_min_duration_scores_zero``.
+        """
         c = MinDurationConstraint(min_duration=60.0)
         az, el = coords.radec_to_altaz(180.0, -30.0, time)
-        if el > 30.0:
-            score = c.score(patch, time, az, el, coords)
-            assert score == 1.0
+        score = c.score(patch, time, az, el, coords)
+        assert score == 1.0
+
+    def test_setting_source_below_min_duration_scores_zero(self, patch, coords):
+        """A source that sets within ``min_duration`` scores 0.0 (reject branch).
+
+        At 2026-06-15T04:00 UTC the patch (180, -30) is up (el ~ 23 deg, above the
+        20 deg limit) but sets within two hours, so a 2-hour min_duration pushes
+        the forward elevation check below the limit.
+        """
+        time = Time("2026-06-15T04:00:00", scale="utc")
+        c = MinDurationConstraint(min_duration=7200.0)
+        az, el = coords.radec_to_altaz(180.0, -30.0, time)
+        assert el > 20.0  # currently observable...
+        assert c.score(patch, time, az, el, coords) == 0.0  # ...but sets too soon
 
     def test_negative_duration(self):
         with pytest.raises(ValueError, match="non-negative"):
             MinDurationConstraint(min_duration=-1.0)
+
+
+class TestObservingPatchValidation:
+    """ObservingPatch.__post_init__ rejects invalid fields."""
+
+    @staticmethod
+    def _kwargs(**overrides):
+        base = dict(
+            name="p",
+            ra_center=180.0,
+            dec_center=-30.0,
+            width=4.0,
+            height=4.0,
+            scan_type="pong",
+            velocity=0.5,
+        )
+        base.update(overrides)
+        return base
+
+    def test_negative_height_raises(self):
+        with pytest.raises(ValueError, match="height must be positive"):
+            ObservingPatch(**self._kwargs(height=-1.0))
+
+    def test_non_positive_priority_raises(self):
+        with pytest.raises(ValueError, match="priority must be positive"):
+            ObservingPatch(**self._kwargs(priority=0.0))
+
+    def test_negative_weight_raises(self):
+        with pytest.raises(ValueError, match="weight must be non-negative"):
+            ObservingPatch(**self._kwargs(weight=-0.5))

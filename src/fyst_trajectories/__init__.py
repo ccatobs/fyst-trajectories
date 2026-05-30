@@ -172,6 +172,7 @@ from .trajectory_utils import (
     to_arrays,
     to_path_format,
     to_path_payload,
+    to_trackpoint_format,
     validate_sun_avoidance,
     validate_trajectory,
     validate_trajectory_bounds,
@@ -239,6 +240,7 @@ __all__ = [
     "to_arrays",
     "to_path_format",
     "to_path_payload",
+    "to_trackpoint_format",
     "plot_trajectory",
     "plot_hit_map",
     # Pattern registry

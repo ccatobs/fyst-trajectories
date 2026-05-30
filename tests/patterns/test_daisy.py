@@ -53,10 +53,15 @@ class TestDaisyScanPattern:
         coords = Coordinates(site)
         center_az, center_el = coords.radec_to_altaz(180.0, -30.0, obstime=start_time)
 
-        distances = np.sqrt((trajectory.az - center_az) ** 2 + (trajectory.el - center_el) ** 2)
-        min_distance = distances.min()
+        # On-sky offset frame: the az component must be scaled by cos(el) or the
+        # metric over-weights azimuth at this declination. The rosette passes
+        # essentially through the centre, so the closest approach is well under
+        # a turn radius, far tighter than the old 0.5 deg bound.
+        dx = (trajectory.az - center_az) * np.cos(np.radians(trajectory.el))
+        dy = trajectory.el - center_el
+        min_distance = np.hypot(dx, dy).min()
 
-        assert min_distance < 0.5
+        assert min_distance < 0.1
 
     @pytest.mark.slow
     def test_daisy_constant_velocity(self, site):
@@ -232,3 +237,84 @@ class TestDaisyScanFlags:
 
         # First few samples must be flagged as non-science.
         assert trajectory.scan_flag[0] == SCAN_FLAG_TURNAROUND
+
+
+class TestDaisyAvoidanceRadius:
+    """A non-zero avoidance_radius holds the rosette out of a central keep-out."""
+
+    def test_avoidance_radius_keeps_out_center(self):
+        # Measured in the offset frame (free of tracking drift); y_offset starts
+        # the path outside the keep-out so the start is not trivially at centre.
+        common = dict(
+            timestep=0.1,
+            radius=1.0,
+            velocity=0.3,
+            turn_radius=0.2,
+            start_acceleration=0.5,
+            y_offset=0.5,
+        )
+        keepout = DaisyScanPattern(
+            ra=180.0, dec=-30.0, config=DaisyScanConfig(avoidance_radius=0.3, **common)
+        )
+        no_keepout = DaisyScanPattern(
+            ra=180.0, dec=-30.0, config=DaisyScanConfig(avoidance_radius=0.0, **common)
+        )
+
+        _, xk, yk = keepout.generate_offsets(600.0)
+        _, x0, y0 = no_keepout.generate_offsets(600.0)
+
+        # With the keep-out the closest approach to centre is ~avoidance_radius;
+        # without it the path passes essentially through the centre.
+        assert np.hypot(xk, yk).min() >= 0.3 - 0.02
+        assert np.hypot(x0, y0).min() < 0.05
+
+
+class TestDaisyTimeGrid:
+    """M-1: the reported time grid matches the integrator grid (no linspace stretch).
+
+    Samples are exactly ``config.timestep`` apart; the old ``linspace`` re-labelling
+    stretched the axis (~1% at a 10 s scan), biasing every derived velocity. Mirrors
+    ``test_constant_el.py``'s position/velocity-consistency guard.
+    """
+
+    def _config(self):
+        return DaisyScanConfig(
+            timestep=0.1,
+            radius=0.5,
+            velocity=0.3,
+            turn_radius=0.2,
+            avoidance_radius=0.0,
+            start_acceleration=0.5,
+            y_offset=0.0,
+        )
+
+    def test_time_grid_is_uniform_at_timestep(self):
+        config = self._config()
+        pattern = DaisyScanPattern(ra=180.0, dec=-30.0, config=config)
+        times, _, _ = pattern.generate_offsets(duration=10.0)
+
+        dt = np.diff(times)
+        assert np.allclose(dt, config.timestep, rtol=0, atol=1e-9), (
+            f"time grid not uniform at timestep: diff range "
+            f"[{dt.min():.6f}, {dt.max():.6f}] vs timestep {config.timestep}"
+        )
+
+    def test_cruise_speed_recovers_velocity(self):
+        config = self._config()
+        pattern = DaisyScanPattern(ra=180.0, dec=-30.0, config=config)
+        times, x, y = pattern.generate_offsets(duration=10.0)
+
+        # Inter-sample (segment) speed ds/dt: directly probes whether the time
+        # grid recovers the integrator's speed, without the second-derivative
+        # discretization error that np.gradient adds on a curving path. A
+        # stretched time axis scales every segment speed by the stretch factor.
+        seg_speed = np.hypot(np.diff(x), np.diff(y)) / np.diff(times)
+        # Cruise = the petal arcs held at the target speed; the start ramp and
+        # center turnarounds are slower, so threshold near ``velocity``.
+        cruise = seg_speed[seg_speed >= 0.95 * config.velocity]
+        assert cruise.size > 10
+        rel = abs(cruise.mean() - config.velocity) / config.velocity
+        assert rel < 0.001, (
+            f"cruise speed {cruise.mean():.5f} deg/s vs configured {config.velocity} "
+            f"(relative error {rel:.4%}); time grid is stretching velocities"
+        )

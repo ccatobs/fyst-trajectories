@@ -400,11 +400,33 @@ class SunAvoidanceConfig:
         Radius around Sun to exclude, in degrees.
     warning_radius : float
         Radius around Sun to warn about, in degrees.
+
+    Raises
+    ------
+    ValueError
+        When ``enabled`` and either ``exclusion_radius < 0`` or
+        ``warning_radius < exclusion_radius`` (which would leave an empty
+        warning band, or silently disable avoidance entirely).
     """
 
     enabled: bool
     exclusion_radius: float
     warning_radius: float
+
+    def __post_init__(self) -> None:
+        # Only meaningful when avoidance is on; disabled configs may carry
+        # inert placeholder radii. Mirrors AxisLimits.__post_init__.
+        if not self.enabled:
+            return
+        if self.exclusion_radius < 0:
+            raise ValueError(
+                f"exclusion_radius ({self.exclusion_radius}) must be >= 0 when enabled"
+            )
+        if self.warning_radius < self.exclusion_radius:
+            raise ValueError(
+                f"warning_radius ({self.warning_radius}) must be >= exclusion_radius "
+                f"({self.exclusion_radius}) when enabled"
+            )
 
 
 _NASMYTH_SIGNS: dict[str, int] = {"right": 1, "left": -1, "cassegrain": 0}

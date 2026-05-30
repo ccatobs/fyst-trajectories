@@ -126,17 +126,16 @@ class TestPatchSelectionPhase:
         assert result.state.current_time.unix > state.current_time.unix
 
     def test_patch_below_elevation_emits_idle(self):
-        """A single patch below the elevation limit yields an idle block."""
+        """A patch that never rises yields an idle block, not a selection."""
         unreachable = ObservingPatch(
-            name="below_horizon",
-            ra_center=150.0,  # COSMOS-like; far from CerroChajnantor's best
-            dec_center=2.2,  # Near-equatorial — rises but low here.
+            name="never_up",
+            ra_center=150.0,
+            dec_center=80.0,  # Never rises from FYST (lat ~ -23): max el ~ -13 deg.
             width=4.0,
             height=4.0,
             scan_type="pong",
             velocity=0.5,
         )
-        # Use a morning window where this field is not up.
         ctx = _make_ctx(
             patches=[unreachable],
             start_time="2026-06-15T02:00:00",
@@ -146,12 +145,13 @@ class TestPatchSelectionPhase:
 
         result = PatchSelectionPhase().run(state, ctx)
 
-        # Either the patch is below elevation (idle) or above (selected);
-        # we test the below case by construction of start_time.
-        if result.selection is None:
-            assert len(result.blocks) == 1
-            assert str(result.blocks[0].block_type) == "idle"
-            assert result.skip_to_next_iter is True
+        # The patch can never be observable, so the phase MUST emit idle and skip.
+        # Previously the whole assertion sat behind `if result.selection is None`,
+        # which silently passed whenever the geometry put the patch above horizon.
+        assert result.selection is None
+        assert len(result.blocks) == 1
+        assert str(result.blocks[0].block_type) == "idle"
+        assert result.skip_to_next_iter is True
 
     def test_observable_patch_selected(self):
         """A well-placed patch is selected with best_az/best_el populated."""

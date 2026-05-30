@@ -55,7 +55,6 @@ class ConstantElScanPattern(AltAzPattern):
     ...     elevation=45.0,
     ...     az_speed=0.5,
     ...     az_accel=1.0,
-    ...     n_scans=10,
     ... )
     >>> pattern = ConstantElScanPattern(config)
     >>> trajectory = pattern.generate(site, duration=60.0)
@@ -156,7 +155,6 @@ class ConstantElScanPattern(AltAzPattern):
                 "elevation": self.config.elevation,
                 "az_speed": self.config.az_speed,
                 "az_accel": self.config.az_accel,
-                "n_scans": self.config.n_scans,
             },
         )
 
@@ -206,14 +204,28 @@ class ConstantElScanPattern(AltAzPattern):
         t_turnaround = 2.0 * az_speed / az_accel
         d_half_turn = 5.0 * az_speed**2 / (8.0 * az_accel)
 
+        # The cruise covers exactly the science region [az_min, az_max] at constant
+        # speed; the quintic turnaround lives in the overscan zone, overshooting the
+        # science edge by ``d_half_turn`` (the quintic peak displacement) before
+        # returning to it. So the motion range is [az_min - d_half_turn,
+        # az_max + d_half_turn] and every science sample is at cruise velocity.
         d_cruise = az_throw
         motion_min = az_min - d_half_turn
         motion_max = az_max + d_half_turn
 
         dir_fwd = 1.0 if start_increasing else -1.0
         dir_rev = -dir_fwd
-        pos_fwd = motion_min if start_increasing else motion_max
-        pos_rev = motion_max if start_increasing else motion_min
+        # Forward cruise starts at the science edge it is moving away from. The
+        # reverse cruise then starts where the forward turnaround returns to (the
+        # opposite science edge), so the two half-cycles form a single continuous
+        # closed loop: forward cruise az_min->az_max (increasing), top turnaround
+        # returning to az_max, reverse cruise az_max->az_min, bottom turnaround
+        # returning to az_min. Position is C0/C1 continuous across every seam and
+        # consistent with ``velocities`` everywhere (the previous code started the
+        # reverse cruise at the far overscan edge, leaving a ~2*d_half_turn position
+        # jump at each half-cycle boundary while velocity stayed smooth).
+        pos_fwd = az_min if start_increasing else az_max
+        pos_rev = az_max if start_increasing else az_min
 
         scan_flag = np.empty(len(times), dtype=np.int8)
 

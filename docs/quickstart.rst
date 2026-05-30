@@ -46,7 +46,7 @@ downstream, so vacuum (geometric) coordinates are correct::
 
     # Translate common frame names to astropy equivalents
     astropy_frame = normalize_frame("J2000")    # Returns "icrs"
-    astropy_frame = normalize_frame("GALACTIC") # Returns "galactic"
+    astropy_frame = normalize_frame("B1950")    # Returns "fk4"
 
 **Proper motion support** (for high proper motion stars)::
 
@@ -148,13 +148,14 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
 
     site = get_fyst_site()
 
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
     block = plan_constant_el_scan(
         field=field,
         elevation=50.0,
         velocity=0.5,
         site=site,
-        start_time="2026-09-15T00:00:00",
+        start_time="2026-03-15T17:00:00",
+        az_accel=0.5,
     )
     trajectory = block.trajectory
 
@@ -168,11 +169,10 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
     config = ConstantElScanConfig(
         timestep=0.1,
         az_start=120.0,
-        az_stop=180.0,
+        az_stop=150.0,
         elevation=45.0,
         az_speed=1.0,
         az_accel=0.5,
-        n_scans=2,
     )
 
     trajectory = (
@@ -190,11 +190,11 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T02:00:00", scale="utc")
 
     config = PongScanConfig(
         timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-        velocity=0.5, num_terms=4, angle=0.0,
+        velocity=0.3, num_terms=4, angle=0.0,
     )
 
     trajectory = (
@@ -214,7 +214,7 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
     from fyst_trajectories.patterns import DaisyScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T02:00:00", scale="utc")
 
     config = DaisyScanConfig(
         timestep=0.1, radius=0.5, velocity=0.3, turn_radius=0.2,
@@ -229,6 +229,38 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
         .starting_at(start_time)
         .build()
     )
+
+**Dynamics safety checks** (the builder flags scans that exceed limits)::
+
+    import warnings
+
+    from astropy.time import Time
+
+    from fyst_trajectories import PointingWarning, get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
+
+    site = get_fyst_site()
+
+    # A 2 deg field scanned at 0.5 deg/s with the target near zenith: cos(el)
+    # inflates the azimuth rate and acceleration past the telescope limits, so
+    # the builder emits PointingWarnings (it still returns the trajectory).
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        trajectory = (
+            TrajectoryBuilder(site)
+            .at(ra=180.0, dec=-30.0)
+            .with_config(PongScanConfig(
+                timestep=0.1, width=2.0, height=2.0, spacing=0.1,
+                velocity=0.5, num_terms=4, angle=0.0,
+            ))
+            .duration(300.0)
+            .starting_at(Time("2026-03-15T04:00:00", scale="utc"))  # near zenith
+            .build()
+        )
+
+    flagged = [w.message for w in caught if issubclass(w.category, PointingWarning)]
+    # `flagged` lists the high-elevation azimuth-rate / acceleration warnings.
+    # Observe at a lower elevation or reduce the scan velocity to clear them.
 
 **Convert trajectory for OCS /path endpoint**::
 
@@ -256,7 +288,7 @@ so the detector (not the boresight) tracks the target::
     from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T02:00:00", scale="utc")
 
     # Use a PrimeCam module offset
     offset = get_primecam_offset("i1")
@@ -267,7 +299,7 @@ so the detector (not the boresight) tracks the target::
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
             timestep=0.1, width=1.0, height=1.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            velocity=0.2, num_terms=4, angle=0.0,
         ))
         .for_detector(offset)
         .duration(60.0)

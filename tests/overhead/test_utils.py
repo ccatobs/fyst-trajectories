@@ -1,5 +1,6 @@
 """Tests for scheduling utilities."""
 
+import pytest
 from astropy.time import Time
 
 from fyst_trajectories.overhead.utils import (
@@ -18,16 +19,18 @@ class TestEstimateSlewTime:
         assert t == 0.0
 
     def test_az_only(self, site):
+        # 10 deg azimuth slew, trapezoidal profile (FYST az vel=3.0, accel=1.0):
+        # t_accel=3, d_accel=9; distance 10 > 9, so
+        # t = 2*t_accel + (10 - d_accel)/vel = 6 + 1/3 = 6.333 s.
         t = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
-        assert t > 0.0
-        assert t > 3.0
-        assert t < 20.0
+        assert t == pytest.approx(6.333, abs=0.01)
 
     def test_el_only(self, site):
+        # 10 deg elevation slew, trapezoidal (FYST el vel=1.0, accel=0.5):
+        # t_accel=2, d_accel=2; distance 10 > 2, so
+        # t = 2*t_accel + (10 - d_accel)/vel = 4 + 8 = 12.0 s.
         t = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
-        assert t > 0.0
-        assert t > 8.0
-        assert t < 30.0
+        assert t == pytest.approx(12.0, abs=0.01)
 
     def test_el_slower_than_az(self, site):
         t_az = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
@@ -37,6 +40,12 @@ class TestEstimateSlewTime:
     def test_large_slew(self, site):
         t = estimate_slew_time(0.0, 30.0, 180.0, 70.0, site)
         assert t > 30.0
+
+    def test_short_az_slew_is_triangular(self, site):
+        # A 2 deg az slew never reaches cruise: d_accel = v^2/a = 9 deg > 2 deg, so
+        # the triangular branch gives t = 2*sqrt(distance/a) = 2*sqrt(2/1) = 2.828 s.
+        t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site)
+        assert t == pytest.approx(2.828, abs=0.01)
 
 
 class TestGetMaxElevation:
@@ -69,9 +78,11 @@ class TestGetTransitTime:
         assert abs(ha) < 2.0  # HA near zero at transit
 
     def test_returns_none_if_not_found(self, site):
+        # max_search_hours=0.001 yields a single sample (no interval to bracket a
+        # meridian crossing), so the search is guaranteed to return None.
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         transit = get_transit_time(180.0, -30.0, t0, site, max_search_hours=0.001)
-        assert transit is None or isinstance(transit, Time)
+        assert transit is None
 
 
 class TestGetObservableWindows:
@@ -88,6 +99,9 @@ class TestGetObservableWindows:
             check_sun=False,
         )
         assert isinstance(windows, list)
+        assert len(windows) >= 1
+        for rise, set_time in windows:
+            assert start_time.unix <= rise.unix < set_time.unix <= end_time.unix
 
     def test_never_visible_source(self, site, start_time, end_time):
         windows = get_observable_windows(
@@ -102,30 +116,24 @@ class TestGetObservableWindows:
         assert len(windows) == 0
 
     def test_circumpolar_source(self, site, start_time, end_time):
-        from fyst_trajectories import Coordinates
+        """A genuinely circumpolar source yields one window over the full range.
 
-        coords = Coordinates(site)
-        az, el = coords.radec_to_altaz(0.0, -50.0, start_time)
-        if el > 30.0:
-            windows = get_observable_windows(
-                0.0,
-                -50.0,
-                start_time,
-                end_time,
-                site,
-                min_elevation=30.0,
-                check_sun=False,
-            )
-            assert len(windows) >= 1
-        else:
-            # Try a different RA that's better placed
-            windows = get_observable_windows(
-                180.0,
-                -30.0,
-                start_time,
-                end_time,
-                site,
-                min_elevation=30.0,
-                check_sun=False,
-            )
-            assert len(windows) >= 1
+        dec=-80 from FYST (lat ~ -23) never sets — it is circumpolar
+        (dec < -(90 - |lat|) = -67). Its lower culmination sits near 13 deg, so
+        with a 5 deg horizon it stays observable for the entire search window,
+        exercising the "truly circumpolar" branch (``set_time = end_time``).
+        """
+        windows = get_observable_windows(
+            0.0,
+            -80.0,
+            start_time,
+            end_time,
+            site,
+            min_elevation=5.0,
+            check_sun=False,
+        )
+
+        assert len(windows) == 1
+        rise, set_time = windows[0]
+        assert rise.unix == pytest.approx(start_time.unix, abs=1.0)
+        assert set_time.unix == pytest.approx(end_time.unix, abs=1.0)

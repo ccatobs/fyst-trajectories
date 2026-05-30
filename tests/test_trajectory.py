@@ -23,6 +23,7 @@ from fyst_trajectories.trajectory_utils import (
     to_arrays,
     to_path_format,
     to_path_payload,
+    to_trackpoint_format,
     validate_trajectory,
 )
 
@@ -188,6 +189,107 @@ class TestTrajectory:
         with pytest.warns(PointingWarning, match="ICRS"):
             payload = to_path_payload(self._payload_traj(), coordsys="ICRS")
         assert payload["coordsys"] == "ICRS"
+
+    def _fine_traj(self, dt, with_start_time=False):
+        """Build a 3-point trajectory with sample spacing ``dt`` seconds."""
+        kwargs = dict(
+            times=np.array([0.0, dt, 2.0 * dt]),
+            az=np.array([100.0, 100.1, 100.2]),
+            el=np.array([45.0, 45.0, 45.0]),
+            az_vel=np.array([5.0, 5.0, 5.0]),
+            el_vel=np.array([0.0, 0.0, 0.0]),
+        )
+        if with_start_time:
+            kwargs["start_time"] = Time("2026-05-28T00:00:00", scale="utc")
+        return Trajectory(**kwargs)
+
+    def test_to_path_format_rejects_sub_50ms_interval(self):
+        """L-2: a sample interval below the Go TCS /path 50 ms minimum raises."""
+        traj = self._fine_traj(dt=0.02)  # 20 ms < 50 ms
+        with pytest.raises(ValueError, match="Go TCS .*minimum"):
+            to_path_format(traj)
+
+    def test_to_path_payload_rejects_sub_50ms_interval(self):
+        """L-2: to_path_payload inherits the 50 ms interval check."""
+        traj = self._fine_traj(dt=0.02, with_start_time=True)
+        with pytest.raises(ValueError, match="Go TCS .*minimum"):
+            to_path_payload(traj)
+
+    def test_to_path_format_accepts_50ms_interval(self):
+        """L-2: exactly 50 ms is allowed (boundary)."""
+        traj = self._fine_traj(dt=0.05)
+        assert len(to_path_format(traj)) == 3
+
+    def _flagged_traj(self, scan_flag, start_time=True):
+        """Build a trajectory with an explicit scan_flag pattern for TrackPoint tests."""
+        n = len(scan_flag)
+        kwargs = dict(
+            times=np.arange(n, dtype=float),
+            az=np.arange(n, dtype=float) + 100.0,
+            el=np.full(n, 45.0),
+            az_vel=np.full(n, 10.0),
+            el_vel=np.zeros(n),
+            scan_flag=np.array(scan_flag, dtype=np.int8),
+        )
+        if start_time:
+            kwargs["start_time"] = Time("2026-05-28T00:00:00", scale="utc")
+        return Trajectory(**kwargs)
+
+    def test_to_trackpoint_format_flags_and_timestamps(self):
+        """az_flag/group_flag follow the SO ACU convention; timestamps are absolute Unix."""
+        # A 5-point science leg, a turnaround, then a 2-point science leg.
+        sf = [
+            SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_TURNAROUND,
+            SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_SCIENCE,
+        ]
+        traj = self._flagged_traj(sf)
+        rows = to_trackpoint_format(traj)
+
+        assert len(rows) == 8
+        assert set(rows[0]) == {
+            "timestamp",
+            "az",
+            "el",
+            "az_vel",
+            "el_vel",
+            "az_flag",
+            "el_flag",
+            "group_flag",
+        }
+        # az_flag: interior science=1, final point of a science leg=2, non-science=0.
+        assert [r["az_flag"] for r in rows] == [1, 1, 1, 1, 2, 0, 1, 2]
+        # group_flag: the first TRACKPOINT_NEW_LEG_GROUP_SIZE (4) points of each science leg.
+        assert [r["group_flag"] for r in rows] == [1, 1, 1, 1, 0, 0, 1, 1]
+        assert all(r["el_flag"] == 0 for r in rows)
+        # Absolute Unix timestamps = start_time.unix + relative trajectory times.
+        t0 = traj.start_time.unix
+        assert rows[0]["timestamp"] == pytest.approx(t0 + 0.0)
+        assert rows[5]["timestamp"] == pytest.approx(t0 + 5.0)
+
+    def test_to_trackpoint_format_requires_start_time(self):
+        """A missing start_time raises ValueError (timestamps are absolute)."""
+        traj = self._flagged_traj([SCAN_FLAG_SCIENCE, SCAN_FLAG_SCIENCE], start_time=False)
+        with pytest.raises(ValueError, match="start_time not set"):
+            to_trackpoint_format(traj)
+
+    def test_to_trackpoint_format_unflagged_all_zero(self):
+        """A trajectory with no scan_flag yields az_flag/group_flag all zero."""
+        traj = Trajectory(
+            times=np.array([0.0, 1.0, 2.0]),
+            az=np.array([100.0, 101.0, 102.0]),
+            el=np.full(3, 45.0),
+            az_vel=np.full(3, 10.0),
+            el_vel=np.zeros(3),
+            start_time=Time("2026-05-28T00:00:00", scale="utc"),
+        )
+        rows = to_trackpoint_format(traj)
+        assert all(r["az_flag"] == 0 and r["group_flag"] == 0 for r in rows)
 
     def test_get_absolute_times_nonzero_origin(self):
         """get_absolute_times maps the first sample to start_time even when times[0] != 0."""
@@ -466,3 +568,29 @@ class TestScanFlagValidation:
         )
         expected = np.array([False, True])
         np.testing.assert_array_equal(traj.science_mask, expected)
+
+
+class TestNonFiniteRejection:
+    """Trajectory rejects NaN/Inf in its coordinate arrays at construction."""
+
+    @staticmethod
+    def _kwargs():
+        return {
+            "times": np.array([0.0, 1.0]),
+            "az": np.array([10.0, 11.0]),
+            "el": np.array([45.0, 45.0]),
+            "az_vel": np.zeros(2),
+            "el_vel": np.zeros(2),
+        }
+
+    def test_nan_in_az_raises(self):
+        kwargs = self._kwargs()
+        kwargs["az"] = np.array([10.0, np.nan])
+        with pytest.raises(ValueError, match="Non-finite"):
+            Trajectory(**kwargs)
+
+    def test_inf_in_el_raises(self):
+        kwargs = self._kwargs()
+        kwargs["el"] = np.array([45.0, np.inf])
+        with pytest.raises(ValueError, match="Non-finite"):
+            Trajectory(**kwargs)

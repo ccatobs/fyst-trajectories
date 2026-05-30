@@ -28,6 +28,7 @@ from .trajectory import (
     SCAN_FLAG_RETUNE,
     SCAN_FLAG_SCIENCE,
     SCAN_FLAG_TURNAROUND,
+    SCAN_FLAG_UNCLASSIFIED,
     RetuneEvent,
     Trajectory,
 )
@@ -72,6 +73,8 @@ def validate_trajectory_bounds(
 
     Raises
     ------
+    ValueError
+        If any az/el value is non-finite (NaN or Inf).
     AzimuthBoundsError
         If any point exceeds telescope azimuth limits.
     ElevationBoundsError
@@ -86,6 +89,11 @@ def validate_trajectory_bounds(
     >>> validate_trajectory_bounds(site, az, el)  # Passes if within limits
     """
     limits = site.telescope_limits
+
+    # Guard non-finite input: NaN/Inf would slip through every comparison
+    # below (``NaN > limit`` is ``False``), silently passing the raising gate.
+    if not (np.all(np.isfinite(az)) and np.all(np.isfinite(el))):
+        raise ValueError("Non-finite values (NaN or Inf) detected in trajectory az/el arrays")
 
     az_min, az_max = float(az.min()), float(az.max())
     if az_min < limits.azimuth.min or az_max > limits.azimuth.max:
@@ -118,9 +126,18 @@ def validate_trajectory_dynamics(
     acceleration, then warns if they exceed the telescope's configured
     limits.
 
-    Issues warnings rather than raising exceptions because exceeding a
-    dynamics limit does not make a trajectory unexecutable. The
-    telescope will simply track slower than requested at those points.
+    Limit violations are advisory (warnings) because exceeding a dynamics
+    limit does not make a trajectory unexecutable -- the telescope simply
+    tracks slower than requested at those points. Malformed input, however,
+    raises ``ValueError``: non-finite (NaN/Inf) ``az``/``el``/``times`` would
+    otherwise pass silently (``NaN > limit`` is ``False``), and non-monotonic
+    timestamps make the numerical derivative divide by zero.
+
+    Only velocity and acceleration are checked. Third-derivative (jerk)
+    limiting is the ACU motion profiler's responsibility -- this library does
+    not validate jerk and ``AxisLimits`` carries no ``max_jerk`` field, even
+    though the Go TCS defines hardware jerk limits (az 12, el 6 deg/s^3).
+    Tracked as a Q-item alongside Q-4.
 
     Parameters
     ----------
@@ -134,12 +151,21 @@ def validate_trajectory_dynamics(
     times : np.ndarray
         Timestamps in seconds.
 
+    Raises
+    ------
+    ValueError
+        If any ``az``/``el``/``times`` value is non-finite (NaN or Inf), or
+        if the timestamps are not strictly increasing.
+
     Warns
     -----
     PointingWarning
         If velocity or acceleration exceeds configured limits, or if
         the trajectory has too few points for meaningful validation.
     """
+    if not (np.all(np.isfinite(az)) and np.all(np.isfinite(el)) and np.all(np.isfinite(times))):
+        raise ValueError("Non-finite values (NaN or Inf) detected in trajectory az/el/times arrays")
+
     if len(times) < 2:
         warnings.warn(
             "Trajectory has fewer than 2 points, skipping dynamics validation.",
@@ -147,6 +173,12 @@ def validate_trajectory_dynamics(
             stacklevel=2,
         )
         return
+
+    if np.any(np.diff(times) <= 0):
+        raise ValueError(
+            "Trajectory times must be strictly increasing; found duplicate or "
+            "non-monotonic timestamps"
+        )
 
     if len(times) < 4:
         warnings.warn(
@@ -414,7 +446,10 @@ def validate_sun_avoidance(
     else:
         closest_time_str = str(sample_times[min_idx])
 
-    if min_sep < exclusion:
+    # Use ``<=`` so a separation exactly at the exclusion radius counts as
+    # unsafe, matching ``Coordinates.is_sun_safe`` / ``is_position_observable``
+    # and the planning sun checks (the conservative ``sep <= radius`` convention).
+    if min_sep <= exclusion:
         warnings.warn(
             f"EXCLUSION ZONE: Trajectory passes {min_sep:.1f}\u00b0 from the Sun "
             f"(exclusion radius: {exclusion}\u00b0) at {closest_time_str}. "
@@ -453,6 +488,12 @@ def to_arrays(
     return trajectory.times.copy(), trajectory.az.copy(), trajectory.el.copy()
 
 
+#: Minimum spacing between consecutive ``/path`` samples accepted by Go TCS.
+#: ``pathCmd.Check()`` hard-rejects any pair closer than 50 ms (ACU ICD 2.0
+#: §8.9.3; ``telescope-control-system/commands.go:248-254``).
+GO_TCS_MIN_SAMPLE_INTERVAL_SEC: float = 0.05
+
+
 def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     """Convert trajectory to the ``points`` list for the Go TCS ``/path`` endpoint.
 
@@ -471,6 +512,15 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
         List of ``[t, az, el, az_vel, el_vel]`` rows. This is only the
         ``points`` array -- the full request body also needs ``start_time``
         and ``coordsys`` (see Notes).
+
+    Raises
+    ------
+    ValueError
+        If any consecutive pair of samples is separated by less than
+        ``GO_TCS_MIN_SAMPLE_INTERVAL_SEC`` (50 ms). The Go TCS ``/path``
+        receiver hard-rejects such a body with HTTP 400 (ACU ICD 2.0 §8.9.3),
+        so the check is enforced here at the serialization boundary rather
+        than failing at POST time.
 
     Notes
     -----
@@ -493,6 +543,16 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     ...     "points": points,
     ... }
     """
+    times = np.asarray(trajectory.times)
+    if times.size >= 2:
+        min_dt = float(np.diff(times).min())
+        if min_dt < GO_TCS_MIN_SAMPLE_INTERVAL_SEC:
+            raise ValueError(
+                f"Trajectory sample interval {min_dt:.4g} s is below the Go TCS "
+                f"/path minimum of {GO_TCS_MIN_SAMPLE_INTERVAL_SEC} s (ACU ICD 2.0 "
+                "§8.9.3); the upload would be rejected with HTTP 400. Increase the "
+                "pattern timestep."
+            )
     return np.column_stack(
         [
             trajectory.times,
@@ -535,8 +595,10 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
     Raises
     ------
     ValueError
-        If ``coordsys`` is not ``"Horizon"`` or ``"ICRS"``, or if
-        ``trajectory.start_time`` is not set.
+        If ``coordsys`` is not ``"Horizon"`` or ``"ICRS"``, if
+        ``trajectory.start_time`` is not set, or -- via :func:`to_path_format`
+        -- if any consecutive sample interval is below
+        ``GO_TCS_MIN_SAMPLE_INTERVAL_SEC`` (50 ms).
 
     Warns
     -----
@@ -560,6 +622,112 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
         "coordsys": coordsys,
         "points": to_path_format(trajectory),
     }
+
+
+#: Number of points at the start of each new constant-velocity science leg
+#: that carry ``group_flag = 1`` in :func:`to_trackpoint_format`. Matches the
+#: Simons Observatory ACU driver convention of front-loading the ProgramTrack
+#: stack at a new leg so the following points are uploaded promptly.
+TRACKPOINT_NEW_LEG_GROUP_SIZE: int = 4
+
+
+def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
+    """Convert a trajectory to ACU ProgramTrack ``TrackPoint`` rows.
+
+    Lowers a :class:`~fyst_trajectories.trajectory.Trajectory` to the
+    per-point representation the Vertex ACU's ProgramTrack stack consumes --
+    the same rows the Go TCS ``/path`` endpoint builds internally, but ready
+    for a consumer that drives the ACU **directly** (e.g. a PCS agent's
+    ``UploadPtStack`` path) rather than through Go TCS. Use
+    :func:`to_path_payload` for the Go TCS ``/path`` route; use this for
+    direct-ACU upload.
+
+    Each row is a dict keyed exactly as a PCS ``TrackPoint``, so a consumer
+    can wrap it directly (``TrackPoint(**row)``): ``timestamp`` (absolute Unix
+    seconds), ``az``, ``el`` (deg), ``az_vel``, ``el_vel`` (deg/s), ``az_flag``,
+    ``el_flag`` (int), and ``group_flag`` (int).
+
+    The :data:`~fyst_trajectories.trajectory.SCAN_FLAG_SCIENCE` /
+    ``SCAN_FLAG_*`` values are mapped to the ACU ``az_flag`` convention:
+
+    - interior point of a science sweep leg -> ``az_flag = 1``
+    - final point of a science sweep leg -> ``az_flag = 2``
+    - turnaround / retune / unclassified / unflagged -> ``az_flag = 0``
+
+    ``group_flag = 1`` is set on the first
+    :data:`TRACKPOINT_NEW_LEG_GROUP_SIZE` points of each new science leg
+    (front-loading the stack, matching the SO ACU driver). ``el_flag`` is
+    always 0 -- FYST scans hold or el-nod within a leg, so the ACU profiler
+    keys off azimuth. Batching the rows for upload is left to the consumer.
+
+    Parameters
+    ----------
+    trajectory : Trajectory
+        The trajectory to convert. Must have ``start_time`` set (per-point
+        timestamps are absolute Unix seconds derived from it). If
+        ``scan_flag`` is ``None`` every point is treated as unclassified
+        (``az_flag = 0``).
+
+    Returns
+    -------
+    list of dict
+        One dict per sample, in time order, with the eight ``TrackPoint``
+        keys described above.
+
+    Raises
+    ------
+    ValueError
+        If ``trajectory.start_time`` is not set.
+
+    See Also
+    --------
+    to_path_payload : the Go TCS ``/path`` body (relative point times plus a
+        single absolute ``start_time``); use that for the Go-TCS route, this
+        for direct-ACU upload.
+    """
+    if trajectory.start_time is None:
+        raise ValueError("start_time not set; cannot build absolute TrackPoint timestamps")
+
+    t0 = float(trajectory.start_time.unix)
+    times = trajectory.times
+    az = trajectory.az
+    el = trajectory.el
+    az_vel = trajectory.az_vel
+    el_vel = trajectory.el_vel
+    scan_flag = trajectory.scan_flag
+    n = len(times)
+
+    rows: list[dict] = []
+    group_countdown = 0
+    for i in range(n):
+        sf = int(scan_flag[i]) if scan_flag is not None else SCAN_FLAG_UNCLASSIFIED
+
+        if sf == SCAN_FLAG_SCIENCE:
+            is_last_science = i == n - 1 or int(scan_flag[i + 1]) != SCAN_FLAG_SCIENCE
+            az_flag = 2 if is_last_science else 1
+        else:
+            az_flag = 0
+
+        # Front-load the ProgramTrack stack at the start of each science leg.
+        if sf == SCAN_FLAG_SCIENCE and (i == 0 or int(scan_flag[i - 1]) != SCAN_FLAG_SCIENCE):
+            group_countdown = TRACKPOINT_NEW_LEG_GROUP_SIZE
+        group_flag = 1 if group_countdown > 0 else 0
+        if group_countdown > 0:
+            group_countdown -= 1
+
+        rows.append(
+            {
+                "timestamp": t0 + float(times[i]),
+                "az": float(az[i]),
+                "el": float(el[i]),
+                "az_vel": float(az_vel[i]),
+                "el_vel": float(el_vel[i]),
+                "az_flag": az_flag,
+                "el_flag": 0,
+                "group_flag": group_flag,
+            }
+        )
+    return rows
 
 
 def plot_trajectory(trajectory: Trajectory, show: bool) -> "Figure":

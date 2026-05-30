@@ -284,7 +284,13 @@ class DaisyScanPattern(CelestialPattern):
             y_coords = y_coords[::sample_every]
 
         n_points = len(x_coords)
-        times = np.linspace(0, duration, n_points)
+        # Label samples on the integrator's own grid: each kept sample is
+        # ``sample_every`` internal steps apart, i.e. exactly ``timestep``
+        # (``sample_every * dt == timestep`` by construction above). The
+        # integrator spans ``[0, duration - dt]``, so ``linspace(0, duration,
+        # n_points)`` would stretch the axis and bias every velocity derived
+        # as ``gradient(position, times)`` (~1% at a 10 s scan).
+        times = np.arange(n_points) * (sample_every * dt)
 
         return times, x_coords, y_coords
 

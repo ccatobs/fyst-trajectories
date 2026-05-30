@@ -113,8 +113,12 @@ TOAST Compatibility
 -------------------
 
 Files written by fyst-trajectories use TOAST canonical column names for the
-common fields and can therefore be read directly by TOAST's
-``GroundSchedule`` reader (which will ignore the FYST extension columns).
+common fields **and** attach ``u.deg`` units to the angle columns
+(``azmin``, ``azmax``, ``el``, ``boresight_angle``), with the site
+coordinates stored as ``Quantity`` header metadata. They can therefore be
+read directly by TOAST's ``GroundSchedule`` v5 reader, whose ``GroundScan``
+consumes those columns via ``to_value(u.degree)`` (it will ignore the FYST
+extension columns).
 
 Standard TOAST schedule files (without ``block_type``, ``scan_type``,
 ``rising``, or the patch-geometry extension columns) are also supported on

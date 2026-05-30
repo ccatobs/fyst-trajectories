@@ -5,11 +5,14 @@ with FYST-specific extensions for calibration blocks.
 """
 
 import json
+import warnings
 from pathlib import Path
 
+from astropy import units as u
 from astropy.table import Table
 from astropy.time import Time
 
+from ..exceptions import PointingWarning
 from ..site import (
     AxisLimits,
     Site,
@@ -176,12 +179,29 @@ def write_timeline(
 
     table = Table(rows)
 
+    # Attach angular units to the TOAST canonical columns so a fyst-written
+    # ECSV is readable by TOAST's GroundSchedule v5 reader, whose
+    # ``GroundScan.__init__`` calls ``az_min.to_value(u.degree)`` on them.
+    # ``read_timeline`` reads with a plain ``Table`` and ``float(row[...])``,
+    # so the units do not affect the internal round-trip.
+    for _deg_col in ("azmin", "azmax", "el", "boresight_angle"):
+        table[_deg_col].unit = u.deg
+
     table.meta["site_name"] = timeline.site.name
     table.meta["site_description"] = timeline.site.description
     table.meta["telescope_name"] = timeline.site.name
-    table.meta["site_lat"] = timeline.site.latitude
-    table.meta["site_lon"] = timeline.site.longitude
-    table.meta["site_alt"] = timeline.site.elevation
+    table.meta["site_lat"] = timeline.site.latitude * u.deg
+    table.meta["site_lon"] = timeline.site.longitude * u.deg
+    table.meta["site_alt"] = timeline.site.elevation * u.m
+    # Persist the non-coordinate Site fields that ``_site_from_meta`` would
+    # otherwise reset to FYST defaults. nasmyth_port matters most: a custom
+    # ``"left"`` previously read back as ``"right"``, flipping the field-rotation
+    # sign.
+    table.meta["site_nasmyth_port"] = timeline.site.nasmyth_port
+    table.meta["site_plate_scale"] = timeline.site.plate_scale
+    table.meta["site_sun_enabled"] = timeline.site.sun_avoidance.enabled
+    table.meta["site_sun_exclusion_radius"] = timeline.site.sun_avoidance.exclusion_radius
+    table.meta["site_sun_warning_radius"] = timeline.site.sun_avoidance.warning_radius
     # OverheadModel — persist ALL fields with overhead_ prefix.
     table.meta["overhead_retune_duration"] = timeline.overhead_model.retune_duration
     table.meta["overhead_pointing_cal_duration"] = timeline.overhead_model.pointing_cal_duration
@@ -388,8 +408,10 @@ def _site_from_meta(meta: dict) -> Site:
     FYST coordinates to 4 decimal places, ``get_fyst_site()`` is used so
     the returned site has the full FYST default limits and atmosphere.
     Otherwise a custom ``Site`` is constructed using the metadata
-    coordinates together with the default FYST telescope limits and
-    sun avoidance settings (which are not currently persisted).
+    coordinates plus the persisted ``nasmyth_port``/``plate_scale``/sun
+    radii (older files without those keys fall back to FYST defaults).
+    ``telescope_limits`` are not persisted and are reset to FYST defaults;
+    a :class:`PointingWarning` is emitted in that case.
     """
     fyst = get_fyst_site()
     lat = meta.get("site_lat")
@@ -399,16 +421,26 @@ def _site_from_meta(meta: dict) -> Site:
     if lat is None or lon is None or alt is None:
         return fyst
 
-    lat = float(lat)
-    lon = float(lon)
-    alt = float(alt)
+    # Coordinates may be stored as bare floats (older files) or as Quantities
+    # (deg/deg/m) once TOAST-compatible units were added.
+    lat = float(lat.to_value(u.deg)) if isinstance(lat, u.Quantity) else float(lat)
+    lon = float(lon.to_value(u.deg)) if isinstance(lon, u.Quantity) else float(lon)
+    alt = float(alt.to_value(u.m)) if isinstance(alt, u.Quantity) else float(alt)
 
     if round(lat, 4) == round(fyst.latitude, 4) and round(lon, 4) == round(fyst.longitude, 4):
         return fyst
 
-    # Non-FYST site: build a custom Site using the stored coordinates plus
-    # the default FYST mechanical limits and sun-avoidance config (which
-    # are not serialised separately in v0.3 ECSV files).
+    # Non-FYST site: restore the persisted fields below; warn that
+    # telescope_limits are not persisted (a consumer recomputing pose or
+    # feasibility from the loaded limits needs to know they are FYST defaults).
+    warnings.warn(
+        "Reconstructing a non-FYST Site from ECSV: telescope_limits are not "
+        "persisted and have been reset to FYST defaults. nasmyth_port, "
+        "plate_scale and sun-avoidance radii are restored from metadata when "
+        "present (older files fall back to FYST defaults).",
+        PointingWarning,
+        stacklevel=2,
+    )
     return Site(
         name=str(meta.get("site_name", "custom")),
         description=str(meta.get("site_description", "")),
@@ -431,12 +463,16 @@ def _site_from_meta(meta: dict) -> Site:
             ),
         ),
         sun_avoidance=SunAvoidanceConfig(
-            enabled=fyst.sun_avoidance.enabled,
-            exclusion_radius=fyst.sun_avoidance.exclusion_radius,
-            warning_radius=fyst.sun_avoidance.warning_radius,
+            enabled=bool(meta.get("site_sun_enabled", fyst.sun_avoidance.enabled)),
+            exclusion_radius=float(
+                meta.get("site_sun_exclusion_radius", fyst.sun_avoidance.exclusion_radius)
+            ),
+            warning_radius=float(
+                meta.get("site_sun_warning_radius", fyst.sun_avoidance.warning_radius)
+            ),
         ),
-        nasmyth_port=fyst.nasmyth_port,
-        plate_scale=fyst.plate_scale,
+        nasmyth_port=str(meta.get("site_nasmyth_port", fyst.nasmyth_port)),
+        plate_scale=float(meta.get("site_plate_scale", fyst.plate_scale)),
     )
 
 
@@ -480,6 +516,11 @@ _KNOWN_META_KEYS = frozenset(
         "site_lat",
         "site_lon",
         "site_alt",
+        "site_nasmyth_port",
+        "site_plate_scale",
+        "site_sun_enabled",
+        "site_sun_exclusion_radius",
+        "site_sun_warning_radius",
         # OverheadModel.
         "overhead_retune_duration",
         "overhead_pointing_cal_duration",

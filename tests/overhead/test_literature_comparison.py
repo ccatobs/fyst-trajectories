@@ -62,16 +62,24 @@ class TestCalibrationCadencesVsLiterature:
     """Validate calibration cadences against published values."""
 
     def test_pointing_cadence_within_literature_range(self):
-        """Default pointing cadence is within literature range.
+        """Default pointing cadence is the agreed 3600 s (1 h).
 
-        NIKA2 uses ~1h, but 350 GHz observations need 20-30 min cadence.
-        Our default (1800s = 30 min) is appropriate for high-frequency use.
+        NIKA2 and JCMT use ~1 h pointing cadence; the default was flipped from
+        1800 s to 3600 s in the audit cycle to match that published practice
+        (see CHANGELOG "Changed"). Pin the exact agreed value so a silent
+        regression or a stale docstring is caught, then sanity-check it stays
+        within the [20 min, 1 h] literature band. ``1800 s`` remains a
+        reasonable commissioning override, passed explicitly.
         """
         policy = CalibrationPolicy()
 
-        assert 1200.0 <= policy.pointing_cadence <= 3600.0, (
-            f"Pointing cadence ({policy.pointing_cadence}s) outside literature range [20 min, 1 hr]"
+        # Agreed canonical default (operations-team-owned; see CHANGELOG).
+        assert policy.pointing_cadence == 3600.0, (
+            f"Pointing cadence default changed from the agreed 3600.0 s to "
+            f"{policy.pointing_cadence}s — update the CHANGELOG and this test together"
         )
+        # Sanity: still within the published literature band [20 min, 1 h].
+        assert 1200.0 <= policy.pointing_cadence <= 3600.0
 
     def test_focus_cadence_reasonable(self):
         """Focus check every 2h is within standard range (1-4h).
@@ -123,29 +131,17 @@ class TestOverallOverheadVsLiterature:
             f"Minimum calibration fraction ({cal_fraction:.1%}) outside expected range [2%, 25%]"
         )
 
-    def test_default_model_retune_is_fast(self):
-        """Retune should be the fastest calibration operation.
+    def test_calibration_duration_ordering(self):
+        """Calibration durations follow a strict, sensible ordering.
 
-        KID probe-tone resets are inherently fast operations (electronic
-        only, no telescope motion). They should be shorter than any
-        pointing, focus, or other mechanical calibration.
+        Quick electronic operations (retune) < short pointing scans < longer
+        focus/skydip < full planet calibrations. The strict ``<`` on the first
+        link subsumes the former ``test_default_model_retune_is_fast`` (retune
+        is the fastest calibration of all).
         """
         model = OverheadModel()
 
         assert model.retune_duration < model.pointing_cal_duration
-        assert model.retune_duration < model.focus_duration
-        assert model.retune_duration < model.skydip_duration
-        assert model.retune_duration < model.planet_cal_duration
-
-    def test_calibration_duration_ordering(self):
-        """Calibration durations should follow a sensible ordering.
-
-        Quick electronic operations < short pointing scans < longer
-        focus/skydip < full planet calibrations.
-        """
-        model = OverheadModel()
-
-        assert model.retune_duration <= model.pointing_cal_duration
         assert model.pointing_cal_duration <= model.focus_duration
         assert model.focus_duration <= model.skydip_duration
         assert model.skydip_duration <= model.planet_cal_duration

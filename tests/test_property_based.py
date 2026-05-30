@@ -370,7 +370,6 @@ class TestTrajectoryProperties:
             elevation=elevation,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(self.site, duration=60.0, start_time=self.start_time)

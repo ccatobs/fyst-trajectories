@@ -1,5 +1,7 @@
 """Tests for ConstantElScanPattern."""
 
+import warnings
+
 import numpy as np
 import pytest
 from astropy.time import Time
@@ -22,7 +24,6 @@ class TestConstantElScanPattern:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -41,7 +42,6 @@ class TestConstantElScanPattern:
             elevation=50.0,
             az_speed=2.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -60,7 +60,6 @@ class TestConstantElScanPattern:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         d_half_turn = 5 * config.az_speed**2 / (8 * config.az_accel)
@@ -83,7 +82,6 @@ class TestConstantElScanPattern:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -105,7 +103,6 @@ class TestConstantElScanPattern:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         d_half_turn = 5 * config.az_speed**2 / (8 * config.az_accel)
@@ -126,7 +123,6 @@ class TestConstantElScanPattern:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=2,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -137,7 +133,6 @@ class TestConstantElScanPattern:
         assert metadata.pattern_params["az_stop"] == 150.0
         assert metadata.pattern_params["elevation"] == 45.0
         assert metadata.pattern_params["az_speed"] == 1.0
-        assert metadata.pattern_params["n_scans"] == 2
 
 
 class TestTurnaroundBehavior:
@@ -152,7 +147,6 @@ class TestTurnaroundBehavior:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -174,7 +168,6 @@ class TestTurnaroundBehavior:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -197,7 +190,6 @@ class TestTurnaroundBehavior:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -217,7 +209,6 @@ class TestTurnaroundBehavior:
             elevation=45.0,
             az_speed=2.0,
             az_accel=1.0,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -240,7 +231,6 @@ class TestEdgeCases:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -256,7 +246,6 @@ class TestEdgeCases:
             elevation=45.0,
             az_speed=0.1,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -272,7 +261,6 @@ class TestEdgeCases:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -304,8 +292,12 @@ class TestConstantElPropertyBased:
         Invariants checked:
         - All positions within motion range (science + overscan, within tolerance)
         - All velocities <= az_speed (within tolerance)
-        - Trajectory starts at the overscan edge (az_start - d_half_turn for
-          start_increasing, or az_start + d_half_turn otherwise)
+        - Trajectory starts at the science edge it scans away from (az_start
+          for start_increasing, az_stop otherwise)
+        - Position is continuous: consecutive az samples never jump by more
+          than the cruise step (no half-cycle-seam discontinuity)
+        - Position and stored velocity are consistent: d(az)/dt recovered by
+          finite differences agrees with the stored az_vel
         - Duration matches requested duration
         """
         az_stop = az_start + az_throw
@@ -324,7 +316,6 @@ class TestConstantElPropertyBased:
             elevation=elevation,
             az_speed=az_speed,
             az_accel=az_accel,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         trajectory = pattern.generate(site, duration=duration, start_time=None)
@@ -346,14 +337,130 @@ class TestConstantElPropertyBased:
             f"Velocity {np.abs(trajectory.az_vel).max():.4f} exceeds speed {az_speed}"
         )
 
-        # Trajectory starts at the overscan edge
-        expected_start = az_start - d_half_turn if az_start < az_stop else az_start + d_half_turn
+        # Trajectory starts at the science edge it scans away from (the
+        # cruise covers the science region; the turnaround lives in overscan)
+        expected_start = az_min if az_start < az_stop else az_max
         assert trajectory.az[0] == pytest.approx(expected_start, abs=0.05), (
             f"Start position {trajectory.az[0]:.4f} != {expected_start}"
         )
 
+        # Position is continuous: the only legitimate step between consecutive
+        # samples is the cruise step (az_speed * timestep); the turnaround moves
+        # slower, never faster. A half-cycle-seam discontinuity would jump by
+        # ~2 * d_half_turn, far larger than the cruise step.
+        cruise_step = az_speed * 0.1
+        assert np.abs(np.diff(trajectory.az)).max() <= cruise_step * 1.05 + 1e-9, (
+            f"Max az step {np.abs(np.diff(trajectory.az)).max():.5f} exceeds "
+            f"cruise step {cruise_step:.5f} -- position is discontinuous"
+        )
+
+        # Position and stored velocity are consistent everywhere after the
+        # first sample (the first leg starts at full cruise speed, so the
+        # one-sided gradient at index 0 is not meaningful).
+        d_az_dt = np.gradient(np.unwrap(trajectory.az, period=360.0), trajectory.times)
+        np.testing.assert_allclose(d_az_dt[1:], trajectory.az_vel[1:], atol=0.15, rtol=0.0)
+
         # Duration matches requested
         assert trajectory.duration == pytest.approx(duration, abs=0.5)
+
+
+class TestPositionContinuity:
+    """Regression tests for the half-cycle position-discontinuity bug.
+
+    Previously the forward and reverse half-cycles did not meet at the
+    seam: the forward half ended near ``az_max - d_half_turn`` while the
+    reverse half restarted its cruise at ``motion_max = az_max + d_half_turn``,
+    so the sampled az jumped by ~``2 * d_half_turn`` at every half-cycle
+    boundary even though the stored ``az_vel`` stayed smooth. That made
+    position inconsistent with velocity and tripped spurious "azimuth
+    acceleration exceeds limit" warnings (``validate_trajectory_dynamics``
+    recomputes acceleration from the position array).
+    """
+
+    # (az_start, az_stop, az_speed, az_accel) -- spans both directions,
+    # several throws, and a range of speed/accel ratios. All chosen so the
+    # quintic peak acceleration (1.5 * az_accel) stays at or below the FYST
+    # az acceleration limit (1.0 deg/s^2), so a clean trajectory is warning-free.
+    CONFIGS = [
+        (130.0, 150.0, 0.5, 0.5),
+        (150.0, 130.0, 0.5, 0.5),
+        (100.0, 102.0, 0.3, 0.5),
+        (100.0, 128.0, 1.0, 0.5),
+        (-10.0, 18.0, 0.8, 0.6),
+        (100.0, 150.0, 0.2, 0.3),
+    ]
+
+    @pytest.mark.parametrize(("az_start", "az_stop", "az_speed", "az_accel"), CONFIGS)
+    def test_position_is_continuous(self, site, az_start, az_stop, az_speed, az_accel):
+        """No half-cycle seam jump: max az step ~ cruise step, not 2*d_half_turn."""
+        config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=az_start,
+            az_stop=az_stop,
+            elevation=45.0,
+            az_speed=az_speed,
+            az_accel=az_accel,
+        )
+        trajectory = ConstantElScanPattern(config).generate(site, duration=300.0, start_time=None)
+
+        cruise_step = az_speed * config.timestep
+        d_half_turn = 5 * az_speed**2 / (8 * az_accel)
+        max_step = np.abs(np.diff(trajectory.az)).max()
+
+        # The largest legitimate step is the cruise step (the turnaround is
+        # slower). The old seam jump would be ~2 * d_half_turn.
+        assert max_step <= cruise_step * 1.05 + 1e-9, (
+            f"Max az step {max_step:.5f} exceeds cruise step {cruise_step:.5f}"
+        )
+        # Sanity: confirm the test would actually catch the old bug, i.e. the
+        # seam jump it guards against is much larger than the cruise step.
+        assert 2 * d_half_turn > 5 * cruise_step
+
+    @pytest.mark.parametrize(("az_start", "az_stop", "az_speed", "az_accel"), CONFIGS)
+    def test_position_velocity_consistent(self, site, az_start, az_stop, az_speed, az_accel):
+        """Stored az_vel matches d(az)/dt recovered from the position array."""
+        config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=az_start,
+            az_stop=az_stop,
+            elevation=45.0,
+            az_speed=az_speed,
+            az_accel=az_accel,
+        )
+        trajectory = ConstantElScanPattern(config).generate(site, duration=300.0, start_time=None)
+
+        d_az_dt = np.gradient(np.unwrap(trajectory.az, period=360.0), trajectory.times)
+        # Skip index 0 (one-sided gradient at the full-speed start is not
+        # meaningful). The tolerance absorbs the central-difference error where
+        # the position curves through the turnaround (~az_accel * timestep / 2).
+        np.testing.assert_allclose(d_az_dt[1:], trajectory.az_vel[1:], atol=0.1, rtol=0.0)
+
+    @pytest.mark.parametrize(("az_start", "az_stop", "az_speed", "az_accel"), CONFIGS)
+    def test_no_spurious_dynamics_warnings(self, site, az_start, az_stop, az_speed, az_accel):
+        """Continuous CE trajectories no longer trip spurious acceleration warnings."""
+        from fyst_trajectories.exceptions import PointingWarning
+        from fyst_trajectories.trajectory_utils import validate_trajectory_dynamics
+
+        config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=az_start,
+            az_stop=az_stop,
+            elevation=45.0,
+            az_speed=az_speed,
+            az_accel=az_accel,
+        )
+        trajectory = ConstantElScanPattern(config).generate(site, duration=300.0, start_time=None)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
+
+        accel_warnings = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, PointingWarning) and "acceleration" in str(w.message)
+        ]
+        assert not accel_warnings, f"Spurious acceleration warnings: {accel_warnings}"
 
 
 class TestScanFlags:
@@ -367,7 +474,6 @@ class TestScanFlags:
             elevation=45.0,
             az_speed=az_speed,
             az_accel=az_accel,
-            n_scans=1,
         )
         pattern = ConstantElScanPattern(config)
         return pattern.generate(site, duration=120.0, start_time=None)

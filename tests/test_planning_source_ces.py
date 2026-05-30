@@ -105,13 +105,26 @@ def test_sidereal_setting_single_module(site):
 
     cp = block.computed_params
     assert cp["mode"] == "setting"
-
-    # PrimeCam-I1 lives at dy = -106.8 arcmin, so the boresight az that
-    # places the I1 detector on the source must differ from the source
-    # az (which would be the az_bore for a centred footprint).
-    # Sanity-check: az_throw is positive and finite.
     assert cp["az_throw"] > 0
     assert np.isfinite(cp["az_start"])
+
+    # PrimeCam-I1 sits ~1.78 deg off-axis (dy = -106.8 arcmin), so the boresight
+    # azimuth that places the I1 detector on the source must differ measurably
+    # from the boresight for a CENTRED footprint at the same target — not just be
+    # "positive and finite". A silent fallback to az_bore = source_az (the bug the
+    # gold test_off_centre_module_lands_on_source_during_pass guards) would
+    # collapse this offset to ~0. Here the off-centre boresight lands ~1.5 deg
+    # from the centred one.
+    block_centre = plan_source_ces(
+        ra=180.0,
+        dec=-30.0,
+        footprint="c",
+        el_bore=40.0,
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="setting",
+        site=site,
+    )
+    assert 1.0 < abs(cp["az_start"] - block_centre.computed_params["az_start"]) < 2.0
 
 
 def test_explicit_window_auto_mode_detect(site):
@@ -489,6 +502,15 @@ def test_proper_motion_path_runs(site):
         or block_pm.computed_params["az_throw"] != block_nopm.computed_params["az_throw"]
     )
 
+    # Magnitude guard: 1000 mas/yr (RA) + 500 mas/yr (dec) over ~26 yr from the
+    # J2000 ref epoch is ~0.0072 deg of on-sky motion; projected to the boresight
+    # azimuth it shifts az_start by ~0.0048 deg (the throw is unchanged). Bounding
+    # the shift rules out a units error (mas read as arcsec -> ~1000x too large)
+    # and a silently-zero displacement, both of which the bare "differs" check
+    # above would miss.
+    daz = abs(block_pm.computed_params["az_start"] - block_nopm.computed_params["az_start"])
+    assert 0.002 < daz < 0.02
+
 
 def test_array_footprint_from_array_info_round_trip():
     """``ArrayFootprint.from_array_info`` round-trips a small SO-style dict."""
@@ -652,38 +674,232 @@ def test_compute_params_no_timestep_kwarg(site):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "schedlib not pip-installable (so3g has no PyPI wheel); "
-        "manual cross-check procedure documented in this test's docstring."
-    )
-)
-def test_cross_validate_so_make_source_ces():
-    """Cross-validate against ``schedlib.source.make_source_ces``.
+def _so_chosen_rising_block(schedlib_source, source_name, el_bore):
+    """Generate a rising SourceBlock from SO schedlib whose el span covers el_bore.
 
-    Kept as a scaffold for a manual cross-validation procedure (the SO
-    xi/eta convention parity is a known open question that this test
-    is designed to settle once ``schedlib`` is installable in CI).
-
-    Procedure (when running on Linux with so3g installed):
-
-    1. Install ``pip install -e
-       git+https://github.com/simonsobs/scheduler@v0.4.0#egg=schedlib``.
-    2. Invoke ``schedlib.source.make_source_ces(
-       source='jupiter', array_info=<dict equivalent to ArrayFootprint>,
-       el_bore=35.0, t=<unix timestamp>, boresight_rot=0.0, mode='rising',
-       horizon=15)`` and compare ``az_drift, az_start, az_stop, t0, t1``
-       against the matching ``plan_source_ces`` ``computed_params``.
-    3. Expected agreement: az_drift to ~0.1 mdeg/s, az_start/stop to
-       ~0.1 deg (driven by az_padding choice).
-
-    Discrepancies in az_start/stop larger than ``az_padding`` indicate a
-    bug in either the SO PyEphem ephemeris or our astropy + offsets
-    geometry — both are worth investigating.
+    Returns the first rising ``SourceBlock`` (SO PyEphem-backed) over a
+    two-day window starting 2026-03-15 whose elevation range contains
+    ``el_bore``. ``schedlib.source.get_site`` must already be patched to
+    return the FYST site so the ephemeris resolves at FYST.
     """
-    raise NotImplementedError(
-        "Manual cross-validation only; see docstring for the schedlib invocation."
+    import datetime as _dt
+
+    t0w = _dt.datetime(2026, 3, 15, tzinfo=_dt.timezone.utc)
+    t1w = _dt.datetime(2026, 3, 17, tzinfo=_dt.timezone.utc)
+    blocks = schedlib_source.source_gen_seq(source_name, t0w, t1w)
+    for b in blocks:
+        if b.mode != "rising":
+            continue
+        _, _, alt = b.get_az_alt()
+        if alt.min() <= el_bore <= alt.max():
+            return b
+    raise AssertionError(f"no rising {source_name} block covers el_bore={el_bore}")
+
+
+@pytest.mark.slow
+def test_cross_validate_so_make_source_ces(site, monkeypatch):
+    """Cross-validate source-CES geometry against SO ``schedlib.source.make_source_ces``.
+
+    Resolves Q-15 (xi/eta axis pairing) and Q-16 (boresight_rot sign)
+    by feeding **identical** inputs — same FYST site, same source +
+    observing window, same ``array_info`` footprint, same
+    ``boresight_rot`` — to both Simons Observatory's quaternion
+    implementation (``so3g.proj.quat`` via ``make_source_ces``) and
+    fyst-trajectories' spherical-trig :func:`compute_source_ces_params`.
+
+    Requires ``so3g`` + ``schedlib`` (Linux only; ``so3g`` has no Windows
+    wheel) — skipped otherwise. Run with::
+
+        pytest tests/test_planning_source_ces.py --run-slow -k cross_validate_so
+
+    Convention findings (verified 2026-05-29 against so3g 0.2.7 /
+    schedlib 0.4.0):
+
+    * **Q-15 (xi/eta pairing): CORRECT.** ``ArrayFootprint`` pairs
+      ``xi → cross-elevation`` and ``eta → elevation`` the same way SO's
+      ``quat.rotation_xieta`` does — no 90° axis swap. The projected
+      cover lands at the same on-sky (az, el).
+    * **Q-16 (boresight_rot sign): CORRECT.** fyst's additive
+      ``+boresight_rot`` produces the same cover rotation as SO's
+      ``quat.euler(2, -np.deg2rad(boresight_rot))`` — the signs agree
+      (they do **not** flip) at ±20° and ±45°.
+
+    The one *expected* divergence: SO ``make_source_ces`` projects the
+    cover in a frame with **no field rotation** (SO LAT has a corotator
+    that holds the array fixed in az/el, so ``boresight_rot`` is already
+    the net focal-plane angle), whereas fyst-trajectories — modelling
+    Prime-Cam on a Nasmyth port — adds the physical
+    ``nasmyth_sign·el + parallactic_angle`` term
+    (``source_ces.py`` lines 634-642 and 665-673). The two therefore
+    agree exactly for a **centred** footprint (where that rotation is a
+    no-op on a symmetric circle) and for an **off-centre** footprint
+    once the field-rotation term is reconciled by the documented bridge
+    ``boresight_rot_fyst = boresight_rot_SO − (nasmyth_sign·el + pa)``.
+    This is a platform-physics difference (corotator vs Nasmyth), **not**
+    a bug — see ``docs/reviews/fyst_team_questions.md`` Q-15/Q-16.
+    """
+    so3g = pytest.importorskip("so3g")  # noqa: F841  Linux-only; gates the test
+    schedlib_source = pytest.importorskip("schedlib.source")
+    schedlib_instrument = pytest.importorskip("schedlib.instrument")
+    # Importing the FYST policy registers 'fyst' into schedlib.source.SITES.
+    pytest.importorskip("schedlib.policies.fyst")
+
+    from astropy import units as u
+
+    from fyst_trajectories.offsets import (
+        InstrumentOffset,
+        compute_focal_plane_rotation,
     )
+
+    source_name = "saturn"  # reaches el ~67° from FYST in the chosen window
+    el_bore = 50.0
+
+    # --- Make BOTH sides use the SAME site (FYST). SO's PyEphem path
+    # resolves the source via ``schedlib.source.get_site()``, which
+    # hard-defaults to 'lat'; patch it to 'fyst' (registered by the
+    # policy import) and clear the precomputed-source cache so the FYST
+    # site is actually used.
+    assert "fyst" in schedlib_source.SITES, "FYST site not registered by policy import"
+    _orig_get_site = schedlib_source.get_site
+    monkeypatch.setattr(schedlib_source, "get_site", lambda s="fyst": _orig_get_site(s))
+    schedlib_source.PRECOMPUTED_SOURCES.clear()
+
+    chosen = _so_chosen_rising_block(schedlib_source, source_name, el_bore)
+    window = (Time(chosen.t0), Time(chosen.t1))
+
+    radius_deg = float(MODULE_FOV_RADIUS_DEG)
+    rots = [0.0, 20.0, -20.0, 45.0, -45.0]
+
+    # Tolerances. az_start within 0.05°, az_throw within 0.05°, times
+    # within sampling_step_seconds (30 s). We PIN ``v_az`` on both sides
+    # rather than let each side solve it independently: the drift-rate
+    # objective (minimise az_throw over v_az) is extremely shallow for a
+    # near-stationary source, so SO's bare Nelder-Mead and fyst's
+    # (xatol=1e-5, fatol=1e-4) Nelder-Mead converge to points ~1e-4 deg/s
+    # apart — pure optimiser-tolerance noise, not a convention difference.
+    # Pinning v_az removes that noise and makes az_start/az_throw a
+    # deterministic function of the projection convention (exactly what
+    # Q-15/Q-16 test). Two pinned values exercise the no-drift and
+    # with-drift code paths.
+    AZ_TOL = 0.05
+    THROW_TOL = 0.05
+    SAMPLING_STEP = 30.0
+    PINNED_VAZ = [0.0, -0.0035]  # deg/s: pure-tracking and a small drift
+
+    def _fy_params(footprint, boresight_rot, v_az):
+        # az_padding=0 matches SO (which does not pad); az_accel=1 and
+        # sampling_step_seconds=30 match SO's defaults.
+        return compute_source_ces_params(
+            body=source_name,
+            footprint=footprint,
+            el_bore=el_bore,
+            boresight_rot=boresight_rot,
+            window=window,
+            mode="rising",
+            site=site,
+            sampling_step_seconds=SAMPLING_STEP,
+            az_accel=1.0,
+            az_padding=0.0,
+            az_branch=None,
+            allow_partial=False,
+            v_az=v_az,
+        )
+
+    # =====================================================================
+    # Part 1 — Q-15 / Q-16 common case: CENTRED footprint.
+    #
+    # For a symmetric circular cover centred on the boresight, fyst's
+    # ``nasmyth_sign·el + parallactic`` rotation is a no-op, so the
+    # AS-SHIPPED planner must match SO directly at every boresight_rot.
+    # A swapped xi/eta axis (Q-15) or a flipped boresight_rot sign (Q-16)
+    # would shift az_start here.
+    # =====================================================================
+    ai_c = schedlib_instrument.make_circular_cover(0.0, 0.0, radius_deg, degree=True)
+    fp_c = ArrayFootprint.from_array_info(ai_c, units="rad")
+    for v_az in PINNED_VAZ:
+        for rot in rots:
+            so_block = schedlib_source.make_source_ces(
+                chosen, array_info=ai_c, el_bore=el_bore, v_az=v_az, boresight_rot=rot
+            )
+            assert so_block is not None, f"SO returned None (centred, rot={rot})"
+            fy = _fy_params(fp_c, rot, v_az)
+
+            assert fy["az_start"] == pytest.approx(float(so_block.az), abs=AZ_TOL), (
+                f"centred az_start mismatch at boresight_rot={rot}, v_az={v_az}: "
+                f"fyst={fy['az_start']:.4f} SO={float(so_block.az):.4f}"
+            )
+            assert fy["az_throw"] == pytest.approx(float(so_block.throw), abs=THROW_TOL), (
+                f"centred az_throw mismatch at boresight_rot={rot}, v_az={v_az}: "
+                f"fyst={fy['az_throw']:.4f} SO={float(so_block.throw):.4f}"
+            )
+            # v_az is pinned identically on both sides, so it round-trips.
+            assert fy["v_az"] == pytest.approx(v_az, abs=1e-9)
+            dt0 = abs((Time(fy["t0_iso"]) - Time(so_block.t0)).to_value(u.s))
+            dt1 = abs((Time(fy["t1_iso"]) - Time(so_block.t1)).to_value(u.s))
+            assert dt0 <= SAMPLING_STEP, f"centred t0 off by {dt0:.1f}s at rot={rot}"
+            assert dt1 <= SAMPLING_STEP, f"centred t1 off by {dt1:.1f}s at rot={rot}"
+
+    # =====================================================================
+    # Part 2 — Q-15 / Q-16 discriminating case: OFF-CENTRE i1 module.
+    #
+    # i1 sits at (xi=0, eta≈-1.78°) — asymmetric, so a 90° axis swap or a
+    # mirrored boresight rotation would NOT cancel. SO and fyst encode
+    # different telescopes here (SO corotator vs FYST Nasmyth), so the
+    # only way to prove the xi/eta pairing and boresight sign are correct
+    # is to reconcile the documented field-rotation convention bridge:
+    #
+    #     boresight_rot_fyst = boresight_rot_SO − (nasmyth_sign·el + pa)
+    #
+    # If Q-15 (axis) or Q-16 (sign) were wrong, parity would NOT hold even
+    # after this bridge.
+    # =====================================================================
+    i1_eta_deg = float(get_primecam_offset("i1").dy_deg)
+    ai_i1 = schedlib_instrument.make_circular_cover(0.0, i1_eta_deg, radius_deg, degree=True)
+    fp_i1 = ArrayFootprint.from_array_info(ai_i1, units="rad")
+
+    # Parallactic angle of the source at el_bore, computed the same way the
+    # planner does (PA at t_at_el_bore on the rising arc).
+    coords = Coordinates(site)
+    sample_times = window[0] + TimeDelta(
+        np.arange(0.0, (window[1] - window[0]).to_value(u.s), SAMPLING_STEP) * u.s
+    )
+    _, el_samp = coords.get_body_altaz(source_name, sample_times)
+    i_top = int(np.argmax(el_samp))
+    rising = slice(0, i_top + 1)
+    order = np.argsort(el_samp[rising])
+    t_of_el = np.interp(el_bore, el_samp[rising][order], sample_times.unix[rising][order])
+    t_bore = Time(float(t_of_el), format="unix", scale="utc")
+    ra_b, dec_b = coords.get_body_radec(source_name, t_bore)
+    pa_at_el_bore = float(coords.get_parallactic_angle(ra_b, dec_b, t_bore))
+    field_rot = float(
+        compute_focal_plane_rotation(
+            el=el_bore,
+            site=site,
+            offset=InstrumentOffset(dx=0.0, dy=0.0),
+            parallactic_angle=pa_at_el_bore,
+        )
+    )  # = nasmyth_sign·el + parallactic_angle
+
+    for v_az in PINNED_VAZ:
+        for rot in rots:
+            so_block = schedlib_source.make_source_ces(
+                chosen, array_info=ai_i1, el_bore=el_bore, v_az=v_az, boresight_rot=rot
+            )
+            assert so_block is not None, f"SO returned None (i1, rot={rot})"
+            # Bridge: hand fyst the boresight_rot that cancels its extra
+            # field-rotation term, leaving the same net cover rotation SO uses.
+            fy = _fy_params(fp_i1, rot - field_rot, v_az)
+
+            assert fy["az_start"] == pytest.approx(float(so_block.az), abs=AZ_TOL), (
+                f"i1 az_start mismatch at boresight_rot_SO={rot}, v_az={v_az} "
+                f"(Q-15 axis / Q-16 sign would break this): "
+                f"fyst={fy['az_start']:.4f} SO={float(so_block.az):.4f}"
+            )
+            assert fy["az_throw"] == pytest.approx(float(so_block.throw), abs=THROW_TOL), (
+                f"i1 az_throw mismatch at boresight_rot_SO={rot}, v_az={v_az}: "
+                f"fyst={fy['az_throw']:.4f} SO={float(so_block.throw):.4f}"
+            )
+            assert fy["v_az"] == pytest.approx(v_az, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------

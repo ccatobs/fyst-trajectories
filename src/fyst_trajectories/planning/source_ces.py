@@ -1301,7 +1301,6 @@ def plan_source_ces(
         elevation=el_bore,
         az_speed=velocity,
         az_accel=az_accel,
-        n_scans=n_scans,
     )
 
     base_traj = _build_altaz_trajectory(

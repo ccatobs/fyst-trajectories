@@ -46,10 +46,18 @@ class TestPlanPongScan:
         assert isinstance(block.config, PongScanConfig)
         assert block.duration > 0
         assert block.trajectory.n_points > 0
-        assert "period" in block.computed_params
-        assert "x_numvert" in block.computed_params
-        assert "y_numvert" in block.computed_params
         assert "Pong scan" in block.summary
+
+        # Pin the Lissajous params to hand-derived values for this 1x1 deg,
+        # spacing=0.1, v=0.5 field. vert_spacing = sqrt(2)*0.1, so
+        # x_numvert = y_numvert = ceil(1 / vert_spacing) = 8; the opposite-parity
+        # bump lifts y_numvert to 9 (8 and 9 coprime); and
+        # period = 4*x*y*spacing/velocity = 4*8*9*0.1/0.5 = 57.6 s. Wrong period,
+        # swapped vertex counts, or a half-length trajectory all fail here.
+        assert block.computed_params["x_numvert"] == 8
+        assert block.computed_params["y_numvert"] == 9
+        assert block.computed_params["period"] == pytest.approx(57.6)
+        assert block.duration == pytest.approx(57.6)
 
     def test_duration_equals_period(self, site, start_time, small_field):
         """Test that default duration is one full period."""

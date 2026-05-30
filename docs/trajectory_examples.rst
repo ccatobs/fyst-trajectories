@@ -135,7 +135,6 @@ For manual control (engineering tests, known azimuth ranges),
         elevation=45.0,     # Fixed elevation (deg)
         az_speed=1.0,       # Scan speed (deg/s)
         az_accel=0.5,       # Acceleration (deg/s^2)
-        n_scans=2,          # Back-and-forth count
     )
 
     trajectory = (
@@ -342,7 +341,6 @@ due to Earth's rotation.
         elevation=jupiter_el,
         az_speed=0.5,
         az_accel=0.3,
-        n_scans=4,
     )
 
     trajectory = (
@@ -392,7 +390,6 @@ due to Earth's rotation.
         elevation=bore_el,
         az_speed=0.5,
         az_accel=0.3,
-        n_scans=4,
     )
 
     trajectory = (

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
-from fyst_trajectories.patterns import PongScanConfig, PongScanPattern
+from fyst_trajectories.patterns import PongScanConfig, PongScanPattern, compute_pong_period
 
 
 class TestPongScanPattern:
@@ -58,8 +58,19 @@ class TestPongScanPattern:
         az_range = trajectory.az.max() - trajectory.az.min()
         el_range = trajectory.el.max() - trajectory.el.min()
 
+        # Sanity: the projected trajectory is genuinely 2-D (not a point). The raw
+        # azimuth range is intentionally NOT upper-bounded -- near high elevation
+        # cos(el) inflates the azimuth coordinate, so a ~1 deg on-sky pattern can
+        # span several degrees of azimuth.
         assert az_range > 0.5
         assert el_range > 0.5
+
+        # Precise coverage check in the offset frame (decoupled from cos(el) and
+        # field rotation): for this field x_numvert=8, y_numvert=9, so the pattern
+        # spans 2*amp = numvert*sqrt(2)*spacing -- 1.131 deg in x, 1.273 deg in y.
+        _, x_off, y_off = pattern.generate_offsets(300.0)
+        assert np.ptp(x_off) == pytest.approx(8 * np.sqrt(2) * 0.1, abs=0.1)
+        assert np.ptp(y_off) == pytest.approx(9 * np.sqrt(2) * 0.1, abs=0.1)
 
     def test_pong_smooth_velocities(self, site):
         """Test that Pong pattern has smooth velocities."""
@@ -207,8 +218,8 @@ class TestPongVertexComputation:
 class TestPongScanFlags:
     """Tests for scan flag behavior on Pong trajectories."""
 
-    def test_pong_trajectory_no_flags(self, site):
-        """Pong trajectory should have scan_flag=None (continuous pattern)."""
+    def test_pong_trajectory_has_science_and_turnaround_flags(self, site):
+        """Pong trajectory carries SCIENCE and TURNAROUND scan flags (not None)."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -229,3 +240,96 @@ class TestPongScanFlags:
         # Majority should be science
         science_frac = (trajectory.scan_flag == 1).sum() / len(trajectory.scan_flag)
         assert science_frac > 0.7
+
+
+class TestComputePongPeriod:
+    """Ground-truth tests for the public ``compute_pong_period`` helper.
+
+    ``compute_pong_period`` is exported in ``__all__`` as the canonical entry
+    point for external code (e.g. the scan_patterns cross-validation
+    reference). The Lissajous ``period`` and the two vertex counts it returns
+    were previously never value-checked anywhere in the suite, so a regression
+    in the period math would have passed silently.
+    """
+
+    def test_known_square_field_period(self):
+        """A 2x2 deg, 0.1 deg-spacing pong has a hand-derivable period.
+
+        ``vert_spacing = sqrt(2) * 0.1``; ``x_numvert = y_numvert =
+        ceil(2 / vert_spacing) = 15`` before the opposite-parity bump pushes
+        ``y_numvert`` to 16 (15 and 16 are coprime, so no further bump). The
+        sqrt(2) factors cancel, leaving
+        ``period = 4 * x_numvert * y_numvert * spacing / velocity =
+        4 * 15 * 16 * 0.1 / 0.5 = 192.0`` s.
+        """
+        config = PongScanConfig(
+            timestep=0.1,
+            width=2.0,
+            height=2.0,
+            spacing=0.1,
+            velocity=0.5,
+            num_terms=4,
+            angle=0.0,
+        )
+
+        period, x_numvert, y_numvert = compute_pong_period(config)
+
+        assert x_numvert == 15
+        assert y_numvert == 16
+        assert period == pytest.approx(192.0)
+
+    @pytest.mark.parametrize(
+        "width, height, spacing, velocity",
+        [
+            (2.0, 2.0, 0.1, 0.5),  # square
+            (3.0, 1.0, 0.1, 0.5),  # wide
+            (1.0, 4.0, 0.05, 0.3),  # tall, fine spacing
+            (5.0, 5.0, 0.25, 1.0),  # large, coarse
+        ],
+    )
+    def test_period_invariants(self, width, height, spacing, velocity):
+        """Vertex counts are coprime + opposite-parity and the period is positive.
+
+        The Pong pattern only closes (and so tiles uniformly) when the two axes'
+        vertex counts are coprime with opposite parity; the helper guarantees
+        both by construction. A positive period is required for the downstream
+        ``duration >= period`` coverage checks.
+        """
+        config = PongScanConfig(
+            timestep=0.1,
+            width=width,
+            height=height,
+            spacing=spacing,
+            velocity=velocity,
+            num_terms=4,
+            angle=0.0,
+        )
+
+        period, x_numvert, y_numvert = compute_pong_period(config)
+
+        assert period > 0.0
+        assert math.gcd(x_numvert, y_numvert) == 1
+        assert (x_numvert % 2) != (y_numvert % 2)
+
+    def test_matches_pattern_metadata(self):
+        """``compute_pong_period`` agrees with ``PongScanPattern.get_metadata``.
+
+        The helper and the pattern compute the period from independent copies
+        of the same formula; pin them together so they cannot drift apart.
+        """
+        config = PongScanConfig(
+            timestep=0.1,
+            width=2.0,
+            height=2.0,
+            spacing=0.1,
+            velocity=0.5,
+            num_terms=4,
+            angle=0.0,
+        )
+
+        period, x_numvert, y_numvert = compute_pong_period(config)
+        meta = PongScanPattern(ra=180.0, dec=-30.0, config=config).get_metadata()
+
+        assert meta.pattern_params["period"] == pytest.approx(period)
+        assert meta.pattern_params["x_numvert"] == x_numvert
+        assert meta.pattern_params["y_numvert"] == y_numvert

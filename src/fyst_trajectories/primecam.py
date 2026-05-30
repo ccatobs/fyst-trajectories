@@ -47,10 +47,14 @@ MODULE_FOV_RADIUS_DEG: float = 0.65
 Used by :func:`fyst_trajectories.plan_source_ces` to build a circular
 cover polygon when the caller passes a single ``InstrumentOffset``
 (or a module name) instead of an explicit
-:class:`~fyst_trajectories.planning.ArrayFootprint`. The 0.65° value
-is a conservative placeholder for Prime-Cam (each module's wafer
-subtends ~0.39° at the FYST plate scale; the constant adds margin
-for vignetting and edge channels).
+:class:`~fyst_trajectories.planning.ArrayFootprint`.
+
+The 0.65° value is the published Prime-Cam per-module field of view: each
+module subtends a ~1.3° **diameter** on sky (arXiv:2208.10634), i.e. a 0.65°
+**radius**. The bare detector-wafer extent (~0.39° *diameter* at the FYST plate
+scale) is only a lower bound -- the optical FOV is larger than the illuminated
+wafer -- so 0.65° is the FOV figure to cover with, not a padded-up wafer
+estimate. Tracked as Q-14 pending an as-built per-module FOV measurement.
 
 Pass an explicit :class:`~fyst_trajectories.planning.ArrayFootprint`
 to override.

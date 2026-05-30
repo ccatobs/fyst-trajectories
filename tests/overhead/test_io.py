@@ -2,7 +2,6 @@
 
 import math
 
-import numpy as np
 import pytest
 from astropy.table import Table
 from astropy.time import Time, TimeDelta
@@ -297,7 +296,14 @@ class TestSiteReconstruction:
         assert loaded.site.plate_scale == timeline.site.plate_scale
 
     def test_custom_site_coordinates_preserved(self, tmp_path):
-        """A non-FYST site must be reconstructed from metadata, not replaced."""
+        """A non-FYST site round-trips from metadata, not replaced (M-3).
+
+        A custom ``nasmyth_port="left"`` previously read back as the FYST
+        default ``"right"``, silently flipping the field-rotation sign;
+        ``nasmyth_port``/``plate_scale``/sun radii now persist. ``telescope_limits``
+        are not persisted, so a ``PointingWarning`` is emitted on read.
+        """
+        from fyst_trajectories.exceptions import PointingWarning
         from fyst_trajectories.site import (
             AxisLimits,
             Site,
@@ -317,10 +323,10 @@ class TestSiteReconstruction:
                 elevation=AxisLimits(min=20.0, max=90.0, max_velocity=1.0, max_acceleration=0.5),
             ),
             sun_avoidance=SunAvoidanceConfig(
-                enabled=True, exclusion_radius=45.0, warning_radius=50.0
+                enabled=True, exclusion_radius=40.0, warning_radius=48.0
             ),
-            nasmyth_port="right",
-            plate_scale=13.89,
+            nasmyth_port="left",
+            plate_scale=10.0,
         )
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         timeline = ObservingTimeline(
@@ -344,10 +350,16 @@ class TestSiteReconstruction:
         )
         path = tmp_path / "custom_site.ecsv"
         write_timeline(timeline, path)
-        loaded = read_timeline(path)
+        with pytest.warns(PointingWarning, match="telescope_limits"):
+            loaded = read_timeline(path)
         assert loaded.site.latitude == pytest.approx(-30.0)
         assert loaded.site.longitude == pytest.approx(-70.0)
         assert loaded.site.elevation == pytest.approx(2500.0)
+        # M-3: previously reset to FYST defaults (silent lossy round-trip).
+        assert loaded.site.nasmyth_port == "left"
+        assert loaded.site.plate_scale == pytest.approx(10.0)
+        assert loaded.site.sun_avoidance.exclusion_radius == pytest.approx(40.0)
+        assert loaded.site.sun_avoidance.warning_radius == pytest.approx(48.0)
 
     def test_site_description_round_trips_without_accumulation(self, tmp_path):
         """C5: description round-trips, telescope_name reflects the site, no metadata leak."""
@@ -525,37 +537,35 @@ class TestNasmythConsistency:
             )
 
     def test_nasmyth_rotation_matches_coordinates_via_instance(self):
-        """Smoke-check equivalence using Coordinates with refraction off.
+        """L-6: the two PA paths agree to machine precision at a non-J2000 epoch.
 
-        Astropy's full ICRS→AltAz transform applies precession, nutation
-        and aberration, so AltAz-derived PA won't match HA-derived PA to
-        machine precision even with refraction off. We tolerate a fraction
-        of a degree here and rely on the analytic test above for exact
-        equivalence.
+        ``compute_nasmyth_rotation`` (AltAz form, overhead path) and
+        ``Coordinates.get_parallactic_angle`` (RA/Dec offset + source-CES path)
+        both derive the PA from the *transformed* vacuum Az/El, so they are the
+        same computation. The pre-H-1 ``HA = apparent LST - ICRS RA`` form left a
+        precession bias (~0.3-0.5 deg in 2026); this pins that they now agree.
         """
         from fyst_trajectories.site import AtmosphericConditions
 
         site = get_fyst_site()
         coords = Coordinates(site, atmosphere=AtmosphericConditions.no_refraction())
         time = Time("2026-06-15T05:00:00", scale="utc")
-        ra, dec = 120.0, -30.0
 
-        az, el = coords.radec_to_altaz(ra, dec, time)
-        pa = coords.get_parallactic_angle(ra, dec, time)
+        saw_nonzero = False
+        for ra, dec in [(120.0, -30.0), (200.0, -55.0), (300.0, -10.0)]:
+            az, el = coords.radec_to_altaz(ra, dec, time)
+            if el < 20.0 or el > 80.0:
+                continue
+            pa = coords.get_parallactic_angle(ra, dec, time)
+            if abs(pa) > 1.0:
+                saw_nonzero = True
 
-        altaz_bangle = compute_nasmyth_rotation(float(az), float(el), site)
-        ha_bangle = site.nasmyth_sign * float(el) + float(pa)
-        diff = math.fmod(altaz_bangle - ha_bangle + 540.0, 360.0) - 180.0
-        # Loose tolerance because astropy applies frame corrections.
-        assert abs(diff) < 1.0
+            altaz_bangle = compute_nasmyth_rotation(float(az), float(el), site)
+            ha_bangle = site.nasmyth_sign * float(el) + float(pa)
+            diff = math.fmod(altaz_bangle - ha_bangle + 540.0, 360.0) - 180.0
+            assert abs(diff) < 1e-6, f"PA paths diverge at RA={ra}, dec={dec}: {diff:.6f} deg"
 
-    def test_nasmyth_rotation_vector_sanity(self):
-        """Quick numerical sanity check at known coordinates."""
-        site = get_fyst_site()
-        # At zero azimuth and due south, numerator -sin(az)*cos(lat) = 0
-        # → PA is 0 or 180 depending on the denominator sign.
-        bangle = compute_nasmyth_rotation(0.0, 45.0, site)
-        assert np.isfinite(bangle)
+        assert saw_nonzero  # the comparison genuinely exercised a non-zero PA
 
 
 class TestOverheadModelRoundTrip:
@@ -966,3 +976,54 @@ class TestRetuneEventsRoundTrip:
         assert loaded_events[0].duration == pytest.approx(5.0)
         assert loaded_events[1].t_start == pytest.approx(120.0)
         assert loaded_events[1].duration == pytest.approx(3.0)
+
+
+class TestToastDegUnits:
+    """M-4: a fyst-written ECSV carries deg units, so TOAST GroundSchedule reads it.
+
+    TOAST v5's ``_read_v5`` builds a ``GroundScan`` per row and its
+    ``__init__`` immediately calls ``az_min.to_value(u.degree)`` on the
+    azmin/azmax/el/boresight_angle columns. Bare unit-less floats make that
+    raise (a ``Column`` has no ``.to_value``). We reproduce that unit-consuming
+    step with a ``QTable`` (TOAST reads the ECSV as a QTable) instead of
+    importing ``toast``.
+    """
+
+    def test_angle_columns_carry_deg_units(self, tmp_path):
+        from astropy import units as u
+        from astropy.table import QTable
+
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        timeline = ObservingTimeline(
+            blocks=[
+                TimelineBlock(
+                    t_start=t0,
+                    t_stop=t0 + TimeDelta(60, format="sec"),
+                    block_type="science",
+                    patch_name="patchA",
+                    az_start=120.0,
+                    az_end=140.0,
+                    elevation=55.0,
+                    scan_index=0,
+                )
+            ],
+            site=get_fyst_site(),
+            start_time=t0,
+            end_time=t0 + TimeDelta(60, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        path = tmp_path / "toast.ecsv"
+        write_timeline(timeline, path)
+
+        qt = QTable.read(str(path), format="ascii.ecsv")
+        for col in ("azmin", "azmax", "el", "boresight_angle"):
+            assert qt[col].unit == u.deg, f"column {col} missing deg unit"
+            # The exact call TOAST's GroundScan.__init__ makes; must not raise.
+            vals = qt[col].to_value(u.degree)
+            assert len(vals) >= 1
+
+        # Site coordinates persisted as Quantities (deg/deg/m).
+        assert isinstance(qt.meta["site_lat"], u.Quantity)
+        assert qt.meta["site_lat"].to_value(u.deg) == pytest.approx(get_fyst_site().latitude)
+        assert qt.meta["site_alt"].to_value(u.m) == pytest.approx(get_fyst_site().elevation)

@@ -239,7 +239,6 @@ def plan_constant_el_scan(
         elevation=elevation,
         az_speed=velocity,
         az_accel=az_accel,
-        n_scans=n_scans,
     )
 
     trajectory = _build_altaz_trajectory(

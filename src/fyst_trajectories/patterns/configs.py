@@ -95,8 +95,6 @@ class ConstantElScanConfig(ScanConfig):
     az_accel : float
         Azimuth acceleration in azimuth coordinate
         degrees/second^2 (not on-sky).
-    n_scans : int
-        Number of one-way scan sweeps (legs).
     timestep : float
         Time between trajectory points in seconds.
 
@@ -136,7 +134,6 @@ class ConstantElScanConfig(ScanConfig):
     elevation: float
     az_speed: float
     az_accel: float
-    n_scans: int
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -144,8 +141,6 @@ class ConstantElScanConfig(ScanConfig):
             raise ValueError(f"az_speed must be positive, got {self.az_speed}")
         if self.az_accel <= 0:
             raise ValueError(f"az_accel must be positive, got {self.az_accel}")
-        if self.n_scans < 1:
-            raise ValueError(f"n_scans must be at least 1, got {self.n_scans}")
         az_throw = abs(self.az_stop - self.az_start)
         _warn_if_unusual(az_throw, MAX_REASONABLE_SCAN_WIDTH_DEG, "Azimuth throw", "deg")
         _warn_if_unusual(self.az_speed, MAX_REASONABLE_VELOCITY_DEG_S, "Azimuth speed", "deg/s")
@@ -184,9 +179,15 @@ class PongScanConfig(ScanConfig):
     spacing : float
         Space between scan lines in degrees. Must be positive.
     velocity : float
-        Total scan velocity in sky-offset degrees/second. This is
-        the speed in the tangent plane, not azimuth coordinate
-        velocity. Must be positive.
+        Mean diagonal scan speed in sky-offset degrees/second (the
+        tangent-plane speed, not azimuth coordinate velocity). Note this is
+        the *mean* cruise speed: each axis follows a truncated Fourier triangle
+        wave whose slope peaks mid-ramp, so the *peak* on-sky diagonal speed
+        exceeds ``velocity`` -- by ~17.5% at the default ``num_terms=4``
+        (converging toward a ~14% floor as ``num_terms`` grows, not to zero).
+        A planner sizing ``velocity`` against axis rate limits should budget for
+        that overshoot; the realized mount-frame velocity is checked by
+        ``validate_trajectory_dynamics``. Must be positive.
     num_terms : int
         Fourier terms for triangle wave approximation.
     angle : float

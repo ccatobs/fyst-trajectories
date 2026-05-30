@@ -580,6 +580,13 @@ def apply_detector_offset(
     This is an approximation; for very large scan patterns (many degrees),
     the actual parallactic angle varies across the field.
 
+    The mechanical term ``nasmyth_sign * el`` is evaluated at the input
+    trajectory's elevation (the detector/target elevation), not the returned
+    boresight elevation. The two differ by the offset's elevation component
+    (up to the offset radius), so a consumer that re-derives the field rotation
+    from the *boresight* elevation will get a slightly different value; use the
+    input (detector) elevation to reproduce it.
+
     Examples
     --------
     >>> from astropy.time import Time

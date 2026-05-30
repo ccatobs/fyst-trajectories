@@ -206,6 +206,35 @@ class TestAxisLimits:
             AxisLimits(min=100.0, max=50.0, max_velocity=1.0, max_acceleration=0.5)
 
 
+class TestSunAvoidanceConfig:
+    """L-1: SunAvoidanceConfig enforces 0 <= exclusion_radius <= warning_radius when enabled."""
+
+    def test_valid_config_constructs(self):
+        cfg = SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=50.0)
+        assert cfg.exclusion_radius == 45.0
+        assert cfg.warning_radius == 50.0
+
+    def test_rejects_warning_below_exclusion(self):
+        # Inverted radii make the warning band [exclusion, warning) empty.
+        with pytest.raises(ValueError, match="warning_radius"):
+            SunAvoidanceConfig(enabled=True, exclusion_radius=50.0, warning_radius=40.0)
+
+    def test_rejects_negative_exclusion(self):
+        # Negative exclusion_radius silently disables avoidance while enabled=True.
+        with pytest.raises(ValueError, match="exclusion_radius"):
+            SunAvoidanceConfig(enabled=True, exclusion_radius=-5.0, warning_radius=50.0)
+
+    def test_equal_radii_allowed(self):
+        # warning == exclusion is degenerate (empty warning band) but valid.
+        cfg = SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=45.0)
+        assert cfg.warning_radius == cfg.exclusion_radius
+
+    def test_disabled_config_skips_validation(self):
+        # When disabled the radii are inert; misordered/negative values are allowed.
+        cfg = SunAvoidanceConfig(enabled=False, exclusion_radius=-5.0, warning_radius=0.0)
+        assert cfg.enabled is False
+
+
 class TestNasmythPort:
     """Tests for nasmyth_port and nasmyth_sign property."""
 

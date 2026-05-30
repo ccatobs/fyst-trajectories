@@ -205,7 +205,6 @@ class TestConstantElRaisesBoundsError:
             elevation=15.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=4,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -227,7 +226,6 @@ class TestConstantElRaisesBoundsError:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=4,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -247,7 +245,6 @@ class TestConstantElRaisesBoundsError:
             elevation=15.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=4,
         )
         pattern = ConstantElScanPattern(config)
 
@@ -320,7 +317,6 @@ class TestBuilderRaisesExceptions:
                     elevation=15.0,
                     az_speed=1.0,
                     az_accel=0.5,
-                    n_scans=4,
                 )
             ).duration(120.0).build()
 

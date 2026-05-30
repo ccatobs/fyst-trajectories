@@ -90,6 +90,8 @@ class TestPlotHitMap:
         fig = plot_hit_map(trajectory, offsets, site, show=False)
 
         assert isinstance(fig, Figure)
+        # Two offsets -> at least two panels (plus possible colorbar axes).
+        assert len(fig.axes) >= 2
 
     def test_without_start_time_raises(self):
         """plot_hit_map should raise ValueError if trajectory has no start_time."""
@@ -219,20 +221,20 @@ class TestFormatRaHm:
     def test_format_zero(self):
         """0 degrees is 0h00m."""
         result = _format_ra_hm(0.0, None)
-        assert "0" in result
-        # LaTeX hour marker should be present in the output.
-        assert "h" in result
+        # Exact LaTeX token: hours=0, minutes=00.
+        assert result == "0$^{h}$00$^{m}$"
 
     def test_format_180_is_12h(self):
         """180 degrees = 12h on the RA hour scale."""
         result = _format_ra_hm(180.0, None)
-        assert "12" in result
+        # Starts with the 12-hour value, not merely "12" somewhere in the string.
+        assert result.startswith("12$^{h}$")
+        assert result == "12$^{h}$00$^{m}$"
 
     def test_format_15_is_1h(self):
         """15 degrees = 1h on the RA hour scale."""
         result = _format_ra_hm(15.0, None)
-        assert "1" in result
-        assert "h" in result
+        assert result == "1$^{h}$00$^{m}$"
 
     def test_wraps_at_360(self):
         """RA values at or beyond 360 degrees wrap back to 0h."""

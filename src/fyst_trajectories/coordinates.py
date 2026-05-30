@@ -71,13 +71,15 @@ SOLAR_SYSTEM_BODIES = [
 # by ~22 mas at the catalogue level (the IAU 1997 alignment of ICRS to
 # FK5). For sub-arcsecond catalogue work this matters; for telescope
 # pointing it is well below the beam and is harmless.
+#
+# Only spherical RA/Dec frames are aliased. GALACTIC (``l``/``b``) and ECLIPTIC
+# (``lon``/``lat``) are intentionally omitted: the transform methods read
+# ``ra``/``dec`` attributes and would raise on them (see ``normalize_frame``).
 FRAME_ALIASES: MappingProxyType[str, str] = MappingProxyType(
     {
         "J2000": "icrs",
         "FK5": "fk5",
         "B1950": "fk4",
-        "GALACTIC": "galactic",
-        "ECLIPTIC": "geocentrictrueecliptic",
         "HORIZON": "altaz",
     }
 )
@@ -100,12 +102,22 @@ def normalize_frame(frame: str) -> str:
     str
         The astropy-compatible frame name (always lowercase).
 
+    Notes
+    -----
+    Only spherical RA/Dec frames (``icrs``/``J2000``, ``fk5``/``FK5``,
+    ``fk4``/``B1950``) are usable with :meth:`Coordinates.radec_to_altaz` and
+    :meth:`Coordinates.altaz_to_radec`, which read ``ra``/``dec`` attributes.
+    ``GALACTIC`` and ``ECLIPTIC`` are deliberately not aliased: those frames
+    use ``l``/``b`` and ``lon``/``lat`` and would raise in the transform
+    methods. (An unknown name is still lowercased for astropy, so a caller can
+    pass an astropy frame name directly at their own risk.)
+
     Examples
     --------
     >>> normalize_frame("J2000")
     'icrs'
-    >>> normalize_frame("GALACTIC")
-    'galactic'
+    >>> normalize_frame("FK5")
+    'fk5'
     >>> normalize_frame("icrs")
     'icrs'
     >>> normalize_frame("ICRS")
@@ -714,6 +726,19 @@ class Coordinates:
             Hour angle in degrees, normalized to -180 to 180.
             Positive values indicate the object is west of the meridian.
 
+        Notes
+        -----
+        ``HA = LST − RA`` pairs the apparent-equinox local sidereal time
+        (``sidereal_time("apparent")``) with the supplied RA. When that RA is a
+        catalogue (ICRS/J2000) value, the result carries the precession of RA
+        since J2000 (dec-dependent, ~0.3° in 2026, growing ~0.018°/yr): it is
+        the hour angle relative to the *mean* catalogue position, not the
+        apparent place. That is adequate for the coarse scheduling uses in this
+        library (transit finding, rising/setting sign) but **not** for
+        parallactic-angle or precise pointing work -- use
+        :meth:`get_parallactic_angle`, which transforms to Az/El and is
+        referenced to the apparent pole.
+
         Examples
         --------
         >>> from astropy.time import Time
@@ -753,27 +778,34 @@ class Coordinates:
 
         Notes
         -----
-        The parallactic angle q is computed using:
+        The parallactic angle is derived from the *transformed* horizontal
+        coordinates (Az, El), using the IAU North-through-East AltAz form
 
-        tan(q) = sin(H) / (cos(dec) * tan(lat) - sin(dec) * cos(H))
+        tan(q) = (−sin(A) cos(φ)) / (sin(φ) cos(a) − cos(φ) sin(a) cos(A))
 
-        where H is the hour angle and lat is the observatory latitude.
-        Positive parallactic angle is measured from North through East,
-        following the IAU convention.
+        where ``A`` is azimuth, ``a`` is elevation and ``φ`` is the site
+        latitude. RA/Dec are transformed to Az/El first, so the full
+        precession/nutation/aberration chain is folded into the geometry and
+        the result is referenced to the **apparent** celestial pole. Computing
+        the angle from ``HA = LST − RA`` instead would mix the apparent-equinox
+        LST with the catalogue (ICRS/J2000) RA, leaving an uncorrected
+        precession term (~0.3° in 2026, growing ~0.018°/yr) in the parallactic
+        angle. This is the same AltAz form used by
+        ``overhead.utils.compute_nasmyth_rotation``, so the two paths agree.
 
-        For objects at the zenith or very close to it, the parallactic
-        angle is undefined (returns 0).
+        A vacuum (zero-pressure) transform is used regardless of the
+        atmosphere configured on this ``Coordinates`` instance, so the
+        parallactic angle is the geometric sky-vs-mount rotation.
 
-        Sources whose declination is close to the site latitude
-        (``|dec − lat| < 5°``) transit very near the zenith and the
-        parallactic-angle *rate* diverges as ``dq/dt → ∞`` at transit.
-        The formula above remains stable (``arctan2`` handles the sign
-        flip) but downstream consumers that depend on PA continuity
-        (e.g. focal-plane rotation rate) should be aware that field
-        rotation can swing through 180° in a few seconds at zenith.
-        FYST's lat = −22.99° puts sources with dec ≈ −18° to −28° in
-        this regime; the ``el_min = 20°`` constraint mitigates but does
-        not eliminate the issue.
+        Near the zenith the parallactic angle is ill-conditioned: it is
+        undefined exactly at the zenith and swings through 180° within a few
+        seconds at transit for sources whose declination is close to the site
+        latitude (``|dec − lat|`` small). ``arctan2`` keeps the computation
+        finite, but the result is **not** ≈ 0 there; downstream consumers that
+        depend on PA continuity (e.g. focal-plane rotation rate) should be
+        aware. FYST's lat = −22.99° puts sources with dec ≈ −18° to −28° in
+        this regime; the ``el_min = 20°`` constraint mitigates but does not
+        eliminate the issue.
 
         Examples
         --------
@@ -783,23 +815,28 @@ class Coordinates:
         >>> pa = coords.get_parallactic_angle(83.633, 22.014, obstime=obstime)
         >>> print(f"Parallactic angle: {pa:.2f}°")
         """
-        ha = self.get_hour_angle(ra, obstime)
+        # Transform RA/Dec -> vacuum Az/El, then take the AltAz-form PA (see
+        # Notes): this references the result to the apparent pole and keeps it
+        # geometric, independent of this instance's atmosphere.
+        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+        altaz_frame = AltAz(obstime=obstime, location=self.location, pressure=0 * u.hPa)
+        altaz = sky_coord.transform_to(altaz_frame)
 
-        ha_rad = np.deg2rad(ha)
-        dec_rad = np.deg2rad(dec)
+        az_rad = altaz.az.rad
+        el_rad = altaz.alt.rad
         lat_rad = np.deg2rad(self.site.latitude)
 
-        sin_ha = np.sin(ha_rad)
-        cos_ha = np.cos(ha_rad)
-        sin_dec = np.sin(dec_rad)
-        cos_dec = np.cos(dec_rad)
-        tan_lat = np.tan(lat_rad)
+        sin_az = np.sin(az_rad)
+        cos_az = np.cos(az_rad)
+        sin_el = np.sin(el_rad)
+        cos_el = np.cos(el_rad)
+        sin_lat = np.sin(lat_rad)
+        cos_lat = np.cos(lat_rad)
 
-        numerator = sin_ha
-        denominator = cos_dec * tan_lat - sin_dec * cos_ha
+        numerator = -sin_az * cos_lat
+        denominator = sin_lat * cos_el - cos_lat * sin_el * cos_az
 
-        pa_rad = np.arctan2(numerator, denominator)
-        pa_deg = np.rad2deg(pa_rad)
+        pa_deg = np.rad2deg(np.arctan2(numerator, denominator))
 
         if np.isscalar(ra) and np.isscalar(dec) and obstime.isscalar:
             return float(pa_deg)

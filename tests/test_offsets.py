@@ -4,8 +4,11 @@ import warnings
 
 import numpy as np
 import pytest
+from astropy import units as u
+from astropy.coordinates import TETE, SkyCoord
 from astropy.time import Time
 
+from fyst_trajectories.coordinates import Coordinates
 from fyst_trajectories.exceptions import PointingWarning, TargetNotObservableError
 from fyst_trajectories.offsets import (
     InstrumentOffset,
@@ -20,7 +23,6 @@ from fyst_trajectories.patterns import (
     TrajectoryBuilder,
 )
 from fyst_trajectories.primecam import (
-    PRIMECAM_CENTER,
     PRIMECAM_I1,
     PRIMECAM_MODULES,
     get_primecam_offset,
@@ -33,6 +35,7 @@ from fyst_trajectories.site import (
     get_fyst_site,
 )
 from fyst_trajectories.trajectory import Trajectory
+from fyst_trajectories.trajectory_utils import get_absolute_times
 
 
 class TestBoresightToDetector:
@@ -369,12 +372,12 @@ class TestApplyDetectorOffset:
 
 
 class TestPrimeCamOffsets:
-    """Tests for predefined PrimeCam offsets."""
+    """Tests for predefined PrimeCam offsets.
 
-    def test_center_is_zero(self):
-        """Test that center module has zero offset."""
-        assert PRIMECAM_CENTER.dx == 0.0
-        assert PRIMECAM_CENTER.dy == 0.0
+    Module-lookup, center-is-zero, and inner-ring-equidistant coverage lives in
+    test_primecam.py (TestGetPrimecamOffset / TestCenterModule / the hexagonal
+    symmetry tests); only the I1 direction sign is checked here.
+    """
 
     def test_i1_offset_direction(self):
         """Test I1 module is in correct direction."""
@@ -382,77 +385,9 @@ class TestPrimeCamOffsets:
         assert PRIMECAM_I1.dx == pytest.approx(0.0, abs=1e-10)
         assert PRIMECAM_I1.dy < 0  # Negative y direction
 
-    def test_get_primecam_offset(self):
-        """Test get_primecam_offset function."""
-        offset = get_primecam_offset("c")
-        assert offset is PRIMECAM_CENTER
-
-        offset = get_primecam_offset("i1")
-        assert offset is PRIMECAM_I1
-
-    def test_get_primecam_offset_case_insensitive(self):
-        """Test that module names are case-insensitive."""
-        offset_lower = get_primecam_offset("center")
-        offset_upper = get_primecam_offset("CENTER")
-        offset_mixed = get_primecam_offset("Center")
-
-        assert offset_lower is offset_upper is offset_mixed
-
-    def test_get_primecam_offset_unknown_raises(self):
-        """Test that unknown module raises KeyError."""
-        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
-            get_primecam_offset("nonexistent")
-
-    def test_inner_ring_modules_equidistant(self):
-        """Test that all inner ring modules are same distance from center."""
-        inner_ring_offsets = [
-            PRIMECAM_MODULES["i1"],
-            PRIMECAM_MODULES["i2"],
-            PRIMECAM_MODULES["i3"],
-            PRIMECAM_MODULES["i4"],
-            PRIMECAM_MODULES["i5"],
-            PRIMECAM_MODULES["i6"],
-        ]
-
-        distances = []
-        for offset in inner_ring_offsets:
-            dist = np.sqrt(offset.dx**2 + offset.dy**2)
-            distances.append(dist)
-
-        # All should be same distance
-        np.testing.assert_allclose(distances, distances[0], rtol=1e-10)
-
 
 class TestBuilderForDetector:
     """Tests for TrajectoryBuilder.for_detector() integration."""
-
-    def test_for_detector_in_chain(self, site):
-        """Test for_detector in full builder chain."""
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        offset = InstrumentOffset(dx=30.0, dy=30.0)
-
-        trajectory = (
-            TrajectoryBuilder(site)
-            .at(ra=180.0, dec=-30.0)
-            .with_config(
-                PongScanConfig(
-                    timestep=0.1,
-                    width=1.0,
-                    height=1.0,
-                    spacing=0.1,
-                    velocity=0.5,
-                    num_terms=4,
-                    angle=0.0,
-                )
-            )
-            .for_detector(offset)
-            .duration(60.0)
-            .starting_at(start_time)
-            .build()
-        )
-
-        assert trajectory.n_points > 0
-        assert trajectory.pattern_type == "pong"
 
     def test_for_detector_changes_positions(self, site):
         """Test that for_detector changes trajectory positions."""
@@ -494,31 +429,44 @@ class TestBuilderForDetector:
         assert not np.allclose(trajectory_with.el, trajectory_without.el)
 
     def test_for_detector_with_primecam(self, site):
-        """Test using PrimeCam predefined offset."""
+        """PrimeCam predefined offset displaces pointing by the module distance."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
-        offset = get_primecam_offset("i1")
+        config = PongScanConfig(
+            timestep=0.1,
+            width=1.0,
+            height=1.0,
+            spacing=0.1,
+            velocity=0.5,
+            num_terms=4,
+            angle=0.0,
+        )
 
-        trajectory = (
+        traj_boresight = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
-            .with_config(
-                PongScanConfig(
-                    timestep=0.1,
-                    width=1.0,
-                    height=1.0,
-                    spacing=0.1,
-                    velocity=0.5,
-                    num_terms=4,
-                    angle=0.0,
-                )
-            )
-            .for_detector(offset)
+            .with_config(config)
+            .duration(60.0)
+            .starting_at(start_time)
+            .build()
+        )
+        traj_i1 = (
+            TrajectoryBuilder(site)
+            .at(ra=180.0, dec=-30.0)
+            .with_config(config)
+            .for_detector(get_primecam_offset("i1"))
             .duration(60.0)
             .starting_at(start_time)
             .build()
         )
 
-        assert trajectory.n_points > 0
+        assert traj_i1.n_points == traj_boresight.n_points
+        # I1 sits ~1.78 deg off-axis, so applying it displaces the pointing from
+        # the boresight pointing by that distance on-sky (a no-op offset would
+        # leave the two trajectories identical).
+        d_el = traj_i1.el - traj_boresight.el
+        d_az = (traj_i1.az - traj_boresight.az) * np.cos(np.radians(traj_i1.el))
+        sep = np.hypot(d_az, d_el)
+        assert np.median(sep) == pytest.approx(1.78, abs=0.05)
 
 
 class TestOffsetRoundTrips:
@@ -849,7 +797,6 @@ class TestApplyDetectorOffsetFieldRotation:
                     elevation=45.0,
                     az_speed=1.0,
                     az_accel=0.5,
-                    n_scans=2,
                 )
             )
             .duration(60.0)
@@ -886,7 +833,6 @@ class TestApplyDetectorOffsetFieldRotation:
                     elevation=45.0,
                     az_speed=1.0,
                     az_accel=0.5,
-                    n_scans=2,
                 )
             )
             .duration(60.0)
@@ -926,7 +872,6 @@ class TestApplyDetectorOffsetFieldRotation:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=2,
         )
 
         traj_right = (
@@ -964,7 +909,6 @@ class TestApplyDetectorOffsetFieldRotation:
             elevation=45.0,
             az_speed=1.0,
             az_accel=0.5,
-            n_scans=2,
         )
 
         trajectory = (
@@ -1304,7 +1248,6 @@ class TestPointingWarningEmitted:
                     elevation=45.0,
                     az_speed=1.0,
                     az_accel=0.5,
-                    n_scans=2,
                 )
             )
             .duration(60.0)
@@ -1409,3 +1352,111 @@ class TestPrimeCamFromFocalPlane:
 
         assert i1.dx == pytest.approx(0.0, abs=1e-10)
         assert i1.dy == pytest.approx(expected_dy, rel=1e-6)
+
+
+class TestComputeFocalPlaneRotationArray:
+    """The array-input path of compute_focal_plane_rotation (used by live PCS).
+
+    Every other caller passes scalars; the PCS scan tasks pass per-sample
+    arrays, so the broadcasting path had no regression guard.
+    """
+
+    def test_array_el_and_pa_broadcast_elementwise(self):
+        site = get_fyst_site()  # right Nasmyth -> nasmyth_sign = +1
+        offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=10.0)
+        el = np.array([20.0, 45.0, 70.0])
+        pa = np.array([5.0, -3.0, 12.0])
+
+        rot = compute_focal_plane_rotation(el, site, offset, parallactic_angle=pa)
+
+        assert isinstance(rot, np.ndarray)
+        assert rot.shape == (3,)
+        np.testing.assert_allclose(rot, site.nasmyth_sign * el + 10.0 + pa)
+        # Concrete spot-check: +1*45 + 10 + (-3) = 52.
+        assert rot[1] == pytest.approx(52.0)
+
+
+def _independent_apparent_pa(coords, ra, dec, times):
+    """Parallactic angle from an independent apparent-place transform (no lib PA).
+
+    Brings the ICRS centre to the apparent equinox of date (TETE) and forms
+    ``HA = LAST - RA_apparent`` before applying the IAU spherical-triangle
+    formula. Independent of ``Coordinates.get_parallactic_angle`` so it can be
+    used as ground truth for the offset path.
+    """
+    loc = coords.location
+    lat_rad = np.deg2rad(coords.site.latitude)
+    app = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs").transform_to(
+        TETE(obstime=times, location=loc)
+    )
+    last = times.sidereal_time("apparent", longitude=loc.lon).to_value(u.deg)
+    ha = np.deg2rad(((last - app.ra.deg + 180.0) % 360.0) - 180.0)
+    dr = np.deg2rad(app.dec.deg)
+    return np.rad2deg(
+        np.arctan2(np.sin(ha), np.tan(lat_rad) * np.cos(dr) - np.sin(dr) * np.cos(ha))
+    )
+
+
+class TestOffsetPathLandsOnTarget:
+    """H-2/L-9: the named detector observes the original target after the offset.
+
+    ``apply_detector_offset`` places an off-axis module by rotating its
+    focal-plane offset by the field rotation (which includes the parallactic
+    angle from ``get_parallactic_angle``). If that PA carries the H-1 frame
+    bias, the boresight is computed for the wrong rotation and the module lands
+    off-target by ``offset_radius * PA_error`` -- tens of arcsec for an
+    inner-ring module. This test plans the boresight with the library, then
+    propagates the module back to sky with an *independent* apparent-place
+    field rotation and asserts it lands on the original target.
+    """
+
+    def test_inner_ring_module_lands_on_target(self):
+        site = get_fyst_site()
+        coords = Coordinates(site)
+        start_time = Time("2026-03-15T04:00:00", scale="utc")
+        ra, dec = 180.0, -30.0  # el ~ 74.6 deg at this epoch -- well observable
+
+        trajectory = (
+            TrajectoryBuilder(site)
+            .at(ra=ra, dec=dec)
+            .with_config(
+                PongScanConfig(
+                    timestep=0.5,
+                    width=0.5,
+                    height=0.5,
+                    spacing=0.1,
+                    velocity=0.3,
+                    num_terms=4,
+                    angle=0.0,
+                )
+            )
+            .duration(20.0)
+            .starting_at(start_time)
+            .build()
+        )
+
+        # PRIMECAM_I1 is an inner-ring module ~106.8 arcmin (1.78 deg) off-axis.
+        boresight = apply_detector_offset(trajectory, PRIMECAM_I1, site)
+
+        # Independent ground-truth field rotation (apparent-place PA, no lib PA),
+        # evaluated at the detector elevation (the elevation the offset is applied at).
+        abs_times = get_absolute_times(trajectory)
+        pa_true = _independent_apparent_pa(
+            coords, trajectory.center_ra, trajectory.center_dec, abs_times
+        )
+        phi_true = compute_focal_plane_rotation(trajectory.el, site, PRIMECAM_I1, pa_true)
+
+        # Where the module actually points given the library's planned boresight.
+        actual_az, actual_el = boresight_to_detector(
+            boresight.az, boresight.el, PRIMECAM_I1, phi_true
+        )
+
+        # The module must observe the original target (the input trajectory).
+        target = SkyCoord(trajectory.az * u.deg, trajectory.el * u.deg, frame="altaz")
+        actual = SkyCoord(actual_az * u.deg, actual_el * u.deg, frame="altaz")
+        miss_arcsec = target.separation(actual).to_value(u.arcsec)
+
+        assert miss_arcsec.max() < 5.0, (
+            f"inner-ring module misses target by up to {miss_arcsec.max():.1f} arcsec "
+            "-- field rotation (parallactic angle) is mis-referenced"
+        )

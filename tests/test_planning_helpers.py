@@ -41,9 +41,14 @@ class TestFieldRegionCorners:
         assert max(abs(r) for r in ra_vals) == pytest.approx(1.0, abs=0.01)
         assert max(abs(d) for d in dec_vals) == pytest.approx(2.0, abs=0.01)
 
+    def test_near_pole_raises(self):
+        """A field within ~0.57 deg of a celestial pole raises (cos(dec) -> 0)."""
+        with pytest.raises(ValueError, match="too close to celestial pole"):
+            _field_region_corners(10.0, 89.5, 4.0, 6.0, 0.0)
+
 
 class TestCrossPlanIntegration:
-    """Cross-plan tests: all three plan functions with the same field."""
+    """Cross-plan tests: the area-mapping planners (pong, daisy) on one field."""
 
     @pytest.fixture
     def shared_field(self):
@@ -54,8 +59,8 @@ class TestCrossPlanIntegration:
     def shared_time(self):
         return Time("2026-03-15T04:00:00", scale="utc")
 
-    def test_all_plans_produce_finite_trajectories(self, site, shared_field, shared_time):
-        """All three plan functions produce trajectories with finite az/el values."""
+    def test_pong_and_daisy_produce_finite_trajectories(self, site, shared_field, shared_time):
+        """The pong and daisy planners produce trajectories with finite az/el values."""
         pong = plan_pong_scan(
             field=shared_field,
             velocity=0.5,

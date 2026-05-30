@@ -34,10 +34,10 @@ def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
     :meth:`fyst_trajectories.coordinates.Coordinates.get_field_rotation`,
     which needs RA/Dec.
 
-    The AltAz-form parallactic angle is mathematically equivalent to the
-    HA-based form used by ``coordinates.get_parallactic_angle``; see
-    ``TestNasmythConsistency`` in ``tests/overhead/test_io.py`` for the
-    cross-check.
+    ``coordinates.get_parallactic_angle`` derives the parallactic angle from
+    the same transformed (vacuum) Az/El, so this function and that method
+    return the same value to machine precision; see ``TestNasmythConsistency``
+    in ``tests/overhead/test_io.py`` for the cross-check.
 
     Parameters
     ----------

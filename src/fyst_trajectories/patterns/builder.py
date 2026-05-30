@@ -114,7 +114,6 @@ class TrajectoryBuilder:
     ...             elevation=45.0,
     ...             az_speed=1.0,
     ...             az_accel=0.5,
-    ...             n_scans=2,
     ...         )
     ...     )
     ...     .duration(60.0)
