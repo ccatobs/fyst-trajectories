@@ -186,7 +186,8 @@ class AtmosphericConditions:
     Parameters
     ----------
     pressure : float
-        Atmospheric pressure in hPa.
+        Atmospheric pressure in hPa. Must be non-negative; ``0`` disables
+        refraction (see :meth:`no_refraction`).
     temperature : float
         Temperature in Kelvin.
     relative_humidity : float
@@ -196,12 +197,14 @@ class AtmosphericConditions:
         the radio refraction model instead of optical. The radio model is
         wavelength-independent, so any value above 100 µm (e.g. 200 µm)
         covers all FYST submillimeter bands. Default is ``None``, which
-        preserves astropy's default optical refraction (1.0 µm).
+        preserves astropy's default optical refraction (1.0 µm). Must be
+        positive when provided.
 
     Raises
     ------
     ValueError
-        If relative_humidity is not in the range [0, 1].
+        If ``relative_humidity`` is outside ``[0, 1]``, ``pressure`` is
+        negative, or ``obswl`` is non-positive.
 
     See Also
     --------
@@ -221,6 +224,15 @@ class AtmosphericConditions:
             raise ValueError(
                 f"relative_humidity must be in range [0, 1], got {self.relative_humidity}"
             )
+        # ``pressure == 0`` is load-bearing (it is how ``no_refraction`` disables
+        # refraction), so only negative pressure is rejected. ``obswl <= 0`` is the
+        # real silent-garbage path: ERFA's optical-dispersion term evaluates to a
+        # finite but wrong refraction constant (~2x over-refraction) rather than
+        # erroring; a negative pressure is harmless (ERFA clamps it to vacuum).
+        if self.pressure < 0:
+            raise ValueError(f"pressure must be >= 0 hPa, got {self.pressure}")
+        if self.obswl is not None and self.obswl <= 0:
+            raise ValueError(f"obswl must be > 0 microns, got {self.obswl}")
 
     @classmethod
     def no_refraction(cls) -> "AtmosphericConditions":

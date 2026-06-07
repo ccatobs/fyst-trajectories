@@ -820,6 +820,11 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="slew",
+            # Precondition: az_start/az_end lie on the same side of the north
+            # wrap — the scheduler's continuous patch-tracking never emits a
+            # slew straddling az=0/360 — so this arithmetic midpoint is the true
+            # mid-azimuth. A north-straddling pair (e.g. 355/5) would need a
+            # circular mean (atan2 of mean sin/cos) to avoid a ~180°-wrong angle.
             boresight_angle=compute_nasmyth_rotation(0.5 * (az_start + az_end), el, site),
             metadata=empty_meta,
         )

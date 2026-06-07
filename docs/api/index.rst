@@ -11,6 +11,7 @@ API Reference
    patterns
    offsets
    planning
+   observability
    plotting
    exceptions
    overhead_models

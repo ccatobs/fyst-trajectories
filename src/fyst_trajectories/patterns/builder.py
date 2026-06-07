@@ -354,7 +354,8 @@ class TrajectoryBuilder:
         ValueError
             If required parameters are missing (config, duration,
             coordinates for celestial patterns, or start time for
-            time-dependent patterns).
+            time-dependent patterns), or if the duration is shorter
+            than the config timestep.
         TargetNotObservableError
             If the target is not observable at the requested time.
         TrajectoryBoundsError
@@ -364,6 +365,18 @@ class TrajectoryBuilder:
             raise ValueError("Pattern not set. Call .with_config() first.")
         if self._duration is None:
             raise ValueError("Duration not set. Call .duration() first.")
+
+        # A scan shorter than a single sample is degenerate: pattern generators
+        # produce 0- or 1-point arrays that then fail opaquely in np.gradient or
+        # array reductions (daisy raises a zero-size reduction error; pong and
+        # sidereal raise IndexError). Reject it here at the shared entry point so
+        # every pattern fails with one clear message rather than a deep numpy one.
+        config_timestep = getattr(self._config, "timestep", None)
+        if config_timestep is not None and self._duration < config_timestep:
+            raise ValueError(
+                f"duration ({self._duration}) must be >= the config timestep "
+                f"({config_timestep}); a scan shorter than one sample is degenerate."
+            )
 
         pattern_cls = get_pattern(self._pattern_name)
 

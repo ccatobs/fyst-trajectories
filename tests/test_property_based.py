@@ -14,7 +14,8 @@ Properties tested:
 
 import numpy as np
 import pytest
-from astropy.time import Time
+from astropy import units as u
+from astropy.time import Time, TimeDelta
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
@@ -83,6 +84,17 @@ duration_strategy = st.floats(
 
 # Timestep in seconds
 timestep_strategy = st.floats(min_value=0.1, max_value=1.0, allow_nan=False, allow_infinity=False)
+
+# Solar-system bodies and a random epoch offset (for ephemeris round-trip checks).
+# Titan (the satellite path) is intentionally NOT fuzzed here (deferred from feasibility
+# study Sec 5.3 B): the satellite path differs from the builtin path only in the
+# epoch-independent _resolve_body lookup, and the downstream get_body + vacuum-AltAz
+# inversion it shares is already fuzzed across these 7 bodies. Titan's round-trip
+# invariant is pinned at fixed epochs in test_coordinates.py::TestTitanSatelliteResolver.
+body_strategy = st.sampled_from(["sun", "moon", "mars", "jupiter", "saturn", "uranus", "neptune"])
+epoch_offset_days_strategy = st.floats(
+    min_value=0.0, max_value=300.0, allow_nan=False, allow_infinity=False
+)
 
 
 # -----------------------------------------------------------------------------
@@ -160,6 +172,24 @@ class TestCoordinateTransformProperties:
 
         assert az1 == az2, f"Non-deterministic azimuth: {az1} != {az2}"
         assert el1 == el2, f"Non-deterministic elevation: {el1} != {el2}"
+
+    @given(body=body_strategy, offset_days=epoch_offset_days_strategy)
+    @settings(max_examples=40, deadline=None)
+    def test_get_body_radec_round_trips_to_altaz(self, body, offset_days):
+        """get_body_radec must be the apparent place: it round-trips to get_body_altaz.
+
+        This is the invariant the barycentric ``.icrs`` bug violated by ~600,000
+        arcsec; checked here over randomized bodies and epochs so the guard holds
+        across geometry, not just hand-picked dates.
+        """
+        t = self.obstime + TimeDelta(offset_days * u.day)
+        ra, dec = self.coords.get_body_radec(body, obstime=t)
+        az_rt, el_rt = self.coords.radec_to_altaz(ra, dec, obstime=t)
+        az_b, el_b = self.coords.get_body_altaz(body, obstime=t)
+        sep_arcsec = self.coords.angular_separation(az_rt, el_rt, az_b, el_b) * 3600.0
+        assert sep_arcsec < 1.0, (
+            f"{body} radec/altaz inconsistent by {sep_arcsec:.3f} arcsec at {t.iso}"
+        )
 
 
 # -----------------------------------------------------------------------------

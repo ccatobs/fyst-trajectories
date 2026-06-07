@@ -121,9 +121,9 @@ def plan_constant_el_scan(
     Raises
     ------
     ValueError
-        If the elevation crossings cannot be found within the search
-        window, or if ``lsa_window`` is supplied with equal endpoints
-        or values outside ``[0, 360)``.
+        If ``velocity`` is not positive, if the elevation crossings
+        cannot be found within the search window, or if ``lsa_window``
+        is supplied with equal endpoints or values outside ``[0, 360)``.
     PointingError
         If ``lsa_window`` is supplied and LST never increases through
         ``min_lsa`` within ``max_search_hours`` of ``start_time``.
@@ -141,8 +141,8 @@ def plan_constant_el_scan(
     Sun moves ~15°/hour — a field that is safely far from the Sun
     at ``start_time`` may not be safe by the time the LSA window
     opens. The elevation-crossing path runs the check only at
-    ``start_time`` because ``obs_start`` resolves within a typical
-    few-seconds search offset of the anchor.
+    ``start_time``; the resolved ``obs_start`` can fall tens of minutes
+    (occasionally hours) later, so this pre-flight is anchor-time only.
 
     Examples
     --------
@@ -176,13 +176,17 @@ def plan_constant_el_scan(
     ...     lsa_window=(310.0, 10.0),
     ... )
     """
+    if velocity <= 0:
+        raise ValueError(f"velocity must be positive, got {velocity}")
+
     if isinstance(start_time, str):
         start_time = Time(start_time, scale="utc")
 
     # Pre-flight sun-safety check at the *search anchor*. For the
-    # elevation-crossing path this is essentially the observation start
-    # (``obs_start`` resolves within seconds of ``start_time`` in the
-    # typical case). For the LSA-window path we re-check below once
+    # elevation-crossing path this is the only check — the resolved
+    # ``obs_start`` can be tens of minutes (occasionally hours) after
+    # ``start_time``, so the pre-flight is anchor-time only. For the
+    # LSA-window path we re-check below once
     # ``obs_start`` is known — the LSA branch can delay observation by
     # hours, during which the Sun moves ~15°/h, so a field that is
     # 50° from the Sun at ``start_time`` can be 5° from it at

@@ -55,6 +55,7 @@ __version__ = "0.4.0"
 
 from .coordinates import (
     FRAME_ALIASES,
+    SATELLITE_BODIES,
     SOLAR_SYSTEM_BODIES,
     Coordinates,
     normalize_frame,
@@ -66,6 +67,18 @@ from .exceptions import (
     PointingWarning,
     TargetNotObservableError,
     TrajectoryBoundsError,
+)
+from .observability import (
+    FLUX_CALIBRATORS,
+    AvoidSeparation,
+    AvoidZone,
+    ObservabilityReport,
+    ObservabilityWindow,
+    ReasonCode,
+    Target,
+    TargetKind,
+    check_observability,
+    resolve_target,
 )
 from .offsets import (
     InstrumentOffset,
@@ -87,6 +100,8 @@ from .patterns import (
     PlanetTrackPattern,
     PongScanConfig,
     PongScanPattern,
+    SatelliteTrackConfig,
+    SatelliteTrackPattern,
     ScanConfig,
     ScanPattern,
     SiderealTrackConfig,
@@ -129,6 +144,7 @@ from .primecam import (
     PRIMECAM_MODULES,
     get_primecam_offset,
     primecam_geometry_dict,
+    resolve_module_tag,
     resolve_offset,
 )
 from .site import (
@@ -220,8 +236,20 @@ __all__ = [
     # Coordinates
     "Coordinates",
     "SOLAR_SYSTEM_BODIES",
+    "SATELLITE_BODIES",
     "FRAME_ALIASES",
     "normalize_frame",
+    # Observability (OBSERVE / EXCLUDE primitives)
+    "check_observability",
+    "resolve_target",
+    "Target",
+    "TargetKind",
+    "AvoidZone",
+    "AvoidSeparation",
+    "ObservabilityReport",
+    "ObservabilityWindow",
+    "ReasonCode",
+    "FLUX_CALIBRATORS",
     # Trajectory
     "Trajectory",
     "SCAN_FLAG_UNCLASSIFIED",
@@ -260,12 +288,14 @@ __all__ = [
     "DaisyScanConfig",
     "SiderealTrackConfig",
     "PlanetTrackConfig",
+    "SatelliteTrackConfig",
     "LinearMotionConfig",
     # Pattern classes
     "ConstantElScanPattern",
     "LinearMotionPattern",
     "SiderealTrackPattern",
     "PlanetTrackPattern",
+    "SatelliteTrackPattern",
     "PongScanPattern",
     "DaisyScanPattern",
     # Builder
@@ -296,6 +326,7 @@ __all__ = [
     "compute_focal_plane_rotation",
     "get_primecam_offset",
     "primecam_geometry_dict",
+    "resolve_module_tag",
     "resolve_offset",
     "MODULE_FOV_RADIUS_DEG",
     "PRIMECAM_CENTER",

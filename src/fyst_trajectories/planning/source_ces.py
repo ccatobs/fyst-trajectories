@@ -499,8 +499,9 @@ def _compute_source_ces_core(
         mode = "rising" if el_src[i_end_inclusive] > el_src[i_beg] else "setting"
     else:
         # Filter arcs by direction, then take the first (chronologically)
-        # whose el-range covers ``el_bore``. If none does, fall back to the
-        # first directional arc.
+        # whose el-range covers ``el_bore``. If none does, raise
+        # ``TargetNotObservableError`` reporting the best-available el span
+        # across all directional arcs (no silent fall-back).
         if mode == "rising":
             directional = [arc for arc in arcs if el_src[arc[1]] > el_src[arc[0]]]
         else:
@@ -1031,14 +1032,16 @@ def compute_source_ces_params(
     az_limits = site.telescope_limits.azimuth
     cp = core.computed
     pass_duration = max(core.actual_duration, 0.0)
-    drift_end = abs(cp["v_az"]) * pass_duration
-    env_lo = min(cp["az_start"], cp["az_start"] + cp["az_throw"]) - max(0.0, cp["v_az"] * 0.0)
-    env_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"]) + 0.0
-    # The drift shifts both ends in the same direction (sign of v_az);
-    # we don't know which end is "later" geometrically, so widen the
-    # envelope in both directions by the drift magnitude.
-    env_lo -= drift_end
-    env_hi += drift_end
+    drift_total = cp["v_az"] * pass_duration
+    env_lo = min(cp["az_start"], cp["az_start"] + cp["az_throw"])
+    env_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"])
+    # The executed trajectory applies ``az + v_az·times`` (see
+    # ``plan_source_ces``), so the linear drift shifts the track in a
+    # single direction (the sign of ``v_az``): later samples move toward
+    # ``+drift_total``. Widen only on that side so the envelope matches
+    # the trajectory ``plan_source_ces`` actually builds and validates.
+    env_lo += min(0.0, drift_total)
+    env_hi += max(0.0, drift_total)
     if env_lo < az_limits.min or env_hi > az_limits.max:
         raise AzimuthBoundsError(
             actual_min=float(env_lo),

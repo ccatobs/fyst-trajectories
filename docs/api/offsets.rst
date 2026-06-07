@@ -9,7 +9,7 @@ Utilities for handling detector offsets from telescope boresight.
    :no-index:
 
 .. automodule:: fyst_trajectories.primecam
-   :members: resolve_offset, get_primecam_offset, PRIMECAM_MODULES, INNER_RING_RADIUS_MM
+   :members: resolve_offset, resolve_module_tag, get_primecam_offset, PRIMECAM_MODULES, INNER_RING_RADIUS_MM
    :undoc-members:
    :no-index:
 

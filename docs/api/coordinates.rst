@@ -92,6 +92,14 @@ Usage Examples
        print(SOLAR_SYSTEM_BODIES)
        # ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', ...]
 
+.. note::
+
+   Planetary satellites (e.g. Titan) are addressed separately, listed in the
+   public ``SATELLITE_BODIES`` tuple. Unlike the builtin bodies they require a JPL
+   satellite SPK kernel, supplied via ``Coordinates(satellite_kernel=...)`` or the
+   ``FYST_SATELLITE_KERNEL`` environment variable (the optional ``[ephemeris]``
+   extra). See :class:`fyst_trajectories.patterns.SatelliteTrackConfig`.
+
 **Safety checks**::
 
     obstime = Time("2026-03-15T04:00:00", scale="utc")

@@ -5,6 +5,8 @@ horizontal coordinate systems, including atmospheric refraction
 corrections and solar system ephemeris calculations.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from astropy import units as u
@@ -158,6 +160,120 @@ class TestSolarSystemBodies:
             ra, dec = coordinates.get_body_radec(body, obstime=obstime)
             assert isinstance(ra, float)
             assert isinstance(dec, float)
+
+    @pytest.mark.parametrize(
+        "epoch",
+        ["2026-06-15T16:30:00", "2026-03-15T04:30:00"],
+    )
+    @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
+    def test_get_body_radec_is_apparent_position(self, coordinates, body, epoch):
+        """get_body_radec returns the apparent place, not the barycentric direction.
+
+        The returned RA/Dec must round-trip back to the same Az/El that
+        ``get_body_altaz`` reports. The previous ``.icrs`` implementation
+        returned the barycentric (SSB->body) direction, off by 7k-613k arcsec
+        here, so this is the regression guard for the barycentric bug.
+        """
+        t = Time(epoch, scale="utc")
+        ra, dec = coordinates.get_body_radec(body, obstime=t)
+        az_rt, el_rt = coordinates.radec_to_altaz(ra, dec, obstime=t)
+        az_body, el_body = coordinates.get_body_altaz(body, obstime=t)
+        sep_arcsec = (
+            np.hypot((az_rt - az_body) * np.cos(np.deg2rad(el_body)), el_rt - el_body) * 3600.0
+        )
+        assert sep_arcsec < 1.0
+
+    @pytest.mark.parametrize(
+        "epoch",
+        ["2026-06-15T16:30:00", "2026-03-15T04:30:00"],
+    )
+    @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
+    def test_get_body_radec_parallactic_angle_geometric(self, coordinates, body, epoch):
+        """get_body_radec feeds get_parallactic_angle to the geometric truth.
+
+        Compute the geometric parallactic angle directly from the body's
+        apparent Az/El (IAU AltAz form) and require ``get_parallactic_angle``
+        of the reported RA/Dec to match. The barycentric ``.icrs`` produced PA
+        errors up to ~348 deg (Moon); the fix is exact.
+        """
+        t = Time(epoch, scale="utc")
+        az_body, el_body = coordinates.get_body_altaz(body, obstime=t)
+        az_r = np.deg2rad(az_body)
+        el_r = np.deg2rad(el_body)
+        lat_r = np.deg2rad(coordinates.site.latitude)
+        num = -np.sin(az_r) * np.cos(lat_r)
+        den = np.sin(lat_r) * np.cos(el_r) - np.cos(lat_r) * np.sin(el_r) * np.cos(az_r)
+        pa_truth = np.rad2deg(np.arctan2(num, den))
+
+        ra, dec = coordinates.get_body_radec(body, obstime=t)
+        pa = coordinates.get_parallactic_angle(ra, dec, obstime=t)
+        dpa = abs(((pa - pa_truth + 180.0) % 360.0) - 180.0)
+        assert dpa < 1e-3
+
+    def test_get_body_radec_not_antisolar(self, coordinates):
+        """The Sun's RA/Dec is the apparent place, not the barycentric anti-solar point.
+
+        At this epoch the apparent Sun is near (83.7, +23.3); the old ``.icrs``
+        returned the anti-solar (248.9, -20.9). Guards against regressing to the
+        SSB direction.
+        """
+        t = Time("2026-06-15T16:30:00", scale="utc")
+        ra, dec = coordinates.get_body_radec("sun", obstime=t)
+        assert ra == pytest.approx(83.7, abs=1.0)
+        assert dec == pytest.approx(23.3, abs=1.0)
+        # ...and far from the barycentric anti-solar direction the bug produced.
+        sep_antisolar = np.rad2deg(
+            np.arccos(
+                np.clip(
+                    np.sin(np.deg2rad(dec)) * np.sin(np.deg2rad(-20.9))
+                    + np.cos(np.deg2rad(dec))
+                    * np.cos(np.deg2rad(-20.9))
+                    * np.cos(np.deg2rad(ra - 248.9)),
+                    -1.0,
+                    1.0,
+                )
+            )
+        )
+        assert sep_antisolar > 90.0
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
+    def test_get_body_radec_matches_skyfield(self, coordinates, body):
+        """Cross-check the apparent RA/Dec against skyfield (independent oracle).
+
+        Skyfield is a dev-only dependency, imported here (never in ``src/``).
+        The ~30 arcsec tolerance absorbs the astropy-vs-skyfield ephemeris and
+        aberration differences; it is far tighter than the barycentric error.
+        """
+        skyfield_api = pytest.importorskip("skyfield.api")
+        from astropy.coordinates import angular_separation
+
+        eph = skyfield_api.load("de421.bsp")
+        ts = skyfield_api.load.timescale()
+        observer = eph["earth"] + skyfield_api.wgs84.latlon(
+            coordinates.site.latitude,
+            coordinates.site.longitude,
+            elevation_m=coordinates.site.elevation,
+        )
+        sf_names = {
+            "sun": "sun",
+            "moon": "moon",
+            "mars": "mars",
+            "jupiter": "jupiter barycenter",
+            "saturn": "saturn barycenter",
+            "neptune": "neptune barycenter",
+        }
+        t = Time("2026-06-15T16:30:00", scale="utc")
+        ra, dec = coordinates.get_body_radec(body, obstime=t)
+        astrometric = observer.at(ts.from_astropy(t)).observe(eph[sf_names[body]]).apparent()
+        ra_sf, dec_sf, _ = astrometric.radec()
+        sep_arcsec = (
+            np.rad2deg(
+                angular_separation(np.deg2rad(ra), np.deg2rad(dec), ra_sf.radians, dec_sf.radians)
+            )
+            * 3600.0
+        )
+        assert sep_arcsec < 30.0
 
 
 class TestAngularSeparation:
@@ -487,12 +603,15 @@ class TestSunUsesTopocentricBody:
     """Tests for the ``get_sun`` → ``get_body("sun", ..., location=...)`` switch."""
 
     def test_sun_altaz_carries_topocentric_parallax(self, coordinates, site):
-        """The Sun's altaz position differs from a geocentric calculation by ~few arcsec.
+        """get_body('sun', location=...) differs from a geocentric get_sun() by ~arcsec.
 
-        ``astropy.coordinates.get_sun`` is geocentric; switching to
-        ``get_body`` with ``location=self.location`` adds the topocentric
-        parallax (~8.8 arcsec). The two should differ by less than the Sun's
-        angular diameter (~0.5°) but by more than zero.
+        The library uses ``get_body("sun", ..., location=...)`` rather than the
+        geocentric ``astropy.coordinates.get_sun``. The two apparent places
+        differ at the ~arcsec scale — an ephemeris/algorithm difference plus the
+        Sun's tiny topocentric effect (the on-sky parallax for the Sun is
+        ~0.01″, far below the 8.8″ horizontal-parallax *constant*). This is a
+        sanity range-check (nonzero, well under the Sun's ~0.5° diameter), not a
+        pinned value.
         """
         from astropy.coordinates import AltAz, get_sun
 
@@ -536,6 +655,20 @@ class TestGetFieldRotation:
 
         assert isinstance(fr, np.ndarray)
         assert len(fr) == 3
+
+    def test_field_rotation_atmosphere_invariant(self, coordinates):
+        """Field rotation is vacuum/geometric regardless of instance atmosphere (S-1).
+
+        The Nasmyth elevation term and the parallactic angle are both vacuum
+        quantities; a refracted elevation would leak refraction into the
+        mechanical term. A refracted instance must return an identical result.
+        """
+        obstime = Time("2026-06-15T08:00:00", scale="utc")
+        ref = Coordinates(coordinates.site, atmosphere=AtmosphericConditions.for_fyst())
+        for ra, dec in [(200.0, -30.0), (83.633, 22.014), (10.0, -60.0)]:
+            assert coordinates.get_field_rotation(ra, dec, obstime=obstime) == pytest.approx(
+                ref.get_field_rotation(ra, dec, obstime=obstime), abs=1e-6
+            )
 
 
 class TestProperMotion:
@@ -739,3 +872,159 @@ class TestSunBoundaryParity:
             validate_sun_avoidance(site, np.array([az, az]), np.array([el, el]), times)
         boundary_flagged = any("EXCLUSION" in str(w.message) for w in caught)
         assert boundary_safe == (not boundary_flagged)
+
+
+# Vendored Titan excerpt kernel (see tests/data/README.md).
+TITAN_KERNEL = str((Path(__file__).parent / "data" / "titan_excerpt.bsp").resolve())
+
+# Frozen JPL Horizons airless apparent Az/El for Titan from FYST -- an independent
+# gold-standard oracle. Regenerate together with the excerpt if the window moves
+# (see tests/data/README.md).
+_TITAN_HORIZONS_AZEL = [
+    ("2026-06-15T04:00:00", 98.336359112, -26.454688715),
+    ("2026-07-15T12:00:00", 307.061067414, 49.690328506),
+    ("2026-08-20T06:00:00", 43.948773558, 55.309186938),
+]
+
+
+class TestTitanSatelliteResolver:
+    """Satellite (Titan) resolution via a JPL kernel (Phase 1)."""
+
+    @pytest.fixture
+    def titan_coords(self, site):
+        """Return a vacuum Coordinates wired to the vendored Titan excerpt kernel."""
+        return Coordinates(site, satellite_kernel=TITAN_KERNEL)
+
+    def test_titan_not_in_solar_system_bodies(self):
+        """Titan is a satellite, never silently the Saturn builtin/proxy."""
+        assert "titan" not in SOLAR_SYSTEM_BODIES
+
+    def test_titan_get_body_altaz_matches_horizons(self, titan_coords):
+        """get_body_altaz('titan') matches JPL Horizons airless Az/El (<= 1 arcsec)."""
+        for iso, h_az, h_el in _TITAN_HORIZONS_AZEL:
+            t = Time(iso, scale="utc")
+            az, el = titan_coords.get_body_altaz("titan", obstime=t)
+            sep = titan_coords.angular_separation(az, el, h_az, h_el) * 3600.0
+            assert sep < 1.0, f"{iso}: Titan {sep:.3f} arcsec from Horizons"
+
+    def test_titan_get_body_radec_round_trips_to_altaz(self, titan_coords):
+        """get_body_radec('titan') is the apparent place: round-trips to get_body_altaz."""
+        for iso, _, _ in _TITAN_HORIZONS_AZEL:
+            t = Time(iso, scale="utc")
+            ra, dec = titan_coords.get_body_radec("titan", obstime=t)
+            az_rt, el_rt = titan_coords.radec_to_altaz(ra, dec, obstime=t)
+            az_b, el_b = titan_coords.get_body_altaz("titan", obstime=t)
+            sep = titan_coords.angular_separation(az_rt, el_rt, az_b, el_b) * 3600.0
+            assert sep < 1.0
+
+    def test_titan_get_body_radec_is_apparent_not_barycentric(self, titan_coords):
+        """Titan RA/Dec is the apparent place, far from the barycentric .icrs trap."""
+        from astropy.coordinates import SkyCoord, get_body
+
+        t = Time("2026-06-15T04:00:00", scale="utc")
+        ra, dec = titan_coords.get_body_radec("titan", obstime=t)
+        apparent = SkyCoord(ra * u.deg, dec * u.deg, frame="icrs")
+        barycentric = get_body(
+            [(0, 6), (6, 606)], t, location=titan_coords.location, ephemeris=TITAN_KERNEL
+        ).icrs
+        # The barycentric `.icrs` trap lands ~4.5-6.1 deg off across the window; bracket it.
+        assert 3.0 < apparent.separation(barycentric).deg < 8.0
+
+    def test_titan_requires_kernel_clear_error(self, monkeypatch, site):
+        """Requesting Titan without a configured kernel raises a clear, actionable error."""
+        monkeypatch.delenv("FYST_SATELLITE_KERNEL", raising=False)
+        coords = Coordinates(site)
+        t = Time("2026-06-15T04:00:00", scale="utc")
+        with pytest.raises(ValueError, match="FYST_SATELLITE_KERNEL"):
+            coords.get_body_altaz("titan", obstime=t)
+        with pytest.raises(ValueError, match="FYST_SATELLITE_KERNEL"):
+            coords.get_body_radec("titan", obstime=t)
+
+    def test_titan_env_var_resolves(self, monkeypatch, site):
+        """FYST_SATELLITE_KERNEL resolves Titan when no explicit kwarg is given."""
+        monkeypatch.setenv("FYST_SATELLITE_KERNEL", TITAN_KERNEL)
+        coords = Coordinates(site)  # no explicit satellite_kernel
+        az, el = coords.get_body_altaz("titan", obstime=Time("2026-06-15T04:00:00", scale="utc"))
+        assert np.isfinite(az) and np.isfinite(el)
+
+    def test_titan_get_body_radec_matches_horizons(self, titan_coords):
+        """get_body_radec('titan'), round-tripped through AltAz, matches frozen Horizons.
+
+        An independent RA/Dec oracle (sibling to the Az/El Horizons check), via the
+        library's own ``altaz_to_radec`` convention -- not a raw skyfield ``.radec()``
+        (which differs by ~7 arcsec on axis convention, feasibility study Sec 3.5).
+        """
+        for iso, h_az, h_el in _TITAN_HORIZONS_AZEL:
+            t = Time(iso, scale="utc")
+            ra, dec = titan_coords.get_body_radec("titan", obstime=t)
+            az, el = titan_coords.radec_to_altaz(ra, dec, obstime=t)
+            sep = titan_coords.angular_separation(az, el, h_az, h_el) * 3600.0
+            assert sep < 1.0, f"{iso}: Titan radec->altaz {sep:.3f} arcsec from Horizons"
+
+    def test_titan_missing_kernel_file_raises(self, monkeypatch, site):
+        """A configured-but-missing kernel raises FileNotFoundError with an absolute path."""
+        import os
+
+        monkeypatch.delenv("FYST_SATELLITE_KERNEL", raising=False)
+        coords = Coordinates(site, satellite_kernel="no_such_titan.bsp")  # relative + missing
+        t = Time("2026-06-15T04:00:00", scale="utc")
+        with pytest.raises(FileNotFoundError) as exc:
+            coords.get_body_altaz("titan", obstime=t)
+        msg = str(exc.value)
+        assert "no_such_titan.bsp" in msg
+        # resolved to an ABSOLUTE path (the de###-regex / cwd-relative trap is dodged)
+        assert os.path.isabs(msg.rsplit(": ", 1)[1])
+
+    def test_titan_kwarg_overrides_env(self, monkeypatch, site):
+        """The explicit satellite_kernel kwarg takes precedence over the env var (both ways)."""
+        t = Time("2026-06-15T04:00:00", scale="utc")
+        # good kwarg beats a bogus env
+        monkeypatch.setenv("FYST_SATELLITE_KERNEL", "/bogus/env_kernel.bsp")
+        az, el = Coordinates(site, satellite_kernel=TITAN_KERNEL).get_body_altaz("titan", obstime=t)
+        assert np.isfinite(az) and np.isfinite(el)
+        # a bogus kwarg overrides a good env (precedence is the kwarg, not "first valid")
+        monkeypatch.setenv("FYST_SATELLITE_KERNEL", TITAN_KERNEL)
+        with pytest.raises(FileNotFoundError):
+            Coordinates(site, satellite_kernel="/bogus/kwarg_kernel.bsp").get_body_altaz(
+                "titan", obstime=t
+            )
+
+    def test_titan_missing_jplephem_actionable_error(self, monkeypatch, site):
+        """Kernel present but jplephem absent raises an actionable [ephemeris] error."""
+        import importlib.util as _iu
+
+        real_find_spec = _iu.find_spec
+        monkeypatch.setattr(
+            _iu,
+            "find_spec",
+            lambda name, *a, **k: None if name == "jplephem" else real_find_spec(name, *a, **k),
+        )
+        coords = Coordinates(site, satellite_kernel=TITAN_KERNEL)
+        t = Time("2026-06-15T04:00:00", scale="utc")
+        with pytest.raises(ModuleNotFoundError, match="ephemeris"):
+            coords.get_body_altaz("titan", obstime=t)
+
+    @pytest.mark.slow
+    def test_titan_get_body_altaz_matches_skyfield(self, titan_coords, site):
+        """get_body_altaz('titan') matches skyfield eph[606] (independent oracle)."""
+        pytest.importorskip("skyfield")
+        from skyfield.api import load, load_file, wgs84
+
+        eph = load_file(TITAN_KERNEL)
+        ts = load.timescale()
+        observer = eph[399] + wgs84.latlon(
+            site.latitude, site.longitude, elevation_m=site.elevation
+        )
+        for iso, _, _ in _TITAN_HORIZONS_AZEL:
+            t = Time(iso, scale="utc")
+            # deflectors=() disables relativistic light deflection. astropy's get_body
+            # likewise omits gravitational deflection for solar-system bodies, so the
+            # term cancels on both sides -- the reason this is safe is *cancellation*,
+            # NOT smallness (the solar deflection here is ~1-2.5 arcsec, not negligible).
+            # The excerpt also lacks the Jupiter barycenter the default deflector set
+            # needs, which would otherwise crash skyfield.
+            app = observer.at(ts.from_astropy(t)).observe(eph[606]).apparent(deflectors=())
+            alt, az, _ = app.altaz()
+            a_az, a_el = titan_coords.get_body_altaz("titan", obstime=t)
+            sep = titan_coords.angular_separation(a_az, a_el, az.degrees, alt.degrees) * 3600.0
+            assert sep < 1.0, f"{iso}: Titan {sep:.3f} arcsec from skyfield"

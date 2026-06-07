@@ -101,7 +101,11 @@ class PlanetTrackPattern(AltAzPattern):
             )
 
         timestep = self.config.timestep
-        coords = Coordinates(site, atmosphere=atmosphere)
+        coords = Coordinates(
+            site,
+            atmosphere=atmosphere,
+            satellite_kernel=getattr(self.config, "satellite_kernel", None),
+        )
 
         n_points = int(round(duration / timestep)) + 1
         times = np.linspace(0, duration, n_points)

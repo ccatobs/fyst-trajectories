@@ -23,7 +23,7 @@ Retrieve a pattern:
 List available patterns:
 
 >>> print(list_patterns())
-['constant_el', 'daisy', 'linear', 'planet', 'pong', 'sidereal']
+['constant_el', 'daisy', 'linear', 'planet', 'pong', 'satellite', 'sidereal']
 """
 
 from typing import TYPE_CHECKING
@@ -148,6 +148,6 @@ def list_patterns() -> list[str]:
     Examples
     --------
     >>> print(list_patterns())
-    ['constant_el', 'daisy', 'linear', 'planet', 'pong', 'sidereal']
+    ['constant_el', 'daisy', 'linear', 'planet', 'pong', 'satellite', 'sidereal']
     """
     return sorted(_PATTERN_REGISTRY.keys())

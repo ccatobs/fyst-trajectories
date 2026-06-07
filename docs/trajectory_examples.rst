@@ -412,7 +412,7 @@ determined at runtime, you can use the registry functions::
 
     # List available pattern names
     print(list_patterns())
-    # ['constant_el', 'daisy', 'linear', 'planet', 'pong', 'sidereal']
+    # ['constant_el', 'daisy', 'linear', 'planet', 'pong', 'satellite', 'sidereal']
 
     # Get a pattern class by name (useful for plugins or config-driven selection)
     pattern_name = "pong"  # e.g., from user input or config file

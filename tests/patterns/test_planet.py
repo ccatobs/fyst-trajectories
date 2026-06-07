@@ -5,8 +5,10 @@ import warnings
 
 import numpy as np
 import pytest
-from astropy.time import Time
+from astropy import units as u
+from astropy.time import Time, TimeDelta
 
+from fyst_trajectories import Coordinates
 from fyst_trajectories.exceptions import PointingWarning
 from fyst_trajectories.offsets import InstrumentOffset, apply_detector_offset
 from fyst_trajectories.patterns import PlanetTrackConfig, PlanetTrackPattern
@@ -131,3 +133,27 @@ class TestPlanetTrackPattern:
             adjusted = apply_detector_offset(trajectory, offset, site)
 
         assert adjusted.n_points == trajectory.n_points
+
+    def test_planet_track_center_is_apparent(self, site):
+        """The track's metadata center RA/Dec is the planet's apparent position.
+
+        ``center_ra``/``center_dec`` feed apply_detector_offset's parallactic
+        angle. The barycentric ``get_body_radec`` bug skewed this (up to ~17 deg
+        for Mars), so guard that the reported center round-trips back to Mars'
+        Az/El at the track midpoint.
+        """
+        start_time = Time("2026-06-15T14:00:00", scale="utc")
+        duration = 60.0
+        config = PlanetTrackConfig(timestep=0.1, body="mars")
+        pattern = PlanetTrackPattern(config=config)
+
+        trajectory = pattern.generate(site, duration=duration, start_time=start_time)
+
+        midpoint_time = start_time + TimeDelta(duration / 2.0 * u.s)
+        coords = Coordinates(site)
+        az_c, el_c = coords.radec_to_altaz(
+            trajectory.center_ra, trajectory.center_dec, midpoint_time
+        )
+        az_m, el_m = coords.get_body_altaz("mars", midpoint_time)
+        sep_arcsec = np.hypot((az_c - az_m) * np.cos(np.deg2rad(el_m)), el_c - el_m) * 3600.0
+        assert sep_arcsec < 1.0

@@ -203,6 +203,28 @@ one call: named module, custom dx/dy, or boresight (``None``)::
     # No arguments -> None (boresight pointing)
     offset = resolve_offset()
 
+Multi-module footprint with ``resolve_module_tag``:
+
+``resolve_module_tag`` expands an SO-style module tag (``"i1,i2"``, a list of
+names, or ``"all"``) into a ``list[InstrumentOffset]``. Pass it straight to
+``plan_source_ces(footprint=...)`` to point the centroid of the selected
+modules at a source::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_source_ces
+    from fyst_trajectories.primecam import resolve_module_tag
+
+    block = plan_source_ces(
+        body="jupiter",
+        footprint=resolve_module_tag("i1,i2"),  # centroid of I1+I2 on Jupiter
+        el_bore=35.0,
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="rising",
+        site=get_fyst_site(),
+    )
+
 Custom Offsets
 --------------
 

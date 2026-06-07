@@ -22,6 +22,7 @@ from fyst_trajectories.primecam import (
     PRIMECAM_MODULES,
     get_primecam_offset,
     primecam_geometry_dict,
+    resolve_module_tag,
     resolve_offset,
 )
 from fyst_trajectories.site import get_fyst_site
@@ -327,3 +328,83 @@ class TestPrimecamGeometryDict:
         for name in base:
             assert shifted[name]["center"][0] == pytest.approx(base[name]["center"][0] + 1.0)
             assert shifted[name]["center"][1] == pytest.approx(base[name]["center"][1] - 2.0)
+
+
+class TestResolveModuleTag:
+    """Tests for the resolve_module_tag string-tag entry point."""
+
+    def test_comma_tag(self):
+        """A comma tag resolves to the named modules, in order."""
+        offsets = resolve_module_tag("i1,i2")
+        assert [o.name for o in offsets] == ["PrimeCam-I1", "PrimeCam-I2"]
+
+    def test_sequence_equals_comma_tag(self):
+        """A sequence of names matches the equivalent comma tag."""
+        assert resolve_module_tag(["i1", "i2"]) == resolve_module_tag("i1,i2")
+
+    def test_all_expands_to_seven_modules(self):
+        """'all' expands to c, i1..i6 (the 'center' alias is dropped)."""
+        names = [o.name for o in resolve_module_tag("all")]
+        assert names == [
+            "PrimeCam-Center",
+            "PrimeCam-I1",
+            "PrimeCam-I2",
+            "PrimeCam-I3",
+            "PrimeCam-I4",
+            "PrimeCam-I5",
+            "PrimeCam-I6",
+        ]
+
+    def test_case_and_whitespace_insensitive(self):
+        """Case and surrounding whitespace are ignored."""
+        assert resolve_module_tag(" I1 , I2 ") == resolve_module_tag("i1,i2")
+
+    def test_c_and_center_dedup_to_single_module(self):
+        """'c' and 'center' are the same module and collapse to one entry."""
+        offsets = resolve_module_tag("c,center")
+        assert len(offsets) == 1
+        assert offsets[0] is get_primecam_offset("c")
+
+    def test_repeated_slot_is_deduplicated(self):
+        """A literally repeated slot collapses to one entry (distinct-module centroid)."""
+        assert [o.name for o in resolve_module_tag("i1,i2,i1")] == ["PrimeCam-I1", "PrimeCam-I2"]
+
+    def test_unknown_token_raises_key_error(self):
+        """An unrecognised token raises KeyError."""
+        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
+            resolve_module_tag("i1,bogus")
+
+    def test_concatenated_names_raise_key_error(self):
+        """Concatenated names without a comma are not a recognised module."""
+        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
+            resolve_module_tag("i1i2")
+
+    @pytest.mark.parametrize("tag", ["", "   ", []])
+    def test_empty_input_raises_value_error(self, tag):
+        """An empty tag resolves to no modules and raises ValueError."""
+        with pytest.raises(ValueError, match="resolved to no modules"):
+            resolve_module_tag(tag)
+
+    @pytest.mark.parametrize("tag", [123, None, b"i1,i2", bytearray(b"i1")])
+    def test_non_sequence_type_raises_type_error(self, tag):
+        """A non-str, non-sequence tag (incl. bytes) raises a clear TypeError."""
+        with pytest.raises(TypeError, match="str or sequence of str"):
+            resolve_module_tag(tag)
+
+    def test_non_string_element_raises_key_error(self):
+        """A non-string element is stringified and rejected as an unknown module."""
+        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
+            resolve_module_tag(["i1", 5])
+
+    @pytest.mark.parametrize(
+        "tag,names",
+        [("i1,i2", ["i1", "i2"]), ("all", ["c", "i1", "i2", "i3", "i4", "i5", "i6"])],
+    )
+    def test_footprint_matches_hand_built_list(self, tag, names):
+        """The tag output produces an identical footprint to a hand-built list."""
+        from fyst_trajectories.planning.source_ces import _resolve_footprint
+
+        from_tag = _resolve_footprint(resolve_module_tag(tag))
+        from_list = _resolve_footprint([get_primecam_offset(n) for n in names])
+        assert from_tag.center_xi_deg == pytest.approx(from_list.center_xi_deg)
+        assert from_tag.center_eta_deg == pytest.approx(from_list.center_eta_deg)

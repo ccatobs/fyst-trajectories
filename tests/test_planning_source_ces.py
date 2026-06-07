@@ -622,6 +622,57 @@ def test_compute_params_az_envelope_validation(site, monkeypatch):
         )
 
 
+def test_compute_params_az_envelope_directional_parity(site):
+    """Emit-time envelope and full plan agree on az-bounds (M2 parity).
+
+    The emit-time envelope check widens the static sweep only in the
+    drift direction (sign of ``v_az``), matching the one-signed drift the
+    executed trajectory applies (``az + v_az·times``). A Jupiter rising
+    CES (el_bore=35) has a negative ``v_az`` so the real trajectory spans
+    ``[33.37, 37.70]`` while the over-wide symmetric envelope would reach
+    ~40.03 on the +az side the track never visits.
+
+    Limits ``[-180, 39.0]`` bracket the real trajectory but fall inside
+    the old over-wide envelope: after the fix ``compute_source_ces_params``
+    must NOT raise where ``plan_source_ces`` succeeds. Tightening the max
+    below the real trajectory (``36.0 < 37.70``) must make BOTH raise.
+    """
+    import dataclasses
+
+    base_az = site.telescope_limits.azimuth
+
+    def _site_with_az_max(az_max):
+        az = dataclasses.replace(base_az, min=-180.0, max=az_max)
+        tl = dataclasses.replace(site.telescope_limits, azimuth=az)
+        return dataclasses.replace(site, telescope_limits=tl)
+
+    kwargs = dict(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+    )
+
+    # Limits bracket the real [33.37, 37.70] track but not the old
+    # over-wide envelope (~40.03). plan_source_ces succeeds, so the
+    # emit-time check must agree and NOT raise.
+    site_ok = _site_with_az_max(39.0)
+    block = plan_source_ces(site=site_ok, **kwargs)
+    assert float(np.max(block.trajectory.az)) < 39.0
+    # No raise => the params are returned (parity with plan_source_ces).
+    params = compute_source_ces_params(site=site_ok, **kwargs)
+    assert params["mode"] == "rising"
+
+    # Genuine violation: max below the real trajectory's reach. Both the
+    # emit-time check and the full plan must raise, in agreement.
+    site_bad = _site_with_az_max(36.0)
+    with pytest.raises(AzimuthBoundsError):
+        compute_source_ces_params(site=site_bad, **kwargs)
+    with pytest.raises(AzimuthBoundsError):
+        plan_source_ces(site=site_bad, **kwargs)
+
+
 def test_compute_params_v_az_override(site):
     """Explicit v_az is passed through to the returned params unchanged."""
     params = compute_source_ces_params(

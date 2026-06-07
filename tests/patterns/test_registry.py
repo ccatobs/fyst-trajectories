@@ -23,7 +23,7 @@ class TestPatternRegistry:
         """Test that all expected patterns are registered."""
         patterns = list_patterns()
 
-        expected = ["constant_el", "daisy", "linear", "planet", "pong", "sidereal"]
+        expected = ["constant_el", "daisy", "linear", "planet", "pong", "satellite", "sidereal"]
         for name in expected:
             assert name in patterns, f"Expected pattern '{name}' not found"
 

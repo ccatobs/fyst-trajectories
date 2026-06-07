@@ -9,7 +9,7 @@ immutable after creation.
 import warnings
 from dataclasses import dataclass
 
-from ..coordinates import SOLAR_SYSTEM_BODIES
+from ..coordinates import SATELLITE_BODIES, SOLAR_SYSTEM_BODIES
 from ..exceptions import PointingWarning
 
 # Advisory upper bounds -- NOT hard telescope limits (those live in
@@ -276,6 +276,14 @@ class DaisyScanConfig(ScanConfig):
     because the Taylor series approximation assumes small arc lengths per step.
     If the arc length per internal step (velocity / 150) approaches the
     turn_radius, consider reducing velocity or increasing turn_radius.
+
+    A Daisy built with ``.duration(D)`` samples the integrator's own grid and
+    spans ``[0, D - timestep]``, so ``trajectory.duration`` reports
+    ``D - timestep`` — one timestep short of the other patterns (which span
+    ``[0, D]``). This is deliberate: sampling on the integrator grid avoids the
+    ~1% velocity bias that a stretched ``linspace(0, D)`` time axis would inject.
+    The per-sample ``times`` array is internally self-consistent, so serialized
+    output (``to_path_format``) and PCS ``/path`` dispatch are unaffected.
     """
 
     radius: float
@@ -347,6 +355,52 @@ class PlanetTrackConfig(ScanConfig):
         super().__post_init__()
         if self.body.lower() not in SOLAR_SYSTEM_BODIES:
             raise ValueError(f"Unknown body '{self.body}'. Valid: {sorted(SOLAR_SYSTEM_BODIES)}")
+
+
+@dataclass(frozen=True)
+class SatelliteTrackConfig(ScanConfig):
+    """Configuration for planetary-satellite tracking.
+
+    Satellite tracking follows a planetary satellite (e.g. Titan) as it
+    moves across the sky, used for submillimetre flux calibration. The
+    satellite's apparent centroid is tracked as an unresolved point
+    source; no disk model is applied (Titan's ~0.8 arcsec disk is well
+    below the Prime-Cam beam).
+
+    Unlike :class:`PlanetTrackConfig`, the body is resolved from a JPL
+    satellite SPK kernel rather than astropy's builtin ephemeris. The
+    kernel is supplied via ``satellite_kernel`` or, if that is ``None``,
+    the ``FYST_SATELLITE_KERNEL`` environment variable.
+
+    Parameters
+    ----------
+    body : str
+        Name of the planetary satellite to track (e.g. ``"titan"``).
+    satellite_kernel : str or None, optional
+        Path to a JPL satellite SPK kernel used to resolve the body.
+        If ``None``, the ``FYST_SATELLITE_KERNEL`` environment variable
+        is used at generation time.
+    timestep : float
+        Time between trajectory points in seconds.
+
+    Raises
+    ------
+    ValueError
+        If body is not a valid planetary-satellite name.
+    """
+
+    body: str
+    satellite_kernel: str | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        body = self.body.lower()
+        if body not in SATELLITE_BODIES:
+            raise ValueError(f"Unknown satellite '{self.body}'. Valid: {sorted(SATELLITE_BODIES)}")
+        # Frozen dataclass: normalise the stored body to lower-case so the
+        # pattern metadata (``target_name``) is canonical regardless of input
+        # casing. ``object.__setattr__`` is the standard frozen-field idiom.
+        object.__setattr__(self, "body", body)
 
 
 @dataclass(frozen=True)

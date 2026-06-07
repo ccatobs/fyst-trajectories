@@ -28,7 +28,7 @@ The pattern type is automatically inferred from the config class::
         .build()
     )
 
-Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``, ``sidereal``.
+Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``, ``satellite``, ``sidereal``.
 
 TrajectoryBuilder
 -----------------
@@ -109,6 +109,10 @@ Configuration Classes
    :members:
    :show-inheritance:
 
+.. autoclass:: fyst_trajectories.patterns.SatelliteTrackConfig
+   :members:
+   :show-inheritance:
+
 .. autoclass:: fyst_trajectories.patterns.LinearMotionConfig
    :members:
    :show-inheritance:
@@ -136,6 +140,10 @@ Pattern Classes
    :members:
    :show-inheritance:
 
+.. autoclass:: fyst_trajectories.patterns.SatelliteTrackPattern
+   :members:
+   :show-inheritance:
+
 .. autoclass:: fyst_trajectories.patterns.LinearMotionPattern
    :members:
    :show-inheritance:
@@ -149,6 +157,8 @@ Pattern Selection
 | ``sidereal``      | CelestialPattern | ``ra``, ``dec``   |
 +-------------------+------------------+-------------------+
 | ``planet``        | AltAzPattern     | ``body``          |
++-------------------+------------------+-------------------+
+| ``satellite``     | AltAzPattern     | ``body``          |
 +-------------------+------------------+-------------------+
 | ``pong``          | CelestialPattern | ``width``,        |
 |                   |                  | ``height``,       |

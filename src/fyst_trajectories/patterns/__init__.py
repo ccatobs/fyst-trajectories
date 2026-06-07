@@ -53,7 +53,7 @@ Listing available patterns:
 
 >>> from fyst_trajectories.patterns import list_patterns
 >>> print(list_patterns())
-['constant_el', 'daisy', 'linear', 'planet', 'pong', 'sidereal']
+['constant_el', 'daisy', 'linear', 'planet', 'pong', 'satellite', 'sidereal']
 """
 
 # Import patterns to trigger registration (order matters)
@@ -62,6 +62,7 @@ from . import daisy as daisy  # noqa: F401  # pylint: disable=useless-import-ali
 from . import linear as linear  # noqa: F401  # pylint: disable=useless-import-alias
 from . import planet as planet  # noqa: F401  # pylint: disable=useless-import-alias
 from . import pong as pong  # noqa: F401  # pylint: disable=useless-import-alias
+from . import satellite as satellite  # noqa: F401  # pylint: disable=useless-import-alias
 from . import sidereal as sidereal  # noqa: F401  # pylint: disable=useless-import-alias
 from .base import AltAzPattern, CelestialPattern, ScanPattern, TrajectoryMetadata
 from .builder import TrajectoryBuilder
@@ -71,6 +72,7 @@ from .configs import (
     LinearMotionConfig,
     PlanetTrackConfig,
     PongScanConfig,
+    SatelliteTrackConfig,
     ScanConfig,
     SiderealTrackConfig,
 )
@@ -85,6 +87,7 @@ from .registry import (
     list_patterns,
     register_pattern,
 )
+from .satellite import SatelliteTrackPattern
 from .sidereal import SiderealTrackPattern
 
 __all__ = [
@@ -105,12 +108,14 @@ __all__ = [
     "DaisyScanConfig",
     "SiderealTrackConfig",
     "PlanetTrackConfig",
+    "SatelliteTrackConfig",
     "LinearMotionConfig",
     # Pattern classes
     "ConstantElScanPattern",
     "LinearMotionPattern",
     "SiderealTrackPattern",
     "PlanetTrackPattern",
+    "SatelliteTrackPattern",
     "PongScanPattern",
     "DaisyScanPattern",
     # Builder

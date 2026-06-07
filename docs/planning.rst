@@ -302,7 +302,9 @@ Worked example -- Jupiter rising across the full PrimeCam array::
 The ``footprint`` argument accepts a named module string (``"c"``,
 ``"i1"`` .. ``"i6"``), a single :class:`~fyst_trajectories.InstrumentOffset`,
 a sequence of offsets (one per module), or an explicit
-:class:`~fyst_trajectories.ArrayFootprint`.
+:class:`~fyst_trajectories.ArrayFootprint`. For a multi-module footprint,
+:func:`~fyst_trajectories.resolve_module_tag` expands an SO-style tag
+(``resolve_module_tag("i1,i2")``, or ``"all"``) into that sequence.
 
 Select the time window with either ``night`` + ``mode`` (``"rising"`` or
 ``"setting"``; searches the next 24 h) or an explicit
@@ -314,15 +316,16 @@ margin, default 0.5 deg), ``az_branch`` (centre of the azimuth wrap branch),
 and ``allow_partial`` (clip to the observable arc and warn instead of
 raising when the source does not fully cover the footprint at ``el_bore``).
 
-Params-only mode for SO schedlib
+Params-only mode (emit-time)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 :func:`~fyst_trajectories.planning.compute_source_ces_params` takes the same
 arguments as :func:`~fyst_trajectories.planning.plan_source_ces` (minus
 ``timestep``) and returns just the scalar
 :class:`~fyst_trajectories.planning.SourceCESComputedParams` dict, skipping
-trajectory generation -- the downstream consumer is a ``schedlib`` policy
-that emits a ``run.acu.source_scan(...)`` line and discards the trajectory.
+trajectory generation -- the downstream consumer is a scheduler policy (our
+``schedlib`` fork) that emits a ``run.acu.source_scan(...)`` line and discards
+the trajectory.
 
 Worked example -- the same Jupiter input as the section above, scalars
 only::

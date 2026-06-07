@@ -33,6 +33,8 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords_plan.radec_to_altaz(83.633, 22.014, obstime=obstime)
 """
 
+import importlib.util
+import os
 import warnings
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -64,6 +66,77 @@ SOLAR_SYSTEM_BODIES = [
     "uranus",
     "neptune",
 ]
+
+
+# Known planetary-satellite NAIF kernel chains (SSB -> ... -> satellite). astropy's
+# get_body has no name for a moon, so it is addressed by integer NAIF-ID chain,
+# evaluated against a JPL *satellite* SPK kernel (not the builtin ephemeris).
+# Extensible (e.g. the Galilean moons: "io": ((0, 5), (5, 501))).
+_SATELLITE_NAIF_CHAINS: dict[str, tuple[tuple[int, int], ...]] = {
+    "titan": ((0, 6), (6, 606)),  # SSB -> Saturn-system barycentre -> Titan
+}
+
+# Public names of the planetary satellites resolvable via a JPL satellite SPK
+# kernel (parallel to ``SOLAR_SYSTEM_BODIES``). Unlike the builtin bodies these
+# require a kernel (``satellite_kernel`` / ``FYST_SATELLITE_KERNEL``).
+SATELLITE_BODIES = tuple(_SATELLITE_NAIF_CHAINS)
+
+# Environment variable holding the path to a JPL satellite SPK kernel. Read
+# lazily, only when a satellite body is requested (never at import).
+_SATELLITE_KERNEL_ENV = "FYST_SATELLITE_KERNEL"
+
+
+def _resolve_satellite_kernel(explicit: str | None) -> str:
+    """Resolve a JPL satellite SPK kernel to an absolute file path.
+
+    Prefers ``explicit`` (the ``Coordinates(satellite_kernel=...)`` value), else
+    the ``FYST_SATELLITE_KERNEL`` environment variable. The result is made
+    **absolute** on purpose: astropy's ephemeris loader special-cases a ``de###``
+    prefix (a regex tested before the on-disk check) and resolves relative paths
+    against the process cwd, so a relative or ``de``-prefixed path would be
+    silently mishandled.
+
+    Parameters
+    ----------
+    explicit : str or None
+        An explicit kernel path, or None to fall back to the environment.
+
+    Returns
+    -------
+    str
+        Absolute path to the kernel.
+
+    Raises
+    ------
+    ValueError
+        If no kernel is configured (message includes actionable guidance).
+    FileNotFoundError
+        If the configured path does not exist.
+    """
+    path = explicit or os.environ.get(_SATELLITE_KERNEL_ENV)
+    if not path:
+        raise ValueError(
+            "Tracking a planetary satellite requires a JPL satellite SPK kernel, "
+            f"which is not configured. Set the {_SATELLITE_KERNEL_ENV} environment "
+            "variable (or pass satellite_kernel=... to Coordinates) to a .bsp path. "
+            "Install the optional dependency with `pip install "
+            "'fyst-trajectories[ephemeris]'` and build a small kernel with: "
+            "`python -m jplephem excerpt --targets 3,399,10,6,606 <start> <end> "
+            "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/satellites/sat441.bsp "
+            "titan.bsp`."
+        )
+    abspath = os.path.abspath(path)
+    if not os.path.isfile(abspath):
+        raise FileNotFoundError(f"Satellite SPK kernel not found: {abspath}")
+    # Loading a non-builtin SPK needs jplephem (astropy does not pull it in by
+    # default). find_spec does not import the module, so this stays import-safe.
+    if importlib.util.find_spec("jplephem") is None:
+        raise ModuleNotFoundError(
+            "Loading a satellite SPK kernel requires the optional 'jplephem' "
+            "dependency. Install it with `pip install 'fyst-trajectories[ephemeris]'`."
+        )
+    return abspath
+
 
 # Frame name aliases for KOSMA/OCS compatibility
 # Maps common telescope control system names to astropy frame names.
@@ -176,6 +249,12 @@ class Coordinates:
         ``AtmosphericConditions.for_fyst()`` for planning/simulation,
         or ``AtmosphericConditions.no_refraction()`` as an explicit
         synonym for the vacuum default.
+    satellite_kernel : str or None, optional
+        Path to a JPL satellite SPK kernel (e.g. an excerpt of NAIF
+        ``sat441``) used to resolve planetary-satellite bodies such as
+        ``"titan"``. If ``None``, the ``FYST_SATELLITE_KERNEL`` environment
+        variable is used. Only consulted when a satellite body is requested;
+        builtin planets/Moon/Sun never need it.
 
     Examples
     --------
@@ -201,6 +280,8 @@ class Coordinates:
         self,
         site: Site,
         atmosphere: AtmosphericConditions | None = None,
+        *,
+        satellite_kernel: str | None = None,
     ):
         self.site = site
         self.location = site.location
@@ -208,6 +289,7 @@ class Coordinates:
             self.atmosphere = atmosphere
         else:
             self.atmosphere = AtmosphericConditions.no_refraction()
+        self._satellite_kernel = satellite_kernel
 
     def _get_altaz_frame(self, obstime: Time) -> AltAz:
         """Get the AltAz frame for the site at a given time.
@@ -326,6 +408,30 @@ class Coordinates:
             return float(ra), float(dec)
         return ra, dec
 
+    def _resolve_body(self, body: str) -> tuple[str | list[tuple[int, int]], str | None]:
+        """Map a body name to its ``get_body`` spec and ephemeris kwarg.
+
+        Returns ``(name, None)`` for a builtin solar-system body (planets, Moon,
+        Sun), or ``(NAIF integer chain, absolute kernel path)`` for a known
+        satellite (resolved via ``satellite_kernel`` / ``FYST_SATELLITE_KERNEL``).
+
+        Raises
+        ------
+        ValueError
+            If ``body`` is neither a builtin body nor a known satellite.
+        """
+        if body in SOLAR_SYSTEM_BODIES:
+            return body, None
+        if body in _SATELLITE_NAIF_CHAINS:
+            return (
+                list(_SATELLITE_NAIF_CHAINS[body]),
+                _resolve_satellite_kernel(self._satellite_kernel),
+            )
+        raise ValueError(
+            f"Unknown body '{body}'. Supported bodies: {SOLAR_SYSTEM_BODIES}; "
+            f"supported satellites (require a kernel): {sorted(_SATELLITE_NAIF_CHAINS)}"
+        )
+
     def get_body_altaz(
         self,
         body: str,
@@ -336,8 +442,10 @@ class Coordinates:
         Parameters
         ----------
         body : str
-            Name of the solar system body. Supported values:
-            sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune.
+            Name of the body. Builtin values: sun, moon, mercury, venus, mars,
+            jupiter, saturn, uranus, neptune. Known satellites (e.g. ``"titan"``)
+            are also accepted when a satellite SPK kernel is configured (see the
+            ``satellite_kernel`` argument / ``FYST_SATELLITE_KERNEL``).
         obstime : Time
             Observation time. Can be a scalar Time or an array of Times.
 
@@ -351,7 +459,8 @@ class Coordinates:
         Raises
         ------
         ValueError
-            If the body name is not recognized.
+            If the body name is not recognized, or a satellite is requested
+            without a configured kernel.
 
         Examples
         --------
@@ -360,13 +469,17 @@ class Coordinates:
         >>> az, el = coords.get_body_altaz("mars", obstime)
         """
         body = body.lower()
-        if body not in SOLAR_SYSTEM_BODIES:
-            raise ValueError(f"Unknown body '{body}'. Supported bodies: {SOLAR_SYSTEM_BODIES}")
+        body_spec, ephemeris = self._resolve_body(body)
 
-        # Use get_body uniformly so the returned position carries the
-        # site's topocentric parallax (~8.8 arcsec for the Sun) — astropy's
-        # get_sun() is geocentric.
-        body_coord = get_body(body, obstime, location=self.location)
+        # Use get_body uniformly (not get_sun) so every body shares one
+        # topocentric code path. Passing location= is what makes the AltAz
+        # apparent place site-topocentric; that parallax is physically
+        # meaningful for finite-distance bodies (the Moon, ~1°) and negligible
+        # for the Sun (~0.01″ on-sky). The visible get_sun()-vs-get_body()
+        # difference (~arcsec) is an ephemeris/algorithm difference, not
+        # parallax (the old "~8.8 arcsec" note was the horizontal-parallax
+        # constant, not the on-sky shift).
+        body_coord = get_body(body_spec, obstime, location=self.location, ephemeris=ephemeris)
 
         altaz_frame = self._get_altaz_frame(obstime)
         altaz = body_coord.transform_to(altaz_frame)
@@ -388,22 +501,33 @@ class Coordinates:
         Parameters
         ----------
         body : str
-            Name of the solar system body. Supported values:
-            sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune.
+            Name of the body. Builtin values: sun, moon, mercury, venus, mars,
+            jupiter, saturn, uranus, neptune. Known satellites (e.g. ``"titan"``)
+            are also accepted when a satellite SPK kernel is configured (see the
+            ``satellite_kernel`` argument / ``FYST_SATELLITE_KERNEL``).
         obstime : Time
             Observation time. Can be a scalar Time or an array of Times.
 
         Returns
         -------
         ra : float or array
-            Right Ascension in degrees.
+            Apparent topocentric Right Ascension in degrees (ICRS axes).
         dec : float or array
-            Declination in degrees.
+            Apparent topocentric Declination in degrees (ICRS axes).
 
         Raises
         ------
         ValueError
-            If the body name is not recognized.
+            If the body name is not recognized, or a satellite is requested
+            without a configured kernel.
+
+        Notes
+        -----
+        The returned RA/Dec is the *apparent* sky position seen from the site,
+        consistent with :meth:`get_body_altaz` (it round-trips:
+        ``radec_to_altaz(get_body_radec(body, t), t) == get_body_altaz(body, t)``
+        to ~arcsec) and with :meth:`get_parallactic_angle`'s ``pressure=0``
+        transform.
 
         Examples
         --------
@@ -412,14 +536,22 @@ class Coordinates:
         >>> ra, dec = coords.get_body_radec("jupiter", obstime)
         """
         body = body.lower()
-        if body not in SOLAR_SYSTEM_BODIES:
-            raise ValueError(f"Unknown body '{body}'. Supported bodies: {SOLAR_SYSTEM_BODIES}")
+        body_spec, ephemeris = self._resolve_body(body)
 
-        # Use get_body uniformly so the returned position carries the
-        # site's topocentric parallax — astropy's get_sun() is geocentric.
-        body_coord = get_body(body, obstime, location=self.location)
+        # get_body returns a GCRS position carrying the body's finite
+        # (topocentric) distance. Taking ``.icrs`` reprojects that finite-distance
+        # vector to the barycentric frame, yielding the SSB->body direction
+        # (e.g. the anti-solar point for the Sun) -- NOT the apparent sky
+        # position. Instead, project to the site's *vacuum* horizontal frame and
+        # back to ICRS so the result is the apparent place, consistent with
+        # get_body_altaz and with get_parallactic_angle's pressure=0 transform.
+        # A vacuum frame (pressure=0) is used regardless of this instance's
+        # atmosphere so the RA/Dec is the geometric apparent place.
+        body_coord = get_body(body_spec, obstime, location=self.location, ephemeris=ephemeris)
+        vacuum_altaz = AltAz(obstime=obstime, location=self.location, pressure=0 * u.hPa)
+        altaz = body_coord.transform_to(vacuum_altaz)
+        icrs = SkyCoord(az=altaz.az, alt=altaz.alt, frame=vacuum_altaz).transform_to("icrs")
 
-        icrs = body_coord.icrs
         ra = icrs.ra.deg
         dec = icrs.dec.deg
 
@@ -880,6 +1012,11 @@ class Coordinates:
         The Nasmyth sign is +1 for Right Nasmyth, -1 for Left Nasmyth,
         and 0 for Cassegrain (no elevation-dependent rotation).
 
+        Like :meth:`get_parallactic_angle`, the elevation term is computed with
+        a vacuum (zero-pressure) transform, so the field rotation is the
+        geometric sky-vs-mount rotation regardless of the atmosphere configured
+        on this instance.
+
         See Also
         --------
         :func:`~fyst_trajectories.offsets.compute_focal_plane_rotation` :
@@ -892,7 +1029,15 @@ class Coordinates:
         >>> coords = Coordinates(site)
         >>> fr = coords.get_field_rotation(83.633, 22.014, Time("2026-03-15T04:00:00", scale="utc"))
         """
-        _, el = self.radec_to_altaz(ra, dec, obstime)
+        # Use a vacuum (pressure=0) elevation so the mechanical Nasmyth term is
+        # frame-consistent with the vacuum geometric parallactic angle: a
+        # refracted el would leak the refraction bump into the mechanical term
+        # while pa stays vacuum. Matches get_parallactic_angle's convention, so
+        # the result is the geometric field rotation regardless of this
+        # instance's atmosphere.
+        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+        altaz_frame = AltAz(obstime=obstime, location=self.location, pressure=0 * u.hPa)
+        el = sky_coord.transform_to(altaz_frame).alt.deg
 
         pa = self.get_parallactic_angle(ra, dec, obstime)
 

@@ -251,13 +251,22 @@ def _offset_forward(
 
 
 _INVERSE_EARLY_EXIT_THRESHOLD: float = 1e-12
-"""Iterative refinement convergence threshold in degrees (~3.6 microarcsec)."""
+"""Iterative refinement convergence threshold in degrees (~3.6 nanoarcsec)."""
 
 _INVERSE_FAILURE_THRESHOLD: float = 1e-6
-"""Degrees (~3.6 arcsec) above which _offset_inverse raises RuntimeError."""
+"""Degrees (~3.6 milliarcsec) above which _offset_inverse raises RuntimeError."""
 
 _INVERSE_MAX_ITERATIONS: int = 20
 """Maximum refinement iterations in _offset_inverse."""
+
+_POLE_GUARD_DEG: float = 1e-6
+"""Elevation within this many degrees of +/-90 makes azimuth indeterminate.
+
+At the pole the forward map collapses every boresight azimuth onto the same
+detector position, so the residual-based convergence check in
+:func:`_offset_inverse` reports success while the recovered azimuth is
+arbitrary. The guard raises instead of returning a silently-wrong azimuth.
+"""
 
 
 def _offset_inverse(
@@ -291,6 +300,15 @@ def _offset_inverse(
     bore_el : float or array
         Boresight elevation in degrees.
 
+    Raises
+    ------
+    RuntimeError
+        If the detector or boresight elevation is within
+        :data:`_POLE_GUARD_DEG` of the pole (+/-90 deg), where azimuth is
+        degenerate and the residual check cannot validate it; or if the
+        iterative refinement residual exceeds
+        :data:`_INVERSE_FAILURE_THRESHOLD` after all iterations.
+
     Notes
     -----
     The closed-form inverse (negated offsets applied via the forward
@@ -303,8 +321,32 @@ def _offset_inverse(
     :data:`_INVERSE_EARLY_EXIT_THRESHOLD`. A ``RuntimeError`` is raised
     if the residual exceeds :data:`_INVERSE_FAILURE_THRESHOLD` after
     all iterations.
+
+    The forward residual ``(d_az, d_el)`` is degenerate at the pole: every
+    boresight azimuth maps a pole-elevation detector to the same position,
+    so the residual can be ~0 while the recovered azimuth is arbitrary. A
+    near-pole guard (:data:`_POLE_GUARD_DEG`) catches this before the residual
+    check can report a false convergence.
     """
     bore_az, bore_el = _offset_forward(det_az, det_el, -dx_rot_deg, -dy_rot_deg)
+
+    # Pole guard: azimuth is indeterminate when either the detector or the
+    # boresight lands within _POLE_GUARD_DEG of +/-90 deg. The residual-based
+    # convergence check below cannot detect this (it is ~0 for any azimuth at
+    # the pole), so it would otherwise return a silently-wrong azimuth.
+    near_pole = (np.abs(np.abs(det_el) - 90.0) < _POLE_GUARD_DEG) | (
+        np.abs(np.abs(bore_el) - 90.0) < _POLE_GUARD_DEG
+    )
+    if np.any(near_pole):
+        raise RuntimeError(
+            "_offset_inverse cannot resolve azimuth at the pole: detector or "
+            "boresight elevation is within "
+            f"{_POLE_GUARD_DEG:g} deg of +/-90 deg, where azimuth is degenerate "
+            "(every boresight azimuth maps to the same pole position, so the "
+            "residual check cannot validate it). This requires an extreme offset "
+            "placing the detector at the zenith and is far outside any realistic "
+            "PrimeCam pointing envelope."
+        )
 
     # Track the worst residual ever seen so the diagnostic on failure can
     # report the full convergence history. The failure check itself uses
@@ -571,6 +613,26 @@ def apply_detector_offset(
 
     Notes
     -----
+    **Precondition: the input trajectory must be in geometric (vacuum)
+    coordinates.** This holds on every live path -- ``Coordinates(site)``
+    defaults to vacuum and the ACU/Go TCS owns refraction (see
+    ``CLAUDE.md`` "vacuum-by-default"). The mechanical Nasmyth term consumes
+    ``trajectory.el`` directly, while the parallactic angle is always
+    computed at ``pressure=0`` (vacuum) by ``get_parallactic_angle``. If the
+    trajectory was instead built with ``AtmosphericConditions.for_fyst()``
+    (refracted -- a planning/sim-only path), its ``el`` is in the apparent
+    frame, so the mechanical term and the vacuum parallactic angle are summed
+    across different frames. This introduces a small field-rotation error
+    (~arcsec of boresight position: empirically ~0.24" at el 75deg rising to
+    ~1.3" near el 36deg for a PrimeCam inner-ring offset rho~1.78deg). The
+    error is left unguarded rather than "fixed" by substituting a single
+    center-elevation: a center-el substitution would discard the
+    physically-correct per-sample ``trajectory.el`` and regress this same
+    vacuum path by ~30-200" for extended patterns -- far larger than the
+    refraction-frame error it would remove. ``Trajectory`` carries no
+    refraction flag, so the refracted input cannot be detected here; pair
+    detector offsets with vacuum trajectories.
+
     The returned trajectory has the same metadata as the input, but with
     the az/el positions adjusted so that when the telescope follows this
     trajectory, the detector observes the original target.
@@ -658,8 +720,15 @@ def apply_detector_offset(
         field_rotation,
     )
 
-    az_vel = np.gradient(bore_az, trajectory.times)
-    el_vel = np.gradient(bore_el, trajectory.times)
+    if len(trajectory.times) < 2:
+        # np.gradient needs >=2 samples; boresight velocities are undefined for
+        # a single sample. Sibling np.gradient sites (daisy.py, trajectory_utils)
+        # guard the same way, and the builder tolerates <2-point trajectories.
+        az_vel = np.zeros_like(bore_az)
+        el_vel = np.zeros_like(bore_el)
+    else:
+        az_vel = np.gradient(bore_az, trajectory.times)
+        el_vel = np.gradient(bore_el, trajectory.times)
 
     result = Trajectory(
         times=trajectory.times.copy(),
@@ -672,6 +741,7 @@ def apply_detector_offset(
         coordsys=trajectory.coordsys,
         epoch=trajectory.epoch,
         scan_flag=trajectory.scan_flag,
+        retune_events=trajectory.retune_events,
     )
 
     if validate:

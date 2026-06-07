@@ -11,6 +11,8 @@ from astropy.time import Time
 from fyst_trajectories.coordinates import Coordinates
 from fyst_trajectories.exceptions import PointingWarning, TargetNotObservableError
 from fyst_trajectories.offsets import (
+    _INVERSE_EARLY_EXIT_THRESHOLD,
+    _INVERSE_FAILURE_THRESHOLD,
     InstrumentOffset,
     apply_detector_offset,
     boresight_to_detector,
@@ -28,14 +30,15 @@ from fyst_trajectories.primecam import (
     get_primecam_offset,
 )
 from fyst_trajectories.site import (
+    AtmosphericConditions,
     AxisLimits,
     Site,
     SunAvoidanceConfig,
     TelescopeLimits,
     get_fyst_site,
 )
-from fyst_trajectories.trajectory import Trajectory
-from fyst_trajectories.trajectory_utils import get_absolute_times
+from fyst_trajectories.trajectory import RetuneEvent, Trajectory
+from fyst_trajectories.trajectory_utils import get_absolute_times, inject_retune
 
 
 class TestBoresightToDetector:
@@ -1460,3 +1463,209 @@ class TestOffsetPathLandsOnTarget:
             f"inner-ring module misses target by up to {miss_arcsec.max():.1f} arcsec "
             "-- field rotation (parallactic angle) is mis-referenced"
         )
+
+
+class TestInverseThresholdMagnitudes:
+    """L7: pin the falsifiable magnitudes in the threshold comments.
+
+    The inline labels on the two private thresholds previously read
+    "~3.6 microarcsec" / "~3.6 arcsec"; both were off by 1000x. The values
+    are deg, so deg*3600 = arcsec. Pin the true magnitudes so the comments
+    cannot drift unnoticed again.
+    """
+
+    def test_early_exit_threshold_is_nanoarcsec(self):
+        # 1e-12 deg * 3600 = 3.6e-9 arcsec = 3.6 nanoarcsec.
+        arcsec = _INVERSE_EARLY_EXIT_THRESHOLD * 3600.0
+        assert arcsec == pytest.approx(3.6e-9, rel=1e-9)
+
+    def test_failure_threshold_is_milliarcsec(self):
+        # 1e-6 deg * 3600 = 3.6e-3 arcsec = 3.6 milliarcsec.
+        arcsec = _INVERSE_FAILURE_THRESHOLD * 3600.0
+        assert arcsec == pytest.approx(3.6e-3, rel=1e-9)
+
+
+class TestInverseZenithDegeneracy:
+    """L2: the inverse must not silently return a wrong azimuth at the pole.
+
+    At the zenith pole, azimuth is degenerate: every boresight azimuth maps a
+    pole-elevation detector to the same position, so the forward-residual
+    convergence check reports success while the recovered azimuth is arbitrary.
+    The pole guard raises a clear RuntimeError instead.
+    """
+
+    def test_zenith_offset_raises_instead_of_wrong_azimuth(self):
+        # bore=(180, 89), dx=60', fr=90 lands the detector at el=90 (the pole).
+        offset = InstrumentOffset(dx=60.0, dy=0.0)
+        det_az, det_el = boresight_to_detector(180.0, 89.0, offset, field_rotation=90.0)
+        assert det_el == pytest.approx(90.0, abs=1e-3)
+
+        with pytest.raises(RuntimeError, match="azimuth"):
+            detector_to_boresight(det_az, det_el, offset, field_rotation=90.0)
+
+    def test_operational_envelope_still_round_trips(self):
+        """The pole guard must not fire inside the real PrimeCam envelope."""
+        offset = InstrumentOffset(dx=106.8, dy=0.0)  # inner ring ~1.78 deg
+        for el in [20.0, 45.0, 70.0, 85.0]:
+            for fr in [0.0, 90.0, 180.0, 270.0]:
+                det_az, det_el = boresight_to_detector(200.0, el, offset, field_rotation=fr)
+                bore_az, bore_el = detector_to_boresight(det_az, det_el, offset, field_rotation=fr)
+                assert bore_az == pytest.approx(200.0, abs=0.01 / 3600.0)
+                assert bore_el == pytest.approx(el, abs=0.01 / 3600.0)
+
+
+class TestApplyDetectorOffsetSingleSample:
+    """N1: a length-1 trajectory must not raise an opaque IndexError."""
+
+    def test_single_sample_trajectory_zero_velocities(self, site):
+        start_time = Time("2026-03-15T04:00:00", scale="utc")
+        trajectory = Trajectory(
+            times=np.array([0.0]),
+            az=np.array([180.0]),
+            el=np.array([45.0]),
+            az_vel=np.array([0.0]),
+            el_vel=np.array([0.0]),
+            start_time=start_time,
+        )
+
+        offset = InstrumentOffset(dx=30.0, dy=30.0)
+        # AltAz (no RA/Dec) -> warns about mechanical-only rotation; that is
+        # orthogonal to this test, so suppress it.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adjusted = apply_detector_offset(trajectory, offset, site)
+
+        assert adjusted.n_points == 1
+        # Boresight velocity is undefined for a single sample -> zeros, not a crash.
+        assert adjusted.az_vel[0] == 0.0
+        assert adjusted.el_vel[0] == 0.0
+
+
+class TestApplyDetectorOffsetRetuneEvents:
+    """L1: the offset must preserve retune_events alongside scan_flag==3."""
+
+    def test_retune_events_preserved_after_offset(self, site):
+        start_time = Time("2026-03-15T04:00:00", scale="utc")
+        trajectory = (
+            TrajectoryBuilder(site)
+            .at(ra=180.0, dec=-30.0)
+            .with_config(
+                PongScanConfig(
+                    timestep=0.5,
+                    width=1.0,
+                    height=1.0,
+                    spacing=0.1,
+                    velocity=0.3,
+                    num_terms=4,
+                    angle=0.0,
+                )
+            )
+            .duration(120.0)
+            .starting_at(start_time)
+            .build()
+        )
+
+        retuned = inject_retune(
+            trajectory,
+            retune_events=[RetuneEvent(t_start=10.0, duration=2.0), RetuneEvent(40.0, 2.0)],
+        )
+        assert len(retuned.retune_events) == 2
+        n_retune_samples = int(np.sum(retuned.scan_flag == 3))
+        assert n_retune_samples > 0
+
+        offset = InstrumentOffset(dx=30.0, dy=30.0)
+        adjusted = apply_detector_offset(retuned, offset, site)
+
+        # Both the per-sample flags and the event-level provenance must survive.
+        assert len(adjusted.retune_events) == len(retuned.retune_events)
+        assert int(np.sum(adjusted.scan_flag == 3)) == n_retune_samples
+
+
+class TestApplyDetectorOffsetFrameConsistency:
+    """M1: frame-varying regression for the refracted-el / vacuum-PA sum.
+
+    Decision (after empirical measurement): keep the physically-correct
+    per-sample ``trajectory.el`` for the mechanical term -- substituting a
+    single center-vacuum-el would regress the vacuum/live path by ~30-200"
+    for extended patterns, far more than the ~arcsec refraction-frame leak it
+    would remove. This test documents and bounds the residual leak: pairing a
+    ``for_fyst()`` (refracted) trajectory with a detector offset shifts the
+    boresight by only a few arcsec vs the (correct) vacuum trajectory, and the
+    vacuum path remains the reference.
+    """
+
+    def _build(self, site, start_time, atmosphere):
+        builder = TrajectoryBuilder(site).at(ra=180.0, dec=-30.0)
+        if atmosphere is not None:
+            builder = builder.with_atmosphere(atmosphere)
+        return (
+            builder.with_config(
+                PongScanConfig(
+                    timestep=0.5,
+                    width=1.0,
+                    height=1.0,
+                    spacing=0.1,
+                    velocity=0.3,
+                    num_terms=4,
+                    angle=0.0,
+                )
+            )
+            .duration(60.0)
+            .starting_at(start_time)
+            .build()
+        )
+
+    def test_refracted_input_leak_is_bounded_arcsec(self, site):
+        # el ~ 36 deg at this epoch -- near the worst case for the leak.
+        start_time = Time("2026-03-15T09:00:00", scale="utc")
+        offset = PRIMECAM_I1  # inner ring rho ~ 1.78 deg
+
+        traj_vac = self._build(site, start_time, atmosphere=None)
+        traj_ref = self._build(site, start_time, atmosphere=AtmosphericConditions.for_fyst())
+
+        adj_vac = apply_detector_offset(traj_vac, offset, site)
+        adj_ref = apply_detector_offset(traj_ref, offset, site)
+
+        # The refracted az/el differ from vacuum by the refraction bump itself
+        # (tens of arcsec in el); to isolate the *frame-sum* leak we compare the
+        # boresight the offset produces for each, removing the input el offset by
+        # comparing the detector->boresight *shift* (boresight - input position).
+        shift_vac_az = adj_vac.az - traj_vac.az
+        shift_vac_el = adj_vac.el - traj_vac.el
+        shift_ref_az = adj_ref.az - traj_ref.az
+        shift_ref_el = adj_ref.el - traj_ref.el
+
+        # The offset-induced boresight shift should be nearly identical between
+        # the vacuum and refracted inputs; the only difference is the refracted-el
+        # vs vacuum-PA frame leak, bounded to a few arcsec on the inner ring.
+        d_az = (shift_ref_az - shift_vac_az) * np.cos(np.radians(traj_vac.el))
+        d_el = shift_ref_el - shift_vac_el
+        leak_arcsec = np.hypot(d_az, d_el) * 3600.0
+
+        assert leak_arcsec.max() < 5.0, (
+            f'refracted-input frame leak {leak_arcsec.max():.2f}" exceeds the '
+            "documented ~arcsec bound -- M1 precondition may be violated"
+        )
+
+    def test_vacuum_path_lands_on_target(self, site):
+        """The vacuum (live) path is the reference: the module lands on target."""
+        coords = Coordinates(site)
+        start_time = Time("2026-03-15T09:00:00", scale="utc")
+        offset = PRIMECAM_I1
+
+        traj_vac = self._build(site, start_time, atmosphere=None)
+        boresight = apply_detector_offset(traj_vac, offset, site)
+
+        abs_times = get_absolute_times(traj_vac)
+        pa = coords.get_parallactic_angle(
+            np.full(len(traj_vac.times), traj_vac.center_ra),
+            np.full(len(traj_vac.times), traj_vac.center_dec),
+            obstime=abs_times,
+        )
+        phi = compute_focal_plane_rotation(traj_vac.el, site, offset, parallactic_angle=pa)
+        actual_az, actual_el = boresight_to_detector(boresight.az, boresight.el, offset, phi)
+
+        target = SkyCoord(traj_vac.az * u.deg, traj_vac.el * u.deg, frame="altaz")
+        actual = SkyCoord(actual_az * u.deg, actual_el * u.deg, frame="altaz")
+        miss_arcsec = target.separation(actual).to_value(u.arcsec)
+        assert miss_arcsec.max() < 0.01

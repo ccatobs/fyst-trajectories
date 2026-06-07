@@ -13,8 +13,8 @@ Get a named module offset:
 
 >>> from fyst_trajectories.primecam import get_primecam_offset
 >>> offset = get_primecam_offset("i1")
->>> print(offset)
-InstrumentOffset(dx=0.0', dy=-106.8', name='PrimeCam-I1')
+>>> f"{offset.name}: dx={offset.dx:.1f}', dy={offset.dy:.1f}'"
+"PrimeCam-I1: dx=0.0', dy=-106.8'"
 
 List available modules:
 
@@ -22,6 +22,8 @@ List available modules:
 >>> print(sorted(PRIMECAM_MODULES.keys()))
 ['c', 'center', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']
 """
+
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -142,14 +144,75 @@ def get_primecam_offset(module_name: str) -> InstrumentOffset:
     Examples
     --------
     >>> offset = get_primecam_offset("i1")
-    >>> print(offset)
-    InstrumentOffset(dx=0.0', dy=-106.8', name='PrimeCam-I1')
+    >>> f"{offset.dx:.1f}', {offset.dy:.1f}'"
+    "0.0', -106.8'"
     """
     key = module_name.lower()
     if key not in PRIMECAM_MODULES:
         available = ", ".join(sorted(PRIMECAM_MODULES.keys()))
         raise KeyError(f"Unknown PrimeCam module '{module_name}'. Available: {available}")
     return PRIMECAM_MODULES[key]
+
+
+def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
+    """Resolve an SO-style module tag into a list of module offsets.
+
+    Expands a comma-separated tag of module names into the
+    ``list[InstrumentOffset]`` accepted by
+    :func:`fyst_trajectories.plan_source_ces` /
+    :func:`fyst_trajectories.compute_source_ces_params` via their ``footprint``
+    argument, which averages the module centres so the centroid of the selected
+    modules lands on the source. Adds no geometry.
+
+    Parameters
+    ----------
+    tag : str or sequence of str
+        ``"i1,i2"`` (exact module names, comma-separated), a sequence of
+        names (``["i1", "i2"]``), or ``"all"`` for every module
+        (``c, i1..i6``). Case-insensitive; whitespace ignored. ``c`` and
+        ``center`` are the same module and are de-duplicated.
+
+    Returns
+    -------
+    list of InstrumentOffset
+        One offset per distinct module, in input order.
+
+    Raises
+    ------
+    KeyError
+        If a token is not a recognised module (from :func:`get_primecam_offset`).
+    ValueError
+        If the tag resolves to no modules.
+    TypeError
+        If ``tag`` is not a str or sequence of str.
+
+    Examples
+    --------
+    >>> [o.name for o in resolve_module_tag("i1,i2")]
+    ['PrimeCam-I1', 'PrimeCam-I2']
+    """
+    if isinstance(tag, str):
+        if tag.strip().lower() == "all":
+            names = [k for k in PRIMECAM_MODULES if k != "center"]
+        else:
+            names = [n.strip() for n in tag.split(",") if n.strip()]
+    elif isinstance(tag, Sequence) and not isinstance(tag, (bytes, bytearray)):
+        names = [str(n).strip() for n in tag if str(n).strip()]
+    else:
+        raise TypeError(f"tag must be a str or sequence of str, got {type(tag).__name__}")
+
+    offsets: list[InstrumentOffset] = []
+    seen: set[str] = set()
+    for name in names:
+        offset = get_primecam_offset(name)
+        if offset.name in seen:
+            continue
+        seen.add(offset.name)
+        offsets.append(offset)
+
+    if not offsets:
+        raise ValueError(f"module tag {tag!r} resolved to no modules")
+    return offsets
 
 
 def resolve_offset(
@@ -192,8 +255,9 @@ def resolve_offset(
     --------
     Named module lookup:
 
-    >>> resolve_offset(module="i3")
-    InstrumentOffset(dx=92.5', dy=53.4', name='PrimeCam-I3')
+    >>> offset = resolve_offset(module="i3")
+    >>> f"{offset.dx:.1f}', {offset.dy:.1f}'"
+    "92.5', 53.4'"
 
     Custom offset:
 
