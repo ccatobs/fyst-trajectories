@@ -109,7 +109,7 @@ Usage Examples
 
     from fyst_trajectories.trajectory_utils import to_path_format, to_arrays
 
-    # For OCS /path endpoint
+    # For Go TCS /path endpoint
     points = to_path_format(trajectory)
     payload = {
         "start_time": trajectory.start_time.unix,

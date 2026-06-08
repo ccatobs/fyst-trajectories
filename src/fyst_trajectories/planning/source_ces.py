@@ -14,8 +14,8 @@ the *entire* footprint at fixed boresight elevation. The output is a
 ``ScanBlock`` whose ``trajectory`` is a constant-elevation scan with
 the solved drift baked into the azimuth track.
 
-The intended consumer is a future ``schedlib/policies/fyst.py`` inside
-Simons Observatory's scheduler.
+The intended consumer is a future ``policies/fyst.py`` in the
+schedlib fork (``ccatobs/pcam_gen_schedule``).
 """
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ _DEFAULT_SEARCH_HORIZON_HOURS = 24.0
 _MIN_PER_LEG_VELOCITY_DEG_S = 0.05
 
 # Number of samples drawn along the planned arc for the sun-safety
-# sweep in Step 11. 60 samples over a typical 10-minute arc gives ~10 s
-# resolution — finer than the sun's apparent motion (~15"/s) and the
+# sweep (see ``_check_arc_sun_safety``). 60 samples over a typical 10-minute arc gives ~10 s
+# resolution -- finer than the sun's apparent motion (~15"/s) and the
 # array's footprint extent.
 _SUN_SAFETY_ARC_N_SAMPLES = 60
 
@@ -91,7 +91,7 @@ class _SourceCESCore:
     """Internal carrier for the params-only phase of source-CES planning.
 
     Holds the completed :class:`SourceCESComputedParams` plus the intermediate
-    state the trajectory builder needs in Steps 13-14 of ``plan_source_ces``.
+    state the trajectory builder in ``plan_source_ces`` needs.
     Strictly private — no public API guarantees on this class.
     """
 
@@ -255,7 +255,7 @@ def _sample_source_altaz(
         return coords.get_body_altaz(body, times)
     if pm_ra != 0.0 or pm_dec != 0.0:
         # radec_to_altaz_with_pm is scalar-time only; loop. For the typical
-        # 30 s × 24 h = 2880 samples this is ~0.5 s in practice — acceptable
+        # 30 s x 24 h = 2880 samples this is ~0.5 s in practice -- acceptable
         # for a planning call and avoids forcing a vectorised PM variant.
         # If it becomes a bottleneck, vectorise in Coordinates.
         n = len(times)
@@ -354,8 +354,8 @@ def _check_arc_sun_safety(
     closest_iso = str(times[closest].iso)  # type: ignore[union-attr]
     warnings.warn(
         f"EXCLUSION ZONE: planned source-CES on {source_label} passes "
-        f"{seps_deg[closest]:.1f}° from the Sun at "
-        f"{closest_iso} (exclusion radius {excl}°).",
+        f"{seps_deg[closest]:.1f} deg from the Sun at "
+        f"{closest_iso} (exclusion radius {excl} deg).",
         PointingWarning,
         stacklevel=3,
     )
@@ -390,7 +390,7 @@ def _compute_source_ces_core(
     allow_partial: bool = False,
     v_az: float | None = None,
 ) -> _SourceCESCore:
-    """Run Steps 0-12 of source-CES planning, returning scalars + builder state.
+    """Run the params-only phase of source-CES planning, returning scalars + builder state.
 
     Shared compute kernel for :func:`plan_source_ces` and
     :func:`compute_source_ces_params`. Validates inputs, resolves the
@@ -476,7 +476,7 @@ def _compute_source_ces_core(
         # Auto-detect: choose the mode of the longest arc that contains
         # ``el_bore``. If no arc covers ``el_bore`` we raise immediately
         # with the global el span (no silent fall-back to the longest
-        # arc — that would defer the failure to Step 5 with a confusing
+        # arc -- that would defer the failure to the el-slice guard below with a confusing
         # error message).
         candidate_arcs = [
             arc
@@ -571,13 +571,13 @@ def _compute_source_ces_core(
         )
 
     # interp1d wants sorted x. For rising slice el is increasing; for
-    # setting slice el is decreasing — sort by el value either way.
+    # setting slice el is decreasing -- sort by el value either way.
     sort_idx = np.argsort(el_slice)
     el_sorted = el_slice[sort_idx]
     t_sorted = t_slice[sort_idx]
     az_sorted = az_slice[sort_idx]
     # Linear interpolation for ``t(el)``: cubic is liable to overshoot
-    # near the arc apex where ``dEl/dt → 0`` and would silently
+    # near the arc apex where ``dEl/dt -> 0`` and would silently
     # extrapolate out-of-range queries. The guard above already
     # ensures ``el_bore`` is inside ``[el_slice.min(), el_slice.max()]``;
     # the assertion below pins that invariant for any future code change.
@@ -597,7 +597,7 @@ def _compute_source_ces_core(
     )
 
     assert el_sorted[0] <= el_bore <= el_sorted[-1], (
-        "Step 5 must guarantee el_bore is in the sorted el slice; got "
+        "the el-slice guard must guarantee el_bore is in the sorted el slice; got "
         f"el_bore={el_bore} not in [{el_sorted[0]}, {el_sorted[-1]}]"
     )
 
@@ -626,7 +626,7 @@ def _compute_source_ces_core(
         center_offset = InstrumentOffset(dx=fp.center_xi_deg * 60.0, dy=fp.center_eta_deg * 60.0)
         # Field rotation at the moment the source is at el_bore.
         # ``compute_focal_plane_rotation`` only reads
-        # ``offset.instrument_rotation`` — it ignores ``dx``/``dy`` — so
+        # ``offset.instrument_rotation`` -- it ignores ``dx``/``dy`` -- so
         # the offset is interchangeable for the rotation computation.
         # Use a zero-offset stub here for clarity (``instrument_rotation``
         # defaults to 0). ``center_offset`` is retained for the
@@ -661,7 +661,7 @@ def _compute_source_ces_core(
             az_bore = src_az_at_el_bore
 
     # Field rotation for the cover projection uses a zero-offset
-    # InstrumentOffset (no per-module instrument_rotation — the cover
+    # InstrumentOffset (no per-module instrument_rotation -- the cover
     # vertices already carry their own focal-plane positions).
     cover_field_rot = float(
         compute_focal_plane_rotation(
@@ -780,11 +780,11 @@ def _compute_source_ces_core(
         az_start = (az_start - (az_branch - 180.0)) % 360.0 + (az_branch - 180.0)
         az_stop = az_start + az_throw
 
-    # Probe three azimuth positions per time sample — the low edge, the
-    # midpoint, and the high edge of the sweep — so that a scan whose
-    # midpoint clears the exclusion radius but whose ±throw/2 edges do
+    # Probe three azimuth positions per time sample -- the low edge, the
+    # midpoint, and the high edge of the sweep -- so that a scan whose
+    # midpoint clears the exclusion radius but whose +/-throw/2 edges do
     # not is still caught. Sun motion within a single sweep is
-    # negligible (~15"/s ≪ az_throw), so reusing the same time at all
+    # negligible (~15"/s << az_throw), so reusing the same time at all
     # three az positions is sound.
     arc_n = _SUN_SAFETY_ARC_N_SAMPLES
     arc_times_sec_base = np.linspace(t0_sec, t1_sec, arc_n)
@@ -816,9 +816,9 @@ def _compute_source_ces_core(
             stacklevel=2,
         )
 
-    # Quantise duration the same way Step 13 does so the returned
+    # Quantise duration the same way the trajectory builder does so the returned
     # ``actual_duration`` matches what the trajectory builder will
-    # produce. Mirror plan_constant_el_scan lines 219-233.
+    # produce. Mirrors the n_scans/duration quantisation in plan_constant_el_scan.
     velocity = nominal_velocity
     scan_leg_time = az_throw / velocity
     n_scans = max(1, round(duration_window / scan_leg_time))
@@ -840,8 +840,8 @@ def _compute_source_ces_core(
     }
     # Direct self-check against the TypedDict's required keys.
     # ``source_ces`` is intentionally not registered in
-    # :data:`fyst_trajectories.planning._types._SCAN_TYPE_TO_KEYS` —
-    # see the note there for the planning↔overhead boundary rationale.
+    # :data:`fyst_trajectories.planning._types._SCAN_TYPE_TO_KEYS` --
+    # see the note there for the planning<->overhead boundary rationale.
     _missing = SourceCESComputedParams.__required_keys__ - computed.keys()
     if _missing:
         raise KeyError(f"source_ces computed_params missing required keys: {sorted(_missing)}")
@@ -898,8 +898,8 @@ def compute_source_ces_params(
     el_bore, boresight_rot, t0_iso, t1_iso, duration, mode, n_scans),
     skipping the per-sample trajectory generation. Intended for
     schedule-emitter consumers that only need the scan scalars to
-    populate a Simons Observatory ``run.acu.source_scan(...)`` call
-    (via a future ``schedlib/policies/fyst.py``) and discard the
+    populate a ``run.acu.source_scan(...)`` call (via a future
+    ``policies/fyst.py`` in the schedlib fork) and discard the
     trajectory.
 
     All keyword arguments are identical to :func:`plan_source_ces`
@@ -971,8 +971,8 @@ def compute_source_ces_params(
     Warns
     -----
     PointingWarning
-        Same warnings as :func:`plan_source_ces` Steps 11-12 (sun-
-        avoidance, peak-velocity sanity).
+        Same warnings as :func:`plan_source_ces` (sun-avoidance,
+        peak-velocity sanity).
 
     Notes
     -----
@@ -1035,7 +1035,7 @@ def compute_source_ces_params(
     drift_total = cp["v_az"] * pass_duration
     env_lo = min(cp["az_start"], cp["az_start"] + cp["az_throw"])
     env_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"])
-    # The executed trajectory applies ``az + v_az·times`` (see
+    # The executed trajectory applies ``az + v_az*times`` (see
     # ``plan_source_ces``), so the linear drift shifts the track in a
     # single direction (the sign of ``v_az``): later samples move toward
     # ``+drift_total``. Widen only on that side so the envelope matches
@@ -1237,9 +1237,9 @@ def plan_source_ces(
     (limits −180° to 360°), ``az_branch`` values near −180° can
     produce out-of-range scans even when geometrically valid.
 
-    ``plan_source_ces`` is planner-only: its consumer is Simons
-    Observatory's ``schedlib`` (via a future
-    ``schedlib/policies/fyst.py``), not the in-tree
+    ``plan_source_ces`` is planner-only: its consumer is the
+    schedlib fork (``ccatobs/pcam_gen_schedule``) via a future
+    ``policies/fyst.py``, not the in-tree
     :mod:`fyst_trajectories.overhead` simulator. See
     ``docs/planning.rst`` "Source CES" for the wider conventions
     discussion.

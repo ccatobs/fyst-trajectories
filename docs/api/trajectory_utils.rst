@@ -24,7 +24,7 @@ Common Operations
 
     from fyst_trajectories.trajectory_utils import to_path_format, to_arrays
 
-    # For OCS /path endpoint
+    # For Go TCS /path endpoint
     points = to_path_format(trajectory)
     # Returns: List[List[float]] with [time, az, el, az_vel, el_vel]
 

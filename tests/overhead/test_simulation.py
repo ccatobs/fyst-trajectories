@@ -193,7 +193,7 @@ class TestGenerateTrajectoryForBlock:
                 "width": 3.0,
                 "height": 2.0,
                 "velocity": 0.5,
-                # "radiu" is a typo for "radius" — belongs to DaisyScanParams.
+                # "radiu" is a typo for "radius" -- belongs to DaisyScanParams.
                 "scan_params": {"radiu": 1.0},
             },
         )

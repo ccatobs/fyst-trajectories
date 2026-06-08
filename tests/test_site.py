@@ -168,7 +168,7 @@ class TestAtmosphericConditions:
         assert atmo.pressure == pytest.approx(500.0)
         assert atmo.temperature == pytest.approx(265.0)
         assert atmo.relative_humidity == pytest.approx(0.10)
-        # 200 µm forces astropy's radio-IR refraction model.
+        # 200 um forces astropy's radio-IR refraction model.
         assert atmo.obswl == pytest.approx(200.0)
         assert atmo.obswl_quantity is not None
 

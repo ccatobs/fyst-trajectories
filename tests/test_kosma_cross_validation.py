@@ -39,7 +39,7 @@ from fyst_trajectories.site import (
 # KOSMA model constants (from tests_with_focalplane.py)
 # ---------------------------------------------------------------------------
 
-KOSMA_PLATE_SCALE = 13.89  # arcsec/mm — intentionally independent of site.plate_scale
+KOSMA_PLATE_SCALE = 13.89  # arcsec/mm -- intentionally independent of site.plate_scale
 """FYST plate scale as hardcoded in the KOSMA control system.
 
 This is defined independently from ``site.plate_scale`` so these cross-validation

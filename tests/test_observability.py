@@ -34,7 +34,7 @@ T_DAY = Time("2026-06-15T16:30:00", scale="utc")
 
 
 def _near_zenith_fixed(coords, t, name="zen"):
-    """Return a FIXED source transiting near the zenith at time ``t`` (el ~ 85°)."""
+    """Return a FIXED source transiting near the zenith at time ``t`` (el ~ 85 deg)."""
     lst = coords.get_lst(t)
     return Target(name, TargetKind.FIXED, ra_deg=float(lst), dec_deg=coords.site.latitude + 5.0)
 
@@ -70,7 +70,7 @@ def test_horizon_window(coordinates):
 # 3
 def test_below_el_min(coordinates):
     t = T_NIGHT
-    # dec = +80° is never visible from FYST (lat ~ -23°): always below the horizon.
+    # dec = +80 deg is never visible from FYST (lat ~ -23 deg): always below the horizon.
     tgt = Target("far_north", TargetKind.FIXED, ra_deg=0.0, dec_deg=80.0)
     r = check_observability([tgt], t, site=coordinates.site)[0]
     assert r.observable is False
@@ -135,7 +135,7 @@ def test_both_avoidance_kinds_reported_separately(coordinates):
     sun_az, sun_el = coordinates.get_sun_altaz(t)
     sun_ra, sun_dec = coordinates.altaz_to_radec(sun_az, sun_el, t)
     tgt = Target("at_sun", TargetKind.FIXED, ra_deg=sun_ra, dec_deg=sun_dec)
-    # A zone > 180° (the maximum possible separation) forces the AVOID branch
+    # A zone > 180 deg (the maximum possible separation) forces the AVOID branch
     # deterministically, independent of the Moon's phase/position.
     r = check_observability([tgt], t, site=coordinates.site, avoid=[AvoidZone("moon", 181.0)])[0]
     assert r.sun_clear is False
@@ -246,10 +246,10 @@ def test_no_overhead_import_at_load():
     assert res.returncode == 0, res.stderr
 
 
-# 17 — F1 regression: SATELLITE self-exclusion keys on the resolved position body
+# 17 -- F1 regression: SATELLITE self-exclusion keys on the resolved position body
 def test_satellite_self_exclusion(coordinates):
     # Titan is proxied by Saturn, so AVOIDing Saturn must self-exclude (Titan IS
-    # at Saturn's position) — otherwise Titan is silently un-schedulable.
+    # at Saturn's position) -- otherwise Titan is silently un-schedulable.
     r = check_observability(
         ["titan"], T_NIGHT, site=coordinates.site, avoid=[AvoidZone("saturn", 5.0)]
     )[0]
@@ -262,7 +262,7 @@ def test_satellite_self_exclusion(coordinates):
     assert [s.body for s in r2.avoid_separations] == ["jupiter"]
 
 
-# 18 — _first_window picks the FIRST contiguous run (deterministic, no ephemeris)
+# 18 -- _first_window picks the FIRST contiguous run (deterministic, no ephemeris)
 def test_first_window_picks_first_run():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = t0 + TimeDelta(np.arange(7) * 600.0, format="sec")  # 7 samples, 10 min apart
@@ -275,7 +275,7 @@ def test_first_window_picks_first_run():
     assert _first_window(np.zeros(7, dtype=bool), grid) is None
 
 
-# 19 — window_step_minutes must be positive when a horizon is requested (F2)
+# 19 -- window_step_minutes must be positive when a horizon is requested (F2)
 def test_window_step_must_be_positive(coordinates):
     tgt = _near_zenith_fixed(coordinates, T_NIGHT)
     with pytest.raises(ValueError):
@@ -291,13 +291,13 @@ def test_window_step_must_be_positive(coordinates):
     assert r.window is None
 
 
-# 20 — el_min > el_max is a caller error (F8)
+# 20 -- el_min > el_max is a caller error (F8)
 def test_el_min_gt_el_max_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(["mars"], T_NIGHT, site=coordinates.site, el_min=80.0, el_max=20.0)
 
 
-# 21 — the Sun is never an AvoidZone (F7)
+# 21 -- the Sun is never an AvoidZone (F7)
 def test_avoid_zone_rejects_sun():
     with pytest.raises(ValueError):
         AvoidZone("sun", 30.0)
@@ -305,7 +305,7 @@ def test_avoid_zone_rejects_sun():
         AvoidZone("SUN", 30.0)
 
 
-# 22 — disabled Sun avoidance: sun_clear True, no SUN_TOO_CLOSE, separation still set (T5)
+# 22 -- disabled Sun avoidance: sun_clear True, no SUN_TOO_CLOSE, separation still set (T5)
 def test_sun_avoidance_disabled():
     site = get_fyst_site(sun_avoidance_enabled=False)
     coords = Coordinates(site)
@@ -318,12 +318,12 @@ def test_sun_avoidance_disabled():
     assert r.sun_separation_deg < 1.0  # still populated
 
 
-# 23 — empty target list
+# 23 -- empty target list
 def test_empty_targets(coordinates):
     assert check_observability([], T_NIGHT, site=coordinates.site) == []
 
 
-# 24 — multiple distinct AVOID bodies each get an entry
+# 24 -- multiple distinct AVOID bodies each get an entry
 def test_multiple_avoid_bodies(coordinates):
     r = check_observability(
         ["mars"],
@@ -334,7 +334,7 @@ def test_multiple_avoid_bodies(coordinates):
     assert sorted(s.body for s in r.avoid_separations) == ["jupiter", "moon"]
 
 
-# 25 — an AVOID body outside SOLAR_SYSTEM_BODIES raises a clear error
+# 25 -- an AVOID body outside SOLAR_SYSTEM_BODIES raises a clear error
 def test_invalid_avoid_body_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(
@@ -342,7 +342,7 @@ def test_invalid_avoid_body_raises(coordinates):
         )
 
 
-# 26 — .summary text for both branches
+# 26 -- .summary text for both branches
 def test_summary_text(coordinates):
     good = check_observability(
         [_near_zenith_fixed(coordinates, T_NIGHT)], T_NIGHT, site=coordinates.site
@@ -354,9 +354,9 @@ def test_summary_text(coordinates):
     assert "NOT observable" in bad.summary
 
 
-# 27 — T6: window is None when a target is never observable over the horizon
+# 27 -- T6: window is None when a target is never observable over the horizon
 def test_window_none_when_never_observable(coordinates):
-    # dec=+80° never rises from FYST; with a horizon, _first_window finds no run.
+    # dec=+80 deg never rises from FYST; with a horizon, _first_window finds no run.
     tgt = Target("far_north", TargetKind.FIXED, ra_deg=0.0, dec_deg=80.0)
     r = check_observability([tgt], T_NIGHT, site=coordinates.site, horizon_hours=24.0)[0]
     assert r.observable is False
@@ -364,7 +364,7 @@ def test_window_none_when_never_observable(coordinates):
     assert ReasonCode.BELOW_EL_MIN in r.reasons
 
 
-# 28 — T9: Titan proxy is exact, and observable when Saturn is up
+# 28 -- T9: Titan proxy is exact, and observable when Saturn is up
 def test_titan_proxy_when_saturn_up(coordinates):
     # Find an hour within 24h where Saturn clears el_min, deterministically.
     grid = T_NIGHT + TimeDelta(np.arange(0, 24 * 3600, 3600), format="sec")
@@ -381,14 +381,14 @@ def test_titan_proxy_when_saturn_up(coordinates):
     assert r.position_approximate is True
 
 
-# 29 — T10: from_pair degree-symbol and whitespace/case normalization
+# 29 -- T10: from_pair degree-symbol and whitespace/case normalization
 def test_from_pair_unit_and_whitespace():
     assert AvoidZone.from_pair(("moon", "5°")).zone_deg == 5.0
     assert AvoidZone.from_pair(("JUPITER", " 3 DEG ")).zone_deg == 3.0
     assert AvoidZone.from_pair(("moon", "3.0")).zone_deg == 3.0
 
 
-# 30 — F9: AVOID body aliases resolve like targets ("luna" -> Moon)
+# 30 -- F9: AVOID body aliases resolve like targets ("luna" -> Moon)
 def test_avoid_body_alias_resolves(coordinates):
     # "luna" must resolve to the Moon, identical to AvoidZone("moon", ...).
     r_luna = check_observability(
@@ -397,14 +397,14 @@ def test_avoid_body_alias_resolves(coordinates):
     r_moon = check_observability(
         ["mars"], T_NIGHT, site=coordinates.site, avoid=[AvoidZone("moon", 181.0)]
     )[0]
-    # Same physical body => same separation; 181° zone forces AVOID_TOO_CLOSE.
+    # Same physical body => same separation; 181 deg zone forces AVOID_TOO_CLOSE.
     assert r_luna.avoid_separations[0].separation_deg == pytest.approx(
         r_moon.avoid_separations[0].separation_deg, abs=1e-9
     )
     assert ReasonCode.AVOID_TOO_CLOSE in r_luna.reasons
 
 
-# 31 — F9: AVOIDing a satellite resolves to its parent; self-excludes the parent target
+# 31 -- F9: AVOIDing a satellite resolves to its parent; self-excludes the parent target
 def test_avoid_satellite_resolves_to_parent(coordinates):
     # AvoidZone("titan") -> Saturn; observing Saturn must self-exclude.
     r = check_observability(
@@ -414,7 +414,7 @@ def test_avoid_satellite_resolves_to_parent(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE not in r.reasons
 
 
-# 32 — F9: an unresolvable AVOID body raises a clear error up front
+# 32 -- F9: an unresolvable AVOID body raises a clear error up front
 def test_avoid_unresolvable_body_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(
@@ -422,7 +422,7 @@ def test_avoid_unresolvable_body_raises(coordinates):
         )
 
 
-# 33 — F10: from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
+# 33 -- F10: from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
 def test_from_pair_rejects_malformed():
     with pytest.raises(ValueError):
         AvoidZone.from_pair(("jupiter", "xy"))  # non-numeric
@@ -434,7 +434,7 @@ def test_from_pair_rejects_malformed():
         AvoidZone.from_pair("xy")  # not a tuple/list pair
 
 
-# 34 — F10: non-finite zone_deg is rejected at construction
+# 34 -- F10: non-finite zone_deg is rejected at construction
 def test_avoid_zone_rejects_non_finite():
     with pytest.raises(ValueError):
         AvoidZone("jupiter", float("nan"))
@@ -444,7 +444,7 @@ def test_avoid_zone_rejects_non_finite():
         AvoidZone.from_pair(("jupiter", "nan"))
 
 
-# 35 — F3: a non-divisor step keeps the window within [time, time+horizon]
+# 35 -- F3: a non-divisor step keeps the window within [time, time+horizon]
 def test_grid_within_horizon_nondivisor_step():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = _build_time_grid(t0, horizon_hours=1.0, step_minutes=7.0)
@@ -455,7 +455,7 @@ def test_grid_within_horizon_nondivisor_step():
     assert len(grid) >= 2
 
 
-# 36 — F3: a sub-step positive horizon still yields a real (n>=2) interval
+# 36 -- F3: a sub-step positive horizon still yields a real (n>=2) interval
 def test_grid_substep_horizon_not_degenerate():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = _build_time_grid(t0, horizon_hours=2.0 / 60.0, step_minutes=5.0)  # 2 min horizon

@@ -5,33 +5,6 @@ trajectories, allowing incremental configuration with validation.
 
 The pattern type is automatically inferred from the config class,
 so there is no need to explicitly call `.pattern()`.
-
-Examples
---------
->>> from astropy.time import Time
->>> from fyst_trajectories import get_fyst_site
->>> from fyst_trajectories.patterns import TrajectoryBuilder, PongScanConfig
->>>
->>> site = get_fyst_site()
->>> start_time = Time("2026-03-15T04:00:00", scale="utc")
->>> trajectory = (
-...     TrajectoryBuilder(site)
-...     .at(ra=180.0, dec=-30.0)
-...     .with_config(
-...         PongScanConfig(
-...             timestep=0.1,
-...             width=2.0,
-...             height=2.0,
-...             spacing=0.1,
-...             velocity=0.5,
-...             num_terms=4,
-...             angle=0.0,
-...         )
-...     )
-...     .duration(300.0)
-...     .starting_at(start_time)
-...     .build()
-... )
 """
 
 import warnings
@@ -46,6 +19,7 @@ from ..trajectory_utils import validate_trajectory_bounds, validate_trajectory_d
 from .base import AltAzPattern, CelestialPattern
 from .configs import ScanConfig
 from .registry import get_pattern, get_pattern_for_config
+from .utils import validate_sample_count
 
 if TYPE_CHECKING:
     from ..offsets import InstrumentOffset
@@ -354,8 +328,8 @@ class TrajectoryBuilder:
         ValueError
             If required parameters are missing (config, duration,
             coordinates for celestial patterns, or start time for
-            time-dependent patterns), or if the duration is shorter
-            than the config timestep.
+            time-dependent patterns), or if the duration yields fewer
+            than two samples at the config timestep.
         TargetNotObservableError
             If the target is not observable at the requested time.
         TrajectoryBoundsError
@@ -366,17 +340,15 @@ class TrajectoryBuilder:
         if self._duration is None:
             raise ValueError("Duration not set. Call .duration() first.")
 
-        # A scan shorter than a single sample is degenerate: pattern generators
-        # produce 0- or 1-point arrays that then fail opaquely in np.gradient or
-        # array reductions (daisy raises a zero-size reduction error; pong and
-        # sidereal raise IndexError). Reject it here at the shared entry point so
-        # every pattern fails with one clear message rather than a deep numpy one.
+        # A scan that yields fewer than 2 samples is degenerate: pattern
+        # generators produce 0- or 1-point arrays that then fail opaquely in
+        # np.gradient or array reductions, or silently return a 1-point
+        # trajectory. Reject it here at the shared entry point with the same
+        # >= 2-sample contract the per-pattern generators enforce, so every
+        # pattern fails with one clear message rather than a deep numpy one.
         config_timestep = getattr(self._config, "timestep", None)
-        if config_timestep is not None and self._duration < config_timestep:
-            raise ValueError(
-                f"duration ({self._duration}) must be >= the config timestep "
-                f"({config_timestep}); a scan shorter than one sample is degenerate."
-            )
+        if config_timestep is not None:
+            validate_sample_count(self._duration, config_timestep)
 
         pattern_cls = get_pattern(self._pattern_name)
 

@@ -11,7 +11,12 @@ from ..trajectory_utils import validate_trajectory_bounds
 from .base import CelestialPattern, TrajectoryMetadata
 from .configs import SiderealTrackConfig
 from .registry import register_pattern
-from .utils import compute_velocities, normalize_azimuth, wrap_bounds_error
+from .utils import (
+    compute_velocities,
+    normalize_azimuth,
+    validate_sample_count,
+    wrap_bounds_error,
+)
 
 
 @register_pattern("sidereal", config=SiderealTrackConfig)
@@ -103,7 +108,7 @@ class SiderealTrackPattern(CelestialPattern):
         timestep = self.config.timestep
         coords = Coordinates(site, atmosphere=atmosphere)
 
-        n_points = int(round(duration / timestep)) + 1
+        n_points = validate_sample_count(duration, timestep)
         times = np.linspace(0, duration, n_points)
 
         obstimes = start_time + TimeDelta(times * u.s)

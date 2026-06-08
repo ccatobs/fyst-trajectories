@@ -250,10 +250,10 @@ class TestPlanPongRotationSequence:
             plan_pong_rotation_sequence(base_config, n_rotations=0)
 
     def test_jcmt_typical_eleven_rotations(self, base_config):
-        """JCMT/SCUBA-2 uses ~11 rotations spaced ~16°."""
+        """JCMT/SCUBA-2 uses ~11 rotations spaced ~16 deg."""
         configs = plan_pong_rotation_sequence(base_config, n_rotations=11)
         angles = [c.angle for c in configs]
-        # Last angle should be 10 * 180/11 ≈ 163.6
+        # Last angle should be 10 * 180/11 ~ 163.6
         assert angles[-1] == pytest.approx(180.0 * 10 / 11)
         # Spacing between consecutive is constant
         diffs = np.diff(angles)

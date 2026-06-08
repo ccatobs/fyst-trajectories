@@ -375,15 +375,16 @@ class ScanBlock:
 # NOTE: ``source_ces`` is intentionally NOT registered here.
 # :class:`SourceCESComputedParams` exists as a static-type schema for
 # :func:`~fyst_trajectories.plan_source_ces` returns, but source-CES is
-# a planner-only scan type — its downstream consumer is Simons
-# Observatory's ``schedlib`` (via a future ``schedlib/policies/fyst.py``),
-# not the in-tree :mod:`fyst_trajectories.overhead` timeline simulator.
-# Keeping it out of this dispatch table keeps the planning↔overhead
+# a planner-only scan type -- its downstream consumer is the
+# schedlib fork (``ccatobs/pcam_gen_schedule``) via a future
+# ``policies/fyst.py``, not the in-tree
+# :mod:`fyst_trajectories.overhead` timeline simulator.
+# Keeping it out of this dispatch table keeps the planning<->overhead
 # boundary explicit: ``overhead.schedule_to_trajectories`` only knows
 # ``pong``/``constant_el``/``daisy`` and ``ObservingPatch`` rejects
 # ``"source_ces"`` at construction time, so the table here would only
 # ever be consulted by the planner's own self-check on its return
-# value — which we now do directly against
+# value -- which we now do directly against
 # :attr:`SourceCESComputedParams.__required_keys__` inside
 # :func:`plan_source_ces`. If a future use case wants source-CES blocks
 # in :func:`~fyst_trajectories.overhead.generate_timeline`, add the

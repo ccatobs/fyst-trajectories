@@ -322,7 +322,6 @@ class TestConstantElPropertyBased:
 
         az_min = min(az_start, az_stop)
         az_max = max(az_start, az_stop)
-        d_half_turn = 5 * az_speed**2 / (8 * az_accel)
 
         # All positions within motion range (science + overscan, with tolerance)
         assert trajectory.az.min() >= az_min - d_half_turn - 0.05, (

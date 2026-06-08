@@ -298,9 +298,10 @@ def primecam_geometry_dict(
     """Build a schedlib-style geometry dict for the PrimeCam modules.
 
     Adapts :data:`PRIMECAM_MODULES` into the ``{name: {"center": [xi_deg,
-    eta_deg], "radius": deg}}`` schema that Simons Observatory's ``schedlib``
-    expects from a policy's ``make_geometry`` (the single source of truth for a
-    future ``schedlib/policies/fyst.py`` ``FYSTPolicy.make_geometry``). Each
+    eta_deg], "radius": deg}}`` schema that ``schedlib`` expects from a
+    policy's ``make_geometry`` (the single source of truth for a future
+    ``policies/fyst.py`` ``FYSTPolicy.make_geometry`` in the ``pcam_gen_schedule``
+    schedlib fork). Each
     module center is the :class:`~fyst_trajectories.offsets.InstrumentOffset`
     cross-elevation/elevation offset (``xi = dx``, ``eta = dy``), converted from
     arcminutes to degrees.

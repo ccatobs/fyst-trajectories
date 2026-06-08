@@ -76,7 +76,7 @@ class TestCalibrationCadencesVsLiterature:
         # Agreed canonical default (operations-team-owned; see CHANGELOG).
         assert policy.pointing_cadence == 3600.0, (
             f"Pointing cadence default changed from the agreed 3600.0 s to "
-            f"{policy.pointing_cadence}s — update the CHANGELOG and this test together"
+            f"{policy.pointing_cadence}s -- update the CHANGELOG and this test together"
         )
         # Sanity: still within the published literature band [20 min, 1 h].
         assert 1200.0 <= policy.pointing_cadence <= 3600.0

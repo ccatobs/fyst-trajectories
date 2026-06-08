@@ -640,7 +640,7 @@ class TestIntegralVelocityEqualsPosition:
     The constant-elevation bug was a velocity computed on a different grid from
     its position; the Daisy M-1 bug was the same class (a stretched time grid
     scaling every velocity). This asserts the inverse invariant --
-    ``cumtrapz(az_vel, times) ≈ az - az[0]`` (and the same for el) -- across
+    ``cumtrapz(az_vel, times) ~ az - az[0]`` (and the same for el) -- across
     Daisy, Pong, and a source-CES block, generalizing the CE fix to all
     patterns. A ~1% grid-scale velocity bias surfaces here as a ~1% relative
     miss, well above the ~0.1% trapezoid/gradient round-trip floor.

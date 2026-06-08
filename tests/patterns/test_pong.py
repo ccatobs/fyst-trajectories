@@ -34,9 +34,7 @@ class TestPongScanPattern:
         assert trajectory.pattern_type == "pong"
         assert trajectory.center_ra == 180.0
         assert trajectory.center_dec == -30.0
-        # Verify new coordsys field is set
         assert trajectory.coordsys == "altaz"
-        # Verify input_frame is set in metadata
         assert trajectory.metadata.input_frame == "icrs"
 
     def test_pong_covers_expected_region(self, site):
@@ -234,7 +232,6 @@ class TestPongScanFlags:
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
         assert trajectory.scan_flag is not None
-        # scan_flag should contain both SCIENCE (1) and TURNAROUND (2) flags
         assert np.any(trajectory.scan_flag == 1)  # SCAN_FLAG_SCIENCE
         assert np.any(trajectory.scan_flag == 2)  # SCAN_FLAG_TURNAROUND
         # Majority should be science

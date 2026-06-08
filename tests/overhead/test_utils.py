@@ -118,7 +118,7 @@ class TestGetObservableWindows:
     def test_circumpolar_source(self, site, start_time, end_time):
         """A genuinely circumpolar source yields one window over the full range.
 
-        dec=-80 from FYST (lat ~ -23) never sets — it is circumpolar
+        dec=-80 from FYST (lat ~ -23) never sets -- it is circumpolar
         (dec < -(90 - |lat|) = -67). Its lower culmination sits near 13 deg, so
         with a 5 deg horizon it stays observable for the entire search window,
         exercising the "truly circumpolar" branch (``set_time = end_time``).

@@ -110,7 +110,7 @@ def test_sidereal_setting_single_module(site):
 
     # PrimeCam-I1 sits ~1.78 deg off-axis (dy = -106.8 arcmin), so the boresight
     # azimuth that places the I1 detector on the source must differ measurably
-    # from the boresight for a CENTRED footprint at the same target — not just be
+    # from the boresight for a CENTRED footprint at the same target -- not just be
     # "positive and finite". A silent fallback to az_bore = source_az (the bug the
     # gold test_off_centre_module_lands_on_source_during_pass guards) would
     # collapse this offset to ~0. Here the off-centre boresight lands ~1.5 deg
@@ -196,7 +196,7 @@ def test_source_ces_not_in_overhead_dispatch_table():
     ``SourceCESComputedParams.__required_keys__`` directly. If this
     test ever needs updating, also wire source_ces through
     ``overhead/simulation.py:_generate_trajectory_for_block`` and
-    ``overhead/models.py:ObservingPatch.__post_init__`` — otherwise
+    ``overhead/models.py:ObservingPatch.__post_init__`` -- otherwise
     the dispatch table will lie about what scan types the overhead
     simulator actually supports.
     """
@@ -226,10 +226,10 @@ def test_source_below_el_bore_raises(site):
 
 def test_partial_coverage_allow_true_warns(site):
     """``allow_partial=True`` downgrades partial-cover error to a warning."""
-    # Sidereal source at dec=-50 culminates at el ≈ 90 − |−50 − (−23)| = 63°
-    # from FYST (lat = −23°). With a 1°-radius circular cover centred on
-    # el_bore=62.5°, ``el_cover_max = 63.5°`` exceeds the source's
-    # ``el_src_max ≈ 63°`` — a textbook partial-coverage scenario where
+    # Sidereal source at dec=-50 culminates at el ~ 90 - |-50 - (-23)| = 63 deg
+    # from FYST (lat = -23 deg). With a 1 deg-radius circular cover centred on
+    # el_bore=62.5 deg, ``el_cover_max = 63.5 deg`` exceeds the source's
+    # ``el_src_max ~ 63 deg`` -- a textbook partial-coverage scenario where
     # the cover cap is just out of reach but the az track stays well
     # inside FYST limits.
     theta = np.linspace(0.0, 2.0 * np.pi, 50, endpoint=False)
@@ -318,20 +318,20 @@ def test_convergence_failure_falls_back(site, monkeypatch):
 
 def test_az_branch_wraps(site):
     """``az_branch`` re-expresses az_start in the chosen half-turn branch."""
-    # Branch 180° → az_start ∈ [0, 360). Jupiter's natural az (~36°) is
+    # Branch 180 deg -> az_start in [0, 360). Jupiter's natural az (~36 deg) is
     # already in this branch so the wrap is a no-op for the start value;
     # we still verify the branch is honoured.
     block = _full_primecam_block(site, az_branch=180.0)
     az_start = block.computed_params["az_start"]
     assert 0.0 <= az_start < 360.0
 
-    # Branch 0° → az_start ∈ [-180, 180). Same input (~36°) stays put.
+    # Branch 0 deg -> az_start in [-180, 180). Same input (~36 deg) stays put.
     block = _full_primecam_block(site, az_branch=0.0)
     az_start = block.computed_params["az_start"]
     assert -180.0 <= az_start < 180.0
 
-    # The wrap math for ``az_branch=-180`` produces az_start ∈ [-360, 0),
-    # which falls outside FYST's [-180, 360] hardware limits — the
+    # The wrap math for ``az_branch=-180`` produces az_start in [-360, 0),
+    # which falls outside FYST's [-180, 360] hardware limits -- the
     # post-build bounds check correctly rejects it with
     # AzimuthBoundsError. This pins both the wrap algebra and the
     # downstream safety net.
@@ -429,7 +429,7 @@ def test_invalid_offset_type_in_sequence(site):
 
 def test_boresight_rot_changes_az_bore_for_off_centre_footprint(site):
     """Non-zero ``boresight_rot`` shifts the recovered ``az_start`` for an off-centre module."""
-    # Use module I1 (centre offset = (0.0, -106.8 arcmin) ≈ (0.0, -1.78°))
+    # Use module I1 (centre offset = (0.0, -106.8 arcmin) ~ (0.0, -1.78 deg))
     # so the boresight recovery exercises the spherical inverse and is
     # actually sensitive to focal-plane rotation. Compare az_start
     # between boresight_rot=None (treated as 0) and boresight_rot=30.
@@ -447,8 +447,8 @@ def test_boresight_rot_changes_az_bore_for_off_centre_footprint(site):
 
     az_zero = block_zero.computed_params["az_start"]
     az_rot = block_rot.computed_params["az_start"]
-    # The 30° boresight rotation should shift az_start by well more than
-    # 0.1° for an off-centre module — anything tighter than that would
+    # The 30 deg boresight rotation should shift az_start by well more than
+    # 0.1 deg for an off-centre module -- anything tighter than that would
     # mean the parameter has no observable effect on the geometry.
     assert abs(az_rot - az_zero) > 0.1, (
         f"boresight_rot did not affect az_start: {az_rot=} vs {az_zero=}"
@@ -473,7 +473,7 @@ def test_proper_motion_requires_ref_epoch(site):
 
 def test_proper_motion_path_runs(site):
     """A non-zero proper-motion call exercises the per-time PM loop."""
-    # Large PM (1000 mas/yr ≈ 0.28"/yr per RA, well above Barnard's Star)
+    # Large PM (1000 mas/yr ~ 0.28"/yr per RA, well above Barnard's Star)
     # so the displacement at the planning epoch is unambiguously
     # different from the no-PM case.
     common = dict(
@@ -627,7 +627,7 @@ def test_compute_params_az_envelope_directional_parity(site):
 
     The emit-time envelope check widens the static sweep only in the
     drift direction (sign of ``v_az``), matching the one-signed drift the
-    executed trajectory applies (``az + v_az·times``). A Jupiter rising
+    executed trajectory applies (``az + v_az*times``). A Jupiter rising
     CES (el_bore=35) has a negative ``v_az`` so the real trajectory spans
     ``[33.37, 37.70]`` while the over-wide symmetric envelope would reach
     ~40.03 on the +az side the track never visits.
@@ -752,14 +752,14 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     """Cross-validate source-CES geometry against SO ``schedlib.source.make_source_ces``.
 
     Resolves Q-15 (xi/eta axis pairing) and Q-16 (boresight_rot sign)
-    by feeding **identical** inputs — same FYST site, same source +
+    by feeding **identical** inputs -- same FYST site, same source +
     observing window, same ``array_info`` footprint, same
-    ``boresight_rot`` — to both Simons Observatory's quaternion
+    ``boresight_rot`` -- to both Simons Observatory's quaternion
     implementation (``so3g.proj.quat`` via ``make_source_ces``) and
     fyst-trajectories' spherical-trig :func:`compute_source_ces_params`.
 
     Requires ``so3g`` + ``schedlib`` (Linux only; ``so3g`` has no Windows
-    wheel) — skipped otherwise. Run with::
+    wheel) -- skipped otherwise. Run with::
 
         pytest tests/test_planning_source_ces.py --run-slow -k cross_validate_so
 
@@ -767,27 +767,27 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     schedlib 0.4.0):
 
     * **Q-15 (xi/eta pairing): CORRECT.** ``ArrayFootprint`` pairs
-      ``xi → cross-elevation`` and ``eta → elevation`` the same way SO's
-      ``quat.rotation_xieta`` does — no 90° axis swap. The projected
+      ``xi -> cross-elevation`` and ``eta -> elevation`` the same way SO's
+      ``quat.rotation_xieta`` does -- no 90 deg axis swap. The projected
       cover lands at the same on-sky (az, el).
     * **Q-16 (boresight_rot sign): CORRECT.** fyst's additive
       ``+boresight_rot`` produces the same cover rotation as SO's
-      ``quat.euler(2, -np.deg2rad(boresight_rot))`` — the signs agree
-      (they do **not** flip) at ±20° and ±45°.
+      ``quat.euler(2, -np.deg2rad(boresight_rot))`` -- the signs agree
+      (they do **not** flip) at +/-20 deg and +/-45 deg.
 
     The one *expected* divergence: SO ``make_source_ces`` projects the
     cover in a frame with **no field rotation** (SO LAT has a corotator
     that holds the array fixed in az/el, so ``boresight_rot`` is already
-    the net focal-plane angle), whereas fyst-trajectories — modelling
-    Prime-Cam on a Nasmyth port — adds the physical
-    ``nasmyth_sign·el + parallactic_angle`` term
+    the net focal-plane angle), whereas fyst-trajectories -- modelling
+    Prime-Cam on a Nasmyth port -- adds the physical
+    ``nasmyth_sign*el + parallactic_angle`` term
     (``source_ces.py`` lines 634-642 and 665-673). The two therefore
     agree exactly for a **centred** footprint (where that rotation is a
     no-op on a symmetric circle) and for an **off-centre** footprint
     once the field-rotation term is reconciled by the documented bridge
-    ``boresight_rot_fyst = boresight_rot_SO − (nasmyth_sign·el + pa)``.
+    ``boresight_rot_fyst = boresight_rot_SO - (nasmyth_sign*el + pa)``.
     This is a platform-physics difference (corotator vs Nasmyth), **not**
-    a bug — see ``docs/reviews/fyst_team_questions.md`` Q-15/Q-16.
+    a bug -- see ``docs/reviews/fyst_team_questions.md`` Q-15/Q-16.
     """
     so3g = pytest.importorskip("so3g")  # noqa: F841  Linux-only; gates the test
     schedlib_source = pytest.importorskip("schedlib.source")
@@ -802,7 +802,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
         compute_focal_plane_rotation,
     )
 
-    source_name = "saturn"  # reaches el ~67° from FYST in the chosen window
+    source_name = "saturn"  # reaches el ~67 deg from FYST in the chosen window
     el_bore = 50.0
 
     # --- Make BOTH sides use the SAME site (FYST). SO's PyEphem path
@@ -821,13 +821,13 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     radius_deg = float(MODULE_FOV_RADIUS_DEG)
     rots = [0.0, 20.0, -20.0, 45.0, -45.0]
 
-    # Tolerances. az_start within 0.05°, az_throw within 0.05°, times
+    # Tolerances. az_start within 0.05 deg, az_throw within 0.05 deg, times
     # within sampling_step_seconds (30 s). We PIN ``v_az`` on both sides
     # rather than let each side solve it independently: the drift-rate
     # objective (minimise az_throw over v_az) is extremely shallow for a
     # near-stationary source, so SO's bare Nelder-Mead and fyst's
     # (xatol=1e-5, fatol=1e-4) Nelder-Mead converge to points ~1e-4 deg/s
-    # apart — pure optimiser-tolerance noise, not a convention difference.
+    # apart -- pure optimiser-tolerance noise, not a convention difference.
     # Pinning v_az removes that noise and makes az_start/az_throw a
     # deterministic function of the projection convention (exactly what
     # Q-15/Q-16 test). Two pinned values exercise the no-drift and
@@ -857,10 +857,10 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
         )
 
     # =====================================================================
-    # Part 1 — Q-15 / Q-16 common case: CENTRED footprint.
+    # Part 1 -- Q-15 / Q-16 common case: CENTRED footprint.
     #
     # For a symmetric circular cover centred on the boresight, fyst's
-    # ``nasmyth_sign·el + parallactic`` rotation is a no-op, so the
+    # ``nasmyth_sign*el + parallactic`` rotation is a no-op, so the
     # AS-SHIPPED planner must match SO directly at every boresight_rot.
     # A swapped xi/eta axis (Q-15) or a flipped boresight_rot sign (Q-16)
     # would shift az_start here.
@@ -891,15 +891,15 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
             assert dt1 <= SAMPLING_STEP, f"centred t1 off by {dt1:.1f}s at rot={rot}"
 
     # =====================================================================
-    # Part 2 — Q-15 / Q-16 discriminating case: OFF-CENTRE i1 module.
+    # Part 2 -- Q-15 / Q-16 discriminating case: OFF-CENTRE i1 module.
     #
-    # i1 sits at (xi=0, eta≈-1.78°) — asymmetric, so a 90° axis swap or a
+    # i1 sits at (xi=0, eta~-1.78 deg) -- asymmetric, so a 90 deg axis swap or a
     # mirrored boresight rotation would NOT cancel. SO and fyst encode
     # different telescopes here (SO corotator vs FYST Nasmyth), so the
     # only way to prove the xi/eta pairing and boresight sign are correct
     # is to reconcile the documented field-rotation convention bridge:
     #
-    #     boresight_rot_fyst = boresight_rot_SO − (nasmyth_sign·el + pa)
+    #     boresight_rot_fyst = boresight_rot_SO - (nasmyth_sign*el + pa)
     #
     # If Q-15 (axis) or Q-16 (sign) were wrong, parity would NOT hold even
     # after this bridge.
@@ -929,7 +929,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
             offset=InstrumentOffset(dx=0.0, dy=0.0),
             parallactic_angle=pa_at_el_bore,
         )
-    )  # = nasmyth_sign·el + parallactic_angle
+    )  # = nasmyth_sign*el + parallactic_angle
 
     for v_az in PINNED_VAZ:
         for rot in rots:
@@ -957,13 +957,13 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
 # Tier-1 integration smoke tests
 #
 # These two tests are the local stand-in for the schedlib cross-validation
-# (test_cross_validate_so_make_source_ces above) — they do not need
+# (test_cross_validate_so_make_source_ces above) -- they do not need
 # schedlib + so3g installed but they verify the same end-to-end property:
 # the planner's trajectory + cover geometry actually places the source on
 # the focal-plane footprint at the times it claims to. They sit at the
-# integration layer (planner output × Coordinates × offset math) and would
-# catch the high-impact class of bug — xi/eta sign convention, focal-plane
-# rotation sign, drift-rate solve, off-centre boresight recovery — that a
+# integration layer (planner output x Coordinates x offset math) and would
+# catch the high-impact class of bug -- xi/eta sign convention, focal-plane
+# rotation sign, drift-rate solve, off-centre boresight recovery -- that a
 # schedlib parity check would catch.
 # ---------------------------------------------------------------------------
 
@@ -975,18 +975,18 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
     ``[t0, t1]`` from ``computed_params`` at 20 uniform times. At each time,
     recover the commanded boresight (az, el) from the trajectory and project
     the 350 cover-polygon vertices to on-sky (az, el) through that boresight.
-    Take the UNION of all projected covers across all sample times — this is
+    Take the UNION of all projected covers across all sample times -- this is
     the on-sky footprint actually swept by the array while the source is
     crossing it. Assert that the source's instantaneous (az, el) at *each*
     sample time lies inside the convex hull of that swept union.
 
     The integration property being verified is: "the source's track over
-    [t0, t1] lies inside the union of all swept covers" — the actual
+    [t0, t1] lies inside the union of all swept covers" -- the actual
     coverage claim of a back-and-forth CES. Two important geometric notes:
 
     * Per-instant containment is the wrong check: in a multi-leg CES the
       boresight oscillates and the instantaneous cover need not contain
-      the source at every leg endpoint — only the swept union must.
+      the source at every leg endpoint -- only the swept union must.
     * We sample within ``[t0, t1]``, NOT over the full trajectory duration.
       The trajectory continues to scan after ``t1`` because ``n_scans`` is
       rounded up; the source genuinely exits the cover at ``t1`` by design,
@@ -994,7 +994,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
 
     This would FAIL if:
 
-    * xi/eta sign convention is wrong (swept envelope rotated 90° on sky);
+    * xi/eta sign convention is wrong (swept envelope rotated 90 deg on sky);
     * boresight_rot sign is wrong (swept envelope rotated wrong direction);
     * the drift solve gave wrong v_az (source drifts out of the swept
       envelope over time);
@@ -1002,7 +1002,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
       misses the source entirely).
 
     For the centred full-PrimeCam case we additionally require the source
-    to sit near the swept-envelope centroid at the trajectory midpoint —
+    to sit near the swept-envelope centroid at the trajectory midpoint --
     a tighter check that catches systematic offsets the convex-hull
     containment test would tolerate.
     """
@@ -1022,7 +1022,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
     # NOTE: the trajectory's actual duration extends beyond t1 because
     # ``n_scans`` is rounded up (the back-and-forth CES continues to scan
     # after the source has left the cover). Sampling beyond t1 is
-    # uninformative — the source is genuinely outside the cover there
+    # uninformative -- the source is genuinely outside the cover there
     # by design.
     t0_iso = cp["t0_iso"]
     t1_iso = cp["t1_iso"]
@@ -1032,19 +1032,19 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
     t_secs_samples = np.linspace(t0_rel, t1_rel, n_samples)
     sample_times = t_start + TimeDelta(t_secs_samples * u.s)
 
-    # The footprint that flowed into the planner — re-resolve here so the
+    # The footprint that flowed into the planner -- re-resolve here so the
     # test is self-contained.
     from fyst_trajectories.planning.source_ces import _resolve_footprint
 
     fp = _resolve_footprint(_FULL_PRIMECAM_MODULES)
-    assert fp.cover_xi_deg.size == 350  # 7 modules × 50 vertices
+    assert fp.cover_xi_deg.size == 350  # 7 modules x 50 vertices
 
     # Buffer (degrees) added to the convex-hull containment test. The
     # planner uses a single parallactic angle for the whole window (the
     # PA at t_at_el_bore); over a ~30 min Jupiter pass at FYST the PA
     # drifts by a couple of degrees, which slightly rotates the actual
-    # swept cover relative to the planner's idealisation. 0.1° is well
-    # below the per-leg az_padding (0.5°).
+    # swept cover relative to the planner's idealisation. 0.1 deg is well
+    # below the per-leg az_padding (0.5 deg).
     HULL_BUFFER_DEG = 0.1
 
     # Pass 1: collect the swept cover (union of all projected covers).
@@ -1116,7 +1116,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
 
     # Centred-case sanity: at the trajectory midpoint, the source should
     # sit near the swept-envelope centroid (within half the median cover
-    # radius). This catches systematic offsets — e.g. an xi/eta swap that
+    # radius). This catches systematic offsets -- e.g. an xi/eta swap that
     # still produces a containing hull but shifts the source consistently
     # to one side.
     mid_idx = len(source_pts) // 2
@@ -1132,7 +1132,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
 def test_off_centre_module_lands_on_source_during_pass(site):
     """Verify off-centre az_bore recovery places the I1 module on the source.
 
-    For a single-module (PrimeCam-I1, dy = −106.8 arcmin off-axis) sidereal
+    For a single-module (PrimeCam-I1, dy = -106.8 arcmin off-axis) sidereal
     source CES, scan along the planned trajectory and find the time at
     which the forward-projected I1 module position is closest to the
     source's instantaneous (az, el). Assert that the minimum miss
@@ -1142,17 +1142,17 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     ``t_at_el_bore`` (when the source's elevation equals ``el_bore``)
     is NOT, in general, inside the trajectory window for an off-centre
     footprint. The cover is offset below the boresight by the module's
-    ``dy``, so projected from a boresight at ``el_bore=40``° the cover
+    ``dy``, so projected from a boresight at ``el_bore=40`` deg the cover
     sits at lower elevations. The trajectory window
     ``[t0, t1]`` is bounded by the source el span overlapping the cover
-    el span, which for I1 puts source el ≈ 41 (above el_bore=40) during
+    el span, which for I1 puts source el ~ 41 (above el_bore=40) during
     the actual scan. The I1 module's centre lands on the source somewhere
     near the trajectory midpoint, NOT at ``t_at_el_bore``.
 
     This test catches the case where the planner's Step-6 spherical
     inverse (:func:`detector_to_boresight`) silently fails and falls back
-    to ``az_bore = source_az`` — which is *wrong* for any off-centre
-    footprint (the I1 module would then sit ~1.8° away from the source,
+    to ``az_bore = source_az`` -- which is *wrong* for any off-centre
+    footprint (the I1 module would then sit ~1.8 deg away from the source,
     not on it).
     """
     # Sidereal source, off-centre module. Match the existing
@@ -1204,7 +1204,7 @@ def test_off_centre_module_lands_on_source_during_pass(site):
                 offset=InstrumentOffset(dx=0.0, dy=0.0),
                 parallactic_angle=pa_k,
             )
-        )  # boresight_rot defaulted to None → treated as 0.
+        )  # boresight_rot defaulted to None -> treated as 0.
         det_az, det_el = boresight_to_detector(
             az=bore_az,
             el=bore_el,
@@ -1225,13 +1225,13 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     k_best = int(np.argmin(misses_deg))
     best_miss = float(misses_deg[k_best])
 
-    # Tolerance: the closed-form spherical inverse converges to sub-µdeg
+    # Tolerance: the closed-form spherical inverse converges to sub-udeg
     # but the planner uses a single parallactic angle (the PA at
     # ``t_at_el_bore``) for the whole-pass cover projection; the actual
-    # PA at the closest-approach time differs by ~0.5°, which rotates the
+    # PA at the closest-approach time differs by ~0.5 deg, which rotates the
     # cover and shifts the I1-vs-source miss by a few arcmin. 6 arcmin
-    # is well below the I1 module's 0.41° (24.6 arcmin) FOV radius —
-    # well inside the module — and four orders of magnitude smaller
+    # is well below the I1 module's 0.41 deg (24.6 arcmin) FOV radius --
+    # well inside the module -- and four orders of magnitude smaller
     # than the dy offset (107 arcmin) a true az_bore-recovery bug
     # would expose (the planner would fall back to ``az_bore =
     # source_az``, missing by the full ``dy``).

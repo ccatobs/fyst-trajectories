@@ -244,7 +244,7 @@ class TestGenerateTimeline:
         site = get_fyst_site()
         coords = Coordinates(site)
 
-        # Pick RA=60 at ~08:00 UTC — source will be setting at FYST.
+        # Pick RA=60 at ~08:00 UTC -- source will be setting at FYST.
         # This creates a scenario where the source sets during a long scan.
         patches = [
             ObservingPatch(
@@ -305,11 +305,11 @@ class TestTimeUntilSet:
     """Tests for the _time_until_set helper."""
 
     def test_near_transit_source_returns_max(self):
-        """A source near transit stays high — should get full requested duration."""
+        """A source near transit stays high -- should get full requested duration."""
         site = get_fyst_site()
         coords = Coordinates(site)
         # RA=180, Dec=-30 transits at ~23:00 UTC at FYST. At 23:00 UTC
-        # elevation is ~83 deg — well above 20. A 1-hour window around
+        # elevation is ~83 deg -- well above 20. A 1-hour window around
         # transit should return the full duration.
         t = Time("2026-06-15T23:00:00", scale="utc")
         dur = _time_until_set(180.0, -30.0, t, 3600.0, coords, 20.0)
@@ -319,7 +319,7 @@ class TestTimeUntilSet:
         """A source that sets within the window should return a clipped duration."""
         site = get_fyst_site()
         coords = Coordinates(site)
-        # RA=60, Dec=-30 at 08:00 UTC — this source is heading towards setting
+        # RA=60, Dec=-30 at 08:00 UTC -- this source is heading towards setting
         # at FYST. The full 2-hour window should be clipped.
         t = Time("2026-06-15T08:00:00", scale="utc")
         dur = _time_until_set(60.0, -30.0, t, 7200.0, coords, 20.0)
@@ -333,7 +333,7 @@ class TestTimeUntilSet:
         """A source already below el_min should return 0."""
         site = get_fyst_site()
         coords = Coordinates(site)
-        # RA=60 at 12:00 UTC — source should be well set at FYST
+        # RA=60 at 12:00 UTC -- source should be well set at FYST
         t = Time("2026-06-15T12:00:00", scale="utc")
         _, el = coords.radec_to_altaz(np.array([60.0]), np.array([-30.0]), t)
         if float(el[0]) < 20.0:

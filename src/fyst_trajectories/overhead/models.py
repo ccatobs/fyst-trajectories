@@ -239,9 +239,9 @@ class EmptyBlockMetadata(TypedDict, total=False):
 
 # Exhaustive union of metadata shapes a :class:`TimelineBlock` may carry.
 # Every :class:`BlockType` maps to exactly one variant:
-#   * ``BlockType.SCIENCE``     → :class:`ScienceBlockMetadata`
-#   * ``BlockType.CALIBRATION`` → :class:`CalibrationBlockMetadata`
-#   * ``BlockType.SLEW`` / ``IDLE`` → :class:`EmptyBlockMetadata`
+#   * ``BlockType.SCIENCE``     -> :class:`ScienceBlockMetadata`
+#   * ``BlockType.CALIBRATION`` -> :class:`CalibrationBlockMetadata`
+#   * ``BlockType.SLEW`` / ``IDLE`` -> :class:`EmptyBlockMetadata`
 TimelineBlockMetadata = ScienceBlockMetadata | CalibrationBlockMetadata | EmptyBlockMetadata
 
 
@@ -323,7 +323,7 @@ class CalibrationType(str, enum.Enum):
 
 # Private lookup tables keyed on :class:`CalibrationType`. Centralising
 # these mappings here keeps :meth:`OverheadModel.get_calibration_duration`
-# and :meth:`CalibrationState.update` trivially in sync — adding a new
+# and :meth:`CalibrationState.update` trivially in sync -- adding a new
 # calibration type is a single-location change. See the docstrings on
 # :attr:`CalibrationType.duration_field` and
 # :attr:`CalibrationType.state_field` for the public API.
@@ -807,7 +807,7 @@ class TimelineBlock:
         TimelineBlock
             A SLEW block with ``scan_type="slew"``.
         """
-        from .utils import compute_nasmyth_rotation
+        from .utils import circular_mean_deg, compute_nasmyth_rotation
 
         empty_meta: EmptyBlockMetadata = {}
         return cls(
@@ -820,12 +820,12 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="slew",
-            # Precondition: az_start/az_end lie on the same side of the north
-            # wrap — the scheduler's continuous patch-tracking never emits a
-            # slew straddling az=0/360 — so this arithmetic midpoint is the true
-            # mid-azimuth. A north-straddling pair (e.g. 355/5) would need a
-            # circular mean (atan2 of mean sin/cos) to avoid a ~180°-wrong angle.
-            boresight_angle=compute_nasmyth_rotation(0.5 * (az_start + az_end), el, site),
+            # Use a circular mean (atan2 of mean sin/cos) for the mid-azimuth so a
+            # north-straddling slew (e.g. 355 -> 5) yields the true midpoint (0)
+            # rather than the arithmetic mean (180, ~180 deg wrong). az_start and
+            # az_end may be on opposite sides of the north wrap when one position
+            # is normalized to a negative azimuth and the other is not.
+            boresight_angle=compute_nasmyth_rotation(circular_mean_deg(az_start, az_end), el, site),
             metadata=empty_meta,
         )
 

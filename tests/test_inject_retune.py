@@ -1207,13 +1207,13 @@ class TestInjectRetuneMetadataPreservation:
         ]
         result = inject_retune(traj, retune_events=events)
 
-        # Pattern accessors must still work — the B1 blocker.
+        # Pattern accessors must still work -- the B1 blocker.
         assert result.pattern_type == "pong"
         assert result.center_ra == 180.0
         assert result.center_dec == -30.0
         assert result.pattern_params == {"width": 2.0, "height": 2.0}
 
-        # Metadata is the exact same object — we don't mutate it.
+        # Metadata is the exact same object -- we don't mutate it.
         assert result.metadata is traj.metadata
 
         # The new first-class field carries the sorted event tuple.

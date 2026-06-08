@@ -88,7 +88,7 @@ class TestSolarSystemBodies:
 
         Beyond shape, pin the vectorised path to the scalar path at the first
         sample and require continuous, non-zero motion across the 5-minute
-        window — a broken array path returning constants, garbage, or a
+        window -- a broken array path returning constants, garbage, or a
         broadcast-misaligned result fails here.
         """
         obstime = Time("2026-03-15T04:30:00", scale="utc")
@@ -600,23 +600,23 @@ class TestNoRefraction:
 
 
 class TestSunUsesTopocentricBody:
-    """Tests for the ``get_sun`` → ``get_body("sun", ..., location=...)`` switch."""
+    """Tests for the ``get_sun`` -> ``get_body("sun", ..., location=...)`` switch."""
 
     def test_sun_altaz_carries_topocentric_parallax(self, coordinates, site):
         """get_body('sun', location=...) differs from a geocentric get_sun() by ~arcsec.
 
         The library uses ``get_body("sun", ..., location=...)`` rather than the
         geocentric ``astropy.coordinates.get_sun``. The two apparent places
-        differ at the ~arcsec scale — an ephemeris/algorithm difference plus the
+        differ at the ~arcsec scale -- an ephemeris/algorithm difference plus the
         Sun's tiny topocentric effect (the on-sky parallax for the Sun is
-        ~0.01″, far below the 8.8″ horizontal-parallax *constant*). This is a
-        sanity range-check (nonzero, well under the Sun's ~0.5° diameter), not a
+        ~0.01 arcsec, far below the 8.8 arcsec horizontal-parallax *constant*). This is a
+        sanity range-check (nonzero, well under the Sun's ~0.5 deg diameter), not a
         pinned value.
         """
         from astropy.coordinates import AltAz, get_sun
 
         obstime = Time("2026-03-15T16:00:00", scale="utc")
-        # Topocentric (library default) — uses get_body with location
+        # Topocentric (library default) -- uses get_body with location
         az_topo, alt_topo = coordinates.get_sun_altaz(obstime)
         # Geocentric (via legacy get_sun)
         sun_geo = get_sun(obstime)
@@ -625,7 +625,7 @@ class TestSunUsesTopocentricBody:
         # Difference is small but nonzero (~arcsec scale)
         diff_alt = abs(alt_topo - float(geo.alt.deg))
         assert diff_alt > 0.0
-        # Sun angular diameter ~0.53°; our shift is much smaller
+        # Sun angular diameter ~0.53 deg; our shift is much smaller
         assert diff_alt < 0.5
 
 
@@ -743,7 +743,7 @@ class TestProperMotion:
         )
 
         # Both paths should agree to well below the proper-motion
-        # accumulation (~0.03°). 0.005° is the tightest tolerance the
+        # accumulation (~0.03 deg). 0.005 deg is the tightest tolerance the
         # 1 Mpc workaround can reasonably hit; loosen if astropy or ERFA
         # changes their PM-propagation precision.
         assert az_no_dist == pytest.approx(az_with_dist, abs=0.005)
@@ -754,7 +754,7 @@ class TestObservingWavelength:
     """Tests for observing wavelength (obswl) support in refraction calculations."""
 
     def test_radio_refraction_differs_from_optical(self, site):
-        """Radio refraction (obswl=200 µm) produces different results from optical.
+        """Radio refraction (obswl=200 um) produces different results from optical.
 
         At moderate elevations the difference should be ~1-2 arcsec. The radio
         model refracts LESS than optical, so radio elevation should be slightly

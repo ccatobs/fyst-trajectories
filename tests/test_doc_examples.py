@@ -584,8 +584,8 @@ def test_linear_motion_pattern_docstring_example():
 def test_plan_pong_rotation_sequence_doc_example():
     """Test the ``plan_pong_rotation_sequence`` example from planning.rst.
 
-    The 8-rotation case should produce angles at 22.5° spacing covering
-    [0°, 180°). Verifies the doc claim
+    The 8-rotation case should produce angles at 22.5 deg spacing covering
+    [0 deg, 180 deg). Verifies the doc claim
     ``[0.0, 22.5, 45.0, 67.5, 90.0, 112.5, 135.0, 157.5]``.
     """
     from fyst_trajectories import PongScanConfig

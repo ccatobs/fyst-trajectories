@@ -228,7 +228,7 @@ def accumulate_hitmaps(
 
     npix = hp.nside2npix(nside)
     hitmap = np.zeros(npix, dtype=np.float64)
-    # Vacuum az/el → RA/Dec is correct *only when the trajectory was
+    # Vacuum az/el -> RA/Dec is correct *only when the trajectory was
     # itself generated with vacuum coordinates*. Pattern generators
     # (patterns/{daisy,pong,sidereal,planet}) accept a user-supplied
     # ``atmosphere=`` and forward it to ``Coordinates``; if the

@@ -577,7 +577,7 @@ class TestOverheadModelRoundTrip:
         Constructs every field with a value distinct from the class
         default (and distinct from every *other* field's default) so a
         future field that is added without the corresponding I/O wiring
-        — like the BEAM_MAP regression — fails loudly instead of
+        -- like the BEAM_MAP regression -- fails loudly instead of
         coincidentally matching a default on the read side.
         """
         import dataclasses
@@ -647,8 +647,8 @@ class TestCalibrationPolicyRoundTrip:
 
         Like the OverheadModel round-trip test, every field is set to a
         value distinct from its class default. The ``beam_map_cadence``
-        field — historically dropped on round-trip because the I/O path
-        was not wired to it — is given a non-None value here so a
+        field -- historically dropped on round-trip because the I/O path
+        was not wired to it -- is given a non-None value here so a
         regression on that field fails loudly.
         """
         import dataclasses

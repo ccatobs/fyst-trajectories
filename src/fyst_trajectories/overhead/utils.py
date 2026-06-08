@@ -16,12 +16,37 @@ from ..coordinates import Coordinates
 from ..site import Site
 
 __all__ = [
+    "circular_mean_deg",
     "compute_nasmyth_rotation",
     "estimate_slew_time",
     "get_max_elevation",
     "get_observable_windows",
     "get_transit_time",
 ]
+
+
+def circular_mean_deg(a: float, b: float) -> float:
+    """Circular mean of two azimuths in degrees.
+
+    Averages two angles on the circle via ``atan2`` of the mean sine and
+    cosine, so a north-straddling pair (e.g. 355 and 5) returns the true
+    midpoint (0) rather than the arithmetic mean (180, ~180 deg wrong).
+
+    Parameters
+    ----------
+    a, b : float
+        Azimuths in degrees.
+
+    Returns
+    -------
+    float
+        Circular-mean azimuth in degrees, in ``[-180, 180]``.
+    """
+    a_rad = math.radians(a)
+    b_rad = math.radians(b)
+    mean_sin = (math.sin(a_rad) + math.sin(b_rad)) / 2.0
+    mean_cos = (math.cos(a_rad) + math.cos(b_rad)) / 2.0
+    return math.degrees(math.atan2(mean_sin, mean_cos))
 
 
 def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
@@ -121,7 +146,7 @@ def estimate_slew_time(
 
     # Direct path respecting cable wrap limits.  Both positions should
     # already be within [az_min, az_max]; the direct distance is the
-    # actual motor travel without wrapping around 360°.
+    # actual motor travel without wrapping around 360 deg.
     az_dist = abs(az2 - az1)
     az_time = _axis_slew_time(az_dist, az_limits.max_velocity, az_limits.max_acceleration)
     el_time = _axis_slew_time(abs(el2 - el1), el_limits.max_velocity, el_limits.max_acceleration)

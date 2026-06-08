@@ -14,7 +14,12 @@ from ..trajectory_utils import validate_trajectory_bounds
 from .base import AltAzPattern, TrajectoryMetadata
 from .configs import PlanetTrackConfig
 from .registry import register_pattern
-from .utils import compute_velocities, normalize_azimuth, wrap_bounds_error
+from .utils import (
+    compute_velocities,
+    normalize_azimuth,
+    validate_sample_count,
+    wrap_bounds_error,
+)
 
 
 @register_pattern("planet", config=PlanetTrackConfig)
@@ -107,7 +112,7 @@ class PlanetTrackPattern(AltAzPattern):
             satellite_kernel=getattr(self.config, "satellite_kernel", None),
         )
 
-        n_points = int(round(duration / timestep)) + 1
+        n_points = validate_sample_count(duration, timestep)
         times = np.linspace(0, duration, n_points)
         obstimes = start_time + TimeDelta(times * u.s)
 

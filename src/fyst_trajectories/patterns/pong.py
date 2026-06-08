@@ -22,6 +22,7 @@ from .utils import (
     compute_velocities,
     normalize_azimuth,
     sky_offsets_to_altaz,
+    validate_sample_count,
     wrap_bounds_error,
 )
 
@@ -230,8 +231,7 @@ class PongScanPattern(CelestialPattern):
         y_offsets : np.ndarray
             Y offsets in the sky-plane tangent frame, in degrees.
         """
-        if duration <= 0:
-            raise ValueError(f"duration must be positive, got {duration}")
+        n_points = validate_sample_count(duration, self.config.timestep)
 
         x_numvert, y_numvert, amp_x, amp_y = self._compute_vertices()
 
@@ -241,7 +241,6 @@ class PongScanPattern(CelestialPattern):
         peri_x = x_numvert * vert_spacing * 2 / vavg
         peri_y = y_numvert * vert_spacing * 2 / vavg
 
-        n_points = int(round(duration / self.config.timestep)) + 1
         times = np.linspace(0, duration, n_points)
 
         x_offsets = self._fourier_triangle_wave(self.config.num_terms, amp_x, times, peri_x)

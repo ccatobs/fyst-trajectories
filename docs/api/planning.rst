@@ -37,6 +37,6 @@ Each planner function returns a :class:`ScanBlock` whose
 
    ``"source_ces"`` is intentionally not accepted by
    ``validate_computed_params``. :func:`plan_source_ces` is
-   planner-only (its consumer is Simons Observatory's ``schedlib``,
+   planner-only (its consumer is the FYST policy in the ``pcam_gen_schedule`` schedlib fork,
    not the in-tree overhead simulator) and self-validates against
    :attr:`SourceCESComputedParams.__required_keys__` directly.

@@ -27,6 +27,7 @@ from astropy import units as u
 from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
+from ..exceptions import PointingError
 from ..math_utils import SMALL_DISTANCE_EPSILON
 from ..site import AtmosphericConditions, Site
 from ..trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, Trajectory
@@ -38,6 +39,7 @@ from .utils import (
     compute_velocities,
     normalize_azimuth,
     sky_offsets_to_altaz,
+    validate_sample_count,
     wrap_bounds_error,
 )
 
@@ -256,10 +258,8 @@ class DaisyScanPattern(CelestialPattern):
         y_offsets : np.ndarray
             Y offsets in the sky-plane tangent frame, in degrees.
         """
-        if duration <= 0:
-            raise ValueError(f"duration must be positive, got {duration}")
-
         timestep = self.config.timestep
+        validate_sample_count(duration, timestep)
 
         if timestep > _DAISY_INTERNAL_TIMESTEP:
             sample_every = math.ceil(timestep / _DAISY_INTERNAL_TIMESTEP)
@@ -284,6 +284,16 @@ class DaisyScanPattern(CelestialPattern):
             y_coords = y_coords[::sample_every]
 
         n_points = len(x_coords)
+        # The ``[::sample_every]`` downsampling drops the final partial step, so
+        # a duration of exactly one ``timestep`` (which passes the up-front
+        # ``validate_sample_count`` guard) can still collapse to a single kept
+        # sample. Reject that here so daisy fails loud and consistently with
+        # the other patterns rather than feeding 1 point into ``np.gradient``.
+        if n_points < 2:
+            raise PointingError(
+                f"duration {duration}s yields fewer than 2 samples at timestep "
+                f"{timestep}s; a scan shorter than one sample is degenerate."
+            )
         # Label samples on the integrator's own grid: each kept sample is
         # ``sample_every`` internal steps apart, i.e. exactly ``timestep``
         # (``sample_every * dt == timestep`` by construction above). The
@@ -343,21 +353,16 @@ class DaisyScanPattern(CelestialPattern):
 
         # Flag the initial start_acceleration ramp-up using offset-frame
         # speed (independent of elevation, matches Pong's convention).
-        # ``np.gradient`` requires at least 2 samples; degenerate scans
-        # (duration < timestep, or the inner generator emitting a single
-        # sample) bypass the speed test and are flagged conservatively
-        # as all-science. Practically unreachable for well-formed
-        # configs, but cheaper than the alternative ValueError.
-        if len(times) < 2:
-            scan_flag = np.full(len(times), SCAN_FLAG_SCIENCE, dtype=np.int8)
-        else:
-            x_vel_offset = np.gradient(x_offsets, times)
-            y_vel_offset = np.gradient(y_offsets, times)
-            speed_offset = np.sqrt(x_vel_offset**2 + y_vel_offset**2)
-            scan_flag = np.full(len(times), SCAN_FLAG_TURNAROUND, dtype=np.int8)
-            scan_flag[speed_offset >= _DAISY_SCIENCE_SPEED_THRESHOLD * self.config.velocity] = (
-                SCAN_FLAG_SCIENCE
-            )
+        # ``generate_offsets`` guarantees at least 2 samples, so ``np.gradient``
+        # is always well-defined here (degenerate durations are rejected with a
+        # clear PointingError before reaching this point).
+        x_vel_offset = np.gradient(x_offsets, times)
+        y_vel_offset = np.gradient(y_offsets, times)
+        speed_offset = np.sqrt(x_vel_offset**2 + y_vel_offset**2)
+        scan_flag = np.full(len(times), SCAN_FLAG_TURNAROUND, dtype=np.int8)
+        scan_flag[speed_offset >= _DAISY_SCIENCE_SPEED_THRESHOLD * self.config.velocity] = (
+            SCAN_FLAG_SCIENCE
+        )
 
         obstimes = start_time + TimeDelta(times * u.s)
 

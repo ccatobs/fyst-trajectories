@@ -93,12 +93,12 @@ class TestPongGenerateOffsets:
 
     def test_generate_offsets_negative_duration_raises(self, pong_pattern):
         """Test that a negative duration raises ValueError."""
-        with pytest.raises(ValueError, match="duration must be positive"):
+        with pytest.raises(ValueError, match="fewer than 2 samples"):
             pong_pattern.generate_offsets(-1.0)
 
     def test_generate_offsets_zero_duration_raises(self, pong_pattern):
         """Test that zero duration raises ValueError."""
-        with pytest.raises(ValueError, match="duration must be positive"):
+        with pytest.raises(ValueError, match="fewer than 2 samples"):
             pong_pattern.generate_offsets(0.0)
 
     def test_rotation_applied(self):
@@ -215,12 +215,12 @@ class TestDaisyGenerateOffsets:
 
     def test_generate_offsets_negative_duration_raises(self, daisy_pattern):
         """Test that a negative duration raises ValueError."""
-        with pytest.raises(ValueError, match="duration must be positive"):
+        with pytest.raises(ValueError, match="fewer than 2 samples"):
             daisy_pattern.generate_offsets(-1.0)
 
     def test_generate_offsets_zero_duration_raises(self, daisy_pattern):
         """Test that zero duration raises ValueError."""
-        with pytest.raises(ValueError, match="duration must be positive"):
+        with pytest.raises(ValueError, match="fewer than 2 samples"):
             daisy_pattern.generate_offsets(0.0)
 
     def test_y_offset_affects_offsets(self):

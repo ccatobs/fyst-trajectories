@@ -53,12 +53,12 @@ def _field_region_corners(
     cos_dec = math.cos(math.radians(dec_center))
     # The flat-sky rotation that follows is only a sensible approximation
     # while cos(dec) is non-trivial. ``cos(dec) < 0.01`` corresponds to
-    # ``|dec| > 89.43°``; beyond that the cylindrical projection breaks
-    # down well before the cos_dec=0 singularity. FYST's lat=-23° puts
+    # ``|dec| > 89.43 deg``; beyond that the cylindrical projection breaks
+    # down well before the cos_dec=0 singularity. FYST's lat=-23 deg puts
     # such declinations below the elevation cut anyway, so the check is
     # a defensive boundary, not an operationally tight one.
     if abs(cos_dec) < 0.01:
-        raise ValueError("FieldRegion too close to celestial pole (|dec| > 89.43°)")
+        raise ValueError("FieldRegion too close to celestial pole (|dec| > 89.43 deg)")
     corners = []
     for dx, dy in corners_local:
         rx = dx * cos_a - dy * sin_a
@@ -382,24 +382,24 @@ def _compute_ce_duration_from_lsa(
 
     # Unwrap LSA into a monotonic series so straddle detection works
     # uniformly when ``min_lsa`` sits at or near the LST = 0/360
-    # boundary. With wrapped samples (e.g. 359.9 → 0.1) and ``min_lsa
+    # boundary. With wrapped samples (e.g. 359.9 -> 0.1) and ``min_lsa
     # = 0``, the naive product test ``(lsa - 0) * (lsa_next - 0)`` is
     # positive at the wrap edge, producing a silent miss. ``np.unwrap``
-    # turns 359.9 → 360.1 → ..., and LST is monotonically increasing in
+    # turns 359.9 -> 360.1 -> ..., and LST is monotonically increasing in
     # time, so the unwrapped series stays monotonic.
     lsa_unwrapped = np.unwrap(np.deg2rad(lsa)) * 180.0 / np.pi
     # The smallest ``target = min_lsa + 360*k`` that lies at or after
     # the first sample is the only candidate crossing within the
-    # horizon (LST advances ~15°/h; even a 24-hour search covers only
+    # horizon (LST advances ~15 deg/h; even a 24-hour search covers only
     # one full wrap, so the *first* increasing crossing of ``min_lsa``
     # is uniquely determined by this offset).
     k = math.ceil((lsa_unwrapped[0] - min_lsa) / 360.0)
     target = min_lsa + 360.0 * k
     if target > lsa_unwrapped[-1]:
         raise PointingError(
-            f"lsa_window min_lsa={min_lsa}° not reached in increasing direction within "
+            f"lsa_window min_lsa={min_lsa} deg not reached in increasing direction within "
             f"{max_search_hours} h of {base_search_time.iso}. "
-            f"LSA swept {lsa[0]:.1f}° -> {lsa[-1]:.1f}°."
+            f"LSA swept {lsa[0]:.1f} deg -> {lsa[-1]:.1f} deg."
         )
 
     # Find the [idx, idx+1] bracket that contains ``target``.

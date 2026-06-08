@@ -17,6 +17,7 @@ from .base import AltAzPattern, TrajectoryMetadata
 from .configs import ConstantElScanConfig
 from .registry import register_pattern
 from .turnarounds import quintic_turnaround
+from .utils import validate_sample_count
 
 
 @register_pattern("constant_el", config=ConstantElScanConfig)
@@ -110,7 +111,7 @@ class ConstantElScanPattern(AltAzPattern):
 
         start_increasing = self.config.az_start < self.config.az_stop
 
-        n_points = int(round(duration / timestep)) + 1
+        n_points = validate_sample_count(duration, timestep)
         times = np.linspace(0, duration, n_points)
 
         el = np.full(n_points, self.config.elevation)

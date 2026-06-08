@@ -23,7 +23,7 @@ from ..models import (
     TimelineBlock,
 )
 from ..utils import estimate_slew_time
-from .helpers import _compute_az_range, _compute_scan_duration, _evaluate_patch
+from .helpers import _compute_az_range, _compute_scan_duration, _evaluate_patch, _normalize_az
 from .state import SchedulerState
 
 if TYPE_CHECKING:
@@ -235,11 +235,15 @@ class PatchSelectionPhase(Phase):
                 skip_to_next_iter=True,
             )
 
+        # Normalize the winning azimuth into the telescope's cable-wrap window
+        # before it flows to SlewPhase / ScienceScanPhase. Raw astropy azimuth
+        # is in [0, 360); leaving it unnormalized inflates a north-straddling
+        # slew distance and flips the slew boresight angle by ~180 deg.
         return PhaseResult(
             state=state,
             blocks=[],
             selection=best_patch,
-            best_az=best_az,
+            best_az=_normalize_az(best_az, ctx.site),
             best_el=best_el,
         )
 
@@ -361,7 +365,7 @@ class ScienceScanPhase(Phase):
         ha = ctx.coords.get_hour_angle(best_patch.ra_center, state.current_time)
         rising = ha < 0.0
 
-        az_start_sci, az_end_sci = _compute_az_range(best_patch, best_az, best_el)
+        az_start_sci, az_end_sci = _compute_az_range(best_patch, best_az, best_el, ctx.site)
 
         state, sub_blocks = self._emit_subscans_with_retunes(
             state=state,

@@ -357,7 +357,7 @@ class TestCalibrationPolicy:
             CalibrationPolicy(beam_map_cadence=-1.0)
 
     def test_beam_map_cadence_zero_allowed(self):
-        """A zero cadence is allowed (always due) — same as the others."""
+        """A zero cadence is allowed (always due) -- same as the others."""
         policy = CalibrationPolicy(beam_map_cadence=0.0)
         assert policy.beam_map_cadence == 0.0
 

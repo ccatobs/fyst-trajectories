@@ -12,6 +12,7 @@ from ..trajectory_utils import validate_trajectory_bounds
 from .base import AltAzPattern, TrajectoryMetadata
 from .configs import LinearMotionConfig
 from .registry import register_pattern
+from .utils import validate_sample_count
 
 
 @register_pattern("linear", config=LinearMotionConfig)
@@ -89,7 +90,7 @@ class LinearMotionPattern(AltAzPattern):
         """
         timestep = self.config.timestep
 
-        n_points = int(round(duration / timestep)) + 1
+        n_points = validate_sample_count(duration, timestep)
         times = np.linspace(0, duration, n_points)
 
         az = self.config.az_start + self.config.az_velocity * times

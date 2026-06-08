@@ -14,7 +14,12 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
-from ..exceptions import PointingWarning, TargetNotObservableError, TrajectoryBoundsError
+from ..exceptions import (
+    PointingError,
+    PointingWarning,
+    TargetNotObservableError,
+    TrajectoryBoundsError,
+)
 from ..site import Site
 
 if TYPE_CHECKING:
@@ -25,8 +30,48 @@ __all__ = [
     "generate_time_array",
     "normalize_azimuth",
     "sky_offsets_to_altaz",
+    "validate_sample_count",
     "wrap_bounds_error",
 ]
+
+
+def validate_sample_count(duration: float, timestep: float) -> int:
+    """Validate that a duration yields at least two samples and return the count.
+
+    Every pattern samples on the grid ``n_points = round(duration / timestep)
+    + 1``. A duration that is zero, negative, or shorter than ``timestep``
+    collapses to a single sample, which then either fails opaquely in
+    ``np.gradient`` (an unhelpful ``IndexError``) or silently produces a
+    one-point trajectory for patterns that set velocities directly. This
+    guard rejects those degenerate cases up front with a clear error so no
+    pattern emits a sub-two-sample trajectory.
+
+    Parameters
+    ----------
+    duration : float
+        Total scan duration in seconds.
+    timestep : float
+        Output sampling step in seconds.
+
+    Returns
+    -------
+    int
+        The number of samples (``>= 2``).
+
+    Raises
+    ------
+    PointingError
+        If ``timestep <= 0`` or the duration yields fewer than two samples.
+    """
+    if timestep <= 0:
+        raise PointingError(f"timestep must be positive, got {timestep}s")
+    n_points = int(round(duration / timestep)) + 1
+    if n_points < 2:
+        raise PointingError(
+            f"duration {duration}s yields fewer than 2 samples at timestep "
+            f"{timestep}s; a scan shorter than one sample is degenerate."
+        )
+    return n_points
 
 
 @contextmanager

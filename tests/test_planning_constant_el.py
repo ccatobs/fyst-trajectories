@@ -160,17 +160,17 @@ class TestCEGeometryWrapHandling:
     """Regression tests for the RA = 0 / az = 0/360 wrap handling.
 
     Both bugs were documented in ``_ce_geometry.py`` as known edge cases.
-    The azimuth-wrap case is plausible at FYST's −23° latitude for
-    sources that transit through north (dec ≳ +20°).
+    The azimuth-wrap case is plausible at FYST's -23 deg latitude for
+    sources that transit through north (dec >= +20 deg).
     """
 
     def test_az_range_handles_north_transit(self, site):
         """``_compute_ce_az_range`` returns a contiguous range for north-transiting sources.
 
-        At FYST (lat = −22.99°), a source at RA = 0°, dec = +35° transits
+        At FYST (lat = -22.99 deg), a source at RA = 0 deg, dec = +35 deg transits
         through north around 04:50 UTC on 2026-09-16, with corner azimuths
         straddling the 0/360 discontinuity. The naive ``min``/``max``
-        computation reports a ~358° throw; the unwrapped result should
+        computation reports a ~358 deg throw; the unwrapped result should
         be a few-degree throw matching the field width.
         """
         coords = Coordinates(site)
@@ -188,10 +188,10 @@ class TestCEGeometryWrapHandling:
         )
 
         throw = az_max - az_min
-        # The field is 4° wide; the temporal sweep adds ~10° of azimuth
+        # The field is 4 deg wide; the temporal sweep adds ~10 deg of azimuth
         # variation as it transits. A wrapped (broken) result would be
-        # close to 358°.
-        assert throw < 30.0, f"az_throw {throw:.2f}° suggests az-wrap was not handled"
+        # close to 358 deg.
+        assert throw < 30.0, f"az_throw {throw:.2f} deg suggests az-wrap was not handled"
         assert throw > field.width
 
     def test_az_range_normal_field_unchanged(self, site):
@@ -220,16 +220,16 @@ class TestCEGeometryWrapHandling:
         assert (az_max - az_min) < 60.0
 
     def test_ra_wrap_handled_for_field_near_ra_zero(self, site):
-        """``_compute_ce_duration`` correctly identifies edges for RA ≈ 0 fields.
+        """``_compute_ce_duration`` correctly identifies edges for RA ~ 0 fields.
 
-        A 3°-wide field centred at RA = 1° has corners at RA ≈ −0.5°
-        and ≈ +2.5°. After ``% 360``, naive ``min``/``max`` would return
+        A 3-deg-wide field centred at RA = 1 deg has corners at RA ~ -0.5 deg
+        and ~ +2.5 deg. After ``% 360``, naive ``min``/``max`` would return
         the wrong leading/trailing edges. The wrap-detection branch
         should re-centre the values around the field centre.
         """
         coords = Coordinates(site)
         # Use a southern-hemisphere field that transits comfortably
-        # above the requested elevation at FYST (lat = −23°).
+        # above the requested elevation at FYST (lat = -23 deg).
         field = FieldRegion(ra_center=1.0, dec_center=-25.0, width=3.0, height=3.0)
         # Pick a search start time before the field rises through el=40
         # (transit happens ~03:30 UTC at this RA on this date).
@@ -251,12 +251,12 @@ class TestCEGeometryWrapHandling:
         # With the fix, the duration is the short interval between the
         # two true RA edges crossing el=40.
         assert duration > 0
-        assert duration < 30 * 60  # 30 min — true value ~10 min for 3° width
+        assert duration < 30 * 60  # 30 min -- true value ~10 min for 3 deg width
 
     def test_north_transit_planning_succeeds(self, site):
         """End-to-end: ``plan_constant_el_scan`` works for a north-transiting source.
 
-        Without the az-wrap fix, ``_compute_ce_az_range`` returns a ~358°
+        Without the az-wrap fix, ``_compute_ce_az_range`` returns a ~358 deg
         throw, which overflows the configured azimuth range and either
         crashes downstream validation or produces a nonsense scan.
         """
@@ -284,12 +284,12 @@ class TestPlanConstantElLsaWindow:
 
     @pytest.fixture
     def deep56_field(self):
-        """Deep56-like field centred near RA = 0, dec ≈ -2°.
+        """Deep56-like field centred near RA = 0, dec ~ -2 deg.
 
-        The full Deep56 patch from sourcelist_CE.csv spans 60° in RA
-        (23:00 → 03:00 wraps) and 14° in Dec, but a 60° physical field
-        would overflow the azimuth limits — the legacy LSA pipeline
-        sweeps the patch piecewise, not as a single 60°-wide raster.
+        The full Deep56 patch from sourcelist_CE.csv spans 60 deg in RA
+        (23:00 -> 03:00 wraps) and 14 deg in Dec, but a 60 deg physical field
+        would overflow the azimuth limits -- the legacy LSA pipeline
+        sweeps the patch piecewise, not as a single 60-deg-wide raster.
         For LSA-window unit tests we only need any FieldRegion that
         coexists with the legal azimuth range; the LSA branch is
         independent of field geometry.
@@ -302,7 +302,7 @@ class TestPlanConstantElLsaWindow:
         return Time("2026-09-15T00:00:00", scale="utc")
 
     def test_lsa_window_no_wrap(self, site, deep56_field, deep56_search_time):
-        """A no-wrap window (22°, 82°) produces a 4-hour scan.
+        """A no-wrap window (22 deg, 82 deg) produces a 4-hour scan.
 
         Duration = (82 - 22) / 15 = 4 h. The start lies between
         ``start_time`` and ``start_time + max_search_hours``.
@@ -332,7 +332,7 @@ class TestPlanConstantElLsaWindow:
         assert obs_start <= deep56_search_time + 12.0 * u.hour
 
     def test_lsa_window_with_wrap(self, site, deep56_field, deep56_search_time):
-        """A wrap-around window (310°, 10°) produces a 4-hour scan."""
+        """A wrap-around window (310 deg, 10 deg) produces a 4-hour scan."""
         block = plan_constant_el_scan(
             field=deep56_field,
             elevation=50.0,
@@ -349,11 +349,11 @@ class TestPlanConstantElLsaWindow:
         # (10 - 310) mod 360 / 15 = 60 / 15 = 4 h.
         assert lsa_duration_h == pytest.approx(4.0, abs=1e-3)
 
-        # LST at obs_start should be very close to 310°.
+        # LST at obs_start should be very close to 310 deg.
         coords = Coordinates(site)
         lst_at_start = coords.get_lst(obs_start)
         diff = (lst_at_start - 310.0 + 180.0) % 360.0 - 180.0
-        assert abs(diff) < 0.05  # 0.05° ≈ 12 s of sidereal time
+        assert abs(diff) < 0.05  # 0.05 deg ~ 12 s of sidereal time
 
     def test_lsa_window_deep56_pattern(self, site, deep56_field, deep56_search_time):
         """Exercise both Deep56 LSA configurations from sourcelist_CE.csv."""
@@ -382,14 +382,14 @@ class TestPlanConstantElLsaWindow:
             obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
             assert (obs_end - obs_start).to_value(u.hour) == pytest.approx(4.0, abs=1e-3)
 
-        # The 22→82 setting window starts after the 310→10 rising window
-        # (both anchored at the same start_time; 310° comes up first, then 22°).
+        # The 22->82 setting window starts after the 310->10 rising window
+        # (both anchored at the same start_time; 310 deg comes up first, then 22 deg).
         t_r = Time(block_rising.computed_params["start_time_iso"], scale="utc")
         t_s = Time(block_setting.computed_params["start_time_iso"], scale="utc")
         assert t_r < t_s
 
     def test_lsa_window_equal_endpoints_raises(self, site, deep56_field, deep56_search_time):
-        """Equal endpoints produce a zero-duration window — refused."""
+        """Equal endpoints produce a zero-duration window -- refused."""
         with pytest.raises(ValueError, match="zero-duration"):
             plan_constant_el_scan(
                 field=deep56_field,
@@ -415,21 +415,21 @@ class TestPlanConstantElLsaWindow:
     def test_lsa_window_not_found_raises(self, site, deep56_field):
         """A tiny search horizon that never crosses min_lsa raises PointingError.
 
-        Pick a start_time where LST is just past 100° and search only
-        0.5 hours forward (≈ 7.5° of LSA travel) for a target of
-        100° — the increasing-direction crossing will already be in
+        Pick a start_time where LST is just past 100 deg and search only
+        0.5 hours forward (~ 7.5 deg of LSA travel) for a target of
+        100 deg -- the increasing-direction crossing will already be in
         the past.
         """
         coords = Coordinates(site)
-        # Find a time when LST = 100° + a small margin, so the next
-        # 0.5 h won't include an increasing crossing of 100°.
-        # Sample LST across a day; pick the first time LST > 100.5°
-        # (so the next 0.5 h spans LSA ~108°-115°, never re-crossing 100°).
+        # Find a time when LST = 100 deg + a small margin, so the next
+        # 0.5 h won't include an increasing crossing of 100 deg.
+        # Sample LST across a day; pick the first time LST > 100.5 deg
+        # (so the next 0.5 h spans LSA ~108 deg-115 deg, never re-crossing 100 deg).
         anchor = Time("2026-09-15T00:00:00", scale="utc")
         dt = np.arange(0, 24 * 3600, 30.0)
         times = anchor + dt * u.s
         lsa = np.asarray(coords.get_lst(times))
-        # First index where LSA is between 100.5 and 105 (just past 100°).
+        # First index where LSA is between 100.5 and 105 (just past 100 deg).
         idx_arr = np.flatnonzero((lsa > 100.5) & (lsa < 105.0))
         assert len(idx_arr) > 0
         start_time = times[idx_arr[0]]
@@ -519,7 +519,7 @@ class TestPlanConstantElLsaWindow:
         assert np.array_equal(block_default.trajectory.el, block_explicit_none.trajectory.el)
 
     def test_lsa_window_at_lst_zero_crossing(self, site):
-        """``min_lsa = 0`` works when LST is currently just below 360°.
+        """``min_lsa = 0`` works when LST is currently just below 360 deg.
 
         Regression for the wrap-edge straddle-detection bug: with a
         ``min_lsa = 0`` and consecutive samples ``(359.9, 0.1)``, the
@@ -527,28 +527,28 @@ class TestPlanConstantElLsaWindow:
         because both factors are positive (the 0/360 boundary is not a
         true sign change in the wrapped-modulo representation). The
         unwrapped LSA-series fix locates the crossing correctly and the
-        planner produces a valid 4-hour scan starting at LST ≈ 0°.
+        planner produces a valid 4-hour scan starting at LST ~ 0 deg.
 
-        The field is positioned at RA = 60° so the LST = 0 crossing
+        The field is positioned at RA = 60 deg so the LST = 0 crossing
         doesn't place the field at meridian (which would put the field
         near zenith for low |dec| and break the az-range computation).
         """
-        # Find an anchor at which LST is currently ~358° so the first
-        # increasing crossing of 0° (== 360° unwrapped) lies within a
+        # Find an anchor at which LST is currently ~358 deg so the first
+        # increasing crossing of 0 deg (== 360 deg unwrapped) lies within a
         # short search horizon.
         coords = Coordinates(site)
         sample_anchor = Time("2026-09-15T00:00:00", scale="utc")
         dt = np.arange(0, 24 * 3600, 30.0)
         times = sample_anchor + dt * u.s
         lsa = np.asarray(coords.get_lst(times))
-        # First index where LSA is in [358, 359.5] — gives ~2-7 minutes
+        # First index where LSA is in [358, 359.5] -- gives ~2-7 minutes
         # before the wrap crossing.
         idx_arr = np.flatnonzero((lsa > 358.0) & (lsa < 359.5))
         assert len(idx_arr) > 0
         start_time = times[idx_arr[0]]
 
-        # Field at RA = 60°, dec = -25°: when LST crosses 0° the field
-        # is at HA = -60° (rising side), well clear of meridian/zenith.
+        # Field at RA = 60 deg, dec = -25 deg: when LST crosses 0 deg the field
+        # is at HA = -60 deg (rising side), well clear of meridian/zenith.
         field = FieldRegion(ra_center=60.0, dec_center=-25.0, width=4.0, height=4.0)
 
         block = plan_constant_el_scan(
@@ -566,17 +566,17 @@ class TestPlanConstantElLsaWindow:
         # (60 - 0) / 15 = 4 hours.
         assert lsa_duration_h == pytest.approx(4.0, abs=1e-3)
 
-        # LST at obs_start should be very close to 0° (== 360°).
+        # LST at obs_start should be very close to 0 deg (== 360 deg).
         lst_at_start = coords.get_lst(obs_start)
         diff = (lst_at_start - 0.0 + 180.0) % 360.0 - 180.0
-        assert abs(diff) < 0.05  # 0.05° ≈ 12 s of sidereal time
+        assert abs(diff) < 0.05  # 0.05 deg ~ 12 s of sidereal time
 
     def test_lsa_window_min_just_above_zero(self, site):
-        """``min_lsa ≈ 0.0001`` is in the wrap dead-zone the legacy test missed.
+        """``min_lsa ~ 0.0001`` is in the wrap dead-zone the legacy test missed.
 
         With the legacy straddle test ``(lsa - 0.0001) * (lsa_next - 0.0001) < 0``,
         consecutive samples like ``(359.9, 0.1)`` produce a negative product
-        only if both factors have opposite sign — but both are positive after
+        only if both factors have opposite sign -- but both are positive after
         the ``% 360`` wrap. The unwrap fix recognises the crossing.
 
         Uses the helper directly to keep the test focused on the
@@ -598,7 +598,7 @@ class TestPlanConstantElLsaWindow:
             base_search_time=base_time,
         )
         assert duration == pytest.approx(4.0 * 3600.0, abs=1e-6)
-        # The crossing of LST = 0.0001° lies just past the wrap.
+        # The crossing of LST = 0.0001 deg lies just past the wrap.
         lst_at_start = coords.get_lst(t_start)
         diff = (lst_at_start - 0.0001 + 180.0) % 360.0 - 180.0
         assert abs(diff) < 0.05
@@ -619,7 +619,7 @@ class TestPlanConstantElLsaWindow:
         from fyst_trajectories.overhead.simulation import _generate_trajectory_for_block
 
         scan_params_tuple = {"lsa_window": (310.0, 10.0)}
-        # Simulate ECSV write → read: tuple becomes list via JSON.
+        # Simulate ECSV write -> read: tuple becomes list via JSON.
         scan_params_list = json.loads(json.dumps(scan_params_tuple))
         assert isinstance(scan_params_list["lsa_window"], list)
 
@@ -687,7 +687,7 @@ class TestPlanConstantElLsaWindow:
         assert np.array_equal(scan_tuple.trajectory.az, scan_list.trajectory.az)
 
     def test_lsa_window_narrow_window(self, site, deep56_field, deep56_search_time):
-        """A narrow 0.5° window produces a valid 2-minute scan."""
+        """A narrow 0.5 deg window produces a valid 2-minute scan."""
         block = plan_constant_el_scan(
             field=deep56_field,
             elevation=50.0,
@@ -696,7 +696,7 @@ class TestPlanConstantElLsaWindow:
             start_time=deep56_search_time,
             lsa_window=(50.0, 50.5),
         )
-        # 0.5° / 15 = 0.0333 h = 120 s.
+        # 0.5 deg / 15 = 0.0333 h = 120 s.
         obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
         obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
         assert (obs_end - obs_start).to_value(u.s) == pytest.approx(120.0, abs=1e-2)
@@ -736,7 +736,7 @@ class TestPlanConstantElLsaWindow:
         fit inside telescope limits (a separate concern).
         """
         coords = Coordinates(site)
-        # 120° / 15 = 8 hours — past the 6 h threshold.
+        # 120 deg / 15 = 8 hours -- past the 6 h threshold.
         with pytest.warns(PointingWarning, match="long"):
             _compute_ce_duration_from_lsa(
                 lsa_window=(22.0, 142.0),
