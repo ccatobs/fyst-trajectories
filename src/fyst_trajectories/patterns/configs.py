@@ -125,8 +125,9 @@ class ConstantElScanConfig(ScanConfig):
 
     A planner that wants a fixed on-sky scan rate (e.g. for noise
     uniformity) must scale ``az_speed`` by ``1/cos(elevation)`` for
-    each target. ``plan_constant_el_scan`` does this conversion for
-    you when called with the ``velocity`` argument (sky-frame).
+    each target; ``plan_constant_el_scan``'s ``velocity`` argument is
+    the same mount-frame quantity, passed through unscaled. (Pong/daisy
+    ``velocity`` is on-sky — a different frame.)
     """
 
     az_start: float

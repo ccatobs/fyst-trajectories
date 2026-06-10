@@ -9,7 +9,7 @@ from astropy.coordinates import TETE, SkyCoord
 from astropy.time import Time
 
 from fyst_trajectories.coordinates import Coordinates
-from fyst_trajectories.exceptions import PointingWarning, TargetNotObservableError
+from fyst_trajectories.exceptions import TargetNotObservableError
 from fyst_trajectories.offsets import (
     _INVERSE_EARLY_EXIT_THRESHOLD,
     _INVERSE_FAILURE_THRESHOLD,
@@ -198,20 +198,34 @@ class TestDetectorToBoresight:
 class TestApplyDetectorOffset:
     """Tests for apply_detector_offset function."""
 
-    def test_requires_start_time(self, site):
-        """Test that start_time is required."""
+    def test_no_start_time_required(self, site):
+        """Mechanical (horizon-frame) rotation needs no timestamps.
+
+        Regression for the pa-in-horizon-frame fix: ``start_time`` was only
+        ever required to evaluate the parallactic angle, which does not
+        belong in this az/el projection. A trajectory without ``start_time``
+        must be accepted and produce the same boresight as the identical
+        trajectory with ``start_time`` set.
+        """
         offset = InstrumentOffset(dx=5.0, dy=3.0)
-        trajectory = Trajectory(
-            times=np.array([0, 1, 2]),
-            az=np.array([180.0, 181.0, 182.0]),
-            el=np.array([45.0, 45.0, 45.0]),
-            az_vel=np.array([1.0, 1.0, 1.0]),
-            el_vel=np.array([0.0, 0.0, 0.0]),
-            start_time=None,  # No start time
+
+        def _traj(start_time):
+            return Trajectory(
+                times=np.array([0.0, 1.0, 2.0]),
+                az=np.array([180.0, 181.0, 182.0]),
+                el=np.array([45.0, 45.0, 45.0]),
+                az_vel=np.array([1.0, 1.0, 1.0]),
+                el_vel=np.array([0.0, 0.0, 0.0]),
+                start_time=start_time,
+            )
+
+        adj_no_time = apply_detector_offset(_traj(None), offset, site)
+        adj_with_time = apply_detector_offset(
+            _traj(Time("2026-03-15T04:00:00", scale="utc")), offset, site
         )
 
-        with pytest.raises(ValueError, match="start_time"):
-            apply_detector_offset(trajectory, offset, site)
+        np.testing.assert_allclose(adj_no_time.az, adj_with_time.az)
+        np.testing.assert_allclose(adj_no_time.el, adj_with_time.el)
 
     def test_zero_offset_preserves_trajectory(self, site):
         """Test that zero offset returns same positions."""
@@ -822,8 +836,14 @@ class TestApplyDetectorOffsetFieldRotation:
         assert not np.allclose(adjusted.az, trajectory.az)
         assert not np.allclose(adjusted.el, trajectory.el)
 
-    def test_altaz_trajectory_emits_warning(self, site):
-        """Test that AltAz trajectory emits a warning about mechanical-only rotation."""
+    def test_altaz_trajectory_no_warning(self, site):
+        """AltAz trajectories must not warn: mechanical-only IS the model.
+
+        The pre-fix code warned that the parallactic angle was unavailable;
+        with the pa-in-horizon-frame fix the mechanical rotation is the
+        correct and complete rotation for every az/el projection, so there
+        is nothing to warn about.
+        """
         start_time = Time("2026-03-15T04:00:00", scale="utc")
 
         trajectory = (
@@ -844,8 +864,10 @@ class TestApplyDetectorOffsetFieldRotation:
         )
 
         offset = InstrumentOffset(dx=30.0, dy=30.0)
-        with pytest.warns(PointingWarning, match="Parallactic angle unavailable"):
-            apply_detector_offset(trajectory, offset, site)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            adjusted = apply_detector_offset(trajectory, offset, site)
+        assert adjusted.n_points == trajectory.n_points
 
     def test_left_nasmyth_sign_flip(self):
         """Test that nasmyth_port='left' flips the sign of elevation rotation."""
@@ -933,11 +955,20 @@ class TestApplyDetectorOffsetFieldRotation:
         # Different instrument_rotation should produce different trajectories
         assert not np.allclose(adj_no_rot.az, adj_with_rot.az)
 
-    def test_celestial_trajectory_uses_parallactic_angle(self, site):
-        """Test that celestial trajectory includes parallactic angle."""
+    def test_celestial_metadata_does_not_change_projection(self, site):
+        """Same az/el in, same az/el out -- celestial metadata is irrelevant.
+
+        Frame-invariance regression for the pa-in-horizon-frame fix: the
+        focal-plane-to-az/el projection depends only on (az, el, offset,
+        mechanical rotation). Two trajectories with identical az/el paths
+        must produce identical boresights whether or not ``center_ra`` /
+        ``center_dec`` metadata is present. The pre-fix code added the
+        parallactic angle when RA/Dec was available, making the two paths
+        diverge by degrees for an off-axis module.
+        """
         start_time = Time("2026-03-15T04:00:00", scale="utc")
 
-        trajectory = (
+        celestial = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
             .with_config(
@@ -955,16 +986,27 @@ class TestApplyDetectorOffsetFieldRotation:
             .starting_at(start_time)
             .build()
         )
+        assert celestial.center_ra is not None
 
-        assert trajectory.center_ra is not None
+        # Identical az/el path, but no celestial metadata.
+        bare = Trajectory(
+            times=celestial.times.copy(),
+            az=celestial.az.copy(),
+            el=celestial.el.copy(),
+            az_vel=celestial.az_vel.copy(),
+            el_vel=celestial.el_vel.copy(),
+            start_time=celestial.start_time,
+        )
+        assert bare.center_ra is None
 
         offset = InstrumentOffset(dx=30.0, dy=30.0)
-        # Should not warn (celestial trajectory has RA/Dec)
         with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            adjusted = apply_detector_offset(trajectory, offset, site)
+            warnings.simplefilter("error")  # neither path may warn
+            adj_celestial = apply_detector_offset(celestial, offset, site)
+            adj_bare = apply_detector_offset(bare, offset, site)
 
-        assert adjusted.n_points == trajectory.n_points
+        np.testing.assert_allclose(adj_celestial.az, adj_bare.az, atol=1e-12)
+        np.testing.assert_allclose(adj_celestial.el, adj_bare.el, atol=1e-12)
 
     def test_unobservable_target_raises(self, site):
         """Test catching TargetNotObservableError for invalid celestial target."""
@@ -1234,37 +1276,6 @@ class TestEarlyExitZeroOffset:
         assert result is not trajectory
 
 
-class TestPointingWarningEmitted:
-    """Tests that PointingWarning (not bare UserWarning) is emitted."""
-
-    def test_altaz_offset_emits_pointing_warning(self, site):
-        """Test that AltAz trajectory offset emits PointingWarning specifically."""
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-
-        trajectory = (
-            TrajectoryBuilder(site)
-            .with_config(
-                ConstantElScanConfig(
-                    timestep=0.1,
-                    az_start=120.0,
-                    az_stop=180.0,
-                    elevation=45.0,
-                    az_speed=1.0,
-                    az_accel=0.5,
-                )
-            )
-            .duration(60.0)
-            .starting_at(start_time)
-            .build()
-        )
-
-        offset = InstrumentOffset(dx=30.0, dy=30.0)
-
-        # Should emit PointingWarning, not bare UserWarning
-        with pytest.warns(PointingWarning, match="Parallactic angle unavailable"):
-            apply_detector_offset(trajectory, offset, site)
-
-
 class TestFromFocalPlane:
     """Tests for InstrumentOffset.from_focal_plane factory method."""
 
@@ -1401,27 +1412,31 @@ def _independent_apparent_pa(coords, ra, dec, times):
 
 
 class TestOffsetPathLandsOnTarget:
-    """H-2/L-9: the named detector observes the original target after the offset.
+    """The named detector observes the original target after the offset.
 
-    ``apply_detector_offset`` places an off-axis module by rotating its
-    focal-plane offset by the field rotation (which includes the parallactic
-    angle from ``get_parallactic_angle``). If that PA carries the H-1 frame
-    bias, the boresight is computed for the wrong rotation and the module lands
-    off-target by ``offset_radius * PA_error`` -- tens of arcsec for an
-    inner-ring module. This test plans the boresight with the library, then
-    propagates the module back to sky with an *independent* apparent-place
-    field rotation and asserts it lands on the original target.
+    ``apply_detector_offset`` is a horizon-frame (az/el) projection, so it
+    must place an off-axis module using the MECHANICAL focal-plane rotation
+    only (``nasmyth_sign * el + instrument_rotation``). The ground truth here
+    is an *independent* flat-sky (KOSMA-style) forward projection of the
+    rotated offset from the library's adjusted boresight -- plain numpy, no
+    library projection functions. Peer references for the pa-free az/el
+    projection: SO ``make_source_ces`` (static rotation only), NIKA2
+    A&A 637 A71 Sec. 5.1 Eq. 2 (elevation-only Nasmyth-to-altaz matrix), and the
+    KOSMA focal-plane model (``+/-el`` only; the parallactic angle lives in a
+    separate celestial pipeline stage).
+
+    The companion test asserts the PRE-FIX model (mechanical + parallactic
+    angle) misses the target by degrees at this geometry, proving the oracle
+    discriminates between the two frame models rather than passing vacuously.
     """
 
-    def test_inner_ring_module_lands_on_target(self):
-        site = get_fyst_site()
-        coords = Coordinates(site)
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        ra, dec = 180.0, -30.0  # el ~ 74.6 deg at this epoch -- well observable
-
-        trajectory = (
+    @staticmethod
+    def _build_trajectory(site, start_time):
+        # ra/dec 180/-30 at 09:00 UTC -> el ~ 36 deg (setting), where the
+        # flat-sky truncation error is small and |pa| is large (~100 deg).
+        return (
             TrajectoryBuilder(site)
-            .at(ra=ra, dec=dec)
+            .at(ra=180.0, dec=-30.0)
             .with_config(
                 PongScanConfig(
                     timestep=0.5,
@@ -1438,30 +1453,67 @@ class TestOffsetPathLandsOnTarget:
             .build()
         )
 
+    @staticmethod
+    def _flat_project(bore_az, bore_el, offset, rho_deg):
+        """Independent KOSMA-style flat-sky projection of a rotated offset."""
+        rho = np.radians(rho_deg)
+        dxr = offset.dx_deg * np.cos(rho) - offset.dy_deg * np.sin(rho)
+        dyr = offset.dx_deg * np.sin(rho) + offset.dy_deg * np.cos(rho)
+        det_el = bore_el + dyr
+        det_az = bore_az + dxr / np.cos(np.radians(bore_el + dyr / 2.0))
+        return det_az, det_el
+
+    def test_inner_ring_module_lands_on_target(self):
+        site = get_fyst_site()
+        start_time = Time("2026-03-15T09:00:00", scale="utc")
+        trajectory = self._build_trajectory(site, start_time)
+
         # PRIMECAM_I1 is an inner-ring module ~106.8 arcmin (1.78 deg) off-axis.
         boresight = apply_detector_offset(trajectory, PRIMECAM_I1, site)
 
-        # Independent ground-truth field rotation (apparent-place PA, no lib PA),
-        # evaluated at the detector elevation (the elevation the offset is applied at).
-        abs_times = get_absolute_times(trajectory)
-        pa_true = _independent_apparent_pa(
-            coords, trajectory.center_ra, trajectory.center_dec, abs_times
-        )
-        phi_true = compute_focal_plane_rotation(trajectory.el, site, PRIMECAM_I1, pa_true)
+        # Independent mechanical (horizon-frame) rotation. Evaluated at the
+        # input (detector) elevation, matching the library's documented
+        # convention.
+        rho_mech = site.nasmyth_sign * trajectory.el + PRIMECAM_I1.instrument_rotation
+        actual_az, actual_el = self._flat_project(boresight.az, boresight.el, PRIMECAM_I1, rho_mech)
 
-        # Where the module actually points given the library's planned boresight.
-        actual_az, actual_el = boresight_to_detector(
-            boresight.az, boresight.el, PRIMECAM_I1, phi_true
-        )
-
-        # The module must observe the original target (the input trajectory).
         target = SkyCoord(trajectory.az * u.deg, trajectory.el * u.deg, frame="altaz")
         actual = SkyCoord(actual_az * u.deg, actual_el * u.deg, frame="altaz")
-        miss_arcsec = target.separation(actual).to_value(u.arcsec)
+        miss_deg = target.separation(actual).to_value(u.deg)
 
-        assert miss_arcsec.max() < 5.0, (
-            f"inner-ring module misses target by up to {miss_arcsec.max():.1f} arcsec "
-            "-- field rotation (parallactic angle) is mis-referenced"
+        # Flat-vs-spherical truncation at rho ~ 1.78 deg and el ~ 36 deg is
+        # well under this bound; a frame-model error is > 1 deg (companion test).
+        assert miss_deg.max() < 0.05, (
+            f"inner-ring module misses target by up to {miss_deg.max():.3f} deg "
+            "-- the az/el projection is not using the mechanical rotation"
+        )
+
+    def test_pa_in_horizon_frame_would_miss(self):
+        """The pre-fix (mechanical + pa) model misses grossly: the oracle discriminates."""
+        site = get_fyst_site()
+        coords = Coordinates(site)
+        start_time = Time("2026-03-15T09:00:00", scale="utc")
+        trajectory = self._build_trajectory(site, start_time)
+
+        boresight = apply_detector_offset(trajectory, PRIMECAM_I1, site)
+
+        abs_times = get_absolute_times(trajectory)
+        pa = _independent_apparent_pa(
+            coords, trajectory.center_ra, trajectory.center_dec, abs_times
+        )
+        # Geometry guard: |pa| must be large here or this test is vacuous.
+        assert np.abs(pa).min() > 25.0
+
+        rho_wrong = site.nasmyth_sign * trajectory.el + pa
+        wrong_az, wrong_el = self._flat_project(boresight.az, boresight.el, PRIMECAM_I1, rho_wrong)
+
+        target = SkyCoord(trajectory.az * u.deg, trajectory.el * u.deg, frame="altaz")
+        wrong = SkyCoord(wrong_az * u.deg, wrong_el * u.deg, frame="altaz")
+        miss_deg = target.separation(wrong).to_value(u.deg)
+
+        assert miss_deg.min() > 0.5, (
+            "pa-rotated projection should miss by degrees; if it lands on "
+            "target the oracle no longer discriminates the frame models"
         )
 
 
@@ -1529,11 +1581,7 @@ class TestApplyDetectorOffsetSingleSample:
         )
 
         offset = InstrumentOffset(dx=30.0, dy=30.0)
-        # AltAz (no RA/Dec) -> warns about mechanical-only rotation; that is
-        # orthogonal to this test, so suppress it.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            adjusted = apply_detector_offset(trajectory, offset, site)
+        adjusted = apply_detector_offset(trajectory, offset, site)
 
         assert adjusted.n_points == 1
         # Boresight velocity is undefined for a single sample -> zeros, not a crash.
@@ -1582,15 +1630,17 @@ class TestApplyDetectorOffsetRetuneEvents:
 
 
 class TestApplyDetectorOffsetFrameConsistency:
-    """M1: frame-varying regression for the refracted-el / vacuum-PA sum.
+    """M1: frame-varying regression for a refracted-el input.
 
     Decision (after empirical measurement): keep the physically-correct
     per-sample ``trajectory.el`` for the mechanical term -- substituting a
     single center-vacuum-el would regress the vacuum/live path by ~30-200"
-    for extended patterns, far more than the ~arcsec refraction-frame leak it
-    would remove. This test documents and bounds the residual leak: pairing a
-    ``for_fyst()`` (refracted) trajectory with a detector offset shifts the
-    boresight by only a few arcsec vs the (correct) vacuum trajectory, and the
+    for extended patterns, far more than the residual leak it would remove.
+    Since the pa-in-horizon-frame fix the only frame leak left is the
+    mechanical term itself: a ``for_fyst()`` (refracted) input evaluates
+    ``nasmyth_sign * el`` at the apparent elevation, differing from vacuum
+    by ``nasmyth_sign * (refraction bump)`` -- a sub-arcsec boresight effect
+    at PrimeCam offset radii. This test documents and bounds that leak; the
     vacuum path remains the reference.
     """
 
@@ -1627,7 +1677,7 @@ class TestApplyDetectorOffsetFrameConsistency:
         adj_ref = apply_detector_offset(traj_ref, offset, site)
 
         # The refracted az/el differ from vacuum by the refraction bump itself
-        # (tens of arcsec in el); to isolate the *frame-sum* leak we compare the
+        # (tens of arcsec in el); to isolate the *rotation* leak we compare the
         # boresight the offset produces for each, removing the input el offset by
         # comparing the detector->boresight *shift* (boresight - input position).
         shift_vac_az = adj_vac.az - traj_vac.az
@@ -1636,8 +1686,8 @@ class TestApplyDetectorOffsetFrameConsistency:
         shift_ref_el = adj_ref.el - traj_ref.el
 
         # The offset-induced boresight shift should be nearly identical between
-        # the vacuum and refracted inputs; the only difference is the refracted-el
-        # vs vacuum-PA frame leak, bounded to a few arcsec on the inner ring.
+        # the vacuum and refracted inputs; the only difference is the mechanical
+        # rotation evaluated at apparent vs vacuum el, bounded to a few arcsec.
         d_az = (shift_ref_az - shift_vac_az) * np.cos(np.radians(traj_vac.el))
         d_el = shift_ref_el - shift_vac_el
         leak_arcsec = np.hypot(d_az, d_el) * 3600.0
@@ -1649,20 +1699,15 @@ class TestApplyDetectorOffsetFrameConsistency:
 
     def test_vacuum_path_lands_on_target(self, site):
         """The vacuum (live) path is the reference: the module lands on target."""
-        coords = Coordinates(site)
         start_time = Time("2026-03-15T09:00:00", scale="utc")
         offset = PRIMECAM_I1
 
         traj_vac = self._build(site, start_time, atmosphere=None)
         boresight = apply_detector_offset(traj_vac, offset, site)
 
-        abs_times = get_absolute_times(traj_vac)
-        pa = coords.get_parallactic_angle(
-            np.full(len(traj_vac.times), traj_vac.center_ra),
-            np.full(len(traj_vac.times), traj_vac.center_dec),
-            obstime=abs_times,
-        )
-        phi = compute_focal_plane_rotation(traj_vac.el, site, offset, parallactic_angle=pa)
+        # Mechanical (horizon-frame) rotation -- forward/inverse consistency;
+        # the independent frame-model oracle lives in TestOffsetPathLandsOnTarget.
+        phi = compute_focal_plane_rotation(traj_vac.el, site, offset)
         actual_az, actual_el = boresight_to_detector(boresight.az, boresight.el, offset, phi)
 
         target = SkyCoord(traj_vac.az * u.deg, traj_vac.el * u.deg, frame="altaz")

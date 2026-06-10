@@ -184,13 +184,6 @@ def plot_hit_map(
     coords = Coordinates(site)
     abs_times = get_absolute_times(trajectory)
 
-    if trajectory.center_ra is not None and trajectory.center_dec is not None:
-        ra_arr = np.full(len(trajectory.times), trajectory.center_ra)
-        dec_arr = np.full(len(trajectory.times), trajectory.center_dec)
-        pa = coords.get_parallactic_angle(ra_arr, dec_arr, obstime=abs_times)
-    else:
-        pa = np.zeros(len(trajectory.times))
-
     coverage_mode = module_fov is not None
     pad_deg = (module_fov / 2.0) if coverage_mode else 0.0
     bin_area_deg2 = bin_size * bin_size
@@ -205,11 +198,12 @@ def plot_hit_map(
     axes = axes[0]
 
     for ax, (offset, label) in zip(axes, offsets):
+        # Horizon-frame projection: mechanical rotation; the celestial
+        # rotation enters in the az/el -> RA/Dec conversion below.
         fr = compute_focal_plane_rotation(
             trajectory.el,
             site,
             offset,
-            parallactic_angle=pa,
         )
 
         det_az, det_el = boresight_to_detector(

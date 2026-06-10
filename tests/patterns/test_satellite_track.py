@@ -120,9 +120,10 @@ class TestSatelliteTrackPattern:
         assert exc_info.value.bounds_error is not None
 
     def test_titan_track_center_is_apparent(self, site):
-        """The metadata center RA/Dec is Titan's apparent position (PA correctness).
+        """The metadata center RA/Dec is Titan's apparent position.
 
-        center_ra/center_dec feed apply_detector_offset's parallactic angle. Push
+        center_ra/center_dec feed celestial-frame consumers (map orientation
+        via get_field_rotation, ECSV provenance). Push
         the STORED center through the INDEPENDENT radec_to_altaz transform and
         compare to Titan's Az/El at the midpoint (mirrors the planet
         test_planet_track_center_is_apparent). This is a real apparent-place check,
@@ -285,11 +286,11 @@ class TestSatelliteTrackPublicAPI:
 
 
 def test_no_pointing_warning_on_apply_detector_offset(site):
-    """Detector offset on a Titan track uses the parallactic angle (no warning).
+    """Detector offset on a Titan track must not warn.
 
-    Parity with the planet pattern: because the metadata carries Titan's
-    apparent RA/Dec, apply_detector_offset has what it needs and must not
-    emit a PointingWarning about a missing parallactic angle.
+    Parity with the planet pattern: apply_detector_offset is a horizon-frame
+    projection using the mechanical rotation only (pa-in-horizon-frame fix),
+    so it needs no celestial metadata and must never emit a PointingWarning.
     """
     from fyst_trajectories.exceptions import PointingWarning
     from fyst_trajectories.offsets import InstrumentOffset, apply_detector_offset

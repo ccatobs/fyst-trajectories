@@ -102,17 +102,20 @@ refraction downstream. For planning/simulation,
 Field Rotation vs. Focal Plane Rotation
 ----------------------------------------
 
-``Coordinates.get_field_rotation()`` returns the sky rotation component
-(``nasmyth_sign * elevation + parallactic_angle``) with no instrument rotation.
-The Nasmyth sign is determined by ``site.nasmyth_port`` (+1 for Right, -1 for
-Left, 0 for Cassegrain).
+``Coordinates.get_field_rotation()`` returns the **celestial-frame**
+orientation of the focal plane
+(``nasmyth_sign * elevation + parallactic_angle``) with no instrument
+rotation — the quantity needed for sky-map orientation, image rotation, and
+polarization angles. The Nasmyth sign is determined by ``site.nasmyth_port``
+(+1 for Right, -1 for Left, 0 for Cassegrain).
 
-For the full focal-plane rotation that includes Nasmyth port sign convention
-and instrument rotation, use ``compute_focal_plane_rotation()``:
+The az/el projections (``apply_detector_offset``, ``boresight_to_detector``,
+``detector_to_boresight``) use the mechanical (horizon-frame) rotation,
+``nasmyth_sign * elevation + instrument_rotation``.
+``compute_focal_plane_rotation()`` computes either frame
+(``parallactic_angle`` defaults to 0.0, the mechanical value).
 
-    ``rotation = nasmyth_sign * elevation + instrument_rotation + parallactic_angle``
-
-See :doc:`instrument_offsets` for details on the decomposition and usage.
+See :doc:`instrument_offsets` for details on the frame distinction and usage.
 
 .. note::
 

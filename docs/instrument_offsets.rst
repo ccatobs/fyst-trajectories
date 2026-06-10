@@ -51,21 +51,25 @@ are tracked. The total rotation applied to detector offsets is decomposed into:
 - ``instrument_rotation``: fixed rotation of the instrument relative to the
   Nasmyth flange, in degrees. Set on ``InstrumentOffset`` (default: 0.0).
 
-**Parallactic angle** (requires celestial coordinates):
+The mechanical rotation is the orientation of the focal plane relative to
+the horizon (az/el) axes. It is the rotation used by the az/el
+projections (``apply_detector_offset``, ``boresight_to_detector``,
+``detector_to_boresight``); celestial and AltAz patterns behave
+identically, and no celestial metadata is consumed.
 
-    Added when the trajectory has RA/Dec metadata (celestial patterns like
-    Pong, Daisy, Sidereal). Not available for AltAz-only patterns
-    (ConstantEl, Linear).
+**Parallactic angle** (celestial frame):
 
-The full rotation is:
+    Adding the parallactic angle gives the orientation of the focal plane
+    relative to the celestial (equatorial) axes:
 
     ``rotation = nasmyth_sign * elevation + instrument_rotation + parallactic_angle``
 
-``apply_detector_offset`` automatically selects the appropriate decomposition
-based on whether the trajectory contains celestial coordinates.
+    This is the quantity needed for sky-map orientation, image rotation,
+    and polarization angles — see ``Coordinates.get_field_rotation``.
 
-The helper ``compute_focal_plane_rotation`` provides the same calculation
-for use outside of trajectory adjustment::
+The helper ``compute_focal_plane_rotation`` computes either frame's
+rotation (the ``parallactic_angle`` argument defaults to 0.0, the
+mechanical / horizon-frame value)::
 
     from fyst_trajectories import get_fyst_site, InstrumentOffset
     from fyst_trajectories.offsets import compute_focal_plane_rotation
@@ -73,10 +77,15 @@ for use outside of trajectory adjustment::
     site = get_fyst_site()
     offset = InstrumentOffset(dx=5.0, dy=3.0, instrument_rotation=10.0)
 
-    rotation = compute_focal_plane_rotation(
+    # Horizon-frame (mechanical) rotation -- for az/el projections:
+    rotation_mech = compute_focal_plane_rotation(el=45.0, site=site, offset=offset)
+    # rotation_mech = +1 * 45.0 + 10.0 = 55.0
+
+    # Celestial-frame rotation -- for sky-map orientation only:
+    rotation_sky = compute_focal_plane_rotation(
         el=45.0, site=site, offset=offset, parallactic_angle=20.0
     )
-    # rotation = +1 * 45.0 + 10.0 + 20.0 = 75.0
+    # rotation_sky = +1 * 45.0 + 10.0 + 20.0 = 75.0
 
 Point Transformations
 ---------------------

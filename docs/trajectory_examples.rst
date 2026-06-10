@@ -366,14 +366,10 @@ due to Earth's rotation.
 
     # Get planet position using ephemeris
     planet_az, planet_el = coords.get_body_altaz("jupiter", observation_time)
-    planet_ra, planet_dec = coords.get_body_radec("jupiter", observation_time)
 
-    # Compute focal plane rotation (mechanical only, no parallactic angle for planets)
+    # Mechanical (horizon-frame) focal plane rotation
     offset = get_primecam_offset("i1")
-    parallactic_angle = coords.get_parallactic_angle(planet_ra, planet_dec, observation_time)
-    field_rotation = compute_focal_plane_rotation(
-        el=planet_el, site=site, offset=offset, parallactic_angle=parallactic_angle
-    )
+    field_rotation = compute_focal_plane_rotation(el=planet_el, site=site, offset=offset)
 
     # Compute boresight position so detector I1 sees the planet
     bore_az, bore_el = detector_to_boresight(

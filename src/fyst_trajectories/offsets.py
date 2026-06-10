@@ -30,16 +30,12 @@ Compute boresight for a detector target:
 """
 
 import dataclasses
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
 
-from .coordinates import Coordinates
-from .exceptions import PointingWarning
 from .site import Site
 from .trajectory import Trajectory
-from .trajectory_utils import get_absolute_times
 
 
 @dataclass(frozen=True)
@@ -423,9 +419,10 @@ def boresight_to_detector(
     telescope boresight is pointed. Uses spherical trigonometry
     (great-circle offset formulas) for accuracy at any offset size.
 
-    For an alt-az mounted telescope, the field of view rotates as objects
-    are tracked across the sky. The field_rotation parameter accounts for
-    this rotation when computing detector positions.
+    For a Nasmyth-mounted instrument on an alt-az telescope, the focal
+    plane rotates relative to the (az, el) axes as the elevation changes.
+    The field_rotation parameter accounts for this rotation when computing
+    detector positions.
 
     Parameters
     ----------
@@ -436,8 +433,10 @@ def boresight_to_detector(
     offset : InstrumentOffset
         Detector offset from boresight.
     field_rotation : float or array
-        Field rotation angle in degrees.
-        For alt-az telescopes, this is typically elevation + parallactic angle.
+        Orientation of the focal plane relative to the horizon (az/el)
+        axes, in degrees. For a Nasmyth-mounted instrument this is the
+        mechanical ``nasmyth_sign * elevation + instrument_rotation``
+        (plus any commanded rotator angle).
 
     Returns
     -------
@@ -482,7 +481,8 @@ def detector_to_boresight(
     offset : InstrumentOffset
         Detector offset from boresight.
     field_rotation : float or array
-        Field rotation angle in degrees.
+        Orientation of the focal plane relative to the horizon (az/el)
+        axes, in degrees; see :func:`boresight_to_detector`.
 
     Returns
     -------
@@ -517,15 +517,19 @@ def compute_focal_plane_rotation(
     offset: InstrumentOffset,
     parallactic_angle: float | np.ndarray = 0.0,
 ) -> float | np.ndarray:
-    """Compute the total focal-plane rotation angle.
+    """Compute the focal-plane rotation angle.
 
     Decomposes the rotation into mechanical (Nasmyth) and sky components:
 
         rotation = nasmyth_sign * elevation + instrument_rotation + parallactic_angle
 
-    The mechanical part (nasmyth_sign * el + instrument_rotation) is always
-    available from the elevation axis. The parallactic angle adds the sky
-    rotation component and requires celestial coordinates.
+    The mechanical part (the default, with ``parallactic_angle=0.0``) is
+    the orientation of the focal plane relative to the horizon (az/el)
+    axes — the rotation used by the az/el projections
+    (:func:`boresight_to_detector`, :func:`detector_to_boresight`,
+    :func:`apply_detector_offset`). Adding the parallactic angle gives
+    the orientation relative to the celestial (equatorial) axes, used
+    for sky-map orientation, image rotation, and polarization angles.
 
     Parameters
     ----------
@@ -536,19 +540,21 @@ def compute_focal_plane_rotation(
     offset : InstrumentOffset
         Instrument offset (provides instrument_rotation).
     parallactic_angle : float or array, optional
-        Parallactic angle in degrees. Default is 0.0.
+        Parallactic angle in degrees. Default is 0.0 (the mechanical,
+        horizon-frame rotation); pass a value to obtain the
+        celestial-frame orientation.
 
     Returns
     -------
     float or array
-        Total focal-plane rotation in degrees.
+        Focal-plane rotation in degrees.
 
     See Also
     --------
     fyst_trajectories.coordinates.Coordinates.get_field_rotation :
-        Convenience method that computes ``nasmyth_sign * el + parallactic_angle``
-        from RA/Dec (no instrument_rotation).  Use ``compute_focal_plane_rotation``
-        when instrument_rotation is needed.
+        Computes the celestial-frame quantity
+        ``nasmyth_sign * el + parallactic_angle`` from RA/Dec
+        (no instrument_rotation).
     """
     mechanical = site.nasmyth_sign * el + offset.instrument_rotation
     return mechanical + parallactic_angle
@@ -567,16 +573,14 @@ def apply_detector_offset(
     when you have generated a trajectory for a celestial target but want a
     specific off-axis detector to track that target instead of the boresight.
 
-    The field rotation is decomposed into:
-
-    - **Mechanical rotation**: ``nasmyth_sign * elevation + instrument_rotation``
-      (always available from the elevation axis).
-    - **Parallactic angle**: adds sky rotation when celestial coordinates
-      (RA/Dec) are available in the trajectory metadata.
-
-    For celestial patterns (with RA/Dec), both components are used. For
-    AltAz patterns (without RA/Dec), only mechanical rotation is used,
-    which is physically correct for focal-plane-to-AltAz conversion.
+    The adjustment is a horizon-frame (az/el) projection: the focal-plane
+    offset is rotated by the mechanical rotation
+    ``nasmyth_sign * elevation + instrument_rotation`` and inverted to a
+    boresight path. Celestial and AltAz patterns behave identically (the
+    trajectory's ``center_ra``/``center_dec`` metadata is not consumed).
+    For the focal plane's orientation on the celestial sky (map
+    orientation, image rotation, polarization angles), use
+    :meth:`~fyst_trajectories.coordinates.Coordinates.get_field_rotation`.
 
     Parameters
     ----------
@@ -598,18 +602,10 @@ def apply_detector_offset(
 
     Raises
     ------
-    ValueError
-        If trajectory has no start_time set (needed for field rotation).
     AzimuthBoundsError
         If ``validate=True`` and the adjusted trajectory exceeds azimuth limits.
     ElevationBoundsError
         If ``validate=True`` and the adjusted trajectory exceeds elevation limits.
-
-    Warns
-    -----
-    PointingWarning
-        When no celestial coordinates are available for parallactic angle
-        computation (AltAz trajectories).
 
     Notes
     -----
@@ -617,30 +613,17 @@ def apply_detector_offset(
     coordinates.** This holds on every live path -- ``Coordinates(site)``
     defaults to vacuum and the ACU/Go TCS owns refraction (see
     ``CLAUDE.md`` "vacuum-by-default"). The mechanical Nasmyth term consumes
-    ``trajectory.el`` directly, while the parallactic angle is always
-    computed at ``pressure=0`` (vacuum) by ``get_parallactic_angle``. If the
-    trajectory was instead built with ``AtmosphericConditions.for_fyst()``
-    (refracted -- a planning/sim-only path), its ``el`` is in the apparent
-    frame, so the mechanical term and the vacuum parallactic angle are summed
-    across different frames. This introduces a small field-rotation error
-    (~arcsec of boresight position: empirically ~0.24" at el 75deg rising to
-    ~1.3" near el 36deg for a PrimeCam inner-ring offset rho~1.78deg). The
-    error is left unguarded rather than "fixed" by substituting a single
-    center-elevation: a center-el substitution would discard the
-    physically-correct per-sample ``trajectory.el`` and regress this same
-    vacuum path by ~30-200" for extended patterns -- far larger than the
-    refraction-frame error it would remove. ``Trajectory`` carries no
-    refraction flag, so the refracted input cannot be detected here; pair
-    detector offsets with vacuum trajectories.
+    ``trajectory.el`` directly; if the trajectory was instead built with
+    ``AtmosphericConditions.for_fyst()`` (refracted -- a planning/sim-only
+    path), its ``el`` is in the apparent frame and the mechanical rotation
+    differs from the vacuum one by ``nasmyth_sign * (refraction bump)`` --
+    a sub-arcsec boresight effect at PrimeCam offset radii. ``Trajectory``
+    carries no refraction flag, so a refracted input cannot be detected
+    here; pair detector offsets with vacuum trajectories.
 
     The returned trajectory has the same metadata as the input, but with
     the az/el positions adjusted so that when the telescope follows this
     trajectory, the detector observes the original target.
-
-    The parallactic angle is computed at the pattern center coordinates
-    (``trajectory.center_ra``, ``trajectory.center_dec``) for all timesteps.
-    This is an approximation; for very large scan patterns (many degrees),
-    the actual parallactic angle varies across the field.
 
     The mechanical term ``nasmyth_sign * el`` is evaluated at the input
     trajectory's elevation (the detector/target elevation), not the returned
@@ -683,35 +666,13 @@ def apply_detector_offset(
     >>> # Adjust so Mod2 observes the target instead of boresight
     >>> adjusted = apply_detector_offset(trajectory, offset, site)
     """
-    if trajectory.start_time is None:
-        raise ValueError("Trajectory must have start_time set for field rotation calculation")
-
     if offset.dx == 0.0 and offset.dy == 0.0 and offset.instrument_rotation == 0.0:
         return dataclasses.replace(trajectory)
 
-    coords = Coordinates(site)
-
-    abs_times = get_absolute_times(trajectory)
-
-    if trajectory.center_ra is not None and trajectory.center_dec is not None:
-        ra_arr = np.full(len(trajectory.times), trajectory.center_ra)
-        dec_arr = np.full(len(trajectory.times), trajectory.center_dec)
-        pa = coords.get_parallactic_angle(ra_arr, dec_arr, obstime=abs_times)
-    else:
-        warnings.warn(
-            "Parallactic angle unavailable (no RA/Dec in trajectory metadata). "
-            "Using mechanical rotation only "
-            "(nasmyth_sign * elevation + instrument_rotation). "
-            "This is correct for AltAz and planet-tracking patterns where the "
-            "sky rotation is already embedded in the Az/El coordinates. For "
-            "celestial patterns, ensure center_ra/center_dec metadata is set so "
-            "the full field rotation (including parallactic angle) is applied.",
-            PointingWarning,
-            stacklevel=2,
-        )
-        pa = 0.0
-
-    field_rotation = compute_focal_plane_rotation(trajectory.el, site, offset, parallactic_angle=pa)
+    # Horizon-frame projection: the rotation is mechanical only -- the
+    # parallactic angle is a horizon-to-celestial quantity and has no
+    # place in an az/el projection.
+    field_rotation = compute_focal_plane_rotation(trajectory.el, site, offset)
 
     bore_az, bore_el = detector_to_boresight(
         trajectory.az,

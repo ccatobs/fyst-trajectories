@@ -114,11 +114,11 @@ class TestPlanetTrackPattern:
         assert metadata.center_dec is None
 
     def test_apply_detector_offset_no_warning(self, site):
-        """Test that apply_detector_offset on planet trajectory uses parallactic angle.
+        """Test that apply_detector_offset on a planet trajectory does not warn.
 
-        Before the fix, planet trajectories had no RA/Dec in metadata, causing
-        apply_detector_offset() to emit a PointingWarning about missing parallactic
-        angle. With the fix, the warning should not appear.
+        apply_detector_offset is a horizon-frame projection using the
+        mechanical rotation only (pa-in-horizon-frame fix), so it needs no
+        celestial metadata and must never emit a PointingWarning.
         """
         start_time = Time("2026-01-15T14:00:00", scale="utc")
         config = PlanetTrackConfig(timestep=0.1, body="mars")
@@ -137,8 +137,9 @@ class TestPlanetTrackPattern:
     def test_planet_track_center_is_apparent(self, site):
         """The track's metadata center RA/Dec is the planet's apparent position.
 
-        ``center_ra``/``center_dec`` feed apply_detector_offset's parallactic
-        angle. The barycentric ``get_body_radec`` bug skewed this (up to ~17 deg
+        ``center_ra``/``center_dec`` feed celestial-frame consumers (map
+        orientation via ``get_field_rotation``, ECSV provenance). The
+        barycentric ``get_body_radec`` bug skewed this (up to ~17 deg
         for Mars), so guard that the reported center round-trips back to Mars'
         Az/El at the track midpoint.
         """

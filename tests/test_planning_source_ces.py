@@ -779,15 +779,19 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     cover in a frame with **no field rotation** (SO LAT has a corotator
     that holds the array fixed in az/el, so ``boresight_rot`` is already
     the net focal-plane angle), whereas fyst-trajectories -- modelling
-    Prime-Cam on a Nasmyth port -- adds the physical
-    ``nasmyth_sign*el + parallactic_angle`` term
-    (``source_ces.py`` lines 634-642 and 665-673). The two therefore
-    agree exactly for a **centred** footprint (where that rotation is a
-    no-op on a symmetric circle) and for an **off-centre** footprint
-    once the field-rotation term is reconciled by the documented bridge
-    ``boresight_rot_fyst = boresight_rot_SO - (nasmyth_sign*el + pa)``.
+    Prime-Cam on a Nasmyth port -- adds the **mechanical**
+    ``nasmyth_sign*el`` term (the az_bore recovery and cover projection
+    in ``_compute_source_ces_core``). The two therefore agree exactly
+    for a **centred** footprint (where that rotation is a no-op on a
+    symmetric circle) and for an **off-centre** footprint once the
+    rotation term is reconciled by the documented bridge
+    ``boresight_rot_fyst = boresight_rot_SO - nasmyth_sign*el``.
     This is a platform-physics difference (corotator vs Nasmyth), **not**
-    a bug -- see ``docs/reviews/fyst_team_questions.md`` Q-15/Q-16.
+    a bug. (Until the 2026-06-10 pa-in-horizon-frame fix the library
+    also added the parallactic angle inside this az/el projection; that
+    term was unphysical -- pa describes the horizon-to-celestial
+    rotation -- and the old bridge cancelled it algebraically rather
+    than validating it.)
     """
     so3g = pytest.importorskip("so3g")  # noqa: F841  Linux-only; gates the test
     schedlib_source = pytest.importorskip("schedlib.source")
@@ -897,9 +901,9 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     # mirrored boresight rotation would NOT cancel. SO and fyst encode
     # different telescopes here (SO corotator vs FYST Nasmyth), so the
     # only way to prove the xi/eta pairing and boresight sign are correct
-    # is to reconcile the documented field-rotation convention bridge:
+    # is to reconcile the documented mechanical-rotation convention bridge:
     #
-    #     boresight_rot_fyst = boresight_rot_SO - (nasmyth_sign*el + pa)
+    #     boresight_rot_fyst = boresight_rot_SO - nasmyth_sign*el
     #
     # If Q-15 (axis) or Q-16 (sign) were wrong, parity would NOT hold even
     # after this bridge.
@@ -908,28 +912,15 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     ai_i1 = schedlib_instrument.make_circular_cover(0.0, i1_eta_deg, radius_deg, degree=True)
     fp_i1 = ArrayFootprint.from_array_info(ai_i1, units="rad")
 
-    # Parallactic angle of the source at el_bore, computed the same way the
-    # planner does (PA at t_at_el_bore on the rising arc).
-    coords = Coordinates(site)
-    sample_times = window[0] + TimeDelta(
-        np.arange(0.0, (window[1] - window[0]).to_value(u.s), SAMPLING_STEP) * u.s
-    )
-    _, el_samp = coords.get_body_altaz(source_name, sample_times)
-    i_top = int(np.argmax(el_samp))
-    rising = slice(0, i_top + 1)
-    order = np.argsort(el_samp[rising])
-    t_of_el = np.interp(el_bore, el_samp[rising][order], sample_times.unix[rising][order])
-    t_bore = Time(float(t_of_el), format="unix", scale="utc")
-    ra_b, dec_b = coords.get_body_radec(source_name, t_bore)
-    pa_at_el_bore = float(coords.get_parallactic_angle(ra_b, dec_b, t_bore))
+    # Mechanical focal-plane rotation at el_bore, computed the same way the
+    # planner does (horizon-frame term only -- no parallactic angle).
     field_rot = float(
         compute_focal_plane_rotation(
             el=el_bore,
             site=site,
             offset=InstrumentOffset(dx=0.0, dy=0.0),
-            parallactic_angle=pa_at_el_bore,
         )
-    )  # = nasmyth_sign*el + parallactic_angle
+    )  # = nasmyth_sign*el_bore
 
     for v_az in PINNED_VAZ:
         for rot in rots:
@@ -1196,13 +1187,13 @@ def test_off_centre_module_lands_on_source_during_pass(site):
         src_el_k = float(src_el_k)
         bore_az = float(np.interp(t_k_sec, traj.times, traj.az))
         bore_el = float(np.interp(t_k_sec, traj.times, traj.el))
-        pa_k = float(coords.get_parallactic_angle(ra_deg, dec_deg, t_k))
+        # Mechanical (horizon-frame) rotation, matching the planner's
+        # az/el projection convention (no parallactic angle).
         fp_rot_k = float(
             compute_focal_plane_rotation(
                 el=el_bore,
                 site=site,
                 offset=InstrumentOffset(dx=0.0, dy=0.0),
-                parallactic_angle=pa_k,
             )
         )  # boresight_rot defaulted to None -> treated as 0.
         det_az, det_el = boresight_to_detector(
@@ -1226,12 +1217,12 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     best_miss = float(misses_deg[k_best])
 
     # Tolerance: the closed-form spherical inverse converges to sub-udeg
-    # but the planner uses a single parallactic angle (the PA at
-    # ``t_at_el_bore``) for the whole-pass cover projection; the actual
-    # PA at the closest-approach time differs by ~0.5 deg, which rotates the
-    # cover and shifts the I1-vs-source miss by a few arcmin. 6 arcmin
+    # but the planner evaluates the mechanical rotation once at
+    # ``el_bore`` for the whole pass while the source sweeps a small
+    # elevation range across the cover, which rotates the projection and
+    # shifts the I1-vs-source miss by a few arcmin. 6 arcmin
     # is well below the I1 module's 0.41 deg (24.6 arcmin) FOV radius --
-    # well inside the module -- and four orders of magnitude smaller
+    # well inside the module -- and an order of magnitude smaller
     # than the dy offset (107 arcmin) a true az_bore-recovery bug
     # would expose (the planner would fall back to ``az_bore =
     # source_az``, missing by the full ``dy``).

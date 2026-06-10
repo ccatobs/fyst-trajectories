@@ -107,8 +107,8 @@ class _SourceCESCore:
     source_label: str
     fp: ArrayFootprint
     # Source coords at ``t_at_el_bore`` for the trajectory metadata.
-    src_ra_at_pa: float
-    src_dec_at_pa: float
+    src_ra_at_el_bore: float
+    src_dec_at_el_bore: float
 
 
 def _resolve_footprint(
@@ -282,7 +282,7 @@ def _source_radec_at(
     ra: float | None,
     dec: float | None,
 ) -> tuple[float, float]:
-    """Return source RA/Dec at a single instant (for parallactic angle)."""
+    """Return source RA/Dec at a single instant (for trajectory metadata)."""
     if body is not None:
         return coords.get_body_radec(body, obstime)
     return float(ra), float(dec)
@@ -605,15 +605,14 @@ def _compute_source_ces_core(
     t_at_el_bore_sec = float(t_of_el(el_bore))
     t_at_el_bore = t_search_start + TimeDelta(t_at_el_bore_sec * u.s)
 
-    # Parallactic angle of the source at el_bore.
-    src_ra_at_pa, src_dec_at_pa = _source_radec_at(
+    # Source RA/Dec at el_bore (recorded as trajectory center metadata).
+    src_ra_at_el_bore, src_dec_at_el_bore = _source_radec_at(
         coords,
         t_at_el_bore,
         body=body,
         ra=ra,
         dec=dec,
     )
-    pa_at_el_bore = float(coords.get_parallactic_angle(src_ra_at_pa, src_dec_at_pa, t_at_el_bore))
 
     # az_bore recovery. For a centred footprint (PrimeCam full-array,
     # PRIMECAM_CENTER) the boresight az IS the source az at el_bore.
@@ -624,7 +623,9 @@ def _compute_source_ces_core(
         az_bore = src_az_at_el_bore
     else:
         center_offset = InstrumentOffset(dx=fp.center_xi_deg * 60.0, dy=fp.center_eta_deg * 60.0)
-        # Field rotation at the moment the source is at el_bore.
+        # Mechanical focal-plane rotation at el_bore (horizon-frame
+        # projection -- the parallactic angle is a horizon-to-celestial
+        # quantity and does not enter).
         # ``compute_focal_plane_rotation`` only reads
         # ``offset.instrument_rotation`` -- it ignores ``dx``/``dy`` -- so
         # the offset is interchangeable for the rotation computation.
@@ -637,7 +638,6 @@ def _compute_source_ces_core(
                 el=el_bore,
                 site=site,
                 offset=InstrumentOffset(dx=0.0, dy=0.0),
-                parallactic_angle=pa_at_el_bore,
             )
             + boresight_rot_deg
         )
@@ -660,7 +660,8 @@ def _compute_source_ces_core(
             )
             az_bore = src_az_at_el_bore
 
-    # Field rotation for the cover projection uses a zero-offset
+    # Mechanical field rotation for the cover projection (horizon-frame,
+    # as in the az_bore recovery above). Uses a zero-offset
     # InstrumentOffset (no per-module instrument_rotation -- the cover
     # vertices already carry their own focal-plane positions).
     cover_field_rot = float(
@@ -668,7 +669,6 @@ def _compute_source_ces_core(
             el=el_bore,
             site=site,
             offset=InstrumentOffset(dx=0.0, dy=0.0),
-            parallactic_angle=pa_at_el_bore,
         )
         + boresight_rot_deg
     )
@@ -857,8 +857,8 @@ def _compute_source_ces_core(
         az_stop=float(az_stop),
         source_label=source_label,
         fp=fp,
-        src_ra_at_pa=float(src_ra_at_pa),
-        src_dec_at_pa=float(src_dec_at_pa),
+        src_ra_at_el_bore=float(src_ra_at_el_bore),
+        src_dec_at_el_bore=float(src_dec_at_el_bore),
     )
 
 
@@ -1222,13 +1222,13 @@ def plan_source_ces(
     Observatory) using astropy + numpy in place of ``so3g.proj``
     quaternions.
 
-    The cover-polygon projection uses the source's parallactic angle
-    at ``t_at_el_bore`` (the moment the source reaches ``el_bore``)
-    for **all** cover vertices. For off-axis modules far from the
-    array centre this is an approximation — the PA at the off-axis
-    module's instantaneous (RA, Dec) differs from the source PA by
-    typically ≤0.5° at FYST elevations. The same approximation is
-    used by SO ``make_source_ces``.
+    The cover-polygon projection and the off-centre boresight recovery
+    rotate the footprint by the mechanical focal-plane rotation,
+    ``nasmyth_sign * el_bore + boresight_rot`` (a horizon-frame
+    projection). SO ``make_source_ces`` projects with a static rotation
+    only (the LAT corotator holds the array fixed in az/el); the two
+    conventions are reconciled by
+    ``boresight_rot_fyst = boresight_rot_SO - nasmyth_sign * el_bore``.
 
     If ``az_branch`` produces an az interval outside
     ``site.telescope_limits.azimuth``, the post-build
@@ -1319,11 +1319,9 @@ def plan_source_ces(
     drifted_az = base_traj.az + v_az_solved * base_traj.times
     drifted_az_vel = base_traj.az_vel + v_az_solved
     # Replace the underlying ConstantEl metadata with source-CES metadata
-    # so downstream consumers (e.g. ``apply_detector_offset``) can see
-    # the source RA/Dec instead of falling into the "no celestial
-    # coordinates available" branch. ``src_ra_at_pa``/``src_dec_at_pa``
-    # are the source coordinates at ``t_at_el_bore`` (computed earlier
-    # for the parallactic angle).
+    # so downstream consumers can see the source RA/Dec.
+    # ``src_ra_at_el_bore``/``src_dec_at_el_bore`` are the source
+    # coordinates at ``t_at_el_bore``.
     source_metadata = TrajectoryMetadata(
         pattern_type="source_ces",
         pattern_params={
@@ -1335,8 +1333,8 @@ def plan_source_ces(
             "mode": mode_resolved,
             "n_scans": int(n_scans),
         },
-        center_ra=float(core.src_ra_at_pa),
-        center_dec=float(core.src_dec_at_pa),
+        center_ra=float(core.src_ra_at_el_bore),
+        center_dec=float(core.src_dec_at_el_bore),
         target_name=source_label,
     )
     trajectory = dataclasses.replace(
