@@ -93,10 +93,18 @@ Conservative operational limit (TCS hardware limit: 6.0 deg/s^2).
 """
 
 FYST_EL_MIN: float = 20.0
-"""Minimum elevation in degrees. Source: FYST TCS commands.go."""
+"""Minimum elevation in degrees.
+
+Conservative operational limit (planning-layer choice), not a TCS bound: the
+Go TCS accepts el down to -90 deg (commands.go).
+"""
 
 FYST_EL_MAX: float = 90.0
-"""Maximum elevation in degrees. Source: FYST TCS commands.go."""
+"""Maximum elevation in degrees.
+
+Conservative operational limit (planning-layer choice): Prime-Cam does not point
+over the top. The Go TCS hardware bound is 180 deg / el>90 (commands.go).
+"""
 
 FYST_EL_MAX_VELOCITY: float = 1.0
 """Maximum elevation velocity in degrees/second.

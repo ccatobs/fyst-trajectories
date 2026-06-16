@@ -60,13 +60,16 @@ from .coordinates import (
     Coordinates,
     normalize_frame,
 )
+from .dispatch import SunSafePredicate, choose_encoder_solution
 from .exceptions import (
+    AccelerationLimitWarning,
     AzimuthBoundsError,
     ElevationBoundsError,
     PointingError,
     PointingWarning,
     TargetNotObservableError,
     TrajectoryBoundsError,
+    VelocityLimitWarning,
 )
 from .observability import (
     FLUX_CALIBRATORS,
@@ -204,6 +207,8 @@ __all__ = [
     # Exceptions and warnings
     "PointingError",
     "PointingWarning",
+    "VelocityLimitWarning",
+    "AccelerationLimitWarning",
     "TrajectoryBoundsError",
     "AzimuthBoundsError",
     "ElevationBoundsError",
@@ -239,6 +244,9 @@ __all__ = [
     "SATELLITE_BODIES",
     "FRAME_ALIASES",
     "normalize_frame",
+    # Dispatch-time helpers (execution layer)
+    "choose_encoder_solution",
+    "SunSafePredicate",
     # Observability (OBSERVE / EXCLUDE primitives)
     "check_observability",
     "resolve_target",

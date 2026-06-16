@@ -9,10 +9,12 @@ from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.exceptions import (
+    AccelerationLimitWarning,
     AzimuthBoundsError,
     ElevationBoundsError,
     PointingWarning,
     TrajectoryBoundsError,
+    VelocityLimitWarning,
 )
 from fyst_trajectories.patterns.utils import (
     compute_velocities,
@@ -435,6 +437,34 @@ class TestValidateTrajectoryDynamics:
             validate_trajectory_dynamics(site, az, el, times)
             accel_warnings = [x for x in w if "acceleration" in str(x.message).lower()]
             assert len(accel_warnings) >= 1
+
+    def test_high_velocity_warning_has_velocity_limit_category(self):
+        """The velocity breach warning is a ``VelocityLimitWarning`` (category, not text).
+
+        The PCS dispatch-time gate escalates on this category, so a velocity
+        breach must carry it regardless of message wording.
+        """
+        site = get_fyst_site()
+        times = np.linspace(0, 10, 100)
+        az = 100.0 + 10.0 * times  # 10 deg/s, exceeds the 3 deg/s limit
+        el = np.full_like(times, 45.0)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_trajectory_dynamics(site, az, el, times)
+        assert any(issubclass(x.category, VelocityLimitWarning) for x in w)
+
+    def test_high_acceleration_warning_has_acceleration_limit_category(self):
+        """The accel breach warning is an ``AccelerationLimitWarning`` (category, not text)."""
+        site = get_fyst_site()
+        times = np.linspace(0, 10, 1000)
+        az = 100.0 + 0.5 * 5.0 * times**2  # a = 5 deg/s^2, exceeds the limit
+        el = np.full_like(times, 45.0)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_trajectory_dynamics(site, az, el, times)
+        assert any(issubclass(x.category, AccelerationLimitWarning) for x in w)
 
     def test_single_point_trajectory_warns_skipped(self):
         """Single-point trajectory warns that dynamics validation is skipped entirely."""

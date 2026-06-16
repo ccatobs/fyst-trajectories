@@ -291,6 +291,114 @@ def test_sun_avoidance_warns_not_raises(site):
     assert any(issubclass(w.category, PointingWarning) and "Sun" in str(w.message) for w in caught)
 
 
+# ---------------------------------------------------------------------------
+# Injectable sun_safe predicate (A3 seam) on the source-CES arc check.
+# ---------------------------------------------------------------------------
+
+
+def _block_everything(az, el, t):
+    """SunSafePredicate that reports every arc sample unsafe."""
+    return False
+
+
+def _allow_everything(az, el, t):
+    """SunSafePredicate that reports every arc sample clear of the Sun."""
+    return True
+
+
+def test_plan_source_ces_honors_injected_predicate(site):
+    """An injected False predicate warns on an otherwise sun-safe Jupiter arc.
+
+    The Jupiter-rising arc at ``_JUPITER_NIGHT`` clears FYST's 45 deg scalar
+    exclusion (the happy-path tests above run it silently), so an EXCLUSION
+    ZONE warning here proves the injected directional model -- not the scalar
+    radius -- drives the arc verdict end-to-end.
+    """
+    # Precondition: the default (scalar) arc check is silent for this arc.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _full_primecam_block(site)
+        assert not [
+            w for w in caught if issubclass(w.category, PointingWarning) and "Sun" in str(w.message)
+        ]
+
+    with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+        block = _full_primecam_block(site, sun_safe=_block_everything)
+    assert isinstance(block, ScanBlock)
+
+
+def test_plan_source_ces_injected_predicate_receives_arc_samples(site):
+    """The arc predicate is consulted per-sample with (az, el_bore, time)."""
+    seen = []
+
+    def spy(az, el, t):
+        seen.append((float(az), float(el)))
+        return True
+
+    _full_primecam_block(site, sun_safe=spy)
+
+    assert seen, "arc sun_safe predicate was never consulted"
+    # The arc is probed at el_bore across many az positions/times.
+    assert len(seen) > 1
+    assert all(el == pytest.approx(35.0) for _, el in seen)
+
+
+def test_plan_source_ces_allow_predicate_overrides_sun(site):
+    """A permissive predicate suppresses the warning for Mercury at the Sun."""
+    mercury_kwargs = dict(
+        body="mercury",
+        footprint="c",
+        el_bore=40.0,
+        night=Time("2026-05-15T00:00:00", scale="utc"),
+        mode="rising",
+        site=site,
+    )
+
+    # Precondition: scalar default warns (Mercury inside the 45 deg zone).
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        plan_source_ces(**mercury_kwargs)
+        assert [
+            w for w in caught if issubclass(w.category, PointingWarning) and "Sun" in str(w.message)
+        ]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        plan_source_ces(**mercury_kwargs, sun_safe=_allow_everything)
+        assert not [
+            w
+            for w in caught
+            if issubclass(w.category, PointingWarning) and "source-CES" in str(w.message)
+        ]
+
+
+def test_compute_source_ces_params_honors_injected_predicate(site):
+    """compute_source_ces_params threads sun_safe through the shared core."""
+    base_kwargs = dict(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+
+    # Default (scalar) path is silent for this arc.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        params_default = compute_source_ces_params(**base_kwargs)
+        assert not [
+            w for w in caught if issubclass(w.category, PointingWarning) and "Sun" in str(w.message)
+        ]
+
+    with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+        params_blocked = compute_source_ces_params(**base_kwargs, sun_safe=_block_everything)
+
+    # The injected predicate is advisory only: the returned scalars are
+    # identical regardless of the sun verdict.
+    assert params_blocked == params_default
+
+
 def test_convergence_failure_falls_back(site, monkeypatch):
     """A non-converging optimiser triggers the median-az-speed fallback."""
 
@@ -456,7 +564,7 @@ def test_boresight_rot_changes_az_bore_for_off_centre_footprint(site):
 
 
 def test_proper_motion_requires_ref_epoch(site):
-    """Non-zero proper motion without ref_epoch is rejected, not silently mis-propagated (C2)."""
+    """Non-zero proper motion without ref_epoch is rejected, not silently mis-propagated."""
     with pytest.raises(ValueError, match="ref_epoch"):
         compute_source_ces_params(
             ra=83.6,
@@ -751,7 +859,7 @@ def _so_chosen_rising_block(schedlib_source, source_name, el_bore):
 def test_cross_validate_so_make_source_ces(site, monkeypatch):
     """Cross-validate source-CES geometry against SO ``schedlib.source.make_source_ces``.
 
-    Resolves Q-15 (xi/eta axis pairing) and Q-16 (boresight_rot sign)
+    Resolves the xi/eta axis pairing and the boresight_rot sign
     by feeding **identical** inputs -- same FYST site, same source +
     observing window, same ``array_info`` footprint, same
     ``boresight_rot`` -- to both Simons Observatory's quaternion
@@ -766,11 +874,11 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     Convention findings (verified 2026-05-29 against so3g 0.2.7 /
     schedlib 0.4.0):
 
-    * **Q-15 (xi/eta pairing): CORRECT.** ``ArrayFootprint`` pairs
+    * **xi/eta pairing: CORRECT.** ``ArrayFootprint`` pairs
       ``xi -> cross-elevation`` and ``eta -> elevation`` the same way SO's
       ``quat.rotation_xieta`` does -- no 90 deg axis swap. The projected
       cover lands at the same on-sky (az, el).
-    * **Q-16 (boresight_rot sign): CORRECT.** fyst's additive
+    * **boresight_rot sign: CORRECT.** fyst's additive
       ``+boresight_rot`` produces the same cover rotation as SO's
       ``quat.euler(2, -np.deg2rad(boresight_rot))`` -- the signs agree
       (they do **not** flip) at +/-20 deg and +/-45 deg.
@@ -834,7 +942,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     # apart -- pure optimiser-tolerance noise, not a convention difference.
     # Pinning v_az removes that noise and makes az_start/az_throw a
     # deterministic function of the projection convention (exactly what
-    # Q-15/Q-16 test). Two pinned values exercise the no-drift and
+    # these checks exercise). Two pinned values exercise the no-drift and
     # with-drift code paths.
     AZ_TOL = 0.05
     THROW_TOL = 0.05
@@ -861,12 +969,12 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
         )
 
     # =====================================================================
-    # Part 1 -- Q-15 / Q-16 common case: CENTRED footprint.
+    # Part 1 -- common case: CENTRED footprint.
     #
     # For a symmetric circular cover centred on the boresight, fyst's
     # ``nasmyth_sign*el + parallactic`` rotation is a no-op, so the
     # AS-SHIPPED planner must match SO directly at every boresight_rot.
-    # A swapped xi/eta axis (Q-15) or a flipped boresight_rot sign (Q-16)
+    # A swapped xi/eta axis or a flipped boresight_rot sign
     # would shift az_start here.
     # =====================================================================
     ai_c = schedlib_instrument.make_circular_cover(0.0, 0.0, radius_deg, degree=True)
@@ -895,7 +1003,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
             assert dt1 <= SAMPLING_STEP, f"centred t1 off by {dt1:.1f}s at rot={rot}"
 
     # =====================================================================
-    # Part 2 -- Q-15 / Q-16 discriminating case: OFF-CENTRE i1 module.
+    # Part 2 -- discriminating case: OFF-CENTRE i1 module.
     #
     # i1 sits at (xi=0, eta~-1.78 deg) -- asymmetric, so a 90 deg axis swap or a
     # mirrored boresight rotation would NOT cancel. SO and fyst encode
@@ -905,8 +1013,8 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     #
     #     boresight_rot_fyst = boresight_rot_SO - nasmyth_sign*el
     #
-    # If Q-15 (axis) or Q-16 (sign) were wrong, parity would NOT hold even
-    # after this bridge.
+    # If the axis pairing or the boresight sign were wrong, parity would NOT
+    # hold even after this bridge.
     # =====================================================================
     i1_eta_deg = float(get_primecam_offset("i1").dy_deg)
     ai_i1 = schedlib_instrument.make_circular_cover(0.0, i1_eta_deg, radius_deg, degree=True)
@@ -934,7 +1042,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
 
             assert fy["az_start"] == pytest.approx(float(so_block.az), abs=AZ_TOL), (
                 f"i1 az_start mismatch at boresight_rot_SO={rot}, v_az={v_az} "
-                f"(Q-15 axis / Q-16 sign would break this): "
+                f"(a wrong axis pairing or boresight sign would break this): "
                 f"fyst={fy['az_start']:.4f} SO={float(so_block.az):.4f}"
             )
             assert fy["az_throw"] == pytest.approx(float(so_block.throw), abs=THROW_TOL), (

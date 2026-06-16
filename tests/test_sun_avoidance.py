@@ -25,6 +25,7 @@ from fyst_trajectories.exceptions import (
 )
 from fyst_trajectories.planning import (
     FieldRegion,
+    plan_constant_el_scan,
     plan_daisy_scan,
     plan_pong_scan,
 )
@@ -351,3 +352,298 @@ class TestPlanningIntegration:
             timestep=0.1,
         )
         assert block.trajectory.n_points > 0
+
+
+# ---------------------------------------------------------------------------
+# Injectable sun_safe predicate (A3 seam): directional model picked up
+# end-to-end at planning time, default path unchanged.
+# ---------------------------------------------------------------------------
+
+# A field far from the Sun at _TEST_OBSTIME -- the scalar default never warns
+# here, so any warning a predicate produces proves the predicate (not the
+# 45 deg scalar) drove the verdict. RA = anti-solar, Dec well south.
+_SAFE_FIELD = FieldRegion(ra_center=0.0, dec_center=-30.0, width=2.0, height=2.0)
+
+
+def _block_everything(az, el, t):
+    """SunSafePredicate that reports every position unsafe (inside the zone)."""
+    return False
+
+
+def _allow_everything(az, el, t):
+    """SunSafePredicate that reports every position clear of the Sun."""
+    return True
+
+
+class TestCheckFieldSunSafetyInjectedPredicate:
+    """``_check_field_sun_safety`` honors an injected ``sun_safe`` predicate."""
+
+    def test_injected_predicate_flags_otherwise_safe_field(self, site, coords, obstime):
+        """A predicate returning False warns even when the scalar check would not.
+
+        The field is placed far from the Sun (anti-solar RA), so the built-in
+        scalar exclusion check passes silently. Injecting a predicate that
+        returns False must still raise the EXCLUSION ZONE warning -- proving
+        the directional model's verdict is what is consulted.
+        """
+        sun_ra, _ = coords.altaz_to_radec(*coords.get_sun_altaz(obstime), obstime)
+        safe_ra = (sun_ra + 180.0) % 360.0
+
+        # Precondition: the default (scalar) check is silent for this field.
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _check_field_sun_safety(safe_ra, -30.0, obstime, site)
+            assert not [x for x in w if "Field center" in str(x.message)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            _check_field_sun_safety(safe_ra, -30.0, obstime, site, sun_safe=_block_everything)
+
+    def test_injected_predicate_receives_field_altaz(self, site, coords, obstime):
+        """The predicate is consulted with the field center's (az, el, time)."""
+        seen = []
+
+        def spy(az, el, t):
+            seen.append((float(az), float(el)))
+            return True
+
+        az_expected, el_expected = coords.radec_to_altaz(120.0, -40.0, obstime)
+        _check_field_sun_safety(120.0, -40.0, obstime, site, sun_safe=spy)
+
+        assert len(seen) == 1, "predicate should be consulted exactly once"
+        az_seen, el_seen = seen[0]
+        assert az_seen == pytest.approx(float(az_expected), abs=1e-6)
+        assert el_seen == pytest.approx(float(el_expected), abs=1e-6)
+
+    def test_injected_allow_predicate_overrides_unsafe_field(self, site, obstime, sun_ra_dec):
+        """A permissive predicate suppresses the warning for a field AT the Sun.
+
+        Pointing the field at the Sun trips the scalar check, but an injected
+        predicate that returns True must override it (warn-only seam, predicate
+        owns the verdict).
+        """
+        sun_ra, sun_dec = sun_ra_dec
+
+        # Precondition: the scalar default DOES warn for a field at the Sun.
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            _check_field_sun_safety(sun_ra, sun_dec, obstime, site)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _check_field_sun_safety(sun_ra, sun_dec, obstime, site, sun_safe=_allow_everything)
+            assert not [x for x in w if "Field center" in str(x.message)]
+
+    def test_default_none_unchanged(self, site, obstime, sun_ra_dec):
+        """sun_safe=None reproduces the built-in scalar behavior exactly."""
+        sun_ra, sun_dec = sun_ra_dec
+        safe_ra = (sun_ra + 90.0) % 360.0
+
+        # Safe field: silent with and without an explicit None.
+        for kw in ({}, {"sun_safe": None}):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                _check_field_sun_safety(safe_ra, -30.0, obstime, site, **kw)
+                assert not [x for x in w if "Field center" in str(x.message)]
+
+        # Field at the Sun: warns with and without an explicit None.
+        for kw in ({}, {"sun_safe": None}):
+            with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+                _check_field_sun_safety(sun_ra, sun_dec, obstime, site, **kw)
+
+
+class TestPlanningEntryPointsInjectedPredicate:
+    """The public planners thread ``sun_safe`` to the field pre-flight check."""
+
+    def test_plan_pong_scan_honors_injected_predicate(self, site, obstime):
+        """plan_pong_scan warns for an otherwise-safe field when sun_safe=False."""
+        # Default path is silent for this safe field.
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            plan_pong_scan(
+                field=_SAFE_FIELD,
+                velocity=0.5,
+                spacing=0.1,
+                num_terms=4,
+                site=site,
+                start_time=obstime,
+                timestep=0.5,
+            )
+            assert not [x for x in w if "Field center" in str(x.message)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            plan_pong_scan(
+                field=_SAFE_FIELD,
+                velocity=0.5,
+                spacing=0.1,
+                num_terms=4,
+                site=site,
+                start_time=obstime,
+                timestep=0.5,
+                sun_safe=_block_everything,
+            )
+
+    def test_plan_daisy_scan_honors_injected_predicate(self, site, obstime, sun_ra_dec):
+        """Thread sun_safe so a permissive predicate suppresses a source-at-Sun warning."""
+        sun_ra, sun_dec = sun_ra_dec
+
+        # Precondition: default scalar check warns at the Sun.
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            plan_daisy_scan(
+                ra=sun_ra,
+                dec=sun_dec,
+                radius=0.5,
+                velocity=0.3,
+                turn_radius=0.2,
+                avoidance_radius=0.0,
+                start_acceleration=0.5,
+                site=site,
+                start_time=obstime,
+                timestep=0.5,
+                duration=60.0,
+            )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            plan_daisy_scan(
+                ra=sun_ra,
+                dec=sun_dec,
+                radius=0.5,
+                velocity=0.3,
+                turn_radius=0.2,
+                avoidance_radius=0.0,
+                start_acceleration=0.5,
+                site=site,
+                start_time=obstime,
+                timestep=0.5,
+                duration=60.0,
+                sun_safe=_allow_everything,
+            )
+            assert not [x for x in w if "Field center" in str(x.message)]
+
+    def test_plan_constant_el_scan_honors_injected_predicate(self, site):
+        """plan_constant_el_scan threads sun_safe to its field pre-flight check."""
+        field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
+        ce_time = Time("2026-03-15T17:00:00", scale="utc")
+
+        # Default path is silent (the E-CDF-S field is far from the Sun here).
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            plan_constant_el_scan(
+                field=field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=ce_time,
+                rising=True,
+            )
+            assert not [x for x in w if "Field center" in str(x.message)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            plan_constant_el_scan(
+                field=field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=ce_time,
+                rising=True,
+                sun_safe=_block_everything,
+            )
+
+
+class TestValidateSunAvoidanceInjectedPredicate:
+    """``validate_sun_avoidance`` / ``validate_trajectory`` honor ``sun_safe``."""
+
+    def _safe_arrays(self, coords, obstime, n=120):
+        """Build an n-point trajectory far from the Sun (anti-solar az, el=45)."""
+        sun_az, _ = coords.get_sun_altaz(obstime)
+        safe_az = (sun_az + 180.0) % 360.0
+        abs_times = obstime + TimeDelta(np.arange(n) * u.s)
+        return np.full(n, safe_az), np.full(n, 45.0), abs_times
+
+    def test_injected_predicate_flags_otherwise_safe_trajectory(self, site, coords, obstime):
+        """A False predicate warns on a trajectory the scalar check passes."""
+        az, el, abs_times = self._safe_arrays(coords, obstime)
+
+        # Default path: silent.
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_sun_avoidance(site, az, el, abs_times, coords=coords)
+            assert not [x for x in w if issubclass(x.category, PointingWarning)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            validate_sun_avoidance(
+                site, az, el, abs_times, coords=coords, sun_safe=_block_everything
+            )
+
+    def test_injected_predicate_consulted_per_subsample(self, site, coords, obstime):
+        """The predicate sees (az, el, time) triples drawn from the trajectory."""
+        az, el, abs_times = self._safe_arrays(coords, obstime, n=240)
+        seen = []
+
+        def spy(a, e, t):
+            seen.append((float(a), float(e)))
+            return True
+
+        validate_sun_avoidance(site, az, el, abs_times, coords=coords, sun_safe=spy)
+
+        assert seen, "predicate was never consulted"
+        # Subsampling is preserved: far fewer calls than trajectory points.
+        assert len(seen) < 240
+        assert all(e == pytest.approx(45.0) for _, e in seen)
+        assert all(a == pytest.approx(float(az[0])) for a, _ in seen)
+
+    def test_allow_predicate_overrides_trajectory_at_sun(self, site, coords, obstime):
+        """A permissive predicate suppresses the warning for a trajectory at the Sun."""
+        sun_az, sun_alt = coords.get_sun_altaz(obstime)
+        n = 50
+        abs_times = obstime + TimeDelta(np.arange(n) * u.s)
+        az = np.full(n, float(sun_az))
+        el = np.full(n, float(sun_alt))
+
+        # Precondition: scalar default warns at the Sun.
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            validate_sun_avoidance(site, az, el, abs_times, coords=coords)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_sun_avoidance(
+                site, az, el, abs_times, coords=coords, sun_safe=_allow_everything
+            )
+            assert not [x for x in w if issubclass(x.category, PointingWarning)]
+
+    def test_validate_trajectory_threads_sun_safe(self, site, coords, obstime):
+        """validate_trajectory forwards sun_safe to the sun-avoidance check."""
+        az, el, _ = self._safe_arrays(coords, obstime, n=120)
+        traj = Trajectory(
+            times=np.arange(120, dtype=float),
+            az=az,
+            el=el,
+            az_vel=np.zeros(120),
+            el_vel=np.zeros(120),
+            start_time=obstime,
+        )
+
+        # Default path: no EXCLUSION ZONE warning for this safe trajectory.
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_trajectory(traj, site)
+            assert not [x for x in w if "EXCLUSION ZONE" in str(x.message)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            validate_trajectory(traj, site, sun_safe=_block_everything)
+
+    def test_validate_trajectory_default_none_unchanged(self, site, coords, obstime):
+        """validate_trajectory with sun_safe=None matches the scalar behavior."""
+        sun_az, sun_alt = coords.get_sun_altaz(obstime)
+        n = 50
+        traj = Trajectory(
+            times=np.arange(n, dtype=float),
+            az=np.full(n, float(sun_az)),
+            el=np.full(n, float(sun_alt)),
+            az_vel=np.zeros(n),
+            el_vel=np.zeros(n),
+            start_time=obstime,
+        )
+        # Trajectory pointed at the Sun warns under the scalar default,
+        # with or without an explicit None.
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            validate_trajectory(traj, site, sun_safe=None)

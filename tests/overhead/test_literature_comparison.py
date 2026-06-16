@@ -65,18 +65,18 @@ class TestCalibrationCadencesVsLiterature:
         """Default pointing cadence is the agreed 3600 s (1 h).
 
         NIKA2 and JCMT use ~1 h pointing cadence; the default was flipped from
-        1800 s to 3600 s in the audit cycle to match that published practice
-        (see CHANGELOG "Changed"). Pin the exact agreed value so a silent
+        1800 s to 3600 s in the audit cycle to match that published practice.
+        Pin the exact agreed value so a silent
         regression or a stale docstring is caught, then sanity-check it stays
         within the [20 min, 1 h] literature band. ``1800 s`` remains a
         reasonable commissioning override, passed explicitly.
         """
         policy = CalibrationPolicy()
 
-        # Agreed canonical default (operations-team-owned; see CHANGELOG).
+        # Agreed canonical default (operations-team-owned).
         assert policy.pointing_cadence == 3600.0, (
             f"Pointing cadence default changed from the agreed 3600.0 s to "
-            f"{policy.pointing_cadence}s -- update the CHANGELOG and this test together"
+            f"{policy.pointing_cadence}s -- update this test and the agreed value together"
         )
         # Sanity: still within the published literature band [20 min, 1 h].
         assert 1200.0 <= policy.pointing_cadence <= 3600.0

@@ -24,7 +24,7 @@ import dataclasses
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from astropy import units as u
@@ -57,6 +57,12 @@ from ._types import (
     ScanBlock,
     SourceCESComputedParams,
 )
+
+if TYPE_CHECKING:
+    # Annotation-only import to avoid an import cycle: ``dispatch`` imports
+    # ``coordinates``/``site``/``exceptions`` at runtime. The predicate is
+    # invoked structurally, so only the type hint needs the symbol.
+    from ..dispatch import SunSafePredicate
 
 __all__ = ["compute_source_ces_params", "plan_source_ces"]
 
@@ -319,6 +325,7 @@ def _check_arc_sun_safety(
     el_arr: np.ndarray,
     times: Time,
     source_label: str,
+    sun_safe: SunSafePredicate | None = None,
 ) -> None:
     """Coarse sun-safety check along an arc; warns only.
 
@@ -327,35 +334,63 @@ def _check_arc_sun_safety(
     radius. Boresight-level (one point per time), which is appropriate
     for a CES whose footprint extent is small relative to the
     exclusion radius.
+
+    When ``sun_safe`` is ``None`` (default) the built-in vectorised
+    scalar-radius check runs unchanged. When a predicate is injected it
+    is consulted per-sample ``(az_i, el_i, time_i)`` instead, so the
+    directional sun-avoidance model (future shared library) is honored;
+    the warn-only semantics are preserved either way.
     """
     if not site.sun_avoidance.enabled:
         return
 
-    sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
-    # Vectorised haversine on the sphere (in degrees) so we don't have
-    # to call angular_separation in a loop of 60.
-    az_rad = np.deg2rad(az_arr)
-    el_rad = np.deg2rad(el_arr)
-    sun_az_rad = np.deg2rad(np.asarray(sun_az_arr, dtype=float))
-    sun_el_rad = np.deg2rad(np.asarray(sun_el_arr, dtype=float))
-    cos_sep = np.sin(el_rad) * np.sin(sun_el_rad) + np.cos(el_rad) * np.cos(sun_el_rad) * np.cos(
-        az_rad - sun_az_rad
-    )
-    seps_deg = np.rad2deg(np.arccos(np.clip(cos_sep, -1.0, 1.0)))
+    if sun_safe is None:
+        sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
+        # Vectorised haversine on the sphere (in degrees) so we don't have
+        # to call angular_separation in a loop of 60.
+        az_rad = np.deg2rad(az_arr)
+        el_rad = np.deg2rad(el_arr)
+        sun_az_rad = np.deg2rad(np.asarray(sun_az_arr, dtype=float))
+        sun_el_rad = np.deg2rad(np.asarray(sun_el_arr, dtype=float))
+        cos_sep = np.sin(el_rad) * np.sin(sun_el_rad) + np.cos(el_rad) * np.cos(
+            sun_el_rad
+        ) * np.cos(az_rad - sun_az_rad)
+        seps_deg = np.rad2deg(np.arccos(np.clip(cos_sep, -1.0, 1.0)))
 
-    excl = site.sun_avoidance.exclusion_radius
-    inside = seps_deg <= excl
-    if not np.any(inside):
+        excl = site.sun_avoidance.exclusion_radius
+        inside = seps_deg <= excl
+        if not np.any(inside):
+            return
+        closest = int(np.argmin(seps_deg))
+        # ``Time.__getitem__`` returns ``Time``; pyright's stubs sometimes
+        # narrow it to ``Time | None`` because the dunder is generic. Coerce
+        # via ``str()`` and silence the spurious optional-access warning.
+        closest_iso = str(times[closest].iso)  # type: ignore[union-attr]
+        warnings.warn(
+            f"EXCLUSION ZONE: planned source-CES on {source_label} passes "
+            f"{seps_deg[closest]:.1f} deg from the Sun at "
+            f"{closest_iso} (exclusion radius {excl} deg).",
+            PointingWarning,
+            stacklevel=3,
+        )
         return
-    closest = int(np.argmin(seps_deg))
-    # ``Time.__getitem__`` returns ``Time``; pyright's stubs sometimes
-    # narrow it to ``Time | None`` because the dunder is generic. Coerce
-    # via ``str()`` and silence the spurious optional-access warning.
-    closest_iso = str(times[closest].iso)  # type: ignore[union-attr]
+
+    # Injected directional model: consult it per-sample. ``False`` marks an
+    # unsafe (inside-the-zone) sample. Warn once, naming the first unsafe
+    # sample, mirroring the scalar branch's single-warning semantics.
+    unsafe_idx = [
+        i
+        for i in range(len(az_arr))
+        if not sun_safe(float(az_arr[i]), float(el_arr[i]), times[i])  # type: ignore[index]
+    ]
+    if not unsafe_idx:
+        return
+    first = unsafe_idx[0]
+    first_iso = str(times[first].iso)  # type: ignore[union-attr]
     warnings.warn(
-        f"EXCLUSION ZONE: planned source-CES on {source_label} passes "
-        f"{seps_deg[closest]:.1f} deg from the Sun at "
-        f"{closest_iso} (exclusion radius {excl} deg).",
+        f"EXCLUSION ZONE: planned source-CES on {source_label} enters the Sun "
+        f"avoidance zone at (az={float(az_arr[first]):.1f} deg, "
+        f"el={float(el_arr[first]):.1f} deg) at {first_iso}.",
         PointingWarning,
         stacklevel=3,
     )
@@ -389,6 +424,7 @@ def _compute_source_ces_core(
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
+    sun_safe: SunSafePredicate | None = None,
 ) -> _SourceCESCore:
     """Run the params-only phase of source-CES planning, returning scalars + builder state.
 
@@ -796,7 +832,7 @@ def _compute_source_ces_core(
     arc_el = np.full(arc_n * 3, el_bore)
     arc_times_sec = np.tile(arc_times_sec_base, 3)
     arc_times = t_search_start + TimeDelta(arc_times_sec * u.s)
-    _check_arc_sun_safety(coords, site, arc_az, arc_el, arc_times, source_label)
+    _check_arc_sun_safety(coords, site, arc_az, arc_el, arc_times, source_label, sun_safe=sun_safe)
 
     az_vel_limit = site.telescope_limits.azimuth.max_velocity
     # Per-leg required speed comes from the underlying ConstantEl
@@ -890,6 +926,7 @@ def compute_source_ces_params(
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
+    sun_safe: SunSafePredicate | None = None,
 ) -> SourceCESComputedParams:
     """Compute source-CES scalar parameters without building the trajectory.
 
@@ -945,6 +982,13 @@ def compute_source_ces_params(
         If ``True``, downgrade footprint-not-fully-covered to a warning.
     v_az : float, optional
         Override the solved azimuth drift rate (deg/s).
+    sun_safe : SunSafePredicate, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract. ``None``
+        (default) keeps the built-in scalar exclusion-radius arc check; an
+        injected predicate is consulted per-sample along the planned arc
+        instead, so the directional sun-avoidance model (future shared library)
+        is honored. Warn-only either way.
 
     Returns
     -------
@@ -1022,6 +1066,7 @@ def compute_source_ces_params(
         az_branch=az_branch,
         allow_partial=allow_partial,
         v_az=v_az,
+        sun_safe=sun_safe,
     )
 
     # Envelope-only az bounds check. The padded sweep [az_start, az_stop]
@@ -1082,6 +1127,7 @@ def plan_source_ces(
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
+    sun_safe: SunSafePredicate | None = None,
 ) -> ScanBlock:
     """Plan a constant-elevation scan that drags a moving source across an array footprint.
 
@@ -1186,6 +1232,16 @@ def plan_source_ces(
         Override the solved azimuth drift rate (deg/s) instead of
         running the Nelder-Mead optimisation. Useful for repeatable
         observations and cross-checks.
+    sun_safe : SunSafePredicate, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
+        position is clear of the Sun. ``None`` (default) keeps the built-in
+        scalar exclusion-radius check along the planned arc; an injected
+        predicate is consulted per-sample instead, so the directional
+        sun-avoidance model (future shared library) is honored end-to-end.
+        Warn-only either way. See
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
 
     Returns
     -------
@@ -1281,6 +1337,7 @@ def plan_source_ces(
         az_branch=az_branch,
         allow_partial=allow_partial,
         v_az=v_az,
+        sun_safe=sun_safe,
     )
 
     computed = core.computed

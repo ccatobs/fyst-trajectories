@@ -1630,7 +1630,7 @@ class TestApplyDetectorOffsetRetuneEvents:
 
 
 class TestApplyDetectorOffsetFrameConsistency:
-    """M1: frame-varying regression for a refracted-el input.
+    """Frame-varying regression for a refracted-el input.
 
     Decision (after empirical measurement): keep the physically-correct
     per-sample ``trajectory.el`` for the mechanical term -- substituting a
@@ -1694,7 +1694,7 @@ class TestApplyDetectorOffsetFrameConsistency:
 
         assert leak_arcsec.max() < 5.0, (
             f'refracted-input frame leak {leak_arcsec.max():.2f}" exceeds the '
-            "documented ~arcsec bound -- M1 precondition may be violated"
+            "documented ~arcsec bound"
         )
 
     def test_vacuum_path_lands_on_target(self, site):

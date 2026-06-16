@@ -888,7 +888,7 @@ _TITAN_HORIZONS_AZEL = [
 
 
 class TestTitanSatelliteResolver:
-    """Satellite (Titan) resolution via a JPL kernel (Phase 1)."""
+    """Satellite (Titan) resolution via a JPL kernel."""
 
     @pytest.fixture
     def titan_coords(self, site):

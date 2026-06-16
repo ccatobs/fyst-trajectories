@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy import units as u
@@ -53,6 +54,13 @@ from astropy.time import Time, TimeDelta
 
 from .coordinates import SOLAR_SYSTEM_BODIES, Coordinates
 from .site import AtmosphericConditions, Site, get_fyst_site
+
+if TYPE_CHECKING:
+    # Annotation-only import to avoid an import cycle: ``dispatch`` imports
+    # ``coordinates``/``site``/``exceptions`` at runtime, and ``__init__``
+    # imports ``dispatch`` before ``observability``. The predicate is invoked
+    # structurally, so only the type hint needs the symbol.
+    from .dispatch import SunSafePredicate
 
 
 # ── Target catalog ───────────────────────────────────────────────────────────
@@ -62,7 +70,7 @@ class TargetKind(str, enum.Enum):
     BODY = "body"
     """A major body resolved directly by astropy (planet, Moon, Sun)."""
     SATELLITE = "satellite"
-    """A planetary moon. In Phase 1 its position is approximated by its
+    """A planetary moon. Its position is approximated by its
     ``parent_body`` (e.g. Titan -> Saturn), which is adequate (<= ~3 arcmin)
     for observability but flagged via ``ObservabilityReport.position_approximate``."""
     FIXED = "fixed"
@@ -125,8 +133,8 @@ class Target:
 
 
 # Built-in submm flux-calibrator catalog. This resolves names -> positions only;
-# it carries NO avoidance defaults. Titan is a SATELLITE proxied by Saturn in
-# Phase 1 (a real satellite ephemeris is a gated Phase-2 addition).
+# it carries NO avoidance defaults. Titan is a SATELLITE proxied by Saturn
+# (a real satellite ephemeris is a possible future addition).
 FLUX_CALIBRATORS: dict[str, Target] = {
     "mars": Target("mars", TargetKind.BODY),
     "jupiter": Target("jupiter", TargetKind.BODY),
@@ -322,9 +330,9 @@ class AvoidZone:
 class ReasonCode(str, enum.Enum):
     """Why a target is (not) observable.
 
-    Phase 1 emits ``BELOW_EL_MIN``, ``ABOVE_EL_MAX``, ``SUN_TOO_CLOSE``, and
+    Currently emits ``BELOW_EL_MIN``, ``ABOVE_EL_MAX``, ``SUN_TOO_CLOSE``, and
     ``AVOID_TOO_CLOSE``. ``OK``, ``BELOW_HORIZON``, ``NEVER_RISES``, and
-    ``WINDOW_TOO_SHORT`` are reserved for later phases and are not yet produced.
+    ``WINDOW_TOO_SHORT`` are reserved and are not yet produced.
     """
 
     OK = "ok"
@@ -519,6 +527,7 @@ def check_observability(
     atmosphere: AtmosphericConditions | None = None,
     window_step_minutes: float = 5.0,
     extra_targets: dict[str, Target] | None = None,
+    sun_safe: SunSafePredicate | None = None,
 ) -> list[ObservabilityReport]:
     """Assess each target's observability now (and optionally over a horizon).
 
@@ -560,6 +569,21 @@ def check_observability(
     extra_targets : dict of str to Target, optional
         Additional catalog (e.g. fixed RA/Dec sources) searched before the
         built-in calibrators.
+    sun_safe : SunSafePredicate, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
+        position is clear of the Sun. ``None`` (default) keeps the built-in
+        scalar exclusion-radius check (the existing vectorised
+        ``sun_separation > exclusion_radius`` computation, unchanged). When a
+        predicate is injected it is consulted per grid sample
+        ``(az_i, el_i, time_i)`` instead -- so the directional sun-avoidance
+        model (future shared library) drives the ``sun_clear`` /
+        :attr:`ReasonCode.SUN_TOO_CLOSE` verdict end-to-end. The reported
+        ``sun_separation_deg`` is still the geometric Sun separation
+        regardless of the predicate. Has no effect when Sun avoidance is
+        disabled on the site. See
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
 
     Returns
     -------
@@ -621,12 +645,20 @@ def check_observability(
             ra0, dec0 = coords.altaz_to_radec(az0, el0, time)
 
         sun_sep_grid = np.atleast_1d(coords.angular_separation(az_grid, el_grid, sun_az, sun_el))
-        if sun_enabled:
+        if not sun_enabled:
+            sun_ok_grid = np.ones(n, dtype=bool)
+        elif sun_safe is None:
             # Strict `>`: conservative thermal/hardware stance, matching is_sun_safe
             # (a target exactly at the exclusion radius is NOT clear).
             sun_ok_grid = sun_sep_grid > sun_radius
         else:
-            sun_ok_grid = np.ones(n, dtype=bool)
+            # Injected directional model: consult it per grid sample. ``False``
+            # marks an unsafe (inside-the-zone) sample. The reported
+            # ``sun_separation_deg`` above is still the geometric separation.
+            sun_ok_grid = np.array(
+                [bool(sun_safe(float(az_grid[i]), float(el_grid[i]), grid[i])) for i in range(n)],
+                dtype=bool,
+            )
 
         el_ok_grid = (el_grid >= el_min) & (el_grid <= el_max)
 

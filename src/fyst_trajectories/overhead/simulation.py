@@ -241,7 +241,7 @@ def accumulate_hitmaps(
     # nside maps.
     # TODO: thread the trajectory's atmospheric conditions through
     # ``Trajectory`` metadata so the inverse uses the same refraction
-    # model. Tracked in post-implementation review (Code F4).
+    # model.
     coords = Coordinates(site)
 
     for sblock, scan_block in trajectory_pairs:

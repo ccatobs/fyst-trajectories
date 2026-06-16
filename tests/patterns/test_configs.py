@@ -84,7 +84,7 @@ class TestConstantElScanConfig:
             )
 
     def test_n_scans_keyword_rejected(self):
-        """``n_scans`` was removed as a dead/false-contract field (see CHANGELOG).
+        """``n_scans`` was removed as a dead/false-contract field.
 
         Guard against accidental re-introduction: the constant-elevation scan
         length is set by ``duration`` at generate time, never by a config field.

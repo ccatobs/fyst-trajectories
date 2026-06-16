@@ -246,7 +246,7 @@ def test_no_overhead_import_at_load():
     assert res.returncode == 0, res.stderr
 
 
-# 17 -- F1 regression: SATELLITE self-exclusion keys on the resolved position body
+# 17 -- regression: SATELLITE self-exclusion keys on the resolved position body
 def test_satellite_self_exclusion(coordinates):
     # Titan is proxied by Saturn, so AVOIDing Saturn must self-exclude (Titan IS
     # at Saturn's position) -- otherwise Titan is silently un-schedulable.
@@ -275,7 +275,7 @@ def test_first_window_picks_first_run():
     assert _first_window(np.zeros(7, dtype=bool), grid) is None
 
 
-# 19 -- window_step_minutes must be positive when a horizon is requested (F2)
+# 19 -- window_step_minutes must be positive when a horizon is requested
 def test_window_step_must_be_positive(coordinates):
     tgt = _near_zenith_fixed(coordinates, T_NIGHT)
     with pytest.raises(ValueError):
@@ -291,13 +291,13 @@ def test_window_step_must_be_positive(coordinates):
     assert r.window is None
 
 
-# 20 -- el_min > el_max is a caller error (F8)
+# 20 -- el_min > el_max is a caller error
 def test_el_min_gt_el_max_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(["mars"], T_NIGHT, site=coordinates.site, el_min=80.0, el_max=20.0)
 
 
-# 21 -- the Sun is never an AvoidZone (F7)
+# 21 -- the Sun is never an AvoidZone
 def test_avoid_zone_rejects_sun():
     with pytest.raises(ValueError):
         AvoidZone("sun", 30.0)
@@ -388,7 +388,7 @@ def test_from_pair_unit_and_whitespace():
     assert AvoidZone.from_pair(("moon", "3.0")).zone_deg == 3.0
 
 
-# 30 -- F9: AVOID body aliases resolve like targets ("luna" -> Moon)
+# 30 -- AVOID body aliases resolve like targets ("luna" -> Moon)
 def test_avoid_body_alias_resolves(coordinates):
     # "luna" must resolve to the Moon, identical to AvoidZone("moon", ...).
     r_luna = check_observability(
@@ -404,7 +404,7 @@ def test_avoid_body_alias_resolves(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE in r_luna.reasons
 
 
-# 31 -- F9: AVOIDing a satellite resolves to its parent; self-excludes the parent target
+# 31 -- AVOIDing a satellite resolves to its parent; self-excludes the parent target
 def test_avoid_satellite_resolves_to_parent(coordinates):
     # AvoidZone("titan") -> Saturn; observing Saturn must self-exclude.
     r = check_observability(
@@ -414,7 +414,7 @@ def test_avoid_satellite_resolves_to_parent(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE not in r.reasons
 
 
-# 32 -- F9: an unresolvable AVOID body raises a clear error up front
+# 32 -- an unresolvable AVOID body raises a clear error up front
 def test_avoid_unresolvable_body_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(
@@ -444,7 +444,7 @@ def test_avoid_zone_rejects_non_finite():
         AvoidZone.from_pair(("jupiter", "nan"))
 
 
-# 35 -- F3: a non-divisor step keeps the window within [time, time+horizon]
+# 35 -- a non-divisor step keeps the window within [time, time+horizon]
 def test_grid_within_horizon_nondivisor_step():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = _build_time_grid(t0, horizon_hours=1.0, step_minutes=7.0)
@@ -455,10 +455,117 @@ def test_grid_within_horizon_nondivisor_step():
     assert len(grid) >= 2
 
 
-# 36 -- F3: a sub-step positive horizon still yields a real (n>=2) interval
+# 36 -- a sub-step positive horizon still yields a real (n>=2) interval
 def test_grid_substep_horizon_not_degenerate():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = _build_time_grid(t0, horizon_hours=2.0 / 60.0, step_minutes=5.0)  # 2 min horizon
     assert len(grid) >= 2
     offs = (grid - t0).to_value("s")
     assert offs[-1] == pytest.approx(120.0)  # clipped to the 2-min horizon
+
+
+# ---------------------------------------------------------------------------
+# Injectable sun_safe predicate (A3 seam): a directional model drives the
+# sun_clear / SUN_TOO_CLOSE verdict end-to-end, default path unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _block_everything(az, el, t):
+    """SunSafePredicate that reports every grid sample unsafe."""
+    return False
+
+
+def _allow_everything(az, el, t):
+    """SunSafePredicate that reports every grid sample clear of the Sun."""
+    return True
+
+
+# 37 -- A3: an injected False predicate flips an otherwise-clear target to
+# SUN_TOO_CLOSE while leaving the geometric sun_separation_deg untouched.
+def test_injected_predicate_flips_sun_clear(coordinates):
+    t = T_NIGHT
+    _, sun_el = coordinates.get_sun_altaz(t)
+    assert sun_el < 0  # precondition: Sun below horizon, scalar check trivially clear
+    tgt = _near_zenith_fixed(coordinates, t)
+
+    r_default = check_observability([tgt], t, site=coordinates.site)[0]
+    assert r_default.sun_clear is True
+    assert r_default.observable is True
+    assert ReasonCode.SUN_TOO_CLOSE not in r_default.reasons
+
+    r_blocked = check_observability([tgt], t, site=coordinates.site, sun_safe=_block_everything)[0]
+    assert r_blocked.sun_clear is False
+    assert r_blocked.observable is False
+    assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
+    # The reported separation is the geometric Sun separation regardless of
+    # the predicate -- only the verdict changes.
+    assert r_blocked.sun_separation_deg == pytest.approx(r_default.sun_separation_deg, abs=1e-6)
+
+
+# 38 -- A3: the predicate is consulted with the target's own (az, el, time).
+def test_injected_predicate_receives_target_altaz(coordinates):
+    t = T_NIGHT
+    tgt = _near_zenith_fixed(coordinates, t)
+    seen = []
+
+    def spy(az, el, tt):
+        seen.append((float(az), float(el)))
+        return True
+
+    r = check_observability([tgt], t, site=coordinates.site, sun_safe=spy)[0]
+    assert seen, "sun_safe predicate was never consulted"
+    # Instant mode (horizon_hours=0) => single grid sample => one call.
+    assert len(seen) == 1
+    az_seen, el_seen = seen[0]
+    assert az_seen == pytest.approx(r.az_deg, abs=1e-6)
+    assert el_seen == pytest.approx(r.el_deg, abs=1e-6)
+
+
+# 39 -- A3: the predicate drives the horizon-window computation too.
+def test_injected_predicate_drives_window(coordinates):
+    t = T_NIGHT
+    tgt = _near_zenith_fixed(coordinates, t)
+
+    # Default: a window exists over the horizon.
+    r_default = check_observability([tgt], t, site=coordinates.site, horizon_hours=6.0)[0]
+    assert r_default.window is not None
+
+    # A predicate that blocks every sample leaves no observable window.
+    r_blocked = check_observability(
+        [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_block_everything
+    )[0]
+    assert r_blocked.window is None
+    assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
+
+
+# 40 -- A3: a permissive predicate clears a daytime target the scalar rejects.
+def test_injected_allow_predicate_overrides_daytime(coordinates):
+    t = T_DAY
+    _, sun_el = coordinates.get_sun_altaz(t)
+    assert sun_el > 0  # precondition: Sun up
+    # A FIXED source AT the Sun's position: the scalar check rejects it.
+    sun_az, sun_alt = coordinates.get_sun_altaz(t)
+    sun_ra, sun_dec = coordinates.altaz_to_radec(sun_az, sun_alt, t)
+    at_sun = Target("at_sun", TargetKind.FIXED, ra_deg=float(sun_ra), dec_deg=float(sun_dec))
+
+    r_default = check_observability([at_sun], t, site=coordinates.site)[0]
+    assert r_default.sun_clear is False
+    assert ReasonCode.SUN_TOO_CLOSE in r_default.reasons
+
+    r_allowed = check_observability([at_sun], t, site=coordinates.site, sun_safe=_allow_everything)[
+        0
+    ]
+    assert r_allowed.sun_clear is True
+    assert ReasonCode.SUN_TOO_CLOSE not in r_allowed.reasons
+
+
+# 41 -- A3: sun_safe=None reproduces the built-in scalar verdict exactly.
+def test_injected_predicate_default_none_unchanged(coordinates):
+    t = T_NIGHT
+    tgt = _near_zenith_fixed(coordinates, t)
+    r_implicit = check_observability([tgt], t, site=coordinates.site)[0]
+    r_explicit_none = check_observability([tgt], t, site=coordinates.site, sun_safe=None)[0]
+    assert r_explicit_none.sun_clear == r_implicit.sun_clear
+    assert r_explicit_none.observable == r_implicit.observable
+    assert r_explicit_none.reasons == r_implicit.reasons
+    assert r_explicit_none.sun_separation_deg == pytest.approx(r_implicit.sun_separation_deg)

@@ -8,6 +8,8 @@ Warning Hierarchy
 ::
 
     PointingWarning(UserWarning)
+        VelocityLimitWarning
+        AccelerationLimitWarning
 
 Exception Hierarchy
 -------------------
@@ -33,6 +35,25 @@ class PointingWarning(UserWarning):
         from fyst_trajectories.exceptions import PointingWarning
 
         warnings.filterwarnings("ignore", category=PointingWarning)
+    """
+
+
+class VelocityLimitWarning(PointingWarning):
+    """A trajectory's velocity exceeds a configured axis limit.
+
+    Subclass of :class:`PointingWarning` (existing ``except PointingWarning``
+    / ``issubclass(.., PointingWarning)`` handlers still catch it). Lets
+    safety-critical consumers (e.g. the PCS dispatch-time escalation) filter
+    on *category* via ``issubclass`` instead of matching free-text message
+    wording.
+    """
+
+
+class AccelerationLimitWarning(PointingWarning):
+    """A trajectory's acceleration exceeds a configured axis limit.
+
+    Subclass of :class:`PointingWarning`. Added for symmetry/future-proofing;
+    the PCS gate keeps acceleration ADVISORY and does not escalate it.
     """
 
 

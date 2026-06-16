@@ -760,9 +760,9 @@ class TestPlanConstantElLsaWindow:
         recorded: list[Time] = []
         original = ce_module._check_field_sun_safety
 
-        def spy(ra, dec, t, s):
+        def spy(ra, dec, t, s, sun_safe=None):
             recorded.append(t)
-            return original(ra, dec, t, s)
+            return original(ra, dec, t, s, sun_safe=sun_safe)
 
         monkeypatch.setattr(ce_module, "_check_field_sun_safety", spy)
 
@@ -796,9 +796,9 @@ class TestPlanConstantElLsaWindow:
         recorded: list[Time] = []
         original = ce_module._check_field_sun_safety
 
-        def spy(ra, dec, t, s):
+        def spy(ra, dec, t, s, sun_safe=None):
             recorded.append(t)
-            return original(ra, dec, t, s)
+            return original(ra, dec, t, s, sun_safe=sun_safe)
 
         monkeypatch.setattr(ce_module, "_check_field_sun_safety", spy)
 

@@ -56,7 +56,7 @@ module subtends a ~1.3° **diameter** on sky (arXiv:2208.10634), i.e. a 0.65°
 **radius**. The bare detector-wafer extent (~0.39° *diameter* at the FYST plate
 scale) is only a lower bound -- the optical FOV is larger than the illuminated
 wafer -- so 0.65° is the FOV figure to cover with, not a padded-up wafer
-estimate. Tracked as Q-14 pending an as-built per-module FOV measurement.
+estimate, pending an as-built per-module FOV measurement.
 
 Pass an explicit :class:`~fyst_trajectories.planning.ArrayFootprint`
 to override.

@@ -19,9 +19,11 @@ from astropy.time import Time, TimeDelta
 
 from .coordinates import Coordinates
 from .exceptions import (
+    AccelerationLimitWarning,
     AzimuthBoundsError,
     ElevationBoundsError,
     PointingWarning,
+    VelocityLimitWarning,
 )
 from .site import Site
 from .trajectory import (
@@ -41,6 +43,12 @@ from .trajectory import (
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
+
+    # Annotation-only import to avoid an import cycle: ``dispatch`` imports
+    # ``coordinates``/``site``/``exceptions`` at runtime, all of which this
+    # module also imports. The predicate is invoked structurally, so only the
+    # type hint needs the symbol.
+    from .dispatch import SunSafePredicate
 
 
 # Default wall-clock duration of a single retune event (seconds).
@@ -137,7 +145,6 @@ def validate_trajectory_dynamics(
     limiting is the ACU motion profiler's responsibility -- this library does
     not validate jerk and ``AxisLimits`` carries no ``max_jerk`` field, even
     though the Go TCS defines hardware jerk limits (az 12, el 6 deg/s^3).
-    Tracked as a Q-item alongside Q-4.
 
     Parameters
     ----------
@@ -202,7 +209,7 @@ def validate_trajectory_dynamics(
         warnings.warn(
             f"Trajectory azimuth velocity ({max_az_vel:.2f} deg/s) exceeds "
             f"limit ({limits.azimuth.max_velocity:.2f} deg/s).",
-            PointingWarning,
+            VelocityLimitWarning,
             stacklevel=2,
         )
 
@@ -210,7 +217,7 @@ def validate_trajectory_dynamics(
         warnings.warn(
             f"Trajectory elevation velocity ({max_el_vel:.2f} deg/s) exceeds "
             f"limit ({limits.elevation.max_velocity:.2f} deg/s).",
-            PointingWarning,
+            VelocityLimitWarning,
             stacklevel=2,
         )
 
@@ -255,7 +262,7 @@ def validate_trajectory_dynamics(
         warnings.warn(
             f"Trajectory azimuth acceleration ({max_az_accel:.2f} deg/s^2) exceeds "
             f"limit ({limits.azimuth.max_acceleration:.2f} deg/s^2).",
-            PointingWarning,
+            AccelerationLimitWarning,
             stacklevel=2,
         )
 
@@ -263,7 +270,7 @@ def validate_trajectory_dynamics(
         warnings.warn(
             f"Trajectory elevation acceleration ({max_el_accel:.2f} deg/s^2) exceeds "
             f"limit ({limits.elevation.max_acceleration:.2f} deg/s^2).",
-            PointingWarning,
+            AccelerationLimitWarning,
             stacklevel=2,
         )
 
@@ -272,6 +279,7 @@ def validate_trajectory(
     trajectory: Trajectory,
     site: Site,
     check_sun: bool = True,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> None:
     """Validate trajectory against telescope limits.
 
@@ -289,6 +297,15 @@ def validate_trajectory(
         Whether to check sun avoidance constraints. Default True.
         Sun checking requires ``trajectory.start_time`` to be set;
         if it is None the sun check is skipped silently.
+    sun_safe : SunSafePredicate, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        forwarded to :func:`validate_sun_avoidance`. ``None`` (default)
+        keeps the built-in scalar exclusion/warning-radius check; an
+        injected predicate is consulted per-subsample instead, so the
+        directional sun-avoidance model (future shared library) is honored
+        end-to-end. Advisory either way. Has no effect when ``check_sun`` is
+        ``False`` or ``trajectory.start_time`` is ``None``.
 
     Raises
     ------
@@ -307,7 +324,7 @@ def validate_trajectory(
     validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
     if check_sun and trajectory.start_time is not None:
         abs_times = get_absolute_times(trajectory)
-        validate_sun_avoidance(site, trajectory.az, trajectory.el, abs_times)
+        validate_sun_avoidance(site, trajectory.az, trajectory.el, abs_times, sun_safe=sun_safe)
 
 
 def get_absolute_times(trajectory: Trajectory) -> Time:
@@ -345,6 +362,7 @@ def validate_sun_avoidance(
     el: np.ndarray,
     times: Time | np.ndarray,
     coords: Coordinates | None = None,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> None:
     """Check sun avoidance constraints, emitting warnings for violations.
 
@@ -377,13 +395,29 @@ def validate_sun_avoidance(
     coords : Coordinates, optional
         Pre-constructed Coordinates instance. Created internally if
         not provided.
+    sun_safe : SunSafePredicate, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
+        position is clear of the Sun. ``None`` (default) keeps the built-in
+        scalar exclusion/warning-radius check (the existing vectorised
+        subsampled separation computation, unchanged). When a predicate is
+        injected it is consulted per-subsample ``(az_i, el_i, time_i)``
+        instead -- so the directional sun-avoidance model (future shared
+        library) is honored -- using the same ~60 s subsampling for parity
+        and performance. The injected model owns its own boundary, so only
+        an "EXCLUSION ZONE" warning is emitted (no separate warning-radius
+        band). Advisory either way. See
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
 
     Warns
     -----
     PointingWarning
         If any trajectory point is within the exclusion radius
         ("EXCLUSION ZONE") or the warning radius ("WARNING ZONE")
-        of the Sun.
+        of the Sun. With an injected ``sun_safe`` predicate, an
+        "EXCLUSION ZONE" warning is emitted for any subsample the
+        predicate reports unsafe.
     """
     if not site.sun_avoidance.enabled:
         return
@@ -413,6 +447,34 @@ def validate_sun_avoidance(
     sample_times = times[sample_indices]
     sample_az = az[sample_indices]
     sample_el = el[sample_indices]
+
+    if sun_safe is not None:
+        # Injected directional model: consult it per-subsample. ``False``
+        # marks an unsafe (inside-the-zone) sample. Warn once, naming the
+        # first unsafe subsample, mirroring the scalar branch's single
+        # closest-approach warning. The ~60 s subsampling above is preserved
+        # so injection does not regress performance.
+        unsafe_idx = [
+            i
+            for i in range(len(sample_az))
+            if not sun_safe(float(sample_az[i]), float(sample_el[i]), sample_times[i])
+        ]
+        if not unsafe_idx:
+            return
+        first = unsafe_idx[0]
+        if isinstance(sample_times, Time):
+            first_time_str = sample_times[first].iso
+        else:
+            first_time_str = str(sample_times[first])
+        warnings.warn(
+            f"EXCLUSION ZONE: Trajectory at (az={float(sample_az[first]):.1f}°, "
+            f"el={float(sample_el[first]):.1f}°) is inside the Sun avoidance "
+            f"zone at {first_time_str}. The telescope hardware may refuse this "
+            f"trajectory.",
+            PointingWarning,
+            stacklevel=2,
+        )
+        return
 
     sun_az, sun_alt = coords.get_sun_altaz(sample_times)
     sun_az = np.atleast_1d(sun_az)

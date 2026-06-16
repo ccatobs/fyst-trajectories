@@ -17,6 +17,7 @@ from ._sun_safety import _check_field_sun_safety
 from ._types import ConstantElComputedParams, FieldRegion, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
+    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
 
 
@@ -36,6 +37,7 @@ def plan_constant_el_scan(
     max_search_hours: float = 12.0,
     step_seconds: float = 30.0,
     lsa_window: tuple[float, float] | list[float] | None = None,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> ScanBlock:
     """Plan a constant-elevation scan that covers a FieldRegion.
 
@@ -110,6 +112,15 @@ def plan_constant_el_scan(
         operator-driven LSA-windowed scheduling (e.g. ACT/Deep56-style
         constant-elevation patches). Default is ``None``, which
         preserves the elevation-crossing behavior.
+    sun_safe : SunSafePredicate or None, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        forwarded to the field-center pre-flight check(s). ``None``
+        (default) keeps the built-in scalar exclusion-radius check; an
+        injected predicate is consulted instead, so the directional
+        sun-avoidance model (future shared library) is honored end-to-end.
+        Applied at both pre-flight checks when ``lsa_window`` is supplied
+        (search anchor and resolved ``obs_start``). Warn-only.
 
     Returns
     -------
@@ -191,7 +202,7 @@ def plan_constant_el_scan(
     # hours, during which the Sun moves ~15 deg/h, so a field that is
     # 50 deg from the Sun at ``start_time`` can be 5 deg from it at
     # ``obs_start``.
-    _check_field_sun_safety(field.ra_center, field.dec_center, start_time, site)
+    _check_field_sun_safety(field.ra_center, field.dec_center, start_time, site, sun_safe=sun_safe)
 
     coords_obj = Coordinates(site, atmosphere=atmosphere)
 
@@ -205,7 +216,9 @@ def plan_constant_el_scan(
         )
         # Re-check sun safety at the resolved ``obs_start`` -- see the
         # comment above for the rationale.
-        _check_field_sun_safety(field.ra_center, field.dec_center, obs_start, site)
+        _check_field_sun_safety(
+            field.ra_center, field.dec_center, obs_start, site, sun_safe=sun_safe
+        )
     else:
         obs_start, obs_end, duration = _compute_ce_duration(
             field,

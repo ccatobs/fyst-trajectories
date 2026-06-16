@@ -11,6 +11,7 @@ from ._sun_safety import _check_field_sun_safety
 from ._types import DaisyComputedParams, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
+    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
 
 
@@ -29,6 +30,7 @@ def plan_daisy_scan(
     y_offset: float = 0.0,
     detector_offset: "InstrumentOffset | None" = None,
     atmosphere: AtmosphericConditions | None = None,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> ScanBlock:
     """Plan a Daisy scan centered on a single RA/Dec position.
 
@@ -66,6 +68,13 @@ def plan_daisy_scan(
     atmosphere : AtmosphericConditions or None, optional
         Atmospheric conditions for refraction correction. If None,
         no refraction is applied.
+    sun_safe : SunSafePredicate or None, optional
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        forwarded to the field-center pre-flight check. ``None`` (default)
+        keeps the built-in scalar exclusion-radius check; an injected
+        predicate is consulted instead, so the directional sun-avoidance
+        model (future shared library) is honored end-to-end. Warn-only.
 
     Returns
     -------
@@ -103,7 +112,7 @@ def plan_daisy_scan(
     if isinstance(start_time, str):
         start_time = Time(start_time, scale="utc")
 
-    _check_field_sun_safety(ra, dec, start_time, site)
+    _check_field_sun_safety(ra, dec, start_time, site, sun_safe=sun_safe)
 
     config = DaisyScanConfig(
         timestep=timestep,

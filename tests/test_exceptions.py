@@ -13,11 +13,14 @@ import pytest
 from astropy.time import Time
 
 from fyst_trajectories.exceptions import (
+    AccelerationLimitWarning,
     AzimuthBoundsError,
     ElevationBoundsError,
     PointingError,
+    PointingWarning,
     TargetNotObservableError,
     TrajectoryBoundsError,
+    VelocityLimitWarning,
 )
 from fyst_trajectories.patterns import (
     ConstantElScanConfig,
@@ -119,6 +122,23 @@ class TestExceptionStructuredData:
         assert isinstance(exc.bounds_error, TrajectoryBoundsError)
         assert exc.bounds_error.axis == "azimuth"
         assert exc.bounds_error.actual_min == -280.0
+
+
+class TestLimitWarningHierarchy:
+    """Lock the backward-compat contract for the structured limit warnings.
+
+    The PCS dispatch-time escalation filters on ``VelocityLimitWarning`` by
+    *category* (``issubclass``), so these must remain ``PointingWarning``
+    subclasses or every existing ``except PointingWarning`` /
+    ``issubclass(.., PointingWarning)`` handler would silently stop catching
+    them.
+    """
+
+    def test_velocity_limit_warning_is_pointing_warning(self):
+        assert issubclass(VelocityLimitWarning, PointingWarning)
+
+    def test_acceleration_limit_warning_is_pointing_warning(self):
+        assert issubclass(AccelerationLimitWarning, PointingWarning)
 
 
 class TestPongRaisesTargetNotObservable:
