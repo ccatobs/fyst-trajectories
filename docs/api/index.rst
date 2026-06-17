@@ -11,6 +11,7 @@ API Reference
    patterns
    offsets
    planning
+   dispatch
    observability
    plotting
    exceptions
