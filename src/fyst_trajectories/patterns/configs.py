@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from ..coordinates import SATELLITE_BODIES, SOLAR_SYSTEM_BODIES
 from ..exceptions import PointingWarning
 
-# Advisory upper bounds -- NOT hard telescope limits (those live in
+# Advisory upper bounds, NOT hard telescope limits (those live in
 # Site.telescope_limits). Exceeding these values emits PointingWarning.
 MAX_REASONABLE_SCAN_WIDTH_DEG: float = 30.0
 """Maximum scan width/height (or azimuth throw) before a warning is issued."""
@@ -184,7 +184,7 @@ class PongScanConfig(ScanConfig):
         tangent-plane speed, not azimuth coordinate velocity). Note this is
         the *mean* cruise speed: each axis follows a truncated Fourier triangle
         wave whose slope peaks mid-ramp, so the *peak* on-sky diagonal speed
-        exceeds ``velocity`` -- by ~17.5% at the default ``num_terms=4``
+        exceeds ``velocity``, by ~17.5% at the default ``num_terms=4``
         (converging toward a ~14% floor as ``num_terms`` grows, not to zero).
         A planner sizing ``velocity`` against axis rate limits should budget for
         that overshoot; the realized mount-frame velocity is checked by

@@ -191,7 +191,7 @@ class TestRiseSetTimes:
 
     def test_set_time_after_rise_time(self, coordinates):
         """Test that set time is always after rise time when both exist."""
-        # Equatorial source from Chile -- definitely rises and sets.
+        # Equatorial source from Chile, definitely rises and sets.
         ra = 90.0
         dec = 0.0
         obstime = Time("2026-06-15T12:00:00", scale="utc")

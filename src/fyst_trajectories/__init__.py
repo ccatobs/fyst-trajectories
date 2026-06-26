@@ -9,7 +9,7 @@ provides a pre-configured, FYST-aware toolkit.
 
 Examples
 --------
-Coordinate transformation (vacuum -- the ACU applies refraction):
+Coordinate transformation (vacuum; the ACU applies refraction):
 
 >>> from astropy.time import Time
 >>> from fyst_trajectories import Coordinates, get_fyst_site

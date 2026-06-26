@@ -43,3 +43,76 @@ This is a **binary** fixture with a **fixed coverage window**. When test epochs 
 forward (e.g. out of the IERS prediction window), the excerpt must be **re-cut** (not
 edited) for a window covering the new epochs, and the frozen Horizons reference values in
 the Titan tests regenerated to match.
+
+## `de421_excerpt.bsp` — planetary ephemeris (skyfield oracle fixture)
+
+A small excerpt of NAIF JPL **`de421`**, the offline ephemeris for the skyfield
+cross-validation oracles in `tests/test_coordinates.py`
+(`test_get_body_radec_matches_skyfield`) and
+`tests/test_coordinates_cross_validation.py` (`test_solar_system_body_positions`).
+It replaces per-fixture `skyfield.api.load("de421.bsp")` network downloads
+(~16.8 MB from `ssd.jpl.nasa.gov`). **Not** on the runtime path.
+
+### Provenance
+- **Source:** `https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de421.bsp`
+  (NAIF generic kernels; US-government **public domain**). de421 is byte-identical
+  across the NAIF and `ssd.jpl.nasa.gov` mirrors; either works.
+- **Command:**
+  ```bash
+  python -m jplephem excerpt --targets 3,399,301,4,499,5,6,8,10 2025/12/1 2027/1/1 \
+    https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de421.bsp \
+    de421_excerpt.bsp
+  ```
+- **Coverage window:** 2025-12-01 .. 2027-01-01 (UTC) — spans the full 2026 test
+  calendar. The two files share this one fixture: `test_coordinates.py`'s oracle uses
+  `16:30`/`04:30` on 2026-06-15, but `test_coordinates_cross_validation.py` evaluates the
+  ephemeris across many epochs (2026-01-01 .. 2026-12-21, plus the Sirius rise/set scan
+  from 2026-03-15), so a narrow June window makes those other slow tests raise
+  `EphemerisRangeError`. The window covers all of them with a month of margin each side.
+- **Targets:** observer SSB→Earth-bary (3), Earth-bary→Earth (399); Moon (301);
+  Sun (10); **Mars-bary (4)** and **Mars (499)** — `eph["mars barycenter"]` in the
+  cross-val file resolves to 4, while `eph["mars"]` in the oracle resolves to 499 via
+  the chain 0→4→499, so **both** are required; Jupiter/Saturn/Neptune barycenters
+  (5/6/8). Omitting 499 makes the oracle's `[mars]` case raise `KeyError` — the same
+  missing-segment failure documented for Titan above.
+
+### Regenerating
+Binary fixture, fixed window. Re-cut if the oracle/cross-val epochs move forward.
+
+## `finals2000A.all` — Earth-orientation (IERS) table (offline fixture)
+
+A snapshot of astropy's IERS-A Earth-orientation table (~3.75 MB), vendored so the suite
+resolves Earth orientation offline and deterministically. **Not** on the runtime path.
+
+### Why it is needed
+The hard-coded 2026 test epochs sit past the last *measured* IERS row, so a stock astropy
+does one of two things on the first coordinate transform, both of which broke CI:
+- with network or a warm cache, it fetches ~3.75 MB from `datacenter.iers.org`, the stall
+  that timed out the slow CI job, or
+- on a cold runner with no cached `finals2000A.all`, it falls back to the shorter table
+  bundled with `astropy-iers-data`, which does not cover 2026, and raises `IERSRangeError`
+  on every 2026-epoch transform.
+
+`tests/conftest.py` pins this vendored table at import time via
+`iers.earth_orientation_table.set(iers.IERS_A.open(...))` and sets
+`iers.conf.auto_download = False`. Because the table is set explicitly, local and CI runs
+use byte-identical Earth-orientation data at full accuracy, and a local run exercises the
+same offline path as CI.
+
+### Provenance
+- **Source:** astropy's standard IERS-A product `finals2000A.all`
+  (`https://datacenter.iers.org/data/9/finals2000A.all`, mirrored at
+  `https://maia.usno.navy.mil/ser7/finals2000A.all`).
+- **Snapshot:** 2026-06-26, copied from the local astropy download cache.
+- **Coverage:** measured values through mid-2026 plus IERS predictions to ~2027, which
+  spans the 2026 test calendar with margin.
+
+### Regenerating (forward maintenance)
+Re-cut when the hard-coded test epochs approach the prediction range (astropy will start
+warning). Refresh from a current astropy cache or either URL above:
+```bash
+python -c "from astropy.utils import iers; from astropy.utils.data import download_file; \
+import shutil; shutil.copyfile(download_file(iers.conf.iers_auto_url, cache=True), \
+'tests/data/finals2000A.all')"
+```
+This is the same forward-maintenance trigger as the de421/Titan excerpt windows.

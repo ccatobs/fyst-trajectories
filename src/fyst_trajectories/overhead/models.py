@@ -323,7 +323,7 @@ class CalibrationType(str, enum.Enum):
 
 # Private lookup tables keyed on :class:`CalibrationType`. Centralising
 # these mappings here keeps :meth:`OverheadModel.get_calibration_duration`
-# and :meth:`CalibrationState.update` trivially in sync -- adding a new
+# and :meth:`CalibrationState.update` trivially in sync; adding a new
 # calibration type is a single-location change. See the docstrings on
 # :attr:`CalibrationType.duration_field` and
 # :attr:`CalibrationType.state_field` for the public API.

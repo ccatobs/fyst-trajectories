@@ -63,7 +63,7 @@ class CalibrationState:
         """Determine which calibrations are due.
 
         Checks each calibration type against its cadence. A cadence of 0
-        means "every scan boundary" -- the retune is always needed in that
+        means "every scan boundary"; the retune is always needed in that
         case (the scheduler inserts it between scans). Beam mapping has
         a nullable cadence; ``policy.beam_map_cadence is None`` (the
         default) keeps beam maps off the automatic schedule entirely.
@@ -101,7 +101,7 @@ class CalibrationState:
         ]
 
         for cal_type, last_time, cadence in checks:
-            # ``None`` cadence means "never automatically schedule" -- used
+            # ``None`` cadence means "never automatically schedule", used
             # to preserve the legacy behaviour for BEAM_MAP unless the
             # operator opts in.
             if cadence is None:

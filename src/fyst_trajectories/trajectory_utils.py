@@ -1,7 +1,7 @@
 """Trajectory utility functions.
 
 Free functions for validating, exporting, formatting, and plotting
-Trajectory objects. These are the primary API -- the
+Trajectory objects. These are the primary API; the
 :class:`~fyst_trajectories.trajectory.Trajectory` container itself
 exposes no methods that delegate here.
 """
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 # and the in-scan retunes injected by :func:`inject_retune` for
 # per-module staggering. The two code paths are independent (different
 # layers, different retune semantics) but share the same nominal
-# wall-time -- exposing the constant here keeps them in sync if the
+# wall-time; exposing the constant here keeps them in sync if the
 # instrument team re-baselines the value.
 DEFAULT_RETUNE_DURATION_SEC: float = 5.0
 
@@ -135,14 +135,14 @@ def validate_trajectory_dynamics(
     limits.
 
     Limit violations are advisory (warnings) because exceeding a dynamics
-    limit does not make a trajectory unexecutable -- the telescope simply
+    limit does not make a trajectory unexecutable; the telescope simply
     tracks slower than requested at those points. Malformed input, however,
     raises ``ValueError``: non-finite (NaN/Inf) ``az``/``el``/``times`` would
     otherwise pass silently (``NaN > limit`` is ``False``), and non-monotonic
     timestamps make the numerical derivative divide by zero.
 
     Only velocity and acceleration are checked. Third-derivative (jerk)
-    limiting is the ACU motion profiler's responsibility -- this library does
+    limiting is the ACU motion profiler's responsibility; this library does
     not validate jerk and ``AxisLimits`` carries no ``max_jerk`` field, even
     though the Go TCS defines hardware jerk limits (az 12, el 6 deg/s^3).
 
@@ -397,14 +397,14 @@ def validate_sun_avoidance(
         not provided.
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
         position is clear of the Sun. ``None`` (default) keeps the built-in
         scalar exclusion/warning-radius check (the existing vectorised
         subsampled separation computation, unchanged). When a predicate is
         injected it is consulted per-subsample ``(az_i, el_i, time_i)``
-        instead -- so the directional sun-avoidance model (future shared
-        library) is honored -- using the same ~60 s subsampling for parity
+        instead, so the directional sun-avoidance model (future shared
+        library) is honored, using the same ~60 s subsampling for parity
         and performance. The injected model owns its own boundary, so only
         an "EXCLUSION ZONE" warning is emitted (no separate warning-radius
         band). Advisory either way. See
@@ -572,7 +572,7 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     -------
     list
         List of ``[t, az, el, az_vel, el_vel]`` rows. This is only the
-        ``points`` array -- the full request body also needs ``start_time``
+        ``points`` array; the full request body also needs ``start_time``
         and ``coordsys`` (see Notes).
 
     Raises
@@ -590,7 +590,7 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     ``DisallowUnknownFields``, so the body must be exactly
     ``{"start_time": <abs Unix s>, "coordsys": "Horizon", "points": [...]}``:
 
-    - ``coordsys`` is **required** and must be ``"Horizon"`` -- these are
+    - ``coordsys`` is **required** and must be ``"Horizon"``; these are
       geometric az/el rows, and ICRS ``/path`` velocities are unimplemented
       in Go TCS. Omitting ``coordsys`` or adding any extra key yields HTTP 400.
     - ``points`` times are **relative** seconds; ``start_time`` is **absolute**
@@ -658,14 +658,14 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
     ------
     ValueError
         If ``coordsys`` is not ``"Horizon"`` or ``"ICRS"``, if
-        ``trajectory.start_time`` is not set, or -- via :func:`to_path_format`
-        -- if any consecutive sample interval is below
+        ``trajectory.start_time`` is not set, or, via :func:`to_path_format`,
+        if any consecutive sample interval is below
         ``GO_TCS_MIN_SAMPLE_INTERVAL_SEC`` (50 ms).
 
     Warns
     -----
     PointingWarning
-        If ``coordsys="ICRS"`` -- Go TCS does not implement ICRS ``/path``
+        If ``coordsys="ICRS"``: Go TCS does not implement ICRS ``/path``
         velocities, so such a body is unsafe for scanning.
     """
     if coordsys not in ("Horizon", "ICRS"):
@@ -697,7 +697,7 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     """Convert a trajectory to ACU ProgramTrack ``TrackPoint`` rows.
 
     Lowers a :class:`~fyst_trajectories.trajectory.Trajectory` to the
-    per-point representation the Vertex ACU's ProgramTrack stack consumes --
+    per-point representation the Vertex ACU's ProgramTrack stack consumes,
     the same rows the Go TCS ``/path`` endpoint builds internally, but ready
     for a consumer that drives the ACU **directly** (e.g. a PCS agent's
     ``UploadPtStack`` path) rather than through Go TCS. Use
@@ -719,7 +719,7 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     ``group_flag = 1`` is set on the first
     :data:`TRACKPOINT_NEW_LEG_GROUP_SIZE` points of each new science leg
     (front-loading the stack, matching the SO ACU driver). ``el_flag`` is
-    always 0 -- FYST scans hold or el-nod within a leg, so the ACU profiler
+    always 0; FYST scans hold or el-nod within a leg, so the ACU profiler
     keys off azimuth. Batching the rows for upload is left to the consumer.
 
     Parameters
@@ -1132,7 +1132,7 @@ def inject_retune(
     Only samples with ``SCAN_FLAG_SCIENCE`` are overwritten with
     ``SCAN_FLAG_RETUNE``; turnaround flags are never modified.
 
-    **Per-module staggered retune** (UNCONFIRMED -- needs FYST team
+    **Per-module staggered retune** (UNCONFIRMED, needs FYST team
     verification): Prime-Cam has 7 independent readout modules. If modules
     can retune independently, setting ``n_modules > 1`` offsets the first
     retune by ``module_index * retune_interval / n_modules``, so only one
@@ -1174,7 +1174,7 @@ def inject_retune(
         by composition).
     n_modules : int
         Total number of independent modules. Default is 1 (no staggering,
-        all modules retune simultaneously -- current behavior). Set to 7
+        all modules retune simultaneously, current behavior). Set to 7
         for Prime-Cam staggered retune. Must be 1 in event-list mode.
     retune_events : sequence of RetuneEvent, optional, keyword-only
         If supplied, enables event-list mode. Each event's ``t_start``
@@ -1275,7 +1275,7 @@ def inject_retune(
     # (see inject_retune body below, which classifies turnarounds via
     # ``SCAN_FLAG_TURNAROUND`` samples derived from the trajectory's
     # velocity profile). A trajectory with identically zero az/el
-    # velocities -- which the primecam wrapper currently supplies -- has no
+    # velocities, which the primecam wrapper currently supplies, has no
     # detectable turnarounds, so snapping would silently collapse to
     # time-based placement anyway. Warn and fall back explicitly so the
     # caller is not misled.
@@ -1308,7 +1308,7 @@ def sample_retune_events(
     Walks forward from ``t_start``, alternating draws from
     ``interval_sampler`` (gap until the next retune) and
     ``duration_sampler`` (duration of that retune). Stops when the next
-    drawn interval would push ``t_start`` past ``duration`` -- the
+    drawn interval would push ``t_start`` past ``duration``; the
     partially-drawn event is discarded, not truncated, so every
     returned event has exactly the duration the sampler produced and
     the returned list is guaranteed non-overlapping.
@@ -1319,12 +1319,12 @@ def sample_retune_events(
         Trajectory window to fill, in seconds. Must be finite and
         non-negative.
     interval_sampler : callable
-        ``(rng) -> float`` -- draws the gap between consecutive retunes
+        ``(rng) -> float``: draws the gap between consecutive retunes
         (or between ``t_start`` and the first retune). Must return a
         positive, finite value; negative or non-finite draws raise
         :class:`ValueError`.
     duration_sampler : callable
-        ``(rng) -> float`` -- draws the duration of the next retune.
+        ``(rng) -> float``: draws the duration of the next retune.
         Must return a positive, finite value.
     rng : np.random.Generator
         Seeded generator for reproducibility. Caller owns seed policy.

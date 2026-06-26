@@ -20,6 +20,30 @@ from fyst_trajectories import (
     normalize_frame,
 )
 
+try:
+    from skyfield.api import load, load_file, wgs84
+
+    SKYFIELD_AVAILABLE = True
+except ImportError:  # pragma: no cover - skyfield is a dev-only extra
+    SKYFIELD_AVAILABLE = False
+
+DE421_KERNEL = str((Path(__file__).parent / "data" / "de421_excerpt.bsp").resolve())
+
+
+@pytest.fixture(scope="module")
+def skyfield_de421():
+    """Load the vendored de421 excerpt + a timescale once per module.
+
+    Uses ``load_file`` on the offline excerpt in ``tests/data/`` (the same
+    vendored-kernel pattern as the Titan tests), so the slow oracle never
+    downloads de421 from JPL in CI.
+    """
+    if not SKYFIELD_AVAILABLE:
+        pytest.skip("Skyfield not installed. Install with: pip install skyfield")
+    eph = load_file(DE421_KERNEL)
+    ts = load.timescale()
+    return eph, ts
+
 
 class TestRadecToAltaz:
     """Tests for RA/Dec to Az/El transformation."""
@@ -88,7 +112,7 @@ class TestSolarSystemBodies:
 
         Beyond shape, pin the vectorised path to the scalar path at the first
         sample and require continuous, non-zero motion across the 5-minute
-        window -- a broken array path returning constants, garbage, or a
+        window. A broken array path returning constants, garbage, or a
         broadcast-misaligned result fails here.
         """
         obstime = Time("2026-03-15T04:30:00", scale="utc")
@@ -238,19 +262,17 @@ class TestSolarSystemBodies:
 
     @pytest.mark.slow
     @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
-    def test_get_body_radec_matches_skyfield(self, coordinates, body):
+    def test_get_body_radec_matches_skyfield(self, coordinates, body, skyfield_de421):
         """Cross-check the apparent RA/Dec against skyfield (independent oracle).
 
         Skyfield is a dev-only dependency, imported here (never in ``src/``).
         The ~30 arcsec tolerance absorbs the astropy-vs-skyfield ephemeris and
         aberration differences; it is far tighter than the barycentric error.
         """
-        skyfield_api = pytest.importorskip("skyfield.api")
         from astropy.coordinates import angular_separation
 
-        eph = skyfield_api.load("de421.bsp")
-        ts = skyfield_api.load.timescale()
-        observer = eph["earth"] + skyfield_api.wgs84.latlon(
+        eph, ts = skyfield_de421
+        observer = eph["earth"] + wgs84.latlon(
             coordinates.site.latitude,
             coordinates.site.longitude,
             elevation_m=coordinates.site.elevation,
@@ -490,8 +512,8 @@ class TestGetParallacticAngle:
         """Parallactic angle is near zero at the meridian for moderate dec.
 
         On the meridian (HA~0) the PA is ~0 (north is up). ``RA = LST`` is only
-        an apparent-meridian proxy -- catalogue RA carries a small precession
-        offset -- so a dec well away from the site latitude keeps the source
+        an apparent-meridian proxy (catalogue RA carries a small precession
+        offset), so a dec well away from the site latitude keeps the source
         clear of the ill-conditioned zenith where that offset is amplified.
         """
         obstime = Time("2026-06-15T12:00:00", scale="utc")
@@ -541,7 +563,7 @@ class TestGetParallacticAngle:
 
         ``get_parallactic_angle`` derives the parallactic angle from the
         vacuum-transformed horizontal coordinates, not from ``HA = LST - RA``
-        (which would mix the apparent-equinox LST with the catalogue RA -- the
+        (which would mix the apparent-equinox LST with the catalogue RA, the
         H-1 frame bias). This checks it equals the documented AltAz-form built
         from the same transform.
         """
@@ -607,7 +629,7 @@ class TestSunUsesTopocentricBody:
 
         The library uses ``get_body("sun", ..., location=...)`` rather than the
         geocentric ``astropy.coordinates.get_sun``. The two apparent places
-        differ at the ~arcsec scale -- an ephemeris/algorithm difference plus the
+        differ at the ~arcsec scale, an ephemeris/algorithm difference plus the
         Sun's tiny topocentric effect (the on-sky parallax for the Sun is
         ~0.01 arcsec, far below the 8.8 arcsec horizontal-parallax *constant*). This is a
         sanity range-check (nonzero, well under the Sun's ~0.5 deg diameter), not a
@@ -616,7 +638,7 @@ class TestSunUsesTopocentricBody:
         from astropy.coordinates import AltAz, get_sun
 
         obstime = Time("2026-03-15T16:00:00", scale="utc")
-        # Topocentric (library default) -- uses get_body with location
+        # Topocentric (library default), uses get_body with location
         az_topo, alt_topo = coordinates.get_sun_altaz(obstime)
         # Geocentric (via legacy get_sun)
         sun_geo = get_sun(obstime)
@@ -877,7 +899,7 @@ class TestSunBoundaryParity:
 # Vendored Titan excerpt kernel (see tests/data/README.md).
 TITAN_KERNEL = str((Path(__file__).parent / "data" / "titan_excerpt.bsp").resolve())
 
-# Frozen JPL Horizons airless apparent Az/El for Titan from FYST -- an independent
+# Frozen JPL Horizons airless apparent Az/El for Titan from FYST, an independent
 # gold-standard oracle. Regenerate together with the excerpt if the window moves
 # (see tests/data/README.md).
 _TITAN_HORIZONS_AZEL = [
@@ -951,7 +973,7 @@ class TestTitanSatelliteResolver:
         """get_body_radec('titan'), round-tripped through AltAz, matches frozen Horizons.
 
         An independent RA/Dec oracle (sibling to the Az/El Horizons check), via the
-        library's own ``altaz_to_radec`` convention -- not a raw skyfield ``.radec()``
+        library's own ``altaz_to_radec`` convention, not a raw skyfield ``.radec()``
         (which differs by ~7 arcsec on axis convention, feasibility study Sec 3.5).
         """
         for iso, h_az, h_el in _TITAN_HORIZONS_AZEL:
@@ -1019,7 +1041,7 @@ class TestTitanSatelliteResolver:
             t = Time(iso, scale="utc")
             # deflectors=() disables relativistic light deflection. astropy's get_body
             # likewise omits gravitational deflection for solar-system bodies, so the
-            # term cancels on both sides -- the reason this is safe is *cancellation*,
+            # term cancels on both sides. The reason this is safe is *cancellation*,
             # NOT smallness (the solar deflection here is ~1-2.5 arcsec, not negligible).
             # The excerpt also lacks the Jupiter barycenter the default deflector set
             # needs, which would otherwise crash skyfield.
@@ -1027,4 +1049,10 @@ class TestTitanSatelliteResolver:
             alt, az, _ = app.altaz()
             a_az, a_el = titan_coords.get_body_altaz("titan", obstime=t)
             sep = titan_coords.angular_separation(a_az, a_el, az.degrees, alt.degrees) * 3600.0
-            assert sep < 1.0, f"{iso}: Titan {sep:.3f} arcsec from skyfield"
+            # Alt/Az (unlike RA/Dec) depends on Earth orientation, and skyfield and astropy
+            # handle predicted IERS EOP slightly differently, so the agreement widens for
+            # epochs past the last measured IERS row (~1 arcsec at the +8 week epoch here)
+            # while astropy still matches gold-standard Horizons under 1 arcsec. 2 arcsec
+            # absorbs that oracle EOP difference and stays ~5 orders of magnitude inside the
+            # barycentric bug this guards (7k-613k arcsec); the RA/Dec skyfield oracle uses 30.
+            assert sep < 2.0, f"{iso}: Titan {sep:.3f} arcsec from skyfield"

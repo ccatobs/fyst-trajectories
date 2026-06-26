@@ -208,8 +208,8 @@ class MinDurationConstraint(Constraint):
         """Return 0.0 if target sets or enters Sun exclusion too soon, 1.0 otherwise.
 
         Forward check: verify the target is still above the elevation limit
-        after ``min_duration`` seconds, and -- when the site has sun
-        avoidance enabled -- that it is still outside the Sun exclusion
+        after ``min_duration`` seconds, and, when the site has sun
+        avoidance enabled, that it is still outside the Sun exclusion
         radius then. The sun forward-check matches the class docstring's
         promise (it previously checked elevation only).
         """

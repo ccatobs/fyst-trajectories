@@ -956,7 +956,7 @@ class TestApplyDetectorOffsetFieldRotation:
         assert not np.allclose(adj_no_rot.az, adj_with_rot.az)
 
     def test_celestial_metadata_does_not_change_projection(self, site):
-        """Same az/el in, same az/el out -- celestial metadata is irrelevant.
+        """Same az/el in, same az/el out: celestial metadata is irrelevant.
 
         Frame-invariance regression for the pa-in-horizon-frame fix: the
         focal-plane-to-az/el projection depends only on (az, el, offset,
@@ -1240,7 +1240,7 @@ class TestEarlyExitZeroOffset:
             .build()
         )
 
-        # dx=dy=0 but instrument_rotation != 0 -- should NOT early-exit
+        # dx=dy=0 but instrument_rotation != 0, should NOT early-exit
         offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=15.0)
         result = apply_detector_offset(trajectory, offset, site)
 
@@ -1418,7 +1418,7 @@ class TestOffsetPathLandsOnTarget:
     must place an off-axis module using the MECHANICAL focal-plane rotation
     only (``nasmyth_sign * el + instrument_rotation``). The ground truth here
     is an *independent* flat-sky (KOSMA-style) forward projection of the
-    rotated offset from the library's adjusted boresight -- plain numpy, no
+    rotated offset from the library's adjusted boresight, plain numpy, no
     library projection functions. Peer references for the pa-free az/el
     projection: SO ``make_source_ces`` (static rotation only), NIKA2
     A&A 637 A71 Sec. 5.1 Eq. 2 (elevation-only Nasmyth-to-altaz matrix), and the
@@ -1484,8 +1484,8 @@ class TestOffsetPathLandsOnTarget:
         # Flat-vs-spherical truncation at rho ~ 1.78 deg and el ~ 36 deg is
         # well under this bound; a frame-model error is > 1 deg (companion test).
         assert miss_deg.max() < 0.05, (
-            f"inner-ring module misses target by up to {miss_deg.max():.3f} deg "
-            "-- the az/el projection is not using the mechanical rotation"
+            f"inner-ring module misses target by up to {miss_deg.max():.3f} deg; "
+            "the az/el projection is not using the mechanical rotation"
         )
 
     def test_pa_in_horizon_frame_would_miss(self):
@@ -1633,13 +1633,13 @@ class TestApplyDetectorOffsetFrameConsistency:
     """Frame-varying regression for a refracted-el input.
 
     Decision (after empirical measurement): keep the physically-correct
-    per-sample ``trajectory.el`` for the mechanical term -- substituting a
+    per-sample ``trajectory.el`` for the mechanical term: substituting a
     single center-vacuum-el would regress the vacuum/live path by ~30-200"
     for extended patterns, far more than the residual leak it would remove.
     Since the pa-in-horizon-frame fix the only frame leak left is the
     mechanical term itself: a ``for_fyst()`` (refracted) input evaluates
     ``nasmyth_sign * el`` at the apparent elevation, differing from vacuum
-    by ``nasmyth_sign * (refraction bump)`` -- a sub-arcsec boresight effect
+    by ``nasmyth_sign * (refraction bump)``, a sub-arcsec boresight effect
     at PrimeCam offset radii. This test documents and bounds that leak; the
     vacuum path remains the reference.
     """
@@ -1666,7 +1666,7 @@ class TestApplyDetectorOffsetFrameConsistency:
         )
 
     def test_refracted_input_leak_is_bounded_arcsec(self, site):
-        # el ~ 36 deg at this epoch -- near the worst case for the leak.
+        # el ~ 36 deg at this epoch, near the worst case for the leak.
         start_time = Time("2026-03-15T09:00:00", scale="utc")
         offset = PRIMECAM_I1  # inner ring rho ~ 1.78 deg
 
@@ -1705,7 +1705,7 @@ class TestApplyDetectorOffsetFrameConsistency:
         traj_vac = self._build(site, start_time, atmosphere=None)
         boresight = apply_detector_offset(traj_vac, offset, site)
 
-        # Mechanical (horizon-frame) rotation -- forward/inverse consistency;
+        # Mechanical (horizon-frame) rotation, forward/inverse consistency;
         # the independent frame-model oracle lives in TestOffsetPathLandsOnTarget.
         phi = compute_focal_plane_rotation(traj_vac.el, site, offset)
         actual_az, actual_el = boresight_to_detector(boresight.az, boresight.el, offset, phi)

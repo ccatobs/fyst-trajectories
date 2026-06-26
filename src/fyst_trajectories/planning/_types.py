@@ -278,7 +278,7 @@ class ArrayFootprint:
         Bridges the ``array_info`` dict schema consumed by Simons
         Observatory's ``schedlib.source.make_source_ces`` to
         fyst-trajectories' :class:`ArrayFootprint`. This is the
-        recommended entry point for SO ``schedlib`` integrators -- one
+        recommended entry point for SO ``schedlib`` integrators: one
         call converts the dict and its radian-valued xi/eta arrays
         into the degree-valued ``ArrayFootprint`` that
         :func:`~fyst_trajectories.plan_source_ces` accepts.
@@ -375,7 +375,7 @@ class ScanBlock:
 # NOTE: ``source_ces`` is intentionally NOT registered here.
 # :class:`SourceCESComputedParams` exists as a static-type schema for
 # :func:`~fyst_trajectories.plan_source_ces` returns, but source-CES is
-# a planner-only scan type -- its downstream consumer is the
+# a planner-only scan type; its downstream consumer is the
 # schedlib fork (``ccatobs/pcam_gen_schedule``) via a future
 # ``policies/fyst.py``, not the in-tree
 # :mod:`fyst_trajectories.overhead` timeline simulator.
@@ -384,7 +384,7 @@ class ScanBlock:
 # ``pong``/``constant_el``/``daisy`` and ``ObservingPatch`` rejects
 # ``"source_ces"`` at construction time, so the table here would only
 # ever be consulted by the planner's own self-check on its return
-# value -- which we now do directly against
+# value, which we now do directly against
 # :attr:`SourceCESComputedParams.__required_keys__` inside
 # :func:`plan_source_ces`. If a future use case wants source-CES blocks
 # in :func:`~fyst_trajectories.overhead.generate_timeline`, add the

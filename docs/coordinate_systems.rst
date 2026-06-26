@@ -80,7 +80,7 @@ Proper Motion
 
 High proper motion stars are handled by ``radec_to_altaz_with_pm()``.
 For trajectory generation (output sent to the ACU), bare
-``Coordinates(site)`` is appropriate -- the ACU applies atmospheric
+``Coordinates(site)`` is appropriate. The ACU applies atmospheric
 refraction downstream. For planning/simulation,
 ``AtmosphericConditions.for_fyst()`` can be passed instead::
 

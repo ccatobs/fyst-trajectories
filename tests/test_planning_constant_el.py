@@ -251,7 +251,7 @@ class TestCEGeometryWrapHandling:
         # With the fix, the duration is the short interval between the
         # two true RA edges crossing el=40.
         assert duration > 0
-        assert duration < 30 * 60  # 30 min -- true value ~10 min for 3 deg width
+        assert duration < 30 * 60  # 30 min; true value ~10 min for 3 deg width
 
     def test_north_transit_planning_succeeds(self, site):
         """End-to-end: ``plan_constant_el_scan`` works for a north-transiting source.
@@ -288,7 +288,7 @@ class TestPlanConstantElLsaWindow:
 
         The full Deep56 patch from sourcelist_CE.csv spans 60 deg in RA
         (23:00 -> 03:00 wraps) and 14 deg in Dec, but a 60 deg physical field
-        would overflow the azimuth limits -- the legacy LSA pipeline
+        would overflow the azimuth limits. The legacy LSA pipeline
         sweeps the patch piecewise, not as a single 60-deg-wide raster.
         For LSA-window unit tests we only need any FieldRegion that
         coexists with the legal azimuth range; the LSA branch is
@@ -389,7 +389,7 @@ class TestPlanConstantElLsaWindow:
         assert t_r < t_s
 
     def test_lsa_window_equal_endpoints_raises(self, site, deep56_field, deep56_search_time):
-        """Equal endpoints produce a zero-duration window -- refused."""
+        """Equal endpoints produce a zero-duration window, refused."""
         with pytest.raises(ValueError, match="zero-duration"):
             plan_constant_el_scan(
                 field=deep56_field,
@@ -417,7 +417,7 @@ class TestPlanConstantElLsaWindow:
 
         Pick a start_time where LST is just past 100 deg and search only
         0.5 hours forward (~ 7.5 deg of LSA travel) for a target of
-        100 deg -- the increasing-direction crossing will already be in
+        100 deg, the increasing-direction crossing will already be in
         the past.
         """
         coords = Coordinates(site)
@@ -541,7 +541,7 @@ class TestPlanConstantElLsaWindow:
         dt = np.arange(0, 24 * 3600, 30.0)
         times = sample_anchor + dt * u.s
         lsa = np.asarray(coords.get_lst(times))
-        # First index where LSA is in [358, 359.5] -- gives ~2-7 minutes
+        # First index where LSA is in [358, 359.5], gives ~2-7 minutes
         # before the wrap crossing.
         idx_arr = np.flatnonzero((lsa > 358.0) & (lsa < 359.5))
         assert len(idx_arr) > 0
@@ -576,7 +576,7 @@ class TestPlanConstantElLsaWindow:
 
         With the legacy straddle test ``(lsa - 0.0001) * (lsa_next - 0.0001) < 0``,
         consecutive samples like ``(359.9, 0.1)`` produce a negative product
-        only if both factors have opposite sign -- but both are positive after
+        only if both factors have opposite sign, but both are positive after
         the ``% 360`` wrap. The unwrap fix recognises the crossing.
 
         Uses the helper directly to keep the test focused on the
@@ -736,7 +736,7 @@ class TestPlanConstantElLsaWindow:
         fit inside telescope limits (a separate concern).
         """
         coords = Coordinates(site)
-        # 120 deg / 15 = 8 hours -- past the 6 h threshold.
+        # 120 deg / 15 = 8 hours, past the 6 h threshold.
         with pytest.warns(PointingWarning, match="long"):
             _compute_ce_duration_from_lsa(
                 lsa_window=(22.0, 142.0),

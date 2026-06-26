@@ -8,18 +8,18 @@ returns a per-target :class:`ObservabilityReport`, it never builds a trajectory,
 and it never raises for an unobservable target (the reason is reported, not
 excepted).
 
-It is intentionally importable in isolation -- it depends only on
+It is intentionally importable in isolation: it depends only on
 :mod:`fyst_trajectories.coordinates` and :mod:`fyst_trajectories.site` (astropy +
 numpy underneath) and does **not** import the offline ``overhead`` simulator.
 
 Two physically distinct kinds of avoidance are kept structurally separate:
 
-* **Sun** -- always-on thermal/hardware safety, read from
+* **Sun**: always-on thermal/hardware safety, read from
   ``site.sun_avoidance`` (45 deg by default). Reported in the dedicated
   ``sun_separation_deg`` / ``sun_clear`` fields with a
   :attr:`ReasonCode.SUN_TOO_CLOSE` reason. It is never an :class:`AvoidZone` and
   cannot be weakened via the ``avoid`` list.
-* **Bright-source contamination** -- caller-specified, variable, per-body
+* **Bright-source contamination**: caller-specified, variable, per-body
   exclusion zones (the Moon, Jupiter, ...). Reported as
   :class:`AvoidSeparation` entries with an :attr:`ReasonCode.AVOID_TOO_CLOSE`
   reason. There are **no library default zones**: every :class:`AvoidZone`
@@ -288,7 +288,7 @@ class AvoidZone:
         """Build from a ``(body, zone)`` pair, accepting ``'3deg'``/``'3'``/``3.0``.
 
         Convenience for a scheduler wrapper parsing the ``AVOID`` list. A pair
-        with a missing or empty zone raises ``ValueError`` -- it never silently
+        with a missing or empty zone raises ``ValueError``; it never silently
         defaults.
 
         Parameters
@@ -352,7 +352,7 @@ class AvoidSeparation:
     Parameters
     ----------
     body : str
-        The contaminating body -- the caller-supplied body name (not the
+        The contaminating body, the caller-supplied body name (not the
         resolved proxy/canonical body).
     zone_deg : float
         The caller-supplied exclusion radius (degrees).
@@ -539,8 +539,8 @@ def check_observability(
     ``avoid``); the ``avoid`` list is exclusively for caller-specified
     bright-source contamination zones, each carrying its own radius. A target
     is never excluded by its own glare (self-exclusion: an :class:`AvoidZone`
-    whose body matches the target's resolved position body -- ``parent_body``
-    for a SATELLITE, ``name`` for a BODY -- is skipped).
+    whose body matches the target's resolved position body, ``parent_body``
+    for a SATELLITE, ``name`` for a BODY, is skipped).
 
     Parameters
     ----------
@@ -571,13 +571,13 @@ def check_observability(
         built-in calibrators.
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
         position is clear of the Sun. ``None`` (default) keeps the built-in
         scalar exclusion-radius check (the existing vectorised
         ``sun_separation > exclusion_radius`` computation, unchanged). When a
         predicate is injected it is consulted per grid sample
-        ``(az_i, el_i, time_i)`` instead -- so the directional sun-avoidance
+        ``(az_i, el_i, time_i)`` instead, so the directional sun-avoidance
         model (future shared library) drives the ``sun_clear`` /
         :attr:`ReasonCode.SUN_TOO_CLOSE` verdict end-to-end. The reported
         ``sun_separation_deg`` is still the geometric Sun separation

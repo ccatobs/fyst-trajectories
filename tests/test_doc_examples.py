@@ -1,7 +1,7 @@
 """Value/outcome assertions for specific documentation examples.
 
 This module holds the value-bearing checks for selected documentation
-examples -- the invariants, error/warning behaviours, and regression
+examples, the invariants, error/warning behaviours, and regression
 guards that go beyond "this snippet runs". Pure execution coverage for
 every code block in ``docs/*.rst`` lives in
 ``tests/test_doc_examples_rst.py``, which extracts and runs each block,
@@ -37,7 +37,7 @@ from fyst_trajectories.patterns import (
 )
 
 # NOTE: Many test functions below contain function-level imports that duplicate
-# the module-level imports above.  This is intentional -- each test mirrors a
+# the module-level imports above.  This is intentional, each test mirrors a
 # code snippet from the RST documentation, so the imports inside the function
 # must match what the docs show the user.  Do not hoist them to module level.
 
@@ -103,7 +103,7 @@ def test_quickstart_proper_motion():
     assert isinstance(az, float)
     assert isinstance(el, float)
     # 10.3"/yr proper motion over ~11 yr shifts the apparent position ~0.0315 deg
-    # from the zero-PM transform -- a real correction, not a no-op.
+    # from the zero-PM transform, a real correction, not a no-op.
     az0, el0 = coords.radec_to_altaz(269.452, 4.693, obstime=Time("2026-06-15T04:00:00"))
     sep = np.hypot((az - az0) * np.cos(np.radians(el)), el - el0)
     assert sep == pytest.approx(0.0315, abs=0.01)
@@ -464,7 +464,7 @@ def test_planning_plan_pong_scan_chandra_deep_field_observable(start_iso):
     The Chandra Deep Field South is below the horizon at FYST at
     2026-03-15T04:00:00 (the previously-broken example time).  It is
     observable at 2026-03-15T22:12:00 (the corrected time).  This
-    parametrized test locks the corrected time in place -- if someone
+    parametrized test locks the corrected time in place. If someone
     reverts it to an unobservable value, this test will fail loudly.
     """
     from astropy.time import Time
@@ -526,7 +526,7 @@ def test_get_rise_set_times_handles_no_set_within_window():
         assert isinstance(rise_iso, str)
         assert isinstance(set_iso, str)
     else:
-        # At least one of rise or set_ is None -- that's allowed and must
+        # At least one of rise or set_ is None, that's allowed and must
         # not raise.
         pass
 

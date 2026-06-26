@@ -1,7 +1,7 @@
 """Dispatch-time helpers for commanding the telescope.
 
-These functions run at *dispatch* (command) time in the execution layer -- for
-example inside a PCS scan task, just before it slews to a scan's start point --
+These functions run at *dispatch* (command) time in the execution layer (for
+example inside a PCS scan task, just before it slews to a scan's start point),
 not at planning time. They turn a goal sky position into a concrete encoder
 command, choosing among the telescope's redundant azimuth-wrap solutions so the
 commanded slew is sun-safe.
@@ -35,18 +35,18 @@ class SunSafePredicate(Protocol):
     This is **the** interface a sun-avoidance check must implement to be injected
     into :func:`choose_encoder_solution` via its ``sun_safe`` parameter. It is a
     structural :class:`typing.Protocol`, so any callable with the matching
-    signature satisfies it -- no base class or registration is required.
+    signature satisfies it; no base class or registration is required.
 
     The current default binding is the scalar exclusion check
     :meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe` (a single
     isotropic radius). The intended future implementer is the shared FYST
-    directional sun-avoidance library (a 50--90 deg direction-dependent CAD
+    directional sun-avoidance library (a 50-90 deg direction-dependent CAD
     table, plus the non-trapping / "pocket" escapability logic): it implements
     *this* signature and is dropped in through the ``sun_safe`` seam with **no
     change to any call site**. The scalar default and the directional model are
     interchangeable precisely because both honour this contract.
 
-    The query is instantaneous -- a single ``(az, el, time)`` point. Dwell /
+    The query is instantaneous, a single ``(az, el, time)`` point. Dwell /
     exit-window ("how soon does the Sun enter this wrap") logic is *not* part of
     this contract; it belongs to the future directional model's internal state,
     not its per-point verdict.
@@ -121,8 +121,8 @@ def choose_encoder_solution(
         Telescope site, providing the azimuth/elevation limits and (for the
         default ``sun_safe``) the sun-avoidance configuration.
     sun_safe : SunSafePredicate, optional
-        Sun-safety predicate implementing the :class:`SunSafePredicate` contract
-        -- ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the encoder
+        Sun-safety predicate implementing the :class:`SunSafePredicate` contract,
+        ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the encoder
         position is clear of the Sun. Defaults to
         :meth:`~fyst_trajectories.coordinates.Coordinates.is_sun_safe` (a scalar
         exclusion radius). This is the seam for the directional sun-avoidance
@@ -148,9 +148,9 @@ def choose_encoder_solution(
     in-range candidates this returns the one closest to ``current_az`` (smallest
     azimuth travel), tie-broken toward the larger margin to the azimuth travel
     limits. This matches the Simons Observatory scheduler's minimise-angular-
-    deviation objective. The "non-trapping / pocket" refinement -- choosing a wrap
+    deviation objective. The "non-trapping / pocket" refinement, choosing a wrap
     you can always escape from to the next target over the asymmetric directional
-    avoidance map -- is future work that belongs in the shared sun-avoidance
+    avoidance map, is future work that belongs in the shared sun-avoidance
     library; it plugs in here through ``sun_safe`` (and a richer selection step)
     without changing this function's call sites.
 
@@ -160,7 +160,7 @@ def choose_encoder_solution(
     that solution is admitted, ``current_el`` will inform the choice.
 
     **The default sun test is instantaneous.** ``Coordinates.is_sun_safe`` checks the
-    angular separation at ``obstime`` only -- it has no notion of how soon the Sun
+    angular separation at ``obstime`` only; it has no notion of how soon the Sun
     enters a wrap (dwell / exit-window). That ``min_sun_time``-style logic belongs in
     the future directional / non-trapping model supplied via ``sun_safe``.
 

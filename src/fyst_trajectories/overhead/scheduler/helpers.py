@@ -149,7 +149,7 @@ def _time_until_sun_unsafe(
     separation first drops below *min_sun_angle*. Mirrors
     :func:`_time_until_set` (which checks elevation) so the pong/daisy
     duration clip can trim a scan that drifts into the exclusion radius
-    mid-scan -- the same sun-safety guarantee the constant_el branch gets
+    mid-scan, the same sun-safety guarantee the constant_el branch gets
     from :func:`get_observable_windows`.
 
     Returns *max_duration* if the source never enters the exclusion zone.

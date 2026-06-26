@@ -3,7 +3,7 @@
 Under FYST Architecture 3 the survey planner (KOSMA ``fystplan``) writes
 per-source scan parameters into OpsDB; at dispatch time the PCS typed scan
 task reads them back and calls the matching ``plan_*_scan`` planner in this
-library. There is no shared schema module between the two sides -- the field
+library. There is no shared schema module between the two sides. The field
 names are coupled only by an *implicit* adapter. This test pins that adapter
 explicitly so a future rename on **either** side fails loudly here instead of
 silently mis-dispatching a scan at the telescope.
@@ -14,10 +14,10 @@ The OpsDB scan parameters are carried in the ``mapping_parameters`` /
 The fystplan emit functions whose dict literals are the source of truth for
 the fixtures below (read-only; never edited by this repo):
 
-* Pong  -- ``fystplan/PrimeCam_planning/create_PrimeCam_sourcecatalog.py``
+* Pong  - ``fystplan/PrimeCam_planning/create_PrimeCam_sourcecatalog.py``
   ``get_pong_params`` (dict at lines ~1196-1213).
-* Daisy -- same file, ``get_daisy_params`` (dict at lines ~1266-1271).
-* CE    -- same file, ``create_entry_constant_elevation`` (the ``list_az_table``
+* Daisy - same file, ``get_daisy_params`` (dict at lines ~1266-1271).
+* CE    - same file, ``create_entry_constant_elevation`` (the ``list_az_table``
   ``s`` dict + the ObsUnit ``nominal_alt`` carrier + the ``onsky_velocity``
   ``mapping_params`` carrier).
 
@@ -42,7 +42,7 @@ that if either side ever drifts to the singular, this test catches it.
 fystplan omits ``start_acceleration`` and ``y_offset`` from its daisy dict
 entirely (it specifies no ramp acceleration). ``y_offset`` is covered by the
 ``plan_daisy_scan`` default (0.0); ``start_acceleration`` is a *required*
-planner parameter with **no default** -- the dispatch-time adapter must supply
+planner parameter with **no default**. The dispatch-time adapter must supply
 it from an instrument-owned source, not from OpsDB. That gap is asserted here so
 it cannot be forgotten.
 """
@@ -151,7 +151,7 @@ def fystplan_pong_dict_angle_var() -> dict:
     fystplan emits ``angle_var`` (an int selector for a per-pass variable
     rotation) in place of ``angle``. This library has no ``angle_var`` analogue
     (recommendations 2026-05-28 section 5 flags it "semantic" / no fyst-traj
-    analogue), so the adapter cannot map it to a planner kwarg -- the test below
+    analogue), so the adapter cannot map it to a planner kwarg. The test below
     asserts the gap explicitly.
     """
     return {
@@ -214,7 +214,7 @@ def test_rename_map_targets_are_known_planner_params():
         accepted |= _planner_param_names(fn)
     unknown = set(RENAME_MAP.values()) - accepted
     assert not unknown, (
-        f"rename-map targets not accepted by any planner: {sorted(unknown)} -- "
+        f"rename-map targets not accepted by any planner: {sorted(unknown)}, "
         f"a planner kwarg was renamed; update RENAME_MAP to match"
     )
 
@@ -261,7 +261,7 @@ def test_pong_required_params_are_all_satisfiable(fystplan_pong_dict):
 def test_pong_adapter_builds_a_valid_planner_call(site, fystplan_pong_dict):
     """End-to-end: the adapter output actually drives ``plan_pong_scan``.
 
-    This is the strongest form of the contract -- it constructs the real planner
+    This is the strongest form of the contract. It constructs the real planner
     call from the fystplan dict (+ dispatch infra) and runs it. If any rename or
     structural step is wrong, this raises ``TypeError`` (bad kwargs) or a planner
     error rather than passing silently.
@@ -334,7 +334,7 @@ def test_daisy_required_params_coverage_and_gaps(fystplan_daisy_dict):
     fystplan supplies the geometry (radius/turn_radius/avoidance_radius/velocity)
     and the source position is dispatch-supplied (ra/dec), but
     ``start_acceleration`` is required with no default and is NOT in the fystplan
-    dict -- the adapter must source it elsewhere (instrument-owned ramp accel).
+    dict, so the adapter must source it elsewhere (instrument-owned ramp accel).
     """
     mapped = _apply_rename(fystplan_daisy_dict)
     required = _required_planner_params(plan_daisy_scan)
@@ -351,7 +351,7 @@ def test_daisy_required_params_coverage_and_gaps(fystplan_daisy_dict):
     # The geometry params must come from fystplan.
     assert {"radius", "turn_radius", "avoidance_radius", "velocity"} <= covered_by_fystplan
     # The only required param neither fystplan nor standard dispatch infra
-    # supplies is start_acceleration -- the documented A->C gap. If this set
+    # supplies is start_acceleration, the documented A->C gap. If this set
     # changes (e.g. the planner adds another required param, or fystplan starts
     # emitting acceleration), this assertion fails and the contract must be
     # revisited.
@@ -367,7 +367,7 @@ def test_daisy_y_offset_is_covered_by_default():
 
     Unlike ``start_acceleration``, ``y_offset`` is optional, so the adapter need
     not supply it. This pins that asymmetry: if ``y_offset`` ever became required
-    (lost its default), the contract -- and the dispatch adapter -- would need to
+    (lost its default), the contract, and the dispatch adapter, would need to
     source it, and this test would fail.
     """
     optional = _planner_param_names(plan_daisy_scan) - _required_planner_params(plan_daisy_scan)
@@ -403,8 +403,8 @@ def test_daisy_adapter_builds_a_valid_planner_call(site, fystplan_daisy_dict):
 def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     """CE is structural: fystplan az-window keys map to planner-derived state.
 
-    ``plan_constant_el_scan`` does not accept az_min/az_max/duration directly --
-    it *derives* the az range and duration from the field + elevation (or from
+    ``plan_constant_el_scan`` does not accept az_min/az_max/duration directly.
+    It *derives* the az range and duration from the field + elevation (or from
     the ``lsa_window`` partial bridge). The only direct scalar rename is
     ``onsky_velocity`` -> ``velocity``; ``nominal_alt`` -> ``elevation`` is a
     semantic (not literal) rename handled by the structural adapter. This test
@@ -428,9 +428,9 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     )
 
     # The lsa_window kwarg is the documented partial bridge for the az-window /
-    # LSA-window inputs -- assert it still exists so the structural path holds.
+    # LSA-window inputs. Assert it still exists so the structural path holds.
     assert "lsa_window" in accepted, (
-        "CE: plan_constant_el_scan lost lsa_window -- the A->C structural bridge "
+        "CE: plan_constant_el_scan lost lsa_window, the A->C structural bridge "
         "for fystplan's min_lsa/max_lsa az-window is gone"
     )
 
@@ -483,7 +483,7 @@ def test_source_ces_required_keyword_only_params():
         f"plan_source_ces required params changed: {sorted(required)}"
     )
     # All params are keyword-only (the leading ``*`` makes the whole signature
-    # keyword-only) -- the adapter must pass everything by keyword.
+    # keyword-only). The adapter must pass everything by keyword.
     kinds = {
         p.kind
         for p in inspect.signature(plan_source_ces).parameters.values()

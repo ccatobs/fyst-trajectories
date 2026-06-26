@@ -6,11 +6,11 @@ constraints, and scan velocities into full pattern configurations. Planning
 functions exist only where there is non-trivial computation bridging the
 astronomer's inputs and the pattern config:
 
-- **Pong** -- computes the Pong period from field dimensions, spacing, and
+- **Pong** - computes the Pong period from field dimensions, spacing, and
   velocity.
-- **Constant-El** -- finds RA-edge elevation crossings to determine timing,
+- **Constant-El** - finds RA-edge elevation crossings to determine timing,
   derives the azimuth range and ``n_scans`` automatically.
-- **Daisy** -- convenience wrapper; parameters map nearly 1:1 to the config.
+- **Daisy** - convenience wrapper; parameters map nearly 1:1 to the config.
 
 Sidereal, planet, and linear patterns have no non-trivial planning step;
 :class:`~fyst_trajectories.patterns.TrajectoryBuilder` can be used directly.
@@ -274,7 +274,7 @@ that sweeps the source over the array. It mirrors Simons Observatory's
 ``schedlib.source.make_source_ces`` (intended consumer: a future
 ``schedlib/policies/fyst.py``).
 
-Worked example -- Jupiter rising across the full PrimeCam array::
+Worked example, Jupiter rising across the full PrimeCam array::
 
     from astropy.time import Time
 
@@ -323,11 +323,11 @@ Params-only mode (emit-time)
 arguments as :func:`~fyst_trajectories.planning.plan_source_ces` (minus
 ``timestep``) and returns just the scalar
 :class:`~fyst_trajectories.planning.SourceCESComputedParams` dict, skipping
-trajectory generation -- the downstream consumer is a scheduler policy (our
+trajectory generation. The downstream consumer is a scheduler policy (our
 ``schedlib`` fork) that emits a ``run.acu.source_scan(...)`` line and discards
 the trajectory.
 
-Worked example -- the same Jupiter input as the section above, scalars
+Worked example, the same Jupiter input as the section above, scalars
 only::
 
     from astropy.time import Time
@@ -377,16 +377,16 @@ containing:
     exact key set is documented by a :class:`typing.TypedDict` schema
     per scan type:
 
-    - **Pong** -- :class:`~fyst_trajectories.planning.PongComputedParams`
+    - **Pong** - :class:`~fyst_trajectories.planning.PongComputedParams`
       (``period``, ``x_numvert``, ``y_numvert``, ``n_cycles``).
-    - **Constant-El (auto)** --
+    - **Constant-El (auto)** -
       :class:`~fyst_trajectories.planning.ConstantElComputedParams`
       (``az_start``, ``az_stop``, ``az_throw``, ``n_scans``,
       ``start_time_iso``, ``end_time_iso``, ``duration``).
-    - **Daisy** --
+    - **Daisy** -
       :class:`~fyst_trajectories.planning.DaisyComputedParams`
       (``duration``).
-    - **Source CES** --
+    - **Source CES** -
       :class:`~fyst_trajectories.planning.SourceCESComputedParams`
       (``az_start``, ``az_throw``, ``v_az``, ``el_bore``,
       ``boresight_rot``, ``t0_iso``, ``t1_iso``, ``duration``,

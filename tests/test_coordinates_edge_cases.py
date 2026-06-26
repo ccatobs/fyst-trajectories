@@ -248,7 +248,7 @@ class TestParallacticAngleEdgeCases:
         A source at ``dec ~ latitude`` transits within a fraction of a degree
         of the zenith, where the parallactic angle is ill-conditioned: it is
         undefined exactly at the zenith and swings through 180 deg at transit.
-        The AltAz-form computation must remain finite -- it is **not** ~ 0 here
+        The AltAz-form computation must remain finite. It is **not** ~ 0 here
         (the old HA-form only returned 0 by the ``atan2(0, 0)`` coincidence of
         forming HA = LST - RA with RA = LST).
         """
@@ -276,7 +276,7 @@ class TestFieldRotationEdgeCases:
         degree of the zenith, where the parallactic angle is ill-conditioned
         (it is *not* ~ 0, so the field rotation is not ~ elevation either). The
         robust near-zenith invariant is simply that the computation stays
-        finite -- it must not blow up to NaN/Inf at the singularity.
+        finite, it must not blow up to NaN/Inf at the singularity.
         """
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 

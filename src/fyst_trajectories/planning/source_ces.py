@@ -87,7 +87,7 @@ _MIN_PER_LEG_VELOCITY_DEG_S = 0.05
 
 # Number of samples drawn along the planned arc for the sun-safety
 # sweep (see ``_check_arc_sun_safety``). 60 samples over a typical 10-minute arc gives ~10 s
-# resolution -- finer than the sun's apparent motion (~15"/s) and the
+# resolution, finer than the sun's apparent motion (~15"/s) and the
 # array's footprint extent.
 _SUN_SAFETY_ARC_N_SAMPLES = 60
 
@@ -261,7 +261,7 @@ def _sample_source_altaz(
         return coords.get_body_altaz(body, times)
     if pm_ra != 0.0 or pm_dec != 0.0:
         # radec_to_altaz_with_pm is scalar-time only; loop. For the typical
-        # 30 s x 24 h = 2880 samples this is ~0.5 s in practice -- acceptable
+        # 30 s x 24 h = 2880 samples this is ~0.5 s in practice, acceptable
         # for a planning call and avoids forcing a vectorised PM variant.
         # If it becomes a bottleneck, vectorise in Coordinates.
         n = len(times)
@@ -512,7 +512,7 @@ def _compute_source_ces_core(
         # Auto-detect: choose the mode of the longest arc that contains
         # ``el_bore``. If no arc covers ``el_bore`` we raise immediately
         # with the global el span (no silent fall-back to the longest
-        # arc -- that would defer the failure to the el-slice guard below with a confusing
+        # arc; that would defer the failure to the el-slice guard below with a confusing
         # error message).
         candidate_arcs = [
             arc
@@ -607,7 +607,7 @@ def _compute_source_ces_core(
         )
 
     # interp1d wants sorted x. For rising slice el is increasing; for
-    # setting slice el is decreasing -- sort by el value either way.
+    # setting slice el is decreasing; sort by el value either way.
     sort_idx = np.argsort(el_slice)
     el_sorted = el_slice[sort_idx]
     t_sorted = t_slice[sort_idx]
@@ -660,10 +660,10 @@ def _compute_source_ces_core(
     else:
         center_offset = InstrumentOffset(dx=fp.center_xi_deg * 60.0, dy=fp.center_eta_deg * 60.0)
         # Mechanical focal-plane rotation at el_bore (horizon-frame
-        # projection -- the parallactic angle is a horizon-to-celestial
+        # projection, the parallactic angle is a horizon-to-celestial
         # quantity and does not enter).
         # ``compute_focal_plane_rotation`` only reads
-        # ``offset.instrument_rotation`` -- it ignores ``dx``/``dy`` -- so
+        # ``offset.instrument_rotation``, it ignores ``dx``/``dy``, so
         # the offset is interchangeable for the rotation computation.
         # Use a zero-offset stub here for clarity (``instrument_rotation``
         # defaults to 0). ``center_offset`` is retained for the
@@ -698,7 +698,7 @@ def _compute_source_ces_core(
 
     # Mechanical field rotation for the cover projection (horizon-frame,
     # as in the az_bore recovery above). Uses a zero-offset
-    # InstrumentOffset (no per-module instrument_rotation -- the cover
+    # InstrumentOffset (no per-module instrument_rotation; the cover
     # vertices already carry their own focal-plane positions).
     cover_field_rot = float(
         compute_focal_plane_rotation(
@@ -816,8 +816,8 @@ def _compute_source_ces_core(
         az_start = (az_start - (az_branch - 180.0)) % 360.0 + (az_branch - 180.0)
         az_stop = az_start + az_throw
 
-    # Probe three azimuth positions per time sample -- the low edge, the
-    # midpoint, and the high edge of the sweep -- so that a scan whose
+    # Probe three azimuth positions per time sample (the low edge, the
+    # midpoint, and the high edge of the sweep) so that a scan whose
     # midpoint clears the exclusion radius but whose +/-throw/2 edges do
     # not is still caught. Sun motion within a single sweep is
     # negligible (~15"/s << az_throw), so reusing the same time at all
@@ -876,7 +876,7 @@ def _compute_source_ces_core(
     }
     # Direct self-check against the TypedDict's required keys.
     # ``source_ces`` is intentionally not registered in
-    # :data:`fyst_trajectories.planning._types._SCAN_TYPE_TO_KEYS` --
+    # :data:`fyst_trajectories.planning._types._SCAN_TYPE_TO_KEYS`;
     # see the note there for the planning<->overhead boundary rationale.
     _missing = SourceCESComputedParams.__required_keys__ - computed.keys()
     if _missing:
@@ -1234,7 +1234,7 @@ def plan_source_ces(
         observations and cross-checks.
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
         position is clear of the Sun. ``None`` (default) keeps the built-in
         scalar exclusion-radius check along the planned arc; an injected

@@ -5,7 +5,7 @@ into the fyst_overhead package did not alter behavior. Expected values
 were computed once from a known-good run and hardcoded as anchors.
 
 Any change to these values means the timeline generation algorithm
-changed -- which requires explicit acknowledgment and updating the
+changed, which requires explicit acknowledgment and updating the
 anchors.
 """
 
@@ -27,7 +27,7 @@ def regression_timeline():
 
     Uses two patches (one CE scan, one Pong scan) with an 8-hour
     nighttime window. The COSMOS patch is below elevation limits
-    during this window, so only Deep56 is scheduled -- this is
+    during this window, so only Deep56 is scheduled. This is
     intentional and tests the constraint system.
     """
     site = get_fyst_site()
@@ -75,7 +75,7 @@ class TestRegressionTimeline:
     """Verify that timeline generation produces known-good outputs.
 
     These anchors were computed from the initial extraction and serve
-    as regression baselines. Tolerances are tight -- any significant
+    as regression baselines. Tolerances are tight, any significant
     change signals an algorithm or API change.
     """
 

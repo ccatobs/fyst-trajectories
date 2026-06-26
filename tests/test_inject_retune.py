@@ -207,7 +207,7 @@ class TestInjectRetuneTurnaroundSnapping:
         """With turnarounds at retune due times, snapping should use them.
 
         Creates a synthetic trajectory with turnarounds at 28-31s,
-        58-61s, 88-91s -- near the 30s, 60s, 90s due times. With
+        58-61s, 88-91s, near the 30s, 60s, 90s due times. With
         prefer_turnarounds=True, retunes should snap to these and
         preserve more (or equal) science samples than time-based
         placement.
@@ -403,11 +403,11 @@ class TestInjectRetuneStaggered:
         """Combined science_mask from all 7 modules should have better coverage."""
         traj = _make_trajectory(duration=300.0, timestep=0.1)
 
-        # Single module (no staggering) -- baseline
+        # Single module (no staggering), baseline
         single = inject_retune(traj, retune_interval=30.0, retune_duration=5.0, n_modules=1)
         single_fraction = single.science_mask.sum() / len(single.times)
 
-        # 7 staggered modules -- combined mask is True where ANY module is observing
+        # 7 staggered modules, combined mask is True where ANY module is observing
         module_masks = []
         for i in range(7):
             result = inject_retune(
@@ -933,7 +933,7 @@ class TestInjectRetuneEventList:
         ]
         assert not skips
 
-        # At least some retune samples must be present -- clipped but not empty.
+        # At least some retune samples must be present, clipped but not empty.
         retune_mask = result.scan_flag == SCAN_FLAG_RETUNE
         assert retune_mask.any()
         # And they must all lie within the trajectory bounds.
@@ -963,7 +963,7 @@ class TestInjectRetuneEventList:
         events = [RetuneEvent(t_start=30.0, duration=10.0)]
         result = inject_retune(traj, retune_events=events)
 
-        # No SCAN_FLAG_RETUNE samples -- all would-be retune samples were
+        # No SCAN_FLAG_RETUNE samples: all would-be retune samples were
         # already SCAN_FLAG_TURNAROUND and remain so.
         assert not (result.scan_flag == SCAN_FLAG_RETUNE).any()
         # Turnaround count unchanged.
@@ -998,7 +998,7 @@ class TestInjectRetuneEventList:
 
     def test_event_list_with_prefer_turnarounds_no_turnaround_nearby(self):
         """Event far from any turnaround uses caller's t_start verbatim."""
-        # Turnaround at 10-12s. Event at 70s -- window=5.0 should find
+        # Turnaround at 10-12s. Event at 70s, window=5.0 should find
         # no turnaround nearby, so placement is literal.
         traj = _make_trajectory(
             duration=120.0,
@@ -1207,13 +1207,13 @@ class TestInjectRetuneMetadataPreservation:
         ]
         result = inject_retune(traj, retune_events=events)
 
-        # Pattern accessors must still work -- the B1 blocker.
+        # Pattern accessors must still work, the B1 blocker.
         assert result.pattern_type == "pong"
         assert result.center_ra == 180.0
         assert result.center_dec == -30.0
         assert result.pattern_params == {"width": 2.0, "height": 2.0}
 
-        # Metadata is the exact same object -- we don't mutate it.
+        # Metadata is the exact same object, we don't mutate it.
         assert result.metadata is traj.metadata
 
         # The new first-class field carries the sorted event tuple.

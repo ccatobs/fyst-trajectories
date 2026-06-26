@@ -1,7 +1,7 @@
 """Scheduling utility functions.
 
 Provides slew time estimation, observable window computation, transit time
-calculation, and maximum elevation lookup -- small utilities that fill gaps
+calculation, and maximum elevation lookup, small utilities that fill gaps
 in the fyst-trajectories API needed by the scheduler.
 """
 
@@ -356,7 +356,7 @@ def _find_set_time(
 
     Used when the source is currently above min_elevation and
     ``get_rise_set_times`` returned ``(None, None)`` because no rise was
-    found -- the source may still set within the window.
+    found; the source may still set within the window.
 
     Parameters
     ----------

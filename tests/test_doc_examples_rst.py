@@ -12,7 +12,7 @@ A few pages assume the reader already holds an object (a built ``trajectory`` / 
 a ``timeline``) or a file (``retunes.csv``); the guard seeds those rather than cluttering
 the docs with boilerplate setup. A small set of blocks are illustrative by design
 (abbreviated ``...`` placeholders, agent-internal pseudo-code, a live HTTP ``POST``, and a
-literal CSV schema) and are skipped with a recorded reason -- see :data:`_SKIP`.
+literal CSV schema) and are skipped with a recorded reason, see :data:`_SKIP`.
 
 Strictness is "executes without error": a block passes if it runs to completion with no
 exception. ``PointingWarning`` advisories (e.g. acceleration-limit notes from the compact

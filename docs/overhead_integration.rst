@@ -31,11 +31,11 @@ operations stack.
      - **Tactical scheduler / command emission.** Given a prioritized
        block list for one night, interleave science with calibrations
        and slews and emit executable commands.
-     - **Live:** ``simonsobs/scheduler`` (schedlib) -- needs a new
+     - **Live:** ``simonsobs/scheduler`` (schedlib). Needs a new
        ``policies/fyst.py`` (not yet written) that subclasses
        ``TelPolicy`` and uses fyst-trajectories for FYST astronomy.
        Emits a Python script of ``sorunlib`` calls.
-       **Offline simulation:** this subpackage --
+       **Offline simulation:** this subpackage,
        :func:`~fyst_trajectories.overhead.generate_timeline` produces a
        realistic minute-by-minute ECSV for survey-design studies and
        hitmap accumulation in ``primecam_camera_mapping_simulations``.
@@ -87,7 +87,7 @@ use a separate stack::
                                                                    Vertex ACU
 
 
-fyst-trajectories sits *underneath* both lanes -- the core library (Site,
+fyst-trajectories sits *underneath* both lanes. The core library (Site,
 Coordinates, Patterns, Planning, Offsets, PrimeCam geometry) is imported
 in both. The ``overhead`` subpackage itself is only used in the sim lane.
 
@@ -99,7 +99,7 @@ functions are called by ``overhead.generate_timeline`` (sim lane) and by
 live PCS ACU-agent tasks (ops lane). This guarantees the sim's wall-clock
 prediction matches what the telescope will actually execute when the same
 parameters are submitted by ``schedlib``. It is *not*, however, a contract
-between the overhead-emitted ECSV and the live execution -- the ECSV is a
+between the overhead-emitted ECSV and the live execution. The ECSV is a
 sim artifact, not the schedule the telescope reads.
 
 Retunes are planning-side only
@@ -107,7 +107,7 @@ Retunes are planning-side only
 
 :func:`~fyst_trajectories.inject_retune` is used to mark sample-level
 retune flags for accurate sim hitmaps (which exclude retune-flagged
-samples from coverage). It is not called at execution time --
+samples from coverage). It is not called at execution time;
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` does not call
 it. At real execution, retunes are triggered by the Prime-Cam SMuRF
 readout (via ``sorunlib.smurf`` calls in the Nextline-executed script),
@@ -146,7 +146,7 @@ control.
    * - **Layer 2 (block-level)**: calibration cadences and activity durations
      - Operations / commissioning team
      - ``CalibrationPolicy`` cadences, ``OverheadModel`` durations. Reflect
-       site atmosphere, telescope settling, and calibration strategy -- not
+       site atmosphere, telescope settling, and calibration strategy, not
        per-proposal knobs.
    * - **Per-proposal**: what to observe
      - Astronomer
@@ -166,15 +166,15 @@ exploratory scripts.
    The overhead subpackage is a planning-time tool and should **not** be
    called from a live observing loop. At execution time the orchestrator
    should read a pre-computed ECSV, then regenerate motion arrays from
-   the stored ``ScanBlock`` metadata -- not re-run the scheduler
+   the stored ``ScanBlock`` metadata, not re-run the scheduler
    mid-night.
 
 Related Reading
 ---------------
 
-* :doc:`overhead_quickstart` -- minimal working example.
-* :doc:`overhead_timeline` -- ``generate_timeline`` walk-through with
+* :doc:`overhead_quickstart` - minimal working example.
+* :doc:`overhead_timeline` - ``generate_timeline`` walk-through with
   per-patch and per-calibration breakdowns.
-* :doc:`overhead_model` -- field-by-field reference for ``OverheadModel``
+* :doc:`overhead_model` - field-by-field reference for ``OverheadModel``
   and ``CalibrationPolicy``.
-* :doc:`overhead_io` -- ECSV column schema and TOAST compatibility notes.
+* :doc:`overhead_io` - ECSV column schema and TOAST compatibility notes.

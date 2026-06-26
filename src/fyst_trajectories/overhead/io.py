@@ -44,8 +44,8 @@ __all__ = [
 # encodes it inside the per-block JSON column as a list of
 # ``[t_start, duration]`` float pairs. The reader decodes it back into a
 # tuple of :class:`RetuneEvent`. This reuses the existing
-# ``block_meta_json`` extra-payload channel -- see the JSON encoding/decoding
-# helpers below -- rather than adding a sidecar table or new columns.
+# ``block_meta_json`` extra-payload channel (see the JSON encoding/decoding
+# helpers below) rather than adding a sidecar table or new columns.
 _RETUNE_EVENTS_META_KEY = "retune_events"
 
 
@@ -131,7 +131,7 @@ def write_timeline(
         # TOAST canonical column names azmin/azmax are preserved even though
         # the Python attributes are az_start/az_end. For slew blocks the
         # columns therefore carry the "from"/"to" azimuths directly and may
-        # not satisfy azmin <= azmax -- consumers that rely on ordered bounds
+        # not satisfy azmin <= azmax; consumers that rely on ordered bounds
         # must filter on block_type first.
         # Encode any RetuneEvent payload into JSON-native shape before
         # dumping the extra-metadata column.
@@ -202,7 +202,7 @@ def write_timeline(
     table.meta["site_sun_enabled"] = timeline.site.sun_avoidance.enabled
     table.meta["site_sun_exclusion_radius"] = timeline.site.sun_avoidance.exclusion_radius
     table.meta["site_sun_warning_radius"] = timeline.site.sun_avoidance.warning_radius
-    # OverheadModel -- persist ALL fields with overhead_ prefix.
+    # OverheadModel: persist ALL fields with overhead_ prefix.
     table.meta["overhead_retune_duration"] = timeline.overhead_model.retune_duration
     table.meta["overhead_pointing_cal_duration"] = timeline.overhead_model.pointing_cal_duration
     table.meta["overhead_focus_duration"] = timeline.overhead_model.focus_duration
@@ -212,7 +212,7 @@ def write_timeline(
     table.meta["overhead_settle_time"] = timeline.overhead_model.settle_time
     table.meta["overhead_min_scan_duration"] = timeline.overhead_model.min_scan_duration
     table.meta["overhead_max_scan_duration"] = timeline.overhead_model.max_scan_duration
-    # CalibrationPolicy -- persist ALL fields with calibration_ prefix.
+    # CalibrationPolicy: persist ALL fields with calibration_ prefix.
     table.meta["calibration_retune_cadence"] = timeline.calibration_policy.retune_cadence
     table.meta["calibration_pointing_cadence"] = timeline.calibration_policy.pointing_cadence
     table.meta["calibration_focus_cadence"] = timeline.calibration_policy.focus_cadence
@@ -256,7 +256,7 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     site = _site_from_meta(meta)
 
     # Use the dataclass defaults as fall-backs so the I/O defaults can never
-    # drift from the class defaults -- this is the same pattern that surfaced
+    # drift from the class defaults; this is the same pattern that surfaced
     # the BEAM_MAP regression and the pointing_cadence default mismatch.
     overhead_defaults = OverheadModel()
     overhead = OverheadModel(

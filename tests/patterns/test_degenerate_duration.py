@@ -3,8 +3,8 @@
 Every pattern samples on ``n_points = round(duration / timestep) + 1``. A
 duration that is zero, negative, or shorter than ``timestep`` collapses to a
 single sample, which historically either failed opaquely in ``np.gradient``
-(an unhelpful ``IndexError``) or -- for the AltAz patterns that set
-velocities directly (linear, constant_el) -- *silently* returned a wrong
+(an unhelpful ``IndexError``) or, for the AltAz patterns that set
+velocities directly (linear, constant_el), *silently* returned a wrong
 1-point trajectory. These tests pin the new contract: such durations raise a
 clear ``PointingError`` (a ``ValueError`` subclass), via both the public
 ``TrajectoryBuilder`` path and the direct ``.generate()`` /
@@ -216,7 +216,7 @@ class TestAltAzNoSilentOnePoint:
 
     These two patterns set velocities directly (no ``np.gradient``), so a
     degenerate duration historically produced a wrong 1-point Trajectory with
-    no error -- the worst failure mode. They must now raise instead.
+    no error, the worst failure mode. They must now raise instead.
     """
 
     @pytest.mark.parametrize(

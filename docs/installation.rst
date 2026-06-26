@@ -58,5 +58,5 @@ implementations. They are gated behind the ``--run-slow`` flag::
 
     pytest tests/ --run-slow
 
-- **Skyfield** -- verifies coordinate transforms against an independent astronomy library
-- **KOSMA** -- verifies focal plane offset model against the KOSMA telescope control system
+- **Skyfield** - verifies coordinate transforms against an independent astronomy library
+- **KOSMA** - verifies focal plane offset model against the KOSMA telescope control system

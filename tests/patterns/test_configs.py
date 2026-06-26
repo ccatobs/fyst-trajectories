@@ -309,7 +309,7 @@ class TestConfigWarnings:
     """Advisory ``PointingWarning`` paths in config ``__post_init__`` routines.
 
     These warn-on-unusual-value branches (and the constant-el
-    turnaround-exceeds-throw branch) had no regression guard -- a mutant
+    turnaround-exceeds-throw branch) had no regression guard, a mutant
     deleting them passed.
     """
 

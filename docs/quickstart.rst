@@ -15,7 +15,7 @@ Coordinate Transformations
 --------------------------
 
 Convert RA/Dec to Az/El. For trajectory generation, use bare
-``Coordinates(site)`` -- the FYST ACU applies atmospheric refraction
+``Coordinates(site)``. The FYST ACU applies atmospheric refraction
 downstream, so vacuum (geometric) coordinates are correct::
 
     from astropy.time import Time
@@ -37,7 +37,7 @@ downstream, so vacuum (geometric) coordinates are correct::
    refraction here would cause double-refraction errors in the
    telescope pointing. For planning and simulation (visibility
    calculations, observability checks) where results are NOT sent to
-   the ACU, use ``AtmosphericConditions.for_fyst()`` -- see
+   the ACU, use ``AtmosphericConditions.for_fyst()``, see
    :ref:`quickstart-planning-refraction` below.
 
 **Frame name translation** (string alias resolution)::
@@ -141,7 +141,7 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
         .build()
     )
 
-**Constant elevation scan** (auto-computed from a field region --- recommended)::
+**Constant elevation scan** (auto-computed from a field region, recommended)::
 
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
@@ -159,7 +159,7 @@ Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``
     )
     trajectory = block.trajectory
 
-**Constant elevation scan** (manual parameters --- for engineering or known az ranges)::
+**Constant elevation scan** (manual parameters, for engineering or known az ranges)::
 
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder

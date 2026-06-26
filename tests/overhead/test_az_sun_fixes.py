@@ -3,14 +3,14 @@
 The overhead subpackage is an OFFLINE observing-night simulator. These
 tests pin three fixes:
 
-b1 -- cable-wrap azimuth normalization. A north-straddling azimuth pair
+b1, cable-wrap azimuth normalization. A north-straddling azimuth pair
       (e.g. 350 deg and 10 deg) must give the short-path slew (~20 deg, not
       ~340 deg) and a non-flipped boresight (circular mean, not the ~180
       deg-off arithmetic mean).
-b2 -- sun-aware pong/daisy duration clip. A pong/daisy scan that is
+b2, sun-aware pong/daisy duration clip. A pong/daisy scan that is
       sun-unsafe (or drifts into the exclusion radius) must have its
       duration trimmed, mirroring the constant_el branch.
-b3 -- MinDurationConstraint sun forward-check. A target that stays above
+b3, MinDurationConstraint sun forward-check. A target that stays above
       the elevation floor but is inside the Sun exclusion zone within
       ``min_duration`` must be rejected, matching the class docstring.
 """
@@ -67,7 +67,7 @@ class TestNorthStraddleSlew:
         assert t_norm == pytest.approx(9.667, abs=0.05)
 
         # The un-normalized direct path would be abs(10 - 350) = 340 deg,
-        # an order of magnitude longer -- the bug this fix removes.
+        # an order of magnitude longer, the bug this fix removes.
         t_raw = estimate_slew_time(350.0, 50.0, 10.0, 50.0, site)
         assert t_raw > 100.0
         assert t_norm < t_raw / 5.0
@@ -174,7 +174,7 @@ class TestMinDurationConstraintSun:
         )
         constraint = MinDurationConstraint(min_duration=600.0)
         # At time + 600s the target is still high (el ~44) but ~18 deg from
-        # the Sun -- inside the 45 deg exclusion. The old elevation-only
+        # the Sun, inside the 45 deg exclusion. The old elevation-only
         # check returned 1.0; the sun forward-check now rejects it.
         assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coords) == 0.0
 

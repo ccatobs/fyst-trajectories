@@ -20,8 +20,8 @@ Scope and limits:
 
 What these tests deliberately do **not** do is assert the exact *membership*
 of ``__all__`` (an intentional add/remove is a normal change, not a
-regression). Detecting accidental removals -- a symbol silently dropped from
-``__all__`` entirely -- is the job of the ``check-api`` skill, which diffs the
+regression). Detecting accidental removals, a symbol silently dropped from
+``__all__`` entirely, is the job of the ``check-api`` skill, which diffs the
 full surface against the source. The hardcoded planning checks below cover the
 five symbols downstream code is known to import.
 """

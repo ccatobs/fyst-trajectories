@@ -44,7 +44,7 @@ def _check_field_sun_safety(
         Site configuration with sun avoidance settings.
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract --
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the field
         center is clear of the Sun. ``None`` (default) keeps the built-in
         scalar exclusion-radius check (the field center's angular separation

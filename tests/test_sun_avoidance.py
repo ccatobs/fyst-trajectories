@@ -186,7 +186,7 @@ class TestValidateSunAvoidance:
         sun_az, _sun_alt = coords.get_sun_altaz(obstime)
         safe_az = (sun_az + 180.0) % 360.0
 
-        # 100k points over 10 seconds -- should subsample heavily
+        # 100k points over 10 seconds, should subsample heavily
         n = 100_000
         abs_times = obstime + TimeDelta(np.linspace(0, 10, n) * u.s)
 
@@ -359,7 +359,7 @@ class TestPlanningIntegration:
 # end-to-end at planning time, default path unchanged.
 # ---------------------------------------------------------------------------
 
-# A field far from the Sun at _TEST_OBSTIME -- the scalar default never warns
+# A field far from the Sun at _TEST_OBSTIME, the scalar default never warns
 # here, so any warning a predicate produces proves the predicate (not the
 # 45 deg scalar) drove the verdict. RA = anti-solar, Dec well south.
 _SAFE_FIELD = FieldRegion(ra_center=0.0, dec_center=-30.0, width=2.0, height=2.0)
@@ -383,7 +383,7 @@ class TestCheckFieldSunSafetyInjectedPredicate:
 
         The field is placed far from the Sun (anti-solar RA), so the built-in
         scalar exclusion check passes silently. Injecting a predicate that
-        returns False must still raise the EXCLUSION ZONE warning -- proving
+        returns False must still raise the EXCLUSION ZONE warning, proving
         the directional model's verdict is what is consulted.
         """
         sun_ra, _ = coords.altaz_to_radec(*coords.get_sun_altaz(obstime), obstime)

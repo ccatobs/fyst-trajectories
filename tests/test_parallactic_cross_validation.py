@@ -3,13 +3,13 @@
 The parallactic-angle *formula* is the IAU SOFA / ERFA ``hd2pa(ha, dec, phi)``
 primitive (bundled with astropy as the ``erfa`` package). The subtlety this
 file guards against (finding H-1) is the input *frame*: the hour angle must be
-referenced to the **apparent** equinox of date -- the same equinox as the
-local apparent sidereal time -- not the catalogue ICRS/J2000 RA. Feeding
+referenced to the **apparent** equinox of date, the same equinox as the
+local apparent sidereal time, not the catalogue ICRS/J2000 RA. Feeding
 ``erfa.hd2pa`` the library's own ``get_hour_angle`` (which forms
 ``apparent LST - ICRS RA``) would cancel the bug on both sides and mask it, so
 the reference here transforms ICRS -> TETE(obstime) to obtain the apparent
-RA/Dec *before* forming the hour angle. Agreement to < 0.01 deg -- including at
-epochs well past J2000, where the uncorrected precession term grows -- validates
+RA/Dec *before* forming the hour angle. Agreement to < 0.01 deg, including at
+epochs well past J2000 where the uncorrected precession term grows, validates
 that ``get_parallactic_angle`` is referenced to the apparent celestial pole.
 
 Points within 10 deg of the zenith are excluded: the parallactic angle is

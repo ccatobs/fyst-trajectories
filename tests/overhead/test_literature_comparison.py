@@ -46,7 +46,7 @@ class TestRetuneVsLiterature:
         """Our retune (5s) is much shorter than SO's bias step interval (~60s).
 
         SO uses TES detectors with bias steps every ~60s. KID retunes
-        are fundamentally faster operations -- we should be well under
+        are fundamentally faster operations, we should be well under
         the SO bias step interval for the retune *duration*.
         """
         model = OverheadModel()
@@ -76,7 +76,7 @@ class TestCalibrationCadencesVsLiterature:
         # Agreed canonical default (operations-team-owned).
         assert policy.pointing_cadence == 3600.0, (
             f"Pointing cadence default changed from the agreed 3600.0 s to "
-            f"{policy.pointing_cadence}s -- update this test and the agreed value together"
+            f"{policy.pointing_cadence}s, update this test and the agreed value together"
         )
         # Sanity: still within the published literature band [20 min, 1 h].
         assert 1200.0 <= policy.pointing_cadence <= 3600.0

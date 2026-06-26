@@ -80,6 +80,10 @@ markers = [
 ]
 filterwarnings = [
     "ignore::fyst_trajectories.exceptions.PointingWarning",
+    # conftest.py pins a vendored IERS table (tests/data/finals2000A.all); a few
+    # cross-validation epochs land just past its range and warn. Benign: the
+    # affected test is a round-trip where the EOP term cancels.
+    "ignore:Tried to get polar motions for times after IERS data is valid:astropy.utils.exceptions.AstropyWarning",
 ]
 
 [tool.ruff]

@@ -84,7 +84,7 @@ class TestCalibrationPhase:
         assert len(result.blocks) >= 4
         # The state advances past every block.
         assert result.state.current_time.unix > state.current_time.unix
-        # The cal state has updated -- at least retune is no longer None.
+        # The cal state has updated, at least retune is no longer None.
         assert result.state.cal_state.last_retune is not None
 
     def test_noop_when_no_cals_due(self):
@@ -169,7 +169,7 @@ class TestPatchSelectionPhase:
         assert result.best_az is not None
         assert result.best_el is not None
         assert result.skip_to_next_iter is False
-        # No blocks emitted -- the selection result is consumed by next phase.
+        # No blocks emitted, the selection result is consumed by next phase.
         assert result.blocks == []
 
 

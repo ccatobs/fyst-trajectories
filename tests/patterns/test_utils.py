@@ -200,7 +200,7 @@ class TestGenerateTimeArray:
         assert len(times) == 4
 
     def test_timestep_greater_than_duration(self):
-        """Test when timestep exceeds duration -- minimum 2 points."""
+        """Test when timestep exceeds duration, minimum 2 points."""
         times = generate_time_array(0.5, 1.0)
         # Minimum 2 points enforced: start and end
         assert times[0] == 0.0

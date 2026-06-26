@@ -9,7 +9,7 @@ from fyst_trajectories import choose_encoder_solution, get_fyst_site
 from fyst_trajectories.exceptions import PointingError
 
 # Fixed time; only consulted by the sun predicate. The geometry tests disable
-# sun avoidance, so they need no ephemeris/network -- the default predicate
+# sun avoidance, so they need no ephemeris/network, the default predicate
 # short-circuits to True when avoidance is disabled.
 OBSTIME = Time("2026-03-15T12:00:00", scale="utc")
 

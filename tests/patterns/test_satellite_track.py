@@ -49,7 +49,7 @@ class TestSatelliteTrackPattern:
 
         The pattern is a thin reuse of PlanetTrackPattern.generate, so each
         (az, el) must match the resolver call for a matching Coordinates with
-        the same kernel -- the same call, byte-for-byte.
+        the same kernel, the same call, byte-for-byte.
         """
         config = SatelliteTrackConfig(timestep=1.0, body="titan", satellite_kernel=TITAN_KERNEL)
         pattern = SatelliteTrackPattern(config=config)
@@ -73,7 +73,7 @@ class TestSatelliteTrackPattern:
         Parity with the planet pattern: Titan's apparent motion is smooth, so
         per-axis velocities are finite, bounded well under any slew limit, and
         free of step discontinuities. The continuity (per-step velocity change)
-        assertion gives the "smooth" claim teeth -- a glitch far below the
+        assertion gives the "smooth" claim teeth, a glitch far below the
         velocity ceiling would still be caught.
         """
         config = SatelliteTrackConfig(timestep=1.0, body="titan", satellite_kernel=TITAN_KERNEL)

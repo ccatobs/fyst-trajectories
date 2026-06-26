@@ -195,6 +195,7 @@ cython_debug/
 # Ephemeris files (downloaded by Skyfield for tests)
 *.bsp
 !tests/data/titan_excerpt.bsp
+!tests/data/de421_excerpt.bsp
 
 # PyPI configuration file
 .pypirc

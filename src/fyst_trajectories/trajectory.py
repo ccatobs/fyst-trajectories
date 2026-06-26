@@ -88,7 +88,7 @@ class RetuneEvent:
 
     Notes
     -----
-    The minimal two-field shape is deliberate -- no public KID-camera
+    The minimal two-field shape is deliberate: no public KID-camera
     retune log has been published, so the dataclass captures only the
     fields every event must have. Per-module staggering is the caller's
     composition: invoke

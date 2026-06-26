@@ -17,16 +17,20 @@ Skyfield is chosen as the reference because it:
 - Is widely used and well-tested in the astronomy community
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from astropy.time import Time, TimeDelta
 
 try:
-    from skyfield.api import S, Star, W, load, wgs84
+    from skyfield.api import S, Star, W, load, load_file, wgs84
 
     SKYFIELD_AVAILABLE = True
 except ImportError:
     SKYFIELD_AVAILABLE = False
+
+DE421_KERNEL = str((Path(__file__).parent / "data" / "de421_excerpt.bsp").resolve())
 
 pytestmark = pytest.mark.skipif(
     not SKYFIELD_AVAILABLE, reason="Skyfield not installed. Install with: pip install skyfield"
@@ -44,10 +48,10 @@ def skyfield_timescale():
 def skyfield_planets():
     """Load ephemeris data for planets.
 
-    Uses the built-in de421.bsp ephemeris for solar system positions.
-    This is cached to avoid repeated downloads.
+    Uses the vendored de421 excerpt (tests/data/de421_excerpt.bsp) so the slow
+    cross-validation never downloads de421 from JPL in CI.
     """
-    eph = load("de421.bsp")
+    eph = load_file(DE421_KERNEL)
     return eph
 
 

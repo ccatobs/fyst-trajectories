@@ -350,7 +350,7 @@ class TestConstantElPropertyBased:
         cruise_step = az_speed * 0.1
         assert np.abs(np.diff(trajectory.az)).max() <= cruise_step * 1.05 + 1e-9, (
             f"Max az step {np.abs(np.diff(trajectory.az)).max():.5f} exceeds "
-            f"cruise step {cruise_step:.5f} -- position is discontinuous"
+            f"cruise step {cruise_step:.5f}, position is discontinuous"
         )
 
         # Position and stored velocity are consistent everywhere after the
@@ -376,7 +376,7 @@ class TestPositionContinuity:
     recomputes acceleration from the position array).
     """
 
-    # (az_start, az_stop, az_speed, az_accel) -- spans both directions,
+    # (az_start, az_stop, az_speed, az_accel), spans both directions,
     # several throws, and a range of speed/accel ratios. All chosen so the
     # quintic peak acceleration (1.5 * az_accel) stays at or below the FYST
     # az acceleration limit (1.0 deg/s^2), so a clean trajectory is warning-free.

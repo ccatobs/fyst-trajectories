@@ -57,7 +57,7 @@ class TestPongScanPattern:
         el_range = trajectory.el.max() - trajectory.el.min()
 
         # Sanity: the projected trajectory is genuinely 2-D (not a point). The raw
-        # azimuth range is intentionally NOT upper-bounded -- near high elevation
+        # azimuth range is intentionally NOT upper-bounded, near high elevation
         # cos(el) inflates the azimuth coordinate, so a ~1 deg on-sky pattern can
         # span several degrees of azimuth.
         assert az_range > 0.5
@@ -65,7 +65,7 @@ class TestPongScanPattern:
 
         # Precise coverage check in the offset frame (decoupled from cos(el) and
         # field rotation): for this field x_numvert=8, y_numvert=9, so the pattern
-        # spans 2*amp = numvert*sqrt(2)*spacing -- 1.131 deg in x, 1.273 deg in y.
+        # spans 2*amp = numvert*sqrt(2)*spacing: 1.131 deg in x, 1.273 deg in y.
         _, x_off, y_off = pattern.generate_offsets(300.0)
         assert np.ptp(x_off) == pytest.approx(8 * np.sqrt(2) * 0.1, abs=0.1)
         assert np.ptp(y_off) == pytest.approx(9 * np.sqrt(2) * 0.1, abs=0.1)

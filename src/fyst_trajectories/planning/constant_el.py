@@ -194,11 +194,11 @@ def plan_constant_el_scan(
         start_time = Time(start_time, scale="utc")
 
     # Pre-flight sun-safety check at the *search anchor*. For the
-    # elevation-crossing path this is the only check -- the resolved
+    # elevation-crossing path this is the only check; the resolved
     # ``obs_start`` can be tens of minutes (occasionally hours) after
     # ``start_time``, so the pre-flight is anchor-time only. For the
     # LSA-window path we re-check below once
-    # ``obs_start`` is known -- the LSA branch can delay observation by
+    # ``obs_start`` is known; the LSA branch can delay observation by
     # hours, during which the Sun moves ~15 deg/h, so a field that is
     # 50 deg from the Sun at ``start_time`` can be 5 deg from it at
     # ``obs_start``.
@@ -214,7 +214,7 @@ def plan_constant_el_scan(
             max_search_hours=max_search_hours,
             step_seconds=step_seconds,
         )
-        # Re-check sun safety at the resolved ``obs_start`` -- see the
+        # Re-check sun safety at the resolved ``obs_start``; see the
         # comment above for the rationale.
         _check_field_sun_safety(
             field.ra_center, field.dec_center, obs_start, site, sun_safe=sun_safe

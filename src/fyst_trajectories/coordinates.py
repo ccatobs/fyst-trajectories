@@ -16,7 +16,7 @@ simulations) where the output is NOT sent to the ACU, pass
 
 Examples
 --------
-Trajectory generation (vacuum -- the ACU applies refraction):
+Trajectory generation (vacuum; the ACU applies refraction):
 
 >>> from astropy.time import Time
 >>> from fyst_trajectories.coordinates import Coordinates
@@ -51,7 +51,7 @@ from .site import AtmosphericConditions, Site
 # from any astropy>=5.0 install (the dependency floor in pyproject.toml), so
 # the import and attribute lookup are unconditional. The previous defensive
 # try/except fell back to ``UserWarning``, which would have silently demoted
-# real ERFA messages if it ever fired -- a worse signal than failing loudly.
+# real ERFA messages if it ever fired, a worse signal than failing loudly.
 _erfa_warning_cls = erfa.ErfaWarning
 
 # Supported solar system bodies for ephemeris
@@ -258,7 +258,7 @@ class Coordinates:
 
     Examples
     --------
-    Trajectory generation (vacuum -- ACU applies refraction):
+    Trajectory generation (vacuum; ACU applies refraction):
 
     >>> from fyst_trajectories.coordinates import Coordinates
     >>> from fyst_trajectories.site import get_fyst_site
@@ -541,7 +541,7 @@ class Coordinates:
         # get_body returns a GCRS position carrying the body's finite
         # (topocentric) distance. Taking ``.icrs`` reprojects that finite-distance
         # vector to the barycentric frame, yielding the SSB->body direction
-        # (e.g. the anti-solar point for the Sun) -- NOT the apparent sky
+        # (e.g. the anti-solar point for the Sun), NOT the apparent sky
         # position. Instead, project to the site's *vacuum* horizontal frame and
         # back to ICRS so the result is the apparent place, consistent with
         # get_body_altaz and with get_parallactic_angle's pressure=0 transform.
@@ -867,7 +867,7 @@ class Coordinates:
         the hour angle relative to the *mean* catalogue position, not the
         apparent place. That is adequate for the coarse scheduling uses in this
         library (transit finding, rising/setting sign) but **not** for
-        parallactic-angle or precise pointing work -- use
+        parallactic-angle or precise pointing work. Use
         :meth:`get_parallactic_angle`, which transforms to Az/El and is
         referenced to the apparent pole.
 

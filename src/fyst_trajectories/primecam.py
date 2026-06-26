@@ -54,8 +54,8 @@ cover polygon when the caller passes a single ``InstrumentOffset``
 The 0.65° value is the published Prime-Cam per-module field of view: each
 module subtends a ~1.3° **diameter** on sky (arXiv:2208.10634), i.e. a 0.65°
 **radius**. The bare detector-wafer extent (~0.39° *diameter* at the FYST plate
-scale) is only a lower bound -- the optical FOV is larger than the illuminated
-wafer -- so 0.65° is the FOV figure to cover with, not a padded-up wafer
+scale) is only a lower bound; the optical FOV is larger than the illuminated
+wafer, so 0.65° is the FOV figure to cover with, not a padded-up wafer
 estimate, pending an as-built per-module FOV measurement.
 
 Pass an explicit :class:`~fyst_trajectories.planning.ArrayFootprint`
@@ -307,7 +307,7 @@ def primecam_geometry_dict(
     arcminutes to degrees.
 
     The duplicate ``"center"`` alias of ``"c"`` in :data:`PRIMECAM_MODULES` is
-    dropped, so the result has one slot per physical module -- ``"c"`` plus
+    dropped, so the result has one slot per physical module, ``"c"`` plus
     ``"i1"``..``"i6"`` (seven entries). A duplicate would double the cover
     polygon when schedlib merges queried slots.
 

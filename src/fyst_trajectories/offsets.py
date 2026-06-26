@@ -350,8 +350,8 @@ def _offset_inverse(
     # this fixed-point iteration, a converged endpoint is the user-visible
     # answer regardless of early-iteration transients. (Non-monotone
     # convergence does occur for unrealistic-large offsets near the zenith
-    # singularity -- e.g. dx=117 deg at el=86 deg in the hypothesis suite
-    # -- but the iteration still lands sub-microarcsecond at the end.)
+    # singularity, e.g. dx=117 deg at el=86 deg in the hypothesis suite,
+    # but the iteration still lands sub-microarcsecond at the end.)
     worst_err = 0.0
 
     for _ in range(_INVERSE_MAX_ITERATIONS):
@@ -610,13 +610,13 @@ def apply_detector_offset(
     Notes
     -----
     **Precondition: the input trajectory must be in geometric (vacuum)
-    coordinates.** This holds on every live path -- ``Coordinates(site)``
+    coordinates.** This holds on every live path: ``Coordinates(site)``
     defaults to vacuum and the ACU/Go TCS owns refraction (see
     ``CLAUDE.md`` "vacuum-by-default"). The mechanical Nasmyth term consumes
     ``trajectory.el`` directly; if the trajectory was instead built with
-    ``AtmosphericConditions.for_fyst()`` (refracted -- a planning/sim-only
+    ``AtmosphericConditions.for_fyst()`` (refracted, a planning/sim-only
     path), its ``el`` is in the apparent frame and the mechanical rotation
-    differs from the vacuum one by ``nasmyth_sign * (refraction bump)`` --
+    differs from the vacuum one by ``nasmyth_sign * (refraction bump)``,
     a sub-arcsec boresight effect at PrimeCam offset radii. ``Trajectory``
     carries no refraction flag, so a refracted input cannot be detected
     here; pair detector offsets with vacuum trajectories.
@@ -669,7 +669,7 @@ def apply_detector_offset(
     if offset.dx == 0.0 and offset.dy == 0.0 and offset.instrument_rotation == 0.0:
         return dataclasses.replace(trajectory)
 
-    # Horizon-frame projection: the rotation is mechanical only -- the
+    # Horizon-frame projection: the rotation is mechanical only; the
     # parallactic angle is a horizon-to-celestial quantity and has no
     # place in an az/el projection.
     field_rotation = compute_focal_plane_rotation(trajectory.el, site, offset)
