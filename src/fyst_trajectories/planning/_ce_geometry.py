@@ -234,7 +234,11 @@ def _compute_ce_az_range(
     Handles the azimuth = 0/360 discontinuity for sources transiting through
     north (plausible at FYST's −23° latitude for sources with dec ≳ +20°):
     when the naive max−min span exceeds 180°, the samples are unwrapped
-    around the median azimuth so the returned range is contiguous.
+    around the median azimuth so the returned range is contiguous. The
+    padded interval is then shifted by a whole turn onto a branch inside
+    the telescope azimuth limits when one fits, so a setting pass (west
+    of north) emits the same near-zero branch as a rising pass (east of
+    north).
 
     Parameters
     ----------
@@ -257,7 +261,10 @@ def _compute_ce_az_range(
         Azimuth range in degrees. May lie outside ``[0, 360)`` when the
         field straddles north (e.g. ``(-5.0, 12.0)`` rather than
         ``(355.0, 12.0)``); callers and consumers handle the unwrapped
-        representation directly.
+        representation directly. The interval is placed on a 360° branch
+        within the telescope azimuth limits whenever such a branch
+        exists; an interval too wide for any branch is returned as-is
+        for downstream bounds validation to refuse.
     """
     corners = _field_region_corners(
         field.ra_center, field.dec_center, field.width, field.height, angle
@@ -280,7 +287,22 @@ def _compute_ce_az_range(
         median = float(np.median(az_arr))
         az_arr = ((az_arr - median + 180.0) % 360.0) - 180.0 + median
 
-    return float(az_arr.min()) - padding, float(az_arr.max()) + padding
+    az_min = float(az_arr.min()) - padding
+    az_max = float(az_arr.max()) + padding
+
+    # Two paths land the interval on an out-of-range branch: the median re-centre
+    # of a west-heavy straddle window, and padding pushing a near-360 window past
+    # the limit. Both are representation choices, not infeasibility; an interval
+    # that fits no branch is left for downstream bounds validation to refuse.
+    lim = coords_obj.site.telescope_limits.azimuth
+    if az_max > lim.max and lim.is_in_range(az_min - 360.0) and lim.is_in_range(az_max - 360.0):
+        az_min -= 360.0
+        az_max -= 360.0
+    elif az_min < lim.min and lim.is_in_range(az_min + 360.0) and lim.is_in_range(az_max + 360.0):
+        az_min += 360.0
+        az_max += 360.0
+
+    return az_min, az_max
 
 
 def _compute_ce_duration_from_lsa(

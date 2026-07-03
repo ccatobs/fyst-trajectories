@@ -46,10 +46,12 @@ class SunSafePredicate(Protocol):
     change to any call site**. The scalar default and the directional model are
     interchangeable precisely because both honour this contract.
 
-    The query is instantaneous, a single ``(az, el, time)`` point. Dwell /
-    exit-window ("how soon does the Sun enter this wrap") logic is *not* part of
-    this contract; it belongs to the future directional model's internal state,
-    not its per-point verdict.
+    The query is instantaneous, a single ``(az, el, time)`` point. A caller may
+    query it at several instants to cover a dwell window (see
+    :func:`choose_encoder_solution`'s array-valued ``obstime``); implementations
+    stay single-instant. Dwell / exit-window ("how soon does the Sun enter this
+    wrap") logic is *not* part of this contract; it belongs to the future
+    directional model's internal state, not its per-point verdict.
     """
 
     def __call__(self, az_deg: float, el_deg: float, time: Time) -> bool:
@@ -83,15 +85,23 @@ def choose_encoder_solution(
     site: Site,
     *,
     sun_safe: SunSafePredicate | None = None,
+    goal_az_span: tuple[float, float] | None = None,
 ) -> tuple[float, float]:
-    """Choose a sun-safe encoder ``(az, el)`` to slew to for a goal sky position.
+    """Choose a sun-safe encoder ``(az, el)`` to slew to for a commanded trajectory.
 
     The telescope azimuth axis travels more than one full turn
     (``site.telescope_limits.azimuth`` spans more than 360 deg), so a single sky
     azimuth has up to two valid encoder representations 360 deg apart. This
-    function enumerates the in-range encoder solutions for ``goal_az`` and returns
-    one that is sun-safe, preferring the smallest slew from the current encoder
-    azimuth.
+    function enumerates the in-range encoder wraps and returns one that is
+    sun-safe, preferring the smallest slew from the current encoder azimuth.
+
+    When ``goal_az_span`` is supplied, wrap admissibility is judged against the
+    whole commanded trajectory's azimuth span rather than the goal point alone:
+    the caller shifts the entire trajectory by the chosen 360 deg multiple, so a
+    wrap is admissible only if both span endpoints stay within the azimuth limits
+    after that shift. This keeps the nearest wrap from being chosen when it would
+    push a north-crossing scan's span outside the limits even though the other
+    wrap fits.
 
     This is a *dispatch-time* helper: call it with the telescope's current encoder
     position (from the live position broadcast) just before commanding the slew to
@@ -112,11 +122,15 @@ def choose_encoder_solution(
     goal_az : float
         Target sky azimuth in degrees (e.g. the first sample of a scan
         trajectory). May be given in any range; its 360 deg images are enumerated
-        against the telescope azimuth limits.
+        against the telescope azimuth limits. Must lie within ``goal_az_span``
+        when that is supplied.
     goal_el : float
         Target sky elevation in degrees.
     obstime : Time
-        Time the slew/scan begins, used to locate the Sun.
+        The time or times at which the commanded position must be clear of the
+        Sun (for example every sample of a pre-scan dwell). Scalar or
+        array-valued astropy :class:`~astropy.time.Time`; a wrap is sun-safe only
+        if the predicate holds at every element.
     site : Site
         Telescope site, providing the azimuth/elevation limits and (for the
         default ``sun_safe``) the sun-avoidance configuration.
@@ -128,6 +142,15 @@ def choose_encoder_solution(
         exclusion radius). This is the seam for the directional sun-avoidance
         model (future shared library): pass that model's predicate here and the
         call sites do not change. See :class:`SunSafePredicate` for the contract.
+    goal_az_span : tuple of float, optional
+        ``(span_min, span_max)``, the minimum and maximum azimuth of the full
+        commanded trajectory in the SAME wrap frame as ``goal_az`` (e.g.
+        ``(traj.az.min(), traj.az.max())`` where ``goal_az == traj.az[0]``).
+        ``goal_az`` need not equal either endpoint but must lie within the span.
+        A wrap ``goal_az + 360 k`` is admissible only if both shifted endpoints
+        stay within the azimuth limits, matching the whole-trajectory shift the
+        caller applies after this function returns. When ``None`` (default),
+        admissibility reduces to the goal point alone.
 
     Returns
     -------
@@ -137,31 +160,38 @@ def choose_encoder_solution(
 
     Raises
     ------
+    ValueError
+        If ``goal_az_span`` is given with ``span_min > span_max`` or with
+        ``goal_az`` outside ``[span_min, span_max]`` by more than a small
+        tolerance.
     PointingError
         If ``goal_el`` is outside the elevation limits, if no 360 deg image of
-        ``goal_az`` lands within the azimuth limits, or if every in-range azimuth
-        wrap is sun-blocked at ``obstime``.
+        ``goal_az`` lands within the azimuth limits, if no wrap keeps the whole
+        span within the azimuth limits, or if every admissible azimuth wrap is
+        sun-blocked at some element of ``obstime``.
 
     Notes
     -----
     **Selection is minimum-slew, not yet "non-trapping".** Among the sun-safe,
     in-range candidates this returns the one closest to ``current_az`` (smallest
     azimuth travel), tie-broken toward the larger margin to the azimuth travel
-    limits. This matches the Simons Observatory scheduler's minimise-angular-
-    deviation objective. The "non-trapping / pocket" refinement, choosing a wrap
-    you can always escape from to the next target over the asymmetric directional
-    avoidance map, is future work that belongs in the shared sun-avoidance
-    library; it plugs in here through ``sun_safe`` (and a richer selection step)
-    without changing this function's call sites.
+    limits, measured against the shifted span endpoints. This matches the Simons
+    Observatory scheduler's minimise-angular-deviation objective. The
+    "non-trapping / pocket" refinement, choosing a wrap you can always escape
+    from to the next target over the asymmetric directional avoidance map, is
+    future work that belongs in the shared sun-avoidance library; it plugs in
+    here through ``sun_safe`` (and a richer selection step) without changing this
+    function's call sites.
 
     **Over-the-top (el > 90) is not enumerated.** FYST caps elevation at 90 deg
     (``FYST_EL_MAX``) and over-the-top pointing is forbidden during the day, so
     the third (el > 90, az + 180) encoder solution is intentionally omitted. When
     that solution is admitted, ``current_el`` will inform the choice.
 
-    **The default sun test is instantaneous.** ``Coordinates.is_sun_safe`` checks the
-    angular separation at ``obstime`` only; it has no notion of how soon the Sun
-    enters a wrap (dwell / exit-window). That ``min_sun_time``-style logic belongs in
+    **The default sun test is instantaneous.** ``Coordinates.is_sun_safe`` checks
+    the angular separation at one instant; it has no notion of how soon the Sun
+    enters a wrap (dwell / exit-window). Passing several ``obstime`` elements
+    covers a dwell only by sampling; that ``min_sun_time``-style logic belongs in
     the future directional / non-trapping model supplied via ``sun_safe``.
 
     Examples
@@ -190,37 +220,72 @@ def choose_encoder_solution(
     if sun_safe is None:
         sun_safe = Coordinates(site).is_sun_safe
 
-    # Enumerate the 360 deg azimuth images of ``goal_az`` that fall within the
-    # encoder range. The k window is padded by one on each side and then filtered
-    # by ``is_in_range`` so floating-point error at a boundary cannot drop a valid
-    # image. For FYST's [-180, 360] range this yields one or two candidates.
-    k_lo = math.floor((az_limits.min - goal_az) / 360.0) - 1
-    k_hi = math.ceil((az_limits.max - goal_az) / 360.0) + 1
-    candidates = [
-        goal_az + 360.0 * k
-        for k in range(k_lo, k_hi + 1)
-        if az_limits.is_in_range(goal_az + 360.0 * k)
-    ]
+    # A bare goal is the degenerate point span (goal_az, goal_az); every check
+    # below runs on the resolved endpoints.
+    span_lo, span_hi = goal_az_span if goal_az_span is not None else (goal_az, goal_az)
+    # The tolerance absorbs float round-off from the caller building the span
+    # (e.g. traj.az.min()/max() vs traj.az[0]).
+    tol = 1e-6
+    if span_lo > span_hi:
+        raise ValueError(f"goal_az_span min ({span_lo}) must be <= max ({span_hi}).")
+    if not (span_lo - tol <= goal_az <= span_hi + tol):
+        raise ValueError(f"goal_az {goal_az} must lie within goal_az_span [{span_lo}, {span_hi}].")
 
-    if not candidates:
+    # Enumerate the 360 deg images of ``goal_az`` whose whole span lands in the
+    # encoder range. The k window brackets the span endpoints, padded by one on
+    # each side and filtered by ``is_in_range`` so floating-point error at a
+    # boundary cannot drop a valid image.
+    k_lo = math.floor((az_limits.min - span_hi) / 360.0) - 1
+    k_hi = math.ceil((az_limits.max - span_lo) / 360.0) + 1
+
+    admissible = []
+    goal_image_in_range = False
+    for k in range(k_lo, k_hi + 1):
+        shift = 360.0 * k
+        if az_limits.is_in_range(goal_az + shift):
+            goal_image_in_range = True
+        if az_limits.is_in_range(span_lo + shift) and az_limits.is_in_range(span_hi + shift):
+            admissible.append((goal_az + shift, shift))
+
+    if not admissible:
+        # Distinguish a span that fits no wrap from a goal with no in-range image
+        # at all (for a point span the two coincide and the goal error fires).
+        if goal_image_in_range:
+            span_width = span_hi - span_lo
+            raise PointingError(
+                f"trajectory azimuth span [{span_lo:.3f}, {span_hi:.3f}] deg "
+                f"(width {span_width:.3f}) does not fit within the telescope "
+                f"azimuth limits [{az_limits.min}, {az_limits.max}] in any wrap "
+                f"of sky azimuth {goal_az:.3f}."
+            )
         raise PointingError(
             f"No encoder azimuth in range [{az_limits.min}, {az_limits.max}] "
             f"represents sky azimuth {goal_az:.3f} deg."
         )
 
-    safe = [az for az in candidates if sun_safe(az, goal_el, obstime)]
+    check_times = [obstime] if obstime.isscalar else list(obstime)
+    safe = [
+        (az, shift)
+        for az, shift in admissible
+        if all(sun_safe(az, goal_el, t) for t in check_times)
+    ]
     if not safe:
+        when = (
+            check_times[0].iso
+            if len(check_times) == 1
+            else f"{check_times[0].iso} through {check_times[-1].iso}"
+        )
         raise PointingError(
             f"No sun-safe azimuth wrap for sky position "
-            f"(az={goal_az:.3f}, el={goal_el:.3f}) deg at {obstime.iso}: every "
-            f"in-range wrap {[round(c, 3) for c in candidates]} is inside the Sun "
-            f"exclusion zone."
+            f"(az={goal_az:.3f}, el={goal_el:.3f}) deg at {when}: every "
+            f"in-range wrap {[round(az, 3) for az, _ in admissible]} is inside the "
+            f"Sun exclusion zone."
         )
 
-    # Minimum-slew selection (see Notes); tie-break toward the larger margin to the
-    # azimuth travel limits as a coarse nod to escapability.
-    def _limit_margin(az: float) -> float:
-        return min(az - az_limits.min, az_limits.max - az)
+    # Minimum-slew selection (see Notes); the limit-margin tie-break is a coarse
+    # nod to escapability, measured against the shifted span endpoints.
+    def _limit_margin(shift: float) -> float:
+        return min(span_lo + shift - az_limits.min, az_limits.max - (span_hi + shift))
 
-    encoder_az = min(safe, key=lambda az: (abs(az - current_az), -_limit_margin(az)))
+    encoder_az, _ = min(safe, key=lambda c: (abs(c[0] - current_az), -_limit_margin(c[1])))
     return encoder_az, goal_el

@@ -273,6 +273,111 @@ class TestCEGeometryWrapHandling:
         # az_throw must be small (matches field width plus temporal sweep)
         assert block.computed_params["az_throw"] < 30.0
 
+    def test_setting_north_crossing_plans_in_range(self, site):
+        """A setting scan straddling north plans with azimuth inside telescope limits.
+
+        At dec = +35 the field transits north at el ~ 32.0; at el = 31.9 the
+        setting crossing sits just west of north while the field's RA span keeps
+        the trailing corners east of north, so the window samples straddle 0/360
+        with the majority on the west side. The planned trajectory must come out
+        on the in-limits near-zero branch (as the rising pass does), not on the
+        equivalent branch extending past the 360 deg azimuth limit.
+        """
+        field = FieldRegion(ra_center=180.0, dec_center=35.0, width=4.0, height=2.0)
+        block = plan_constant_el_scan(
+            field=field,
+            elevation=31.9,
+            velocity=0.5,
+            site=site,
+            start_time=Time("2026-09-15T16:13:00", scale="utc"),
+            rising=False,
+            angle=0.0,
+        )
+        lim = site.telescope_limits.azimuth
+        assert block.trajectory.az.min() >= lim.min
+        assert block.trajectory.az.max() <= lim.max
+        assert block.computed_params["az_throw"] < 30.0
+
+    def test_setting_north_crossing_az_range_within_limits(self, site):
+        """``_compute_ce_az_range`` keeps a west-heavy straddle window within limits.
+
+        Same regime as the end-to-end test above, exercised at the helper level:
+        the setting window sits mostly west of north, and the returned interval
+        must be the 360 deg branch that fits the telescope range, not the
+        equivalent one extending past 360.
+        """
+        coords = Coordinates(site)
+        field = FieldRegion(ra_center=180.0, dec_center=35.0, width=4.0, height=2.0)
+        t_start, t_end, _ = _compute_ce_duration(
+            field,
+            angle=0.0,
+            elevation=31.9,
+            coords_obj=coords,
+            base_search_time=Time("2026-09-15T16:13:00", scale="utc"),
+            rising=False,
+        )
+        az_min, az_max = _compute_ce_az_range(
+            field, angle=0.0, coords_obj=coords, obs_start=t_start, obs_end=t_end, padding=2.0
+        )
+        lim = site.telescope_limits.azimuth
+        assert az_min >= lim.min
+        assert az_max <= lim.max
+        # The interval stays contiguous and field-sized across the crossing.
+        assert 0.0 < az_max - az_min < 30.0
+
+    def test_setting_padding_overflow_az_range_within_limits(self, site):
+        """Azimuth padding alone must not push the returned interval past 360.
+
+        A wide setting field at dec = +25, el = 40 samples azimuths up to
+        ~359.3 deg without straddling north, but the 2 deg padding pushes the
+        raw maximum to ~361.3 deg. The returned interval must sit on the branch
+        that fits the telescope range.
+        """
+        coords = Coordinates(site)
+        field = FieldRegion(ra_center=0.0, dec_center=25.0, width=12.0, height=12.0)
+        t_start, t_end, _ = _compute_ce_duration(
+            field,
+            angle=0.0,
+            elevation=40.0,
+            coords_obj=coords,
+            base_search_time=Time("2026-09-15T05:21:00", scale="utc"),
+            rising=False,
+        )
+        az_min, az_max = _compute_ce_az_range(
+            field, angle=0.0, coords_obj=coords, obs_start=t_start, obs_end=t_end, padding=2.0
+        )
+        lim = site.telescope_limits.azimuth
+        assert az_min >= lim.min
+        assert az_max <= lim.max
+        assert 0.0 < az_max - az_min < 60.0
+
+    def test_rising_north_crossing_control_on_near_zero_branch(self, site):
+        """Rising-pass control: the already-in-range branch is not shifted.
+
+        Same field, elevation, and anchor as the setting regression above but
+        rising = True. The rising window (east of north) is already inside the
+        telescope limits, so the branch placement must leave it on the near-zero
+        branch; a spurious whole-turn shift would move the endpoints by 360 deg.
+        """
+        field = FieldRegion(ra_center=180.0, dec_center=35.0, width=4.0, height=2.0)
+        block = plan_constant_el_scan(
+            field=field,
+            elevation=31.9,
+            velocity=0.5,
+            site=site,
+            start_time=Time("2026-09-15T16:13:00", scale="utc"),
+            rising=True,
+            angle=0.0,
+        )
+        lim = site.telescope_limits.azimuth
+        az = block.trajectory.az
+        assert az.min() >= lim.min
+        assert az.max() <= lim.max
+        # Near-zero branch (loose tolerance; a whole-turn error is 360 deg off).
+        cp = block.computed_params
+        assert cp["az_start"] == pytest.approx(-1.12, abs=2.0)
+        assert cp["az_stop"] == pytest.approx(12.49, abs=2.0)
+
 
 class TestPlanConstantElLsaWindow:
     """Tests for the ``lsa_window`` kwarg on ``plan_constant_el_scan``.
