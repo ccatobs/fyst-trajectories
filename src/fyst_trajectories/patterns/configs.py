@@ -6,8 +6,9 @@ provides the common ``timestep`` parameter. Config instances are
 immutable after creation.
 """
 
+import math
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..coordinates import SATELLITE_BODIES, SOLAR_SYSTEM_BODIES
 from ..exceptions import PointingWarning
@@ -236,6 +237,118 @@ class PongScanConfig(ScanConfig):
 
 
 @dataclass(frozen=True)
+class PongAltAzScanConfig(ScanConfig):
+    """Configuration for a Curvy-Pong scan about a fixed AltAz center.
+
+    Executes the same Fourier-truncated Pong pattern as
+    :class:`PongScanConfig`, but about a fixed horizon-frame center
+    (``az_center``, ``el_center``) with no sky tracking. The on-sky
+    tangent-plane pattern is generated exactly as for the celestial Pong,
+    then mapped into telescope coordinates by::
+
+        az = x_offset / cos(radians(el_center)) + az_center
+        el = y_offset + el_center
+
+    Consequently ``width``, ``height``, ``spacing``, and ``velocity`` are
+    tangent-plane (on-sky) quantities, identical in meaning to the
+    :class:`PongScanConfig` fields of the same name. The azimuth coordinate
+    is stretched by ``1 / cos(el_center)``: the azimuth-coordinate extent is
+    ``width / cos(el_center)`` and the azimuth-coordinate speed exceeds the
+    on-sky speed by the same factor. Pick ``velocity`` against the mount
+    azimuth-rate limit with that factor (and the Pong peak-speed overshoot,
+    see :class:`PongScanConfig`) in mind.
+
+    Unlike the celestial Pong, no coordinate transform or ``start_time`` is
+    needed to build the pattern (it is an :class:`AltAzPattern`); the mapping
+    above is a static horizon-frame projection.
+
+    Parameters
+    ----------
+    az_center : float
+        Azimuth of the pattern center in degrees.
+    el_center : float
+        Elevation of the pattern center in degrees. Must be in the open
+        interval ``(0, 90)`` so ``cos(el_center)`` is defined and nonzero.
+    width : float
+        On-sky width of the scan region in degrees (cross-elevation extent
+        before the ``1 / cos(el_center)`` azimuth stretch). Must be positive.
+    height : float
+        On-sky height of the scan region in degrees (elevation extent).
+        Must be positive.
+    spacing : float
+        On-sky spacing between scan lines in degrees. Must be positive.
+    velocity : float
+        Mean diagonal on-sky scan speed in degrees/second (tangent-plane,
+        not azimuth-coordinate). The peak on-sky speed exceeds this (see
+        :class:`PongScanConfig`); the azimuth-coordinate speed exceeds the
+        on-sky speed by ``1 / cos(el_center)``. Must be positive.
+    num_terms : int, optional
+        Number of Fourier terms for the triangle-wave approximation.
+        Default is 4 (matching :class:`PongScanConfig` usage). Must be >= 1.
+    angle : float, optional
+        Rotation angle of the on-sky pattern in degrees, applied in the
+        tangent plane before the horizon-frame mapping. Default is 0.0.
+    timestep : float, optional
+        Time between trajectory points in seconds. Default is 0.1. Must be
+        positive.
+
+    Raises
+    ------
+    ValueError
+        If width, height, spacing, or velocity is not positive, if
+        num_terms is less than 1, or if el_center is not in ``(0, 90)``.
+
+    Notes
+    -----
+    The scan geometry uses a flat-sky (tangent-plane) approximation, so it
+    is accurate for scan dimensions up to about 10 degrees; beyond that,
+    field-edge distortion becomes significant.
+    """
+
+    az_center: float
+    el_center: float
+    width: float
+    height: float
+    spacing: float
+    velocity: float
+    # kw_only so these defaulted fields may follow the required fields above
+    # despite the base class declaring ``timestep`` without a default.
+    num_terms: int = field(default=4, kw_only=True)
+    angle: float = field(default=0.0, kw_only=True)
+    timestep: float = field(default=0.1, kw_only=True)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.width <= 0:
+            raise ValueError(f"width must be positive, got {self.width}")
+        if self.height <= 0:
+            raise ValueError(f"height must be positive, got {self.height}")
+        if self.spacing <= 0:
+            raise ValueError(f"spacing must be positive, got {self.spacing}")
+        if self.velocity <= 0:
+            raise ValueError(f"velocity must be positive, got {self.velocity}")
+        if self.num_terms < 1:
+            raise ValueError(f"num_terms must be at least 1, got {self.num_terms}")
+        if not 0.0 < self.el_center < 90.0:
+            raise ValueError(
+                f"el_center must be in (0, 90) degrees so cos(el_center) is nonzero, "
+                f"got {self.el_center}"
+            )
+        _warn_if_unusual(self.width, MAX_REASONABLE_SCAN_WIDTH_DEG, "Scan width", "deg")
+        _warn_if_unusual(self.height, MAX_REASONABLE_SCAN_WIDTH_DEG, "Scan height", "deg")
+        _warn_if_unusual(self.velocity, MAX_REASONABLE_VELOCITY_DEG_S, "Scan velocity", "deg/s")
+        # The azimuth-coordinate speed is inflated by 1/cos(el_center); warn on
+        # that realized quantity too, since it is what the mount must slew.
+        az_coord_velocity = self.velocity / math.cos(math.radians(self.el_center))
+        _warn_if_unusual(
+            az_coord_velocity,
+            MAX_REASONABLE_VELOCITY_DEG_S,
+            "Azimuth-coordinate velocity",
+            "deg/s",
+        )
+
+
+@dataclass(frozen=True)
 class DaisyScanConfig(ScanConfig):
     """Configuration for Daisy (Constant Velocity petal) scan.
 
@@ -313,6 +426,118 @@ class DaisyScanConfig(ScanConfig):
             MAX_REASONABLE_ACCELERATION_DEG_S2,
             "Start acceleration",
             "deg/s^2",
+        )
+
+
+@dataclass(frozen=True)
+class DaisyAltAzScanConfig(ScanConfig):
+    """Configuration for a Constant-Velocity Daisy scan about a fixed AltAz center.
+
+    Executes the same Constant-Velocity petal pattern as
+    :class:`DaisyScanConfig`, but about a fixed horizon-frame center
+    (``az_center``, ``el_center``) with no sky tracking. The on-sky
+    tangent-plane pattern is generated exactly as for the celestial Daisy,
+    then mapped into telescope coordinates by::
+
+        az = x_offset / cos(radians(el_center)) + az_center
+        el = y_offset + el_center
+
+    Consequently ``radius``, ``velocity``, ``turn_radius``,
+    ``avoidance_radius``, and ``start_acceleration`` are tangent-plane
+    (on-sky) quantities, identical in meaning to the :class:`DaisyScanConfig`
+    fields of the same name. The azimuth coordinate is stretched by
+    ``1 / cos(el_center)``: the azimuth-coordinate extent is
+    ``2 * radius / cos(el_center)`` and the azimuth-coordinate speed exceeds
+    the on-sky speed by the same factor. Pick ``velocity`` against the mount
+    azimuth-rate limit with that factor in mind.
+
+    Unlike the celestial Daisy, no coordinate transform or ``start_time`` is
+    needed to build the pattern (it is an :class:`AltAzPattern`); the mapping
+    above is a static horizon-frame projection.
+
+    Parameters
+    ----------
+    az_center : float
+        Azimuth of the pattern center in degrees.
+    el_center : float
+        Elevation of the pattern center in degrees. Must be in the open
+        interval ``(0, 90)`` so ``cos(el_center)`` is defined and nonzero.
+    radius : float
+        On-sky characteristic radius R0 in degrees. Must be positive.
+    velocity : float
+        On-sky scan velocity in degrees/second (tangent-plane, not
+        azimuth-coordinate). The azimuth-coordinate speed exceeds this by
+        ``1 / cos(el_center)``. Must be positive.
+    turn_radius : float
+        On-sky radius of curvature for turns in degrees. Must be positive.
+    avoidance_radius : float
+        On-sky radius to avoid near center in degrees. Must be non-negative.
+    start_acceleration : float
+        On-sky ramp-up acceleration in degrees/second^2. Must be positive.
+    y_offset : float, optional
+        Initial on-sky y offset in degrees. Default is 0.0 (start at center).
+    timestep : float, optional
+        Time between trajectory points in seconds. Default is 0.1. Must be
+        positive.
+
+    Raises
+    ------
+    ValueError
+        If radius, velocity, or turn_radius is not positive, if
+        avoidance_radius is negative, if start_acceleration is not positive,
+        or if el_center is not in ``(0, 90)``.
+
+    Notes
+    -----
+    The internal simulation uses a fixed timestep of ~1/150 s for accurate
+    curve approximation during turns, exactly as for the celestial Daisy.
+    """
+
+    az_center: float
+    el_center: float
+    radius: float
+    velocity: float
+    turn_radius: float
+    avoidance_radius: float
+    start_acceleration: float
+    # kw_only so these defaulted fields may follow the required fields above
+    # despite the base class declaring ``timestep`` without a default.
+    y_offset: float = field(default=0.0, kw_only=True)
+    timestep: float = field(default=0.1, kw_only=True)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.radius <= 0:
+            raise ValueError(f"radius must be positive, got {self.radius}")
+        if self.velocity <= 0:
+            raise ValueError(f"velocity must be positive, got {self.velocity}")
+        if self.turn_radius <= 0:
+            raise ValueError(f"turn_radius must be positive, got {self.turn_radius}")
+        if self.avoidance_radius < 0:
+            raise ValueError(f"avoidance_radius must be non-negative, got {self.avoidance_radius}")
+        if self.start_acceleration <= 0:
+            raise ValueError(f"start_acceleration must be positive, got {self.start_acceleration}")
+        if not 0.0 < self.el_center < 90.0:
+            raise ValueError(
+                f"el_center must be in (0, 90) degrees so cos(el_center) is nonzero, "
+                f"got {self.el_center}"
+            )
+        _warn_if_unusual(self.radius, MAX_REASONABLE_DAISY_RADIUS_DEG, "Daisy radius", "deg")
+        _warn_if_unusual(self.velocity, MAX_REASONABLE_VELOCITY_DEG_S, "Scan velocity", "deg/s")
+        _warn_if_unusual(
+            self.start_acceleration,
+            MAX_REASONABLE_ACCELERATION_DEG_S2,
+            "Start acceleration",
+            "deg/s^2",
+        )
+        # The azimuth-coordinate speed is inflated by 1/cos(el_center); warn on
+        # that realized quantity too, since it is what the mount must slew.
+        az_coord_velocity = self.velocity / math.cos(math.radians(self.el_center))
+        _warn_if_unusual(
+            az_coord_velocity,
+            MAX_REASONABLE_VELOCITY_DEG_S,
+            "Azimuth-coordinate velocity",
+            "deg/s",
         )
 
 

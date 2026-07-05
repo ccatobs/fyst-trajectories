@@ -6,8 +6,9 @@ Contains:
   the public data containers consumed and returned by the planner
   functions (``plan_pong_scan``, ``plan_constant_el_scan``,
   ``plan_daisy_scan``, ``plan_source_ces``).
-* :class:`PongComputedParams`, :class:`ConstantElComputedParams`,
-  :class:`DaisyComputedParams`, :class:`SourceCESComputedParams` —
+* :class:`PongComputedParams`, :class:`PongAltAzComputedParams`,
+  :class:`ConstantElComputedParams`, :class:`DaisyComputedParams`,
+  :class:`DaisyAltAzComputedParams`, :class:`SourceCESComputedParams` —
   schemas that describe the shape of :attr:`ScanBlock.computed_params`
   returned by each planner.
 
@@ -47,6 +48,36 @@ class PongComputedParams(TypedDict):
     x_numvert: int
     y_numvert: int
     n_cycles: int
+
+
+class PongAltAzComputedParams(TypedDict):
+    """Computed parameters returned by :func:`plan_pong_altaz_scan`.
+
+    Mirrors :class:`PongComputedParams` and adds the fixed horizon-frame
+    center the pattern was executed about.
+
+    Attributes
+    ----------
+    period : float
+        Pattern period in seconds for one full Pong cycle.
+    x_numvert : int
+        Number of vertices along the x-axis of the Lissajous lattice.
+    y_numvert : int
+        Number of vertices along the y-axis of the Lissajous lattice.
+    n_cycles : int
+        Number of full pattern cycles in the planned observation.
+    az_center : float
+        Azimuth of the fixed pattern center in degrees.
+    el_center : float
+        Elevation of the fixed pattern center in degrees.
+    """
+
+    period: float
+    x_numvert: int
+    y_numvert: int
+    n_cycles: int
+    az_center: float
+    el_center: float
 
 
 class ConstantElComputedParams(TypedDict):
@@ -89,6 +120,27 @@ class DaisyComputedParams(TypedDict):
     """
 
     duration: float
+
+
+class DaisyAltAzComputedParams(TypedDict):
+    """Computed parameters returned by :func:`plan_daisy_altaz_scan`.
+
+    Mirrors :class:`DaisyComputedParams` and adds the fixed horizon-frame
+    center the pattern was executed about.
+
+    Attributes
+    ----------
+    duration : float
+        Observation duration in seconds.
+    az_center : float
+        Azimuth of the fixed pattern center in degrees.
+    el_center : float
+        Elevation of the fixed pattern center in degrees.
+    """
+
+    duration: float
+    az_center: float
+    el_center: float
 
 
 class SourceCESComputedParams(TypedDict):
@@ -136,7 +188,12 @@ class SourceCESComputedParams(TypedDict):
 # Umbrella alias used by :attr:`ScanBlock.computed_params`. The concrete
 # dict shape depends on which ``plan_*`` function produced the block.
 ComputedParams = (
-    PongComputedParams | ConstantElComputedParams | DaisyComputedParams | SourceCESComputedParams
+    PongComputedParams
+    | PongAltAzComputedParams
+    | ConstantElComputedParams
+    | DaisyComputedParams
+    | DaisyAltAzComputedParams
+    | SourceCESComputedParams
 )
 
 
@@ -346,8 +403,10 @@ class ScanBlock:
     computed_params : ComputedParams
         A dict of computed parameters whose shape depends on the planner
         that produced the block: :class:`PongComputedParams`,
+        :class:`PongAltAzComputedParams`,
         :class:`ConstantElComputedParams`, :class:`DaisyComputedParams`,
-        or :class:`SourceCESComputedParams`.
+        :class:`DaisyAltAzComputedParams`, or
+        :class:`SourceCESComputedParams`.
     summary : str
         Human-readable summary of the planned observation.
 
@@ -375,10 +434,8 @@ class ScanBlock:
 # NOTE: ``source_ces`` is intentionally NOT registered here.
 # :class:`SourceCESComputedParams` exists as a static-type schema for
 # :func:`~fyst_trajectories.plan_source_ces` returns, but source-CES is
-# a planner-only scan type; its downstream consumer is the
-# schedlib fork (``ccatobs/pcam_gen_schedule``) via a future
-# ``policies/fyst.py``, not the in-tree
-# :mod:`fyst_trajectories.overhead` timeline simulator.
+# a planner-only scan type: it is consumed at dispatch time, not by the
+# in-tree :mod:`fyst_trajectories.overhead` timeline simulator.
 # Keeping it out of this dispatch table keeps the planning<->overhead
 # boundary explicit: ``overhead.schedule_to_trajectories`` only knows
 # ``pong``/``constant_el``/``daisy`` and ``ObservingPatch`` rejects
@@ -394,8 +451,10 @@ class ScanBlock:
 # ``SourceCESScanParams`` TypedDict in ``overhead/models.py``.
 _SCAN_TYPE_TO_KEYS: dict[str, frozenset[str]] = {
     "pong": PongComputedParams.__required_keys__,
+    "pong_altaz": PongAltAzComputedParams.__required_keys__,
     "constant_el": ConstantElComputedParams.__required_keys__,
     "daisy": DaisyComputedParams.__required_keys__,
+    "daisy_altaz": DaisyAltAzComputedParams.__required_keys__,
 }
 
 
@@ -412,7 +471,8 @@ def validate_computed_params(params: Mapping[str, object], scan_type: str) -> No
     params : mapping of str to object
         The candidate computed_params dict.
     scan_type : str
-        One of ``"pong"``, ``"constant_el"``, or ``"daisy"``.
+        One of ``"pong"``, ``"pong_altaz"``, ``"constant_el"``,
+        ``"daisy"``, or ``"daisy_altaz"``.
         ``"source_ces"`` is intentionally NOT accepted — see the note
         on :data:`_SCAN_TYPE_TO_KEYS`. :func:`plan_source_ces`
         self-validates against

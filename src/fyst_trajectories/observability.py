@@ -26,7 +26,7 @@ Two physically distinct kinds of avoidance are kept structurally separate:
   carries its own caller-supplied radius.
 
 The orchestration that turns ``schedule(OBSERVE=[...], AVOID=[...])`` into
-selected blocks lives one layer up (the schedlib scheduler), not here; this
+selected blocks lives one layer up (the scheduling layer), not here; this
 module supplies the observability primitive the scheduler calls.
 
 Examples

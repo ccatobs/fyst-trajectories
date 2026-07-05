@@ -5,13 +5,16 @@ The overhead subpackage is a **planning-time / simulation-only** tool. This
 page explains where it sits in the FYST observing pipeline, who owns each
 category of input, and what downstream integrations exist today.
 
+FYST hosts two instrument pipelines: Prime-Cam (SO-derived) and CHAI
+(KOSMA-derived). This library and the typed PCS scan tasks serve the
+Prime-Cam lane; the framing below is written for that lane.
+
 Three Scheduler Layers
 ----------------------
 
 FYST's observing workflow separates into three conceptual layers. The
-overhead subpackage is an offline simulator that mimics what a real
-Layer-B scheduler would produce; the live execution path uses the SO
-operations stack.
+overhead subpackage is an offline simulator that mimics what the
+tactical layer produces; it does not drive live observing.
 
 .. list-table::
    :header-rows: 1
@@ -21,20 +24,20 @@ operations stack.
      - Responsibility
      - Status
    * - A
-     - **Survey/visibility scheduler.** Decide which patches are
+     - **Survey/visibility scheduler.** Decide which observing units are
        observable across many nights and enforce
        cadence/grouping/PWV constraints.
-     - ``fystplan`` (astroplan-based) in ``obs_implementation``. Writes
-       ``ObsUnit`` selections to Redis via ops-db-api. May additionally
-       generate a TOAST-style master schedule for ``schedlib`` ingestion.
+     - An upstream survey planner selects observing units across nights
+       and records the selection for the tactical layer.
    * - B
      - **Tactical scheduler / command emission.** Given a prioritized
        block list for one night, interleave science with calibrations
        and slews and emit executable commands.
-     - **Live:** ``simonsobs/scheduler`` (schedlib). Needs a new
-       ``policies/fyst.py`` (not yet written) that subclasses
-       ``TelPolicy`` and uses fyst-trajectories for FYST astronomy.
-       Emits a Python script of ``sorunlib`` calls.
+     - **Live:** the observatory scheduling layer expands the selected
+       observing units and dispatches the typed PCS scan tasks
+       (``pong_scan``, ``daisy_scan``, ``constant_el_scan``,
+       ``source_scan``), each of which calls the ``plan_*_scan``
+       planners at dispatch time.
        **Offline simulation:** this subpackage,
        :func:`~fyst_trajectories.overhead.generate_timeline` produces a
        realistic minute-by-minute ECSV for survey-design studies and
@@ -42,19 +45,17 @@ operations stack.
        It does *not* drive live observing.
    * - C
      - **Execution.** Run the night against the ACU.
-     - Nextline (line-by-line Python interpreter) executes the
-       schedlib-emitted script; sorunlib dispatches OCS RPCs;
-       ``ccatobs/pcs`` ACU agent posts trajectories to the FYST Go TCS;
-       Go TCS uploads ProgramTrack to the Vertex ACU. PCS tasks
-       (``pong_scan``, ``daisy_scan``, ``constant_el_scan``) call
+     - The ``ccatobs/pcs`` ACU agent posts each trajectory to the
+       telescope control system, which uploads the motion program to the
+       Vertex ACU. The typed PCS scan tasks call
        :func:`~fyst_trajectories.plan_pong_scan` etc. and
-       :func:`~fyst_trajectories.to_path_format`.
+       :func:`~fyst_trajectories.to_path_payload`.
 
 Where the Subpackage Fits (current architecture)
 ------------------------------------------------
 
 The overhead subpackage feeds the offline simulation lane. Live operations
-use a separate stack::
+run through a separate path::
 
    OFFLINE SIM LANE (where this subpackage lives):
    ─────────────────────────────────────────────────
@@ -71,20 +72,13 @@ use a separate stack::
    LIVE OPS LANE (Prime-Cam, what actually drives the telescope):
    ──────────────────────────────────────────────────────────────
 
-   Astronomer          fystplan or            schedlib              nextline + sorunlib
-   target list   ──▶   upstream master ──▶    policies/fyst.py ──▶  (line-by-line
-                       schedule generator     (not yet written;     interpreter +
-                                              uses fyst-trajec-     OCS RPC
-                                              tories for FYST       dispatch)
-                                              astronomy)                  │
-                                              │                           ▼
-                                              ▼                    pcs ACU agent
-                                              Python script               │
-                                              of sorunlib calls           ▼
-                                                                   Go TCS /path
-                                                                          │
-                                                                          ▼
-                                                                   Vertex ACU
+   long-term schedule ──▶ observatory scheduling layer ──▶ PCS ACU agent
+                          (dispatches the typed scan            │
+                           tasks; each calls                    ▼
+                           plan_*_scan at dispatch)   telescope control system
+                                                                │
+                                                                ▼
+                                                               ACU
 
 
 fyst-trajectories sits *underneath* both lanes. The core library (Site,
@@ -96,9 +90,9 @@ Planning = Execution invariant (still applies, narrower scope)
 
 The invariant holds within fyst-trajectories: the same ``plan_*_scan``
 functions are called by ``overhead.generate_timeline`` (sim lane) and by
-live PCS ACU-agent tasks (ops lane). This guarantees the sim's wall-clock
+the live PCS scan tasks (ops lane). This guarantees the sim's wall-clock
 prediction matches what the telescope will actually execute when the same
-parameters are submitted by ``schedlib``. It is *not*, however, a contract
+parameters are dispatched. It is *not*, however, a contract
 between the overhead-emitted ECSV and the live execution. The ECSV is a
 sim artifact, not the schedule the telescope reads.
 
@@ -109,20 +103,18 @@ Retunes are planning-side only
 retune flags for accurate sim hitmaps (which exclude retune-flagged
 samples from coverage). It is not called at execution time;
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` does not call
-it. At real execution, retunes are triggered by the Prime-Cam SMuRF
-readout (via ``sorunlib.smurf`` calls in the Nextline-executed script),
-which flags the data itself; the trajectory az/el is unaffected.
+it. At real execution, retunes are triggered by the Prime-Cam detector
+readout, which flags the data itself; the trajectory az/el is unaffected.
 
 Source-CES is planner-only too
 ------------------------------
 
-:func:`~fyst_trajectories.plan_source_ces` is part of the planning
-subpackage but is **not** a supported overhead scan type. The
-overhead simulator dispatches on ``pong`` / ``constant_el`` / ``daisy``
-only; planet calibrations are handled as fixed-duration blocks
-(``OverheadModel.planet_cal_duration``) without invoking any
-``plan_*`` function. ``plan_source_ces`` exists so a future
-``schedlib/policies/fyst.py`` can call it directly. See the
+:func:`~fyst_trajectories.plan_source_ces` is planner-only here: it is
+**not** a supported overhead scan type. The overhead simulator dispatches
+on ``pong`` / ``constant_el`` / ``daisy`` only; planet calibrations are
+handled as fixed-duration blocks (``OverheadModel.planet_cal_duration``)
+without invoking any ``plan_*`` function. At dispatch time the live PCS
+``source_scan`` task consumes ``plan_source_ces`` instead. See the
 "Planning a Source CES" section in :doc:`planning` for details.
 
 Parameter Ownership
@@ -164,10 +156,11 @@ exploratory scripts.
 .. note::
 
    The overhead subpackage is a planning-time tool and should **not** be
-   called from a live observing loop. At execution time the orchestrator
-   should read a pre-computed ECSV, then regenerate motion arrays from
-   the stored ``ScanBlock`` metadata, not re-run the scheduler
-   mid-night.
+   called from a live observing loop. Nothing live reads the ECSV it emits;
+   it is an offline artifact. Coverage tooling regenerates motion arrays
+   from the stored ``TimelineBlock`` metadata via
+   :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rather than
+   re-running the scheduler.
 
 Related Reading
 ---------------

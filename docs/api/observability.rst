@@ -35,7 +35,7 @@ Two physically distinct kinds of avoidance are kept structurally separate:
 
    The orchestration that turns ``schedule(OBSERVE=[...], AVOID=[...])`` into
    selected, sequenced observing blocks lives **one layer up** — in the
-   schedlib scheduler policy, not here. This module supplies the stateless
+   scheduling layer, not here. This module supplies the stateless
    observability primitive that the scheduler calls; it does not select,
    sequence, or trim blocks.
 

@@ -9,8 +9,10 @@ into pattern configurations and trajectories.
    :imported-members:
    :undoc-members:
    :show-inheritance:
-   :exclude-members: PongComputedParams, ConstantElComputedParams,
-                     DaisyComputedParams, SourceCESComputedParams,
+   :exclude-members: PongComputedParams, PongAltAzComputedParams,
+                     ConstantElComputedParams,
+                     DaisyComputedParams, DaisyAltAzComputedParams,
+                     SourceCESComputedParams,
                      ComputedParams, validate_computed_params
 
 Computed Parameter Schemas
@@ -22,10 +24,16 @@ Each planner function returns a :class:`ScanBlock` whose
 .. autoclass:: fyst_trajectories.planning.PongComputedParams
    :members:
 
+.. autoclass:: fyst_trajectories.planning.PongAltAzComputedParams
+   :members:
+
 .. autoclass:: fyst_trajectories.planning.ConstantElComputedParams
    :members:
 
 .. autoclass:: fyst_trajectories.planning.DaisyComputedParams
+   :members:
+
+.. autoclass:: fyst_trajectories.planning.DaisyAltAzComputedParams
    :members:
 
 .. autoclass:: fyst_trajectories.planning.SourceCESComputedParams
@@ -37,6 +45,5 @@ Each planner function returns a :class:`ScanBlock` whose
 
    ``"source_ces"`` is intentionally not accepted by
    ``validate_computed_params``. :func:`plan_source_ces` is
-   planner-only (its consumer is the FYST policy in the ``pcam_gen_schedule`` schedlib fork,
-   not the in-tree overhead simulator) and self-validates against
+   planner-only and self-validates against
    :attr:`SourceCESComputedParams.__required_keys__` directly.

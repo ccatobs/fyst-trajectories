@@ -9,8 +9,14 @@ astronomer's inputs and the pattern config:
 - **Pong** - computes the Pong period from field dimensions, spacing, and
   velocity.
 - **Constant-El** - finds RA-edge elevation crossings to determine timing,
-  derives the azimuth range and ``n_scans`` automatically.
+  derives the azimuth range and ``n_scans`` automatically; also accepts an
+  explicit ``lsa_window`` to pin timing to a Local Sidereal Angle window.
 - **Daisy** - convenience wrapper; parameters map nearly 1:1 to the config.
+- **Source CES** - drags a moving source (planet or sidereal point) across an
+  instrument-array footprint at fixed boresight elevation, solving for the
+  azimuth drift rate.
+- **AltAz Pong / Daisy** - run the Pong and Daisy patterns about a fixed
+  horizon-frame center (no RA/Dec tracking).
 
 Sidereal, planet, and linear patterns have no non-trivial planning step;
 :class:`~fyst_trajectories.patterns.TrajectoryBuilder` can be used directly.
@@ -185,6 +191,54 @@ returned config is passed individually through
         )
         blocks.append(block)
 
+Planning an AltAz Pong Scan
+---------------------------
+
+:func:`~fyst_trajectories.planning.plan_pong_altaz_scan` runs the same
+Curvy-Pong pattern as :func:`~fyst_trajectories.planning.plan_pong_scan`, but
+about a fixed horizon-frame center (``az_center``, ``el_center``) with no sky
+tracking. The on-sky tangent-plane offsets are mapped into telescope
+coordinates by::
+
+    az = x_offset / cos(radians(el_center)) + az_center
+    el = y_offset + el_center
+
+so ``width``, ``height``, ``spacing``, and ``velocity`` keep their on-sky
+meaning from the celestial Pong. The azimuth coordinate is stretched by
+``1 / cos(el_center)``: the azimuth-coordinate extent is
+``width / cos(el_center)`` and the azimuth-coordinate speed exceeds the on-sky
+``velocity`` by the same factor (budget ``velocity`` against the mount azimuth
+rate limit accordingly).
+
+Basic usage::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_pong_altaz_scan
+
+    site = get_fyst_site()
+
+    block = plan_pong_altaz_scan(
+        az_center=120.0,     # deg
+        el_center=60.0,      # deg (fixed; no sky tracking)
+        width=2.0,           # deg on-sky
+        height=2.0,          # deg on-sky
+        spacing=0.1,         # deg between scan lines
+        velocity=0.5,        # deg/s on-sky
+        site=site,
+        start_time=Time("2026-03-15T04:00:00", scale="utc"),
+    )
+
+    print(block.summary)
+    print(f"Duration: {block.duration:.1f}s")
+
+The duration defaults to one full Pong period; pass ``n_cycles`` to observe
+several. ``num_terms``, ``angle``, ``timestep``, and ``detector_offset`` behave
+as in :func:`~fyst_trajectories.planning.plan_pong_scan`. ``start_time`` is
+used to anchor the trajectory timestamp and to convert the center to RA/Dec for
+the (warn-only) sun-safety pre-flight check.
+
 Planning a Constant-Elevation Scan
 -----------------------------------
 
@@ -235,6 +289,35 @@ With a detector offset::
         detector_offset=offset,
     )
 
+LSA-windowed timing
+~~~~~~~~~~~~~~~~~~~~
+
+Instead of deriving timing from RA-edge elevation crossings, pass
+``lsa_window=(min_lsa, max_lsa)`` (degrees) to pin the scan to a Local
+Sidereal Angle window. The duration is ``((max_lsa - min_lsa) mod 360) / 15``
+hours. Wrap-around windows (``max_lsa < min_lsa``, e.g. ``(310.0, 10.0)``) are
+supported, and ``rising`` still selects the azimuth half::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
+
+    site = get_fyst_site()
+
+    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    block = plan_constant_el_scan(
+        field=field,
+        elevation=50.0,
+        velocity=0.5,
+        site=site,
+        start_time=Time("2026-09-15T00:00:00", scale="utc"),
+        rising=True,
+        lsa_window=(310.0, 10.0),   # 60 deg / 15 = 4 h scan across LSA = 0
+    )
+
+    print(f"Duration: {block.duration / 3600:.1f}h")
+
 Planning a Daisy Scan
 ---------------------
 
@@ -264,6 +347,56 @@ position rather than a ``FieldRegion``::
 
     print(block.summary)
 
+Planning an AltAz Daisy Scan
+----------------------------
+
+:func:`~fyst_trajectories.planning.plan_daisy_altaz_scan` runs the same
+Constant-Velocity Daisy pattern as
+:func:`~fyst_trajectories.planning.plan_daisy_scan`, but about a fixed
+horizon-frame center (``az_center``, ``el_center``) with no sky tracking. The
+on-sky tangent-plane offsets are mapped into telescope coordinates by::
+
+    az = x_offset / cos(radians(el_center)) + az_center
+    el = y_offset + el_center
+
+so ``radius``, ``velocity``, ``turn_radius``, ``avoidance_radius``, and
+``start_acceleration`` keep their on-sky meaning from the celestial Daisy. The
+azimuth coordinate is stretched by ``1 / cos(el_center)``: the
+azimuth-coordinate extent is ``2 * radius / cos(el_center)`` and the
+azimuth-coordinate speed exceeds the on-sky ``velocity`` by the same factor
+(budget ``velocity`` against the mount azimuth rate limit accordingly).
+
+Basic usage::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_daisy_altaz_scan
+
+    site = get_fyst_site()
+
+    block = plan_daisy_altaz_scan(
+        az_center=120.0,        # deg
+        el_center=60.0,         # deg (fixed; no sky tracking)
+        radius=0.5,             # characteristic radius R0 (deg on-sky)
+        velocity=0.3,           # deg/s on-sky
+        turn_radius=0.2,        # curvature radius for turns (deg on-sky)
+        avoidance_radius=0.0,   # avoid center within this radius (deg on-sky)
+        start_acceleration=0.5, # ramp-up acceleration (deg/s^2 on-sky)
+        site=site,
+        start_time=Time("2026-03-15T04:00:00", scale="utc"),
+        timestep=0.1,
+        duration=300.0,
+    )
+
+    print(block.summary)
+    print(f"Duration: {block.duration:.1f}s")
+
+``timestep``, ``duration``, ``y_offset``, and ``detector_offset`` behave as in
+:func:`~fyst_trajectories.planning.plan_daisy_scan`. ``start_time`` is used to
+anchor the trajectory timestamp and to convert the center to RA/Dec for the
+(warn-only) sun-safety pre-flight check.
+
 Planning a Source CES (Planet / Sidereal Drift)
 ------------------------------------------------
 
@@ -271,8 +404,7 @@ Planning a Source CES (Planet / Sidereal Drift)
 (planet or sidereal point) across an instrument-array footprint at a fixed
 boresight elevation ``el_bore``, solving for the azimuth drift rate ``v_az``
 that sweeps the source over the array. It mirrors Simons Observatory's
-``schedlib.source.make_source_ces`` (intended consumer: a future
-``schedlib/policies/fyst.py``).
+``schedlib.source.make_source_ces``.
 
 Worked example, Jupiter rising across the full PrimeCam array::
 
@@ -323,9 +455,10 @@ Params-only mode (emit-time)
 arguments as :func:`~fyst_trajectories.planning.plan_source_ces` (minus
 ``timestep``) and returns just the scalar
 :class:`~fyst_trajectories.planning.SourceCESComputedParams` dict, skipping
-trajectory generation. The downstream consumer is a scheduler policy (our
-``schedlib`` fork) that emits a ``run.acu.source_scan(...)`` line and discards
-the trajectory.
+trajectory generation. This is the emit-time entry point: a scheduler can
+price many candidate scans cheaply (feasibility, duration, azimuth throw)
+without building a trajectory, which the execution layer generates once at
+dispatch.
 
 Worked example, the same Jupiter input as the section above, scalars
 only::
@@ -347,7 +480,7 @@ only::
         site=site,
     )
 
-    # No trajectory; just the scalars the schedlib emitter needs.
+    # No trajectory; just the scalars a scheduler needs at emit time.
     print(f"az_start={params['az_start']:.2f}  az_throw={params['az_throw']:.2f}")
     print(f"v_az={params['v_az']:+.5f} deg/s  el_bore={params['el_bore']:.2f}")
     print(f"t0={params['t0_iso'][:19]}  t1={params['t1_iso'][:19]}")
@@ -379,6 +512,10 @@ containing:
 
     - **Pong** - :class:`~fyst_trajectories.planning.PongComputedParams`
       (``period``, ``x_numvert``, ``y_numvert``, ``n_cycles``).
+    - **AltAz Pong** -
+      :class:`~fyst_trajectories.planning.PongAltAzComputedParams`
+      (``period``, ``x_numvert``, ``y_numvert``, ``n_cycles``,
+      ``az_center``, ``el_center``).
     - **Constant-El (auto)** -
       :class:`~fyst_trajectories.planning.ConstantElComputedParams`
       (``az_start``, ``az_stop``, ``az_throw``, ``n_scans``,
@@ -386,6 +523,9 @@ containing:
     - **Daisy** -
       :class:`~fyst_trajectories.planning.DaisyComputedParams`
       (``duration``).
+    - **AltAz Daisy** -
+      :class:`~fyst_trajectories.planning.DaisyAltAzComputedParams`
+      (``duration``, ``az_center``, ``el_center``).
     - **Source CES** -
       :class:`~fyst_trajectories.planning.SourceCESComputedParams`
       (``az_start``, ``az_throw``, ``v_az``, ``el_bore``,

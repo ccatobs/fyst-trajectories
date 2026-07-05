@@ -28,7 +28,7 @@ The pattern type is automatically inferred from the config class::
         .build()
     )
 
-Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``, ``satellite``, ``sidereal``.
+Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``.
 
 TrajectoryBuilder
 -----------------
@@ -41,6 +41,8 @@ TrajectoryBuilder
 
     from astropy.time import Time
 
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
     from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
@@ -97,7 +99,15 @@ Configuration Classes
    :members:
    :show-inheritance:
 
+.. autoclass:: fyst_trajectories.patterns.PongAltAzScanConfig
+   :members:
+   :show-inheritance:
+
 .. autoclass:: fyst_trajectories.patterns.DaisyScanConfig
+   :members:
+   :show-inheritance:
+
+.. autoclass:: fyst_trajectories.patterns.DaisyAltAzScanConfig
    :members:
    :show-inheritance:
 
@@ -128,7 +138,15 @@ Pattern Classes
    :members:
    :show-inheritance:
 
+.. autoclass:: fyst_trajectories.patterns.PongAltAzScanPattern
+   :members:
+   :show-inheritance:
+
 .. autoclass:: fyst_trajectories.patterns.DaisyScanPattern
+   :members:
+   :show-inheritance:
+
+.. autoclass:: fyst_trajectories.patterns.DaisyAltAzScanPattern
    :members:
    :show-inheritance:
 
@@ -164,7 +182,17 @@ Pattern Selection
 |                   |                  | ``height``,       |
 |                   |                  | ``spacing``       |
 +-------------------+------------------+-------------------+
+| ``pong_altaz``    | AltAzPattern     | ``az_center``,    |
+|                   |                  | ``el_center``,    |
+|                   |                  | ``width``,        |
+|                   |                  | ``height``        |
++-------------------+------------------+-------------------+
 | ``daisy``         | CelestialPattern | ``radius``,       |
+|                   |                  | ``velocity``      |
++-------------------+------------------+-------------------+
+| ``daisy_altaz``   | AltAzPattern     | ``az_center``,    |
+|                   |                  | ``el_center``,    |
+|                   |                  | ``radius``,       |
 |                   |                  | ``velocity``      |
 +-------------------+------------------+-------------------+
 | ``constant_el``   | AltAzPattern     | ``az_start``,     |

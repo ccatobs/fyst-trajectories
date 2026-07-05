@@ -9,7 +9,7 @@ Visualization utilities for trajectories and observational data.
 
        pip install "fyst-trajectories[plotting]"
 
-   This installs ``matplotlib`` and ``scipy``.
+   This installs ``matplotlib``.
 
 .. automodule:: fyst_trajectories.plotting
    :members:

@@ -22,11 +22,17 @@ Common Operations
 
 **Export formats**::
 
-    from fyst_trajectories.trajectory_utils import to_path_format, to_arrays
+    from fyst_trajectories.trajectory_utils import (
+        to_arrays,
+        to_path_format,
+        to_path_payload,
+    )
 
-    # For Go TCS /path endpoint
+    # Ready-to-POST Go TCS /path body: {"start_time", "coordsys", "points"}
+    payload = to_path_payload(trajectory)
+
+    # Just the point rows: List[List[float]] with [time, az, el, az_vel, el_vel]
     points = to_path_format(trajectory)
-    # Returns: List[List[float]] with [time, az, el, az_vel, el_vel]
 
     # Simple numpy arrays
     times, az, el = to_arrays(trajectory)

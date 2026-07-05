@@ -103,6 +103,10 @@ _SKIP = {
             "block = plan_pong_scan(...)",
             "abbreviated `...` placeholder; the full call is shown in Quick Start",
         ),
+        (
+            "az = x_offset / cos(radians(el_center)) + az_center",
+            "illustrative horizon-frame mapping formula, not runnable Python",
+        ),
     ],
     "retune_events.rst": [
         ("t_start_s,duration_s,module_index", "literal CSV schema shown as a block, not Python"),

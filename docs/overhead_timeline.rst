@@ -163,7 +163,7 @@ Regenerating Trajectories
 
 A timeline stores scan geometry in ``block.metadata``, not motion arrays.
 To rebuild az/el/time arrays for every science block (e.g. for coverage
-simulation or to stream to OCS),
+simulation),
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` iterates the
 timeline, calls the appropriate ``plan_*_scan`` function for each science
 block, and yields ``(TimelineBlock, ScanBlock)`` pairs. Blocks that are

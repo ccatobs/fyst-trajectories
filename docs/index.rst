@@ -5,6 +5,11 @@ Trajectory generation for the FYST (Fred Young Submillimeter
 Telescope).  Wraps astropy with FYST-specific site coordinates, telescope
 limits, and scan pattern generators.
 
+This release adds AltAz-native Pong and Daisy planners (a fixed
+horizon-frame center, no RA/Dec tracking) and an ``lsa_window`` option on
+constant-elevation planning that pins timing to a Local Sidereal Angle
+window. See :doc:`planning`.
+
 Scope and boundaries
 --------------------
 
@@ -64,7 +69,7 @@ use.
      - ``get_fyst_site(sun_exclusion_radius=...)``
    * - Nasmyth port
      - ``"right"`` (+1 sign)
-     - ``site.FYST_NASMYTH_PORT``
+     - module constant ``site.FYST_NASMYTH_PORT`` (not a call-time option)
    * - Az/El velocity limits
      - 3.0 / 1.0 deg/s
      - ``get_fyst_site()`` kwargs
@@ -73,10 +78,10 @@ use.
      - ``get_fyst_site()`` kwargs
    * - Plate scale
      - 13.89 arcsec/mm
-     - ``site.FYST_PLATE_SCALE``
+     - module constant ``site.FYST_PLATE_SCALE`` (not a call-time option)
    * - PrimeCam inner ring radius
      - 461.3 mm
-     - ``primecam.INNER_RING_RADIUS_MM``
+     - module constant ``primecam.INNER_RING_RADIUS_MM`` (not a call-time option)
    * - Retune interval
      - 300 s
      - ``inject_retune(retune_interval=...)``

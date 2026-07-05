@@ -52,25 +52,30 @@ Using the registry directly:
 Listing available patterns:
 
 >>> from fyst_trajectories.patterns import list_patterns
->>> print(list_patterns())
-['constant_el', 'daisy', 'linear', 'planet', 'pong', 'satellite', 'sidereal']
+>>> list_patterns()  # doctest: +NORMALIZE_WHITESPACE
+['constant_el', 'daisy', 'daisy_altaz', 'linear', 'planet', 'pong',
+ 'pong_altaz', 'satellite', 'sidereal']
 """
 
 # Import patterns to trigger registration (order matters)
 from . import constant_el as constant_el  # noqa: F401  # pylint: disable=useless-import-alias
 from . import daisy as daisy  # noqa: F401  # pylint: disable=useless-import-alias
+from . import daisy_altaz as daisy_altaz  # noqa: F401  # pylint: disable=useless-import-alias
 from . import linear as linear  # noqa: F401  # pylint: disable=useless-import-alias
 from . import planet as planet  # noqa: F401  # pylint: disable=useless-import-alias
 from . import pong as pong  # noqa: F401  # pylint: disable=useless-import-alias
+from . import pong_altaz as pong_altaz  # noqa: F401  # pylint: disable=useless-import-alias
 from . import satellite as satellite  # noqa: F401  # pylint: disable=useless-import-alias
 from . import sidereal as sidereal  # noqa: F401  # pylint: disable=useless-import-alias
 from .base import AltAzPattern, CelestialPattern, ScanPattern, TrajectoryMetadata
 from .builder import TrajectoryBuilder
 from .configs import (
     ConstantElScanConfig,
+    DaisyAltAzScanConfig,
     DaisyScanConfig,
     LinearMotionConfig,
     PlanetTrackConfig,
+    PongAltAzScanConfig,
     PongScanConfig,
     SatelliteTrackConfig,
     ScanConfig,
@@ -78,9 +83,11 @@ from .configs import (
 )
 from .constant_el import ConstantElScanPattern
 from .daisy import DaisyScanPattern
+from .daisy_altaz import DaisyAltAzScanPattern
 from .linear import LinearMotionPattern
 from .planet import PlanetTrackPattern
 from .pong import PongScanPattern, compute_pong_period
+from .pong_altaz import PongAltAzScanPattern
 from .registry import (
     get_pattern,
     get_pattern_for_config,
@@ -105,7 +112,9 @@ __all__ = [
     "ScanConfig",
     "ConstantElScanConfig",
     "PongScanConfig",
+    "PongAltAzScanConfig",
     "DaisyScanConfig",
+    "DaisyAltAzScanConfig",
     "SiderealTrackConfig",
     "PlanetTrackConfig",
     "SatelliteTrackConfig",
@@ -117,7 +126,9 @@ __all__ = [
     "PlanetTrackPattern",
     "SatelliteTrackPattern",
     "PongScanPattern",
+    "PongAltAzScanPattern",
     "DaisyScanPattern",
+    "DaisyAltAzScanPattern",
     # Builder
     "TrajectoryBuilder",
     # Helpers

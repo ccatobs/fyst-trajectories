@@ -289,6 +289,10 @@ agent itself. Inside an agent task, a typical scan looks like::
     tcs = self._get_tcs_client()
     tcs.scan_pattern(data)
 
+:func:`~fyst_trajectories.trajectory_utils.to_path_payload` builds that
+same three-key ``data`` dict in one call:
+``to_path_payload(block.trajectory)``.
+
 For local testing without the PCS agent, POST the same payload directly::
 
     import requests
@@ -408,7 +412,7 @@ determined at runtime, you can use the registry functions::
 
     # List available pattern names
     print(list_patterns())
-    # ['constant_el', 'daisy', 'linear', 'planet', 'pong', 'satellite', 'sidereal']
+    # ['constant_el', 'daisy', 'daisy_altaz', 'linear', 'planet', 'pong', 'pong_altaz', 'satellite', 'sidereal']
 
     # Get a pattern class by name (useful for plugins or config-driven selection)
     pattern_name = "pong"  # e.g., from user input or config file

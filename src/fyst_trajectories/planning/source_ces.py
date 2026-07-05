@@ -14,8 +14,10 @@ the *entire* footprint at fixed boresight elevation. The output is a
 ``ScanBlock`` whose ``trajectory`` is a constant-elevation scan with
 the solved drift baked into the azimuth track.
 
-The intended consumer is a future ``policies/fyst.py`` in the
-schedlib fork (``ccatobs/pcam_gen_schedule``).
+``plan_source_ces`` is planner-only; at dispatch time the PCS
+``source_scan`` task consumes it. The params-only sibling
+:func:`compute_source_ces_params` is the emit-time entry point for a
+scheduler.
 """
 
 from __future__ import annotations
@@ -933,11 +935,11 @@ def compute_source_ces_params(
     Params-only sibling of :func:`plan_source_ces`. Returns just the
     :class:`SourceCESComputedParams` dict (az_start, az_throw, v_az,
     el_bore, boresight_rot, t0_iso, t1_iso, duration, mode, n_scans),
-    skipping the per-sample trajectory generation. Intended for
-    schedule-emitter consumers that only need the scan scalars to
-    populate a ``run.acu.source_scan(...)`` call (via a future
-    ``policies/fyst.py`` in the schedlib fork) and discard the
-    trajectory.
+    skipping the per-sample trajectory generation. This is the emit-time
+    entry point: a scheduler can price many candidate scans cheaply
+    (feasibility, duration, azimuth throw) from the scalars alone and
+    discard the trajectory, which the execution layer generates once at
+    dispatch.
 
     All keyword arguments are identical to :func:`plan_source_ces`
     except that ``timestep`` is omitted — only the trajectory builder
@@ -1293,9 +1295,8 @@ def plan_source_ces(
     (limits −180° to 360°), ``az_branch`` values near −180° can
     produce out-of-range scans even when geometrically valid.
 
-    ``plan_source_ces`` is planner-only: its consumer is the
-    schedlib fork (``ccatobs/pcam_gen_schedule``) via a future
-    ``policies/fyst.py``, not the in-tree
+    ``plan_source_ces`` is planner-only: it is consumed at dispatch time
+    by the PCS ``source_scan`` task, not by the in-tree
     :mod:`fyst_trajectories.overhead` simulator. See
     ``docs/planning.rst`` "Source CES" for the wider conventions
     discussion.

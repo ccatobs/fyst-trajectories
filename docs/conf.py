@@ -3,6 +3,7 @@
 import os
 import sys
 import warnings
+from importlib.metadata import version as _pkg_version
 
 sys.path.insert(0, os.path.abspath("../src"))
 
@@ -17,6 +18,9 @@ warnings.filterwarnings(
 project = "fyst-trajectories"
 copyright = "[TBD]"
 author = "Graham Gibson"
+
+release = _pkg_version("fyst-trajectories")
+version = ".".join(release.split(".")[:2])
 
 extensions = [
     "sphinx.ext.autodoc",

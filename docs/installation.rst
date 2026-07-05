@@ -20,9 +20,9 @@ Optional dependencies
 ---------------------
 
 The minimal install pulls only the core runtime dependencies (astropy,
-numpy, pyyaml). The following extras are available for opt-in features:
+numpy, pyyaml, scipy). The following extras are available for opt-in features:
 
-- ``plotting`` — adds ``matplotlib`` and ``scipy``; required by
+- ``plotting`` — adds ``matplotlib``; required by
   :mod:`fyst_trajectories.plotting` (``plot_trajectory``, ``plot_hit_map``).
 - ``performance`` — adds ``numba`` for JIT-compiled hot paths.
 - ``ephemeris`` — adds ``jplephem`` for high-precision solar-system body
@@ -32,7 +32,7 @@ numpy, pyyaml). The following extras are available for opt-in features:
 - ``docs`` — adds Sphinx and the rendering extensions used to build
   this site.
 - ``dev`` — superset of testing and development tools (pytest,
-  hypothesis, ruff, pre-commit, skyfield, numba).
+  pytest-cov, hypothesis, ruff, pre-commit, skyfield, numba).
 - ``all`` — installs every extra above.
 
 Install one or more by passing them to ``pip``::
