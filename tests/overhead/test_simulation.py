@@ -224,3 +224,12 @@ class TestValidateScanParams:
     def test_rejects_unknown_scan_type(self):
         with pytest.raises(KeyError, match="Unknown scan_type"):
             validate_scan_params({}, "sidereal")
+
+    def test_rising_key_allowed_only_for_constant_el(self):
+        # "rising" is a CEScanParams key: valid on constant_el, rejected
+        # on pong and daisy (which have no such key).
+        validate_scan_params({"rising": True}, "constant_el")
+        with pytest.raises(KeyError, match="unknown keys"):
+            validate_scan_params({"rising": True}, "pong")
+        with pytest.raises(KeyError, match="unknown keys"):
+            validate_scan_params({"rising": True}, "daisy")

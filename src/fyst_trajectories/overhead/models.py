@@ -67,6 +67,15 @@ class CEScanParams(TypedDict, total=False):
         :func:`~fyst_trajectories.planning.plan_constant_el_scan`
         for the full semantics (wrap-around handling, ``rising``
         interaction, search horizon).
+    rising : bool
+        Which elevation crossing to observe: ``True`` for the rising
+        (east-of-meridian) half of the field's transit, ``False`` for
+        the setting (west-of-meridian) half. When omitted, the scheduler
+        picks the crossing from the hour angle at selection time. When
+        supplied, the patch is only selectable while the sky side matches
+        this request, and the value is forwarded to the planner's
+        ``rising`` argument so the emitted trajectory covers the
+        requested half.
     """
 
     az_min: float
@@ -75,6 +84,7 @@ class CEScanParams(TypedDict, total=False):
     az_padding: float
     timestep: float
     lsa_window: tuple[float, float] | list[float]
+    rising: bool
 
 
 class PongScanParams(TypedDict, total=False):

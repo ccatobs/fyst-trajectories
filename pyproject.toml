@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fyst-trajectories"
-version = "0.5.0"
+version = "0.5.1"
 description = "Coordinate transformation and trajectory generation for FYST telescope"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -70,6 +70,7 @@ packages = ["src/fyst_trajectories"]
 include = [
     "/src",
     "/tests",
+    "/examples",
 ]
 
 [tool.pytest.ini_options]

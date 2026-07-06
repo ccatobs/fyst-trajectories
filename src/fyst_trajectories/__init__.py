@@ -51,7 +51,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .coordinates import (
     FRAME_ALIASES,

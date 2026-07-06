@@ -114,3 +114,7 @@ Write to TOAST-compatible ECSV and read it back::
     print(f"Loaded {len(loaded)} blocks")
 
 See :doc:`overhead_io` for format details and TOAST compatibility.
+
+For a complete runnable script that reads patches from a source-list CSV
+and walks this whole path (build, generate, write, read back, summarise),
+see ``examples/overhead_from_csv.py`` in the repository.

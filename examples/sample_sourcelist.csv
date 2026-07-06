@@ -1,0 +1,6 @@
+name,RA,DEC,width,height,priority,velocity,scan_type
+Lupus_daisy,15:28:00,-34:00:00,4.0,4.0,1.0,0.4,daisy
+Oph_pong,16:40:00,-24:00:00,8.0,8.0,1.0,0.5,pong
+GC_CE,17:52:00,-29:00:00,18.0,8.0,1.0,0.7,constant_el
+CrA_daisy,19:00:00,-37:00:00,4.0,4.0,1.0,0.4,daisy
+Sgr_pong,20:20:00,-30:00:00,8.0,8.0,1.0,0.5,pong

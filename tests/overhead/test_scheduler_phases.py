@@ -306,3 +306,90 @@ class TestSchedulerComposition:
             assert a.block_type == b.block_type
             assert abs(a.t_start.unix - b.t_start.unix) < 1e-6
             assert abs(a.t_stop.unix - b.t_stop.unix) < 1e-6
+
+
+class TestRisingSetting:
+    """A CE patch's ``scan_params['rising']`` request is honored end to end.
+
+    The test field (RA=40, Dec=-32) transits near zenith at FYST, so a
+    seven-hour window brackets both its rising (east, hour angle < 0) and
+    setting (west, hour angle > 0) crossings of el=50. A greedy scheduler
+    with no request picks the earliest (rising) side; pinning ``rising``
+    must move selection to the requested half.
+    """
+
+    # Window brackets both crossings of the el=50 transit of this field.
+    _START = "2026-06-15T10:00:00"
+    _END = "2026-06-15T17:00:00"
+    _RA = 40.0
+
+    def _field_patch(self, scan_params=None):
+        return ObservingPatch(
+            name="transit_field",
+            ra_center=self._RA,
+            dec_center=-32.0,
+            width=20.0,
+            height=10.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=50.0,
+            scan_params=scan_params or {},
+        )
+
+    def _first_science(self, patch):
+        from fyst_trajectories.overhead import BlockType, generate_timeline
+
+        timeline = generate_timeline(
+            patches=[patch],
+            site=get_fyst_site(),
+            start_time=self._START,
+            end_time=self._END,
+        )
+        science = [b for b in timeline.blocks if b.block_type == BlockType.SCIENCE]
+        assert science, "expected at least one science block"
+        return science[0]
+
+    def test_setting_request_lands_on_setting_side(self):
+        """``rising=False`` moves the block to the setting (west) crossing."""
+        from fyst_trajectories.coordinates import Coordinates
+
+        block = self._first_science(self._field_patch({"rising": False}))
+        coords = Coordinates(get_fyst_site())
+
+        # The block must carry the requested flag.
+        assert block.rising is False
+        # Selection must have waited for the setting side: hour angle > 0
+        # (west of the meridian) at the block start, per the planner's own
+        # HA convention.
+        ha = float(coords.get_hour_angle(self._RA, block.t_start))
+        assert ha > 0.0, f"expected setting-side (HA>0), got HA={ha:.1f}"
+        # The az sweep must sit in the western (setting) half of the
+        # transit. Its center is west of the meridian: az > 180 for a
+        # source that transits to the south at FYST's southern latitude.
+        az_center = 0.5 * (block.az_start + block.az_end)
+        assert az_center > 180.0, f"expected western az center, got {az_center:.1f}"
+
+    def test_no_rising_key_keeps_ha_default(self):
+        """Absent the key, selection matches today's HA-derived behavior.
+
+        With no request the greedy scheduler picks the earliest observable
+        side, which for this window is the rising (east, HA<0) crossing,
+        and the emitted block start is bit-for-bit identical to the
+        rising-side path taken when ``rising=True`` is requested.
+        """
+        from fyst_trajectories.coordinates import Coordinates
+
+        default_block = self._first_science(self._field_patch())
+        rising_block = self._first_science(self._field_patch({"rising": True}))
+        coords = Coordinates(get_fyst_site())
+
+        # HA-default picks the rising side here.
+        assert default_block.rising is True
+        ha = float(coords.get_hour_angle(self._RA, default_block.t_start))
+        assert ha < 0.0, f"expected rising-side (HA<0), got HA={ha:.1f}"
+        # The default is exactly the rising-requested path (the request is
+        # a no-op when the HA default already matches it).
+        assert abs(default_block.t_start.unix - rising_block.t_start.unix) < 1e-6
+        # And the setting request genuinely differs: it starts later.
+        setting_block = self._first_science(self._field_patch({"rising": False}))
+        assert setting_block.t_start.unix > default_block.t_start.unix

@@ -210,6 +210,17 @@ class PatchSelectionPhase(Phase):
             )
             score *= patch.weight / patch.priority
 
+            # Honor a requested elevation crossing: a patch whose
+            # scan_params pins "rising" is only selectable while the sky
+            # side matches (hour angle < 0 for rising, > 0 for setting).
+            # Without this a setting request would be scheduled at a
+            # rising-side time and the planner's geometry/timing would
+            # decohere from the request.
+            if score > 0.0 and "rising" in patch.scan_params:
+                ha = ctx.coords.get_hour_angle(patch.ra_center, state.current_time)
+                if bool(patch.scan_params["rising"]) != (ha < 0.0):
+                    score = 0.0
+
             if score > best_score:
                 best_score = score
                 best_patch = patch
@@ -363,7 +374,7 @@ class ScienceScanPhase(Phase):
         subscan_duration = scan_duration / n_subscans
 
         ha = ctx.coords.get_hour_angle(best_patch.ra_center, state.current_time)
-        rising = ha < 0.0
+        rising = best_patch.scan_params.get("rising", ha < 0.0)
 
         az_start_sci, az_end_sci = _compute_az_range(best_patch, best_az, best_el, ctx.site)
 
