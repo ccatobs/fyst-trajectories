@@ -666,6 +666,10 @@ class TestCalibrationPolicyRoundTrip:
             beam_map_cadence=86400.0,  # non-default (default None) to catch dropped serialisation
             planet_targets=("mars", "venus"),
             planet_min_elevation=25.0,
+            planet_cal_scan=True,  # non-default (default False)
+            planet_cal_passes=5,  # non-default (default 3)
+            planet_cal_el_step=1.5,  # non-default (default None) to catch dropped serialisation
+            planet_cal_footprint="i1",  # non-default (default "c")
         )
 
         # Sanity check: every field really differs from the class default.

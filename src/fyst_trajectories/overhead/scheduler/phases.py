@@ -16,17 +16,26 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from astropy.time import TimeDelta
+import numpy as np
+from astropy.time import Time, TimeDelta
 
+from ...exceptions import PointingError
+from ...planning import plan_source_ces_passes
 from ..models import (
+    CalibrationSpec,
+    CalibrationType,
     ObservingPatch,
     TimelineBlock,
+    validate_scan_params,
 )
 from ..utils import estimate_slew_time
 from .helpers import _compute_az_range, _compute_scan_duration, _evaluate_patch, _normalize_az
 from .state import SchedulerState
 
 if TYPE_CHECKING:
+    from ...planning import ScanBlock
+    from ...site import Site
+    from ..models import SourceCESScanParams
     from .state import SchedulerContext
 
 __all__ = [
@@ -129,6 +138,157 @@ class Phase:
         raise NotImplementedError
 
 
+# Trajectory sample spacing (seconds) used when a planet calibration is
+# planned as a source-CES pass sequence. Matches the plan_source_ces
+# default and is recorded in the block's scan_params so a consumer can
+# rebuild the pass with the same sampling.
+_SOURCE_CES_TIMESTEP_SEC = 0.1
+
+
+def _planet_cal_pass_block(
+    pass_block: ScanBlock,
+    *,
+    cal_spec: CalibrationSpec,
+    footprint: str,
+    t_start: Time,
+    scan_index: int,
+    site: Site,
+) -> tuple[TimelineBlock, Time, float, float]:
+    """Build one planet-calibration CALIBRATION block from a source-CES pass.
+
+    Returns ``(block, t_stop, az_end, el_bore)``. ``t_stop`` is the pass's
+    ``t1``; the caller chains it as the next block's ``t_start`` so the
+    blocks tile with no gaps. ``az_end`` / ``el_bore`` give the pass end
+    pose the caller carries forward as the scheduler's current position.
+
+    The block's ``t_start`` is supplied by the caller (the scheduler clock
+    for the first pass, the previous pass's ``t1`` afterwards), so the
+    inter-pass repointing gap and the anchor-to-scan lead fold into the
+    block as acquisition time. The true scan start is recorded in
+    ``metadata["t0_scan"]``. The azimuth bounds are the honest executed
+    envelope: the min/max over the pass trajectory's azimuth samples
+    (drift included), read from the planned trajectory itself rather
+    than re-derived from the scalar parameters.
+    """
+    cp = pass_block.computed_params
+    pp = pass_block.trajectory.metadata.pattern_params
+
+    t0_iso = str(cp["t0_iso"])
+    t1_iso = str(cp["t1_iso"])
+    t_stop = Time(t1_iso, scale="utc")
+    el_bore = float(cp["el_bore"])
+    mode = str(cp["mode"])
+
+    env_lo = float(np.min(pass_block.trajectory.az))
+    env_hi = float(np.max(pass_block.trajectory.az))
+
+    scan_params: SourceCESScanParams = {
+        "body": str(cal_spec.target),
+        "footprint": footprint,
+        "el_bore": el_bore,
+        "mode": mode,
+        "window": [t0_iso, t1_iso],
+        "boresight_rot": float(cp["boresight_rot"]),
+        "timestep": _SOURCE_CES_TIMESTEP_SEC,
+        "eta_offset_deg": float(pp["pass_eta_offset_deg"]),
+        "pass_index": int(pp["pass_index"]),
+        "n_passes": int(pp["n_passes"]),
+    }
+    validate_scan_params(scan_params, "source_ces")
+
+    block = TimelineBlock.calibration(
+        cal_type=cal_spec.name,
+        t_start=t_start,
+        duration=(t_stop - t_start).sec,
+        az=env_lo,
+        el=el_bore,
+        site=site,
+        scan_index=scan_index,
+        target=cal_spec.target,
+        az_end=env_hi,
+        scan_params=scan_params,
+        t0_scan=t0_iso,
+        rising=(mode == "rising"),
+    )
+    return block, t_stop, env_hi, el_bore
+
+
+def _emit_planet_cal_passes(
+    state: SchedulerState,
+    ctx: SchedulerContext,
+    cal_spec: CalibrationSpec,
+) -> tuple[bool, list[TimelineBlock], SchedulerState]:
+    """Plan a planet calibration as a multi-pass source-CES sequence.
+
+    Returns ``(emitted, blocks, new_state)``. ``emitted`` is ``False`` when
+    the sequence is infeasible (any
+    :class:`~fyst_trajectories.PointingError`) or when no pass finishes
+    before ``ctx.end_time``; in that case ``blocks`` is empty and
+    ``new_state`` is the unchanged input state. The caller then neither
+    emits nor marks the cadence, so the calibration stays due and is
+    retried on the next scheduler iteration, exactly like a planet cal with
+    no visible planet.
+
+    On success the blocks tile ``[state.current_time, last_pass_t1]`` with
+    no gaps, ``new_state`` advances ``current_time`` to the last pass's
+    ``t1`` and ``current_az`` / ``current_el`` to its end pose, and the
+    planet-cal cadence is marked at the (pre-scan) ``state.current_time``,
+    matching the parked path.
+    """
+    policy = ctx.calibration_policy
+
+    kwargs = dict(
+        body=cal_spec.target,
+        footprint=policy.planet_cal_footprint,
+        n_passes=policy.planet_cal_passes,
+        start_time=state.current_time,
+        site=ctx.site,
+        timestep=_SOURCE_CES_TIMESTEP_SEC,
+    )
+    if policy.planet_cal_el_step is not None:
+        kwargs["el_step"] = policy.planet_cal_el_step
+
+    try:
+        passes = plan_source_ces_passes(**kwargs)
+    except PointingError:
+        return False, [], state
+
+    # End-of-night: keep only whole passes that finish before the window
+    # closes. n_passes in the recorded scan_params stays the requested total
+    # so a truncated sequence is visible.
+    kept = [
+        b
+        for b in passes
+        if Time(str(b.computed_params["t1_iso"]), scale="utc").unix <= ctx.end_time.unix
+    ]
+    if not kept:
+        return False, [], state
+
+    blocks: list[TimelineBlock] = []
+    t_start = state.current_time
+    end_az = state.current_az
+    end_el = state.current_el
+    for pass_block in kept:
+        block, t_stop, end_az, end_el = _planet_cal_pass_block(
+            pass_block,
+            cal_spec=cal_spec,
+            footprint=policy.planet_cal_footprint,
+            t_start=t_start,
+            scan_index=state.scan_counter,
+            site=ctx.site,
+        )
+        blocks.append(block)
+        t_start = t_stop
+
+    new_state = state.advanced(
+        cal_state=state.cal_state.update(cal_spec.name, state.current_time),
+        current_time=t_start,
+        current_az=end_az,
+        current_el=end_el,
+    )
+    return True, blocks, new_state
+
+
 class CalibrationPhase(Phase):
     """Emit any calibration blocks whose cadence has elapsed.
 
@@ -141,6 +301,12 @@ class CalibrationPhase(Phase):
     Clamps each cal block's duration against the remaining schedule
     window so no block extends past ``ctx.end_time``. Stops early if
     the schedule window is exhausted partway through the burst.
+
+    When ``CalibrationPolicy.planet_cal_scan`` is set, a due
+    ``planet_cal`` is instead planned as a multi-pass source-CES
+    sequence anchored at the scheduler clock (one CALIBRATION block per
+    pass). An infeasible sequence is skipped and left due, so the
+    calibration retries on a later iteration.
     """
 
     def run(self, state: SchedulerState, ctx: SchedulerContext) -> PhaseResult:
@@ -156,6 +322,17 @@ class CalibrationPhase(Phase):
         for cal_spec in needed_cals:
             if state.current_time.unix >= ctx.end_time.unix:
                 break
+
+            if (
+                cal_spec.name == CalibrationType.PLANET_CAL
+                and ctx.calibration_policy.planet_cal_scan
+            ):
+                emitted, cal_blocks, new_state = _emit_planet_cal_passes(state, ctx, cal_spec)
+                if emitted:
+                    blocks.extend(cal_blocks)
+                    state = new_state
+                continue
+
             cal_duration = min(cal_spec.duration, (ctx.end_time - state.current_time).sec)
             cal_block = TimelineBlock.calibration(
                 cal_type=cal_spec.name,

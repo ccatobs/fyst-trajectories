@@ -227,6 +227,14 @@ def write_timeline(
     table.meta["calibration_planet_min_elevation"] = (
         timeline.calibration_policy.planet_min_elevation
     )
+    table.meta["calibration_planet_cal_scan"] = timeline.calibration_policy.planet_cal_scan
+    table.meta["calibration_planet_cal_passes"] = timeline.calibration_policy.planet_cal_passes
+    # ``planet_cal_el_step`` is ``float | None``; ECSV preserves ``None``
+    # in table metadata, so store it directly (mirrors beam_map_cadence).
+    table.meta["calibration_planet_cal_el_step"] = timeline.calibration_policy.planet_cal_el_step
+    table.meta["calibration_planet_cal_footprint"] = (
+        timeline.calibration_policy.planet_cal_footprint
+    )
     table.meta.update(timeline.metadata)
 
     table.write(str(path), format="ascii.ecsv", overwrite=True)
@@ -297,6 +305,14 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     _bmc = meta.get("calibration_beam_map_cadence", _MISSING)
     beam_map_cadence = cal_defaults.beam_map_cadence if _bmc is _MISSING else _bmc
 
+    # ``planet_cal_el_step`` is also ``float | None``; use the same sentinel
+    # so a stored ``None`` is preserved and only a missing key falls back.
+    _ces = meta.get("calibration_planet_cal_el_step", _MISSING)
+    if _ces is _MISSING:
+        planet_cal_el_step = cal_defaults.planet_cal_el_step
+    else:
+        planet_cal_el_step = None if _ces is None else float(_ces)
+
     cal_policy = CalibrationPolicy(
         retune_cadence=meta.get("calibration_retune_cadence", cal_defaults.retune_cadence),
         pointing_cadence=meta.get("calibration_pointing_cadence", cal_defaults.pointing_cadence),
@@ -309,6 +325,14 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
         planet_targets=_planet_targets,
         planet_min_elevation=meta.get(
             "calibration_planet_min_elevation", cal_defaults.planet_min_elevation
+        ),
+        planet_cal_scan=bool(meta.get("calibration_planet_cal_scan", cal_defaults.planet_cal_scan)),
+        planet_cal_passes=int(
+            meta.get("calibration_planet_cal_passes", cal_defaults.planet_cal_passes)
+        ),
+        planet_cal_el_step=planet_cal_el_step,
+        planet_cal_footprint=str(
+            meta.get("calibration_planet_cal_footprint", cal_defaults.planet_cal_footprint)
         ),
     )
 
@@ -351,6 +375,16 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
             # ``block_meta_json``.
             empty_meta: EmptyBlockMetadata = {}
             block_meta = empty_meta
+            # A non-science block may still carry scan_params (a planet
+            # calibration planned as a source-CES pass records its replay
+            # parameters there). The writer always dumps scan_params to the
+            # scan_params_json column, so restore it here when present and
+            # non-empty; slew/idle/retune blocks (empty scan_params) stay
+            # metadata-empty.
+            if "scan_params_json" in table.colnames:
+                sp = json.loads(str(row["scan_params_json"]))
+                if sp:
+                    block_meta["scan_params"] = sp  # type: ignore[typeddict-item]
         # Merge any extra per-block metadata stored in block_meta_json.
         # For calibration blocks this is where ``cal_type``/``target`` live.
         # The retune-events payload (if present) is decoded back into a
@@ -540,5 +574,9 @@ _KNOWN_META_KEYS = frozenset(
         "calibration_beam_map_cadence",
         "calibration_planet_targets",
         "calibration_planet_min_elevation",
+        "calibration_planet_cal_scan",
+        "calibration_planet_cal_passes",
+        "calibration_planet_cal_el_step",
+        "calibration_planet_cal_footprint",
     }
 )

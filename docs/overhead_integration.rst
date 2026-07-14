@@ -106,16 +106,39 @@ samples from coverage). It is not called at execution time;
 it. At real execution, retunes are triggered by the Prime-Cam detector
 readout, which flags the data itself; the trajectory az/el is unaffected.
 
-Source-CES is planner-only too
-------------------------------
+Planet calibrations and source-CES
+----------------------------------
 
-:func:`~fyst_trajectories.plan_source_ces` is planner-only here: it is
-**not** a supported overhead scan type. The overhead simulator dispatches
-on ``pong`` / ``constant_el`` / ``daisy`` only; planet calibrations are
-handled as fixed-duration blocks (``OverheadModel.planet_cal_duration``)
-without invoking any ``plan_*`` function. At dispatch time the live PCS
-``source_scan`` task consumes ``plan_source_ces`` instead. See the
-"Planning a Source CES" section in :doc:`planning` for details.
+The overhead simulator dispatches **science** blocks on
+``pong`` / ``constant_el`` / ``daisy`` only. Planet calibrations are, by
+default, fixed-duration parked blocks
+(``OverheadModel.planet_cal_duration``) with no scan geometry, emitted
+without invoking any ``plan_*`` function.
+
+Setting ``CalibrationPolicy.planet_cal_scan`` instead plans each planet
+calibration as a real multi-pass source-CES sequence via
+:func:`~fyst_trajectories.plan_source_ces_passes`, anchored at the
+scheduler clock: one calibration block per pass, each recording the full
+source-CES parameters in ``metadata["scan_params"]`` and the true scan
+start in ``metadata["t0_scan"]`` (see
+":ref:`planet-cal-source-ces`" in :doc:`overhead_model`).
+
+Those recorded parameters make each pass reconstructable from the
+timeline. :func:`~fyst_trajectories.overhead.schedule_to_trajectories`
+returns science blocks only by default (``science_only=True``), but with
+``science_only=False`` it rebuilds every source-CES planet-cal block from
+its recorded parameters via
+:func:`~fyst_trajectories.plan_source_ces`::
+
+    from fyst_trajectories.overhead import schedule_to_trajectories
+
+    pairs = schedule_to_trajectories(timeline, science_only=False)
+
+Calibration blocks with no ``scan_params`` (parked planet cals, retunes,
+pointing/focus/skydip) carry no trajectory to rebuild and are skipped
+silently. At dispatch time the live PCS ``source_scan`` task consumes
+:func:`~fyst_trajectories.plan_source_ces` directly. See the "Planning a
+Source CES" section in :doc:`planning` for details.
 
 Parameter Ownership
 -------------------

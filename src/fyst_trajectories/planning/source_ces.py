@@ -14,10 +14,14 @@ the *entire* footprint at fixed boresight elevation. The output is a
 ``ScanBlock`` whose ``trajectory`` is a constant-elevation scan with
 the solved drift baked into the azimuth track.
 
-``plan_source_ces`` is planner-only; at dispatch time the PCS
-``source_scan`` task consumes it. The params-only sibling
-:func:`compute_source_ces_params` is the emit-time entry point for a
-scheduler.
+``plan_source_ces`` is consumed at dispatch time by the
+PCS ``source_scan`` task and offline by the
+:mod:`fyst_trajectories.overhead` simulator, whose planet-calibration
+path both emits source-CES pass sequences
+(``CalibrationPolicy.planet_cal_scan``) and rebuilds them from recorded
+parameters (``schedule_to_trajectories(science_only=False)``). The
+params-only sibling :func:`compute_source_ces_params` is the emit-time
+entry point for a scheduler.
 """
 
 from __future__ import annotations
@@ -66,7 +70,7 @@ if TYPE_CHECKING:
     # invoked structurally, so only the type hint needs the symbol.
     from ..dispatch import SunSafePredicate
 
-__all__ = ["compute_source_ces_params", "plan_source_ces"]
+__all__ = ["compute_source_ces_params", "plan_source_ces", "plan_source_ces_passes"]
 
 
 # Number of polygon vertices used when constructing a circular cover
@@ -92,6 +96,52 @@ _MIN_PER_LEG_VELOCITY_DEG_S = 0.05
 # resolution, finer than the sun's apparent motion (~15"/s) and the
 # array's footprint extent.
 _SUN_SAFETY_ARC_N_SAMPLES = 60
+
+# --- Approximate-start-time ("anchor") resolution constants ---------------
+# These support the ``start_time`` keyword on the source-CES entry points,
+# which lets a caller ask for "a pass starting about now" without solving
+# el_bore themselves. They only affect the anchored code path; the classic
+# night+mode and explicit-window forms never touch them.
+
+# Time separation used to probe the source's elevation slope at the anchor.
+# The slope sign picks the rising/setting mode when it is omitted, and its
+# magnitude is checked against the near-transit drift guard below. 60 s is
+# long enough for the finite difference to clear ephemeris rounding yet
+# short enough that the local slope is still representative.
+_ANCHOR_SLOPE_DT_SEC = 60.0
+
+# Elevation buffer added on top of the footprint's angular radius from the
+# boresight when choosing the probe el_bore. The projected elevation extent
+# of any cover vertex is bounded by its angular distance from the boresight,
+# so a probe el_bore this far beyond the anchor elevation keeps the whole
+# projected cover inside the reachable arc (no window-edge clip) while
+# keeping the probe close enough that the geometry it measures matches the
+# final solve.
+_ANCHOR_PROBE_BUFFER_DEG = 0.1
+
+# Deliberate elevation lead applied to the derived el_bore so the resolved
+# pass start lands just after the anchor rather than exactly on it. The
+# search window opens at the anchor, so the pass can never begin earlier;
+# without this lead the footprint's near-anchor cover edge sits on the
+# window boundary, where the elevation-crossing slice is prone to clip. At
+# typical source drift rates this places the start within about a minute of
+# the anchor.
+_ANCHOR_START_LEAD_DEG = 0.05
+
+# Minimum source elevation drift rate (deg/s) for deriving el_bore from an
+# anchor. The binding requirement is timing: the derivation leads the anchor
+# by _ANCHOR_START_LEAD_DEG of elevation, which the source crosses in
+# lead / drift seconds, so honouring the documented "resolved start lands
+# within about a minute of the anchor" contract needs
+# drift >= _ANCHOR_START_LEAD_DEG / 60 s ~ 8.3e-4 deg/s. This supersedes the
+# looser conditioning floor: near transit d(el)/dt -> 0 and the t(el)
+# inversion that places the pass start becomes ill-conditioned; a single
+# PrimeCam module cover spans ~2 * MODULE_FOV_RADIUS_DEG = 1.3 deg in eta, so
+# keeping a module-c pass under ~1 h (3600 s) needs
+# drift >= 1.3 / 3600 ~ 3.6e-4 deg/s. Below the threshold the derivation
+# refuses and asks the caller to anchor away from transit (or pass el_bore
+# explicitly).
+_MIN_ANCHOR_EL_DRIFT_DEG_S = _ANCHOR_START_LEAD_DEG / 60.0
 
 
 @dataclass(frozen=True)
@@ -900,6 +950,387 @@ def _compute_source_ces_core(
     )
 
 
+def _source_el_at(
+    coords: Coordinates,
+    obstime: Time,
+    *,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    pm_ra: float,
+    pm_dec: float,
+    ref_epoch: Time | None,
+) -> float:
+    """Sample the source elevation (degrees) at a single instant.
+
+    Wraps :func:`_sample_source_altaz` with a one-element time array so the
+    body / ra-dec / proper-motion dispatch stays identical to the search,
+    then returns the scalar elevation.
+    """
+    arr = obstime + TimeDelta(np.array([0.0]) * u.s)
+    _, el = _sample_source_altaz(
+        coords, arr, body=body, ra=ra, dec=dec, pm_ra=pm_ra, pm_dec=pm_dec, ref_epoch=ref_epoch
+    )
+    return float(np.asarray(el, dtype=float)[0])
+
+
+def _probe_anchor_slope(
+    coords: Coordinates,
+    anchor: Time,
+    *,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    pm_ra: float,
+    pm_dec: float,
+    ref_epoch: Time | None,
+) -> tuple[float, float]:
+    """Return ``(el_at_anchor_deg, el_slope_deg_per_s)`` for the source at ``anchor``.
+
+    Samples the source elevation at ``anchor`` and
+    ``anchor + _ANCHOR_SLOPE_DT_SEC`` through the same dispatch the planner
+    uses, so the slope sign (which picks the rising/setting mode) and its
+    magnitude (checked against the near-transit guard) stay consistent with
+    the elevation-crossing search.
+    """
+    probe_times = anchor + TimeDelta(np.array([0.0, _ANCHOR_SLOPE_DT_SEC]) * u.s)
+    _, el = _sample_source_altaz(
+        coords,
+        probe_times,
+        body=body,
+        ra=ra,
+        dec=dec,
+        pm_ra=pm_ra,
+        pm_dec=pm_dec,
+        ref_epoch=ref_epoch,
+    )
+    el = np.asarray(el, dtype=float)
+    el_at_anchor = float(el[0])
+    slope = (float(el[1]) - el_at_anchor) / _ANCHOR_SLOPE_DT_SEC
+    return el_at_anchor, slope
+
+
+def _anchored_el_limits_error(
+    *,
+    anchor: Time,
+    el_at_anchor: float,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    site: Site,
+) -> TargetNotObservableError:
+    """Build the anchored-derivation elevation-limits error.
+
+    Used when deriving ``el_bore`` from an anchor would place the boresight
+    outside the telescope elevation limits (e.g. the source sits below the
+    elevation floor at the anchor). The message is anchor-relative, naming
+    the source's elevation at the anchor and the telescope limits, rather
+    than an internally derived boresight elevation the caller never supplied.
+    """
+    label = _describe_source(body, ra, dec)
+    el_limits = site.telescope_limits.elevation
+    return TargetNotObservableError(
+        target=label,
+        time_info=str(anchor.iso),
+        bounds_error=ElevationBoundsError(
+            actual_min=el_at_anchor,
+            actual_max=el_at_anchor,
+            limit_min=el_limits.min,
+            limit_max=el_limits.max,
+        ),
+        message=(
+            f"{label} is at elevation {el_at_anchor:.2f} deg at the anchor "
+            f"{anchor.iso}: the derived boresight elevation would fall outside "
+            f"the telescope elevation limits (floor {el_limits.min} deg, "
+            f"ceiling {el_limits.max} deg). Anchor while the source pass fits "
+            f"inside the elevation range, or pass el_bore explicitly."
+        ),
+    )
+
+
+def _derive_anchored_el_bore(
+    *,
+    anchor: Time,
+    el_at_anchor: float,
+    mode: Literal["rising", "setting"],
+    coords: Coordinates,
+    fp: ArrayFootprint,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    pm_ra: float,
+    pm_dec: float,
+    ref_epoch: Time | None,
+    boresight_rot: float | None,
+    site: Site,
+    atmosphere: AtmosphericConditions | None,
+    sampling_step_seconds: float,
+    az_accel: float,
+    az_padding: float,
+    az_branch: float | None,
+) -> float:
+    """Derive the ``el_bore`` whose pass starts approximately at ``anchor``.
+
+    A source-tracking CES starts (rising) or ends (setting) when the source
+    crosses the footprint's lower/upper projected elevation edge, so
+    ``el_bore = el(anchor)`` would centre the pass on the anchor and begin it
+    earlier. This runs one probe of the params-only kernel at a lifted
+    ``el_bore`` (far enough from the anchor that the whole cover is reachable),
+    reads the source elevation at the probe's resolved start, and shifts
+    ``el_bore`` so that crossing lands on the anchor. A small
+    :data:`_ANCHOR_START_LEAD_DEG` lead is added in the drift direction so the
+    resolved start settles just after the anchor, clear of the search-window
+    boundary. One probe, no iteration.
+
+    Raises :class:`TargetNotObservableError` (anchor-relative message) when
+    the probe or the derived ``el_bore`` falls outside the telescope
+    elevation limits, e.g. the source is below the elevation floor at the
+    anchor; the probe's :class:`ElevationBoundsError` is preserved as the
+    ``__cause__``.
+    """
+    drift_sign = 1.0 if mode == "rising" else -1.0
+    # The projected elevation deviation of any cover vertex is bounded by its
+    # angular distance from the boresight (focal-plane origin), so lifting the
+    # probe el_bore by more than that distance keeps the whole cover inside
+    # the reachable arc regardless of the field rotation.
+    r_bore = float(np.hypot(fp.cover_xi_deg, fp.cover_eta_deg).max())
+    margin = r_bore + _ANCHOR_PROBE_BUFFER_DEG
+    el_bore_probe = el_at_anchor + drift_sign * margin
+
+    horizon = TimeDelta(_DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
+    probe_window = (anchor, anchor + horizon)
+    try:
+        with warnings.catch_warnings():
+            # The probe is an internal measurement; v_az=0 skips the optimiser
+            # (t0 does not depend on it) and allow_partial keeps it robust. The
+            # authoritative warnings come from the real solve, so silence these.
+            warnings.simplefilter("ignore")
+            probe = _compute_source_ces_core(
+                body=body,
+                ra=ra,
+                dec=dec,
+                pm_ra=pm_ra,
+                pm_dec=pm_dec,
+                ref_epoch=ref_epoch,
+                footprint=fp,
+                el_bore=el_bore_probe,
+                boresight_rot=boresight_rot,
+                window=probe_window,
+                night=None,
+                mode=mode,
+                site=site,
+                atmosphere=atmosphere,
+                sampling_step_seconds=sampling_step_seconds,
+                az_accel=az_accel,
+                az_padding=az_padding,
+                az_branch=az_branch,
+                allow_partial=True,
+                v_az=0.0,
+                sun_safe=None,
+            )
+    except ElevationBoundsError as err:
+        # The kernel only raises a bare ElevationBoundsError for an el_bore
+        # outside the telescope limits, and here that el_bore is the internal
+        # probe value; report the failure in the caller's terms instead.
+        raise _anchored_el_limits_error(
+            anchor=anchor, el_at_anchor=el_at_anchor, body=body, ra=ra, dec=dec, site=site
+        ) from err
+    el_at_probe_t0 = _source_el_at(
+        coords, probe.t0, body=body, ra=ra, dec=dec, pm_ra=pm_ra, pm_dec=pm_dec, ref_epoch=ref_epoch
+    )
+    derived = el_bore_probe + (el_at_anchor - el_at_probe_t0) + drift_sign * _ANCHOR_START_LEAD_DEG
+    # The probe sits farther from the anchor elevation than the derived value
+    # in most geometries, but not in all of them; pre-check the derived
+    # el_bore too so an out-of-limits result surfaces with the same
+    # anchor-relative message rather than the kernel's raw bounds error.
+    el_limits = site.telescope_limits.elevation
+    if not (el_limits.min <= derived <= el_limits.max):
+        raise _anchored_el_limits_error(
+            anchor=anchor, el_at_anchor=el_at_anchor, body=body, ra=ra, dec=dec, site=site
+        )
+    return derived
+
+
+def _anchor_drift_guard(
+    slope: float,
+    *,
+    anchor: Time,
+    el_at_anchor: float,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    el_limits_min: float,
+    el_limits_max: float,
+) -> None:
+    """Reject anchors too near transit to derive ``el_bore`` from.
+
+    Raises :class:`TargetNotObservableError` when the source elevation drift
+    rate at the anchor is below :data:`_MIN_ANCHOR_EL_DRIFT_DEG_S`.
+    """
+    if abs(slope) >= _MIN_ANCHOR_EL_DRIFT_DEG_S:
+        return
+    label = _describe_source(body, ra, dec)
+    raise TargetNotObservableError(
+        target=label,
+        time_info=str(anchor.iso),
+        bounds_error=ElevationBoundsError(
+            actual_min=el_at_anchor,
+            actual_max=el_at_anchor,
+            limit_min=el_limits_min,
+            limit_max=el_limits_max,
+        ),
+        message=(
+            f"{label} is too near transit at {anchor.iso} to derive el_bore from "
+            f"start_time: the source elevation drift rate is {abs(slope):.2e} deg/s, "
+            f"below the {_MIN_ANCHOR_EL_DRIFT_DEG_S:.1e} deg/s minimum. Anchor away "
+            f"from transit, or pass el_bore explicitly."
+        ),
+    )
+
+
+def _resolve_anchor_prefix(
+    *,
+    start_time: Time | str,
+    el_bore: float | None,
+    mode: Literal["rising", "setting"] | None,
+    night: Time | None,
+    window: tuple[Time, Time] | None,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    pm_ra: float,
+    pm_dec: float,
+    ref_epoch: Time | None,
+    site: Site,
+    atmosphere: AtmosphericConditions | None,
+) -> tuple[Time, Coordinates, Literal["rising", "setting"], float]:
+    """Shared validation and slope probe for the anchored entry points.
+
+    Common front half of every ``start_time`` resolution: validates that
+    ``start_time`` is not combined with ``night`` or ``window``, parses the
+    anchor, and, when ``el_bore`` or ``mode`` is omitted, probes the source
+    elevation slope at the anchor. The slope sign resolves an omitted
+    ``mode``; the near-transit drift guard runs when ``el_bore`` must be
+    derived. Returns ``(anchor, coords, mode, el_at_anchor)``;
+    ``el_at_anchor`` is meaningful whenever ``el_bore`` is ``None`` (the
+    probe is guaranteed to have run in that case).
+    """
+    if night is not None:
+        raise ValueError("specify either 'start_time' or 'night', not both")
+    if window is not None:
+        raise ValueError("specify either 'start_time' or 'window', not both")
+
+    anchor = Time(start_time, scale="utc") if isinstance(start_time, str) else start_time
+    coords = Coordinates(site, atmosphere=atmosphere)
+
+    resolved_mode = mode
+    el_at_anchor = 0.0
+    if el_bore is None or mode is None:
+        el_at_anchor, slope = _probe_anchor_slope(
+            coords,
+            anchor,
+            body=body,
+            ra=ra,
+            dec=dec,
+            pm_ra=pm_ra,
+            pm_dec=pm_dec,
+            ref_epoch=ref_epoch,
+        )
+        if resolved_mode is None:
+            resolved_mode = "rising" if slope >= 0.0 else "setting"
+        if el_bore is None:
+            el_limits = site.telescope_limits.elevation
+            _anchor_drift_guard(
+                slope,
+                anchor=anchor,
+                el_at_anchor=el_at_anchor,
+                body=body,
+                ra=ra,
+                dec=dec,
+                el_limits_min=el_limits.min,
+                el_limits_max=el_limits.max,
+            )
+
+    assert resolved_mode is not None  # mode was given, or set from the probe slope above
+    return anchor, coords, resolved_mode, el_at_anchor
+
+
+def _resolve_start_time_anchor(
+    *,
+    start_time: Time | str,
+    el_bore: float | None,
+    mode: Literal["rising", "setting"] | None,
+    night: Time | None,
+    window: tuple[Time, Time] | None,
+    footprint: InstrumentOffset | str | Sequence[InstrumentOffset] | ArrayFootprint,
+    body: str | None,
+    ra: float | None,
+    dec: float | None,
+    pm_ra: float,
+    pm_dec: float,
+    ref_epoch: Time | None,
+    boresight_rot: float | None,
+    site: Site,
+    atmosphere: AtmosphericConditions | None,
+    sampling_step_seconds: float,
+    az_accel: float,
+    az_padding: float,
+    az_branch: float | None,
+) -> tuple[float, tuple[Time, Time], Literal["rising", "setting"]]:
+    """Resolve an approximate ``start_time`` anchor into ``(el_bore, window, mode)``.
+
+    Thin resolution layer that sits in front of the classic search machinery.
+    :func:`_resolve_anchor_prefix` handles the shared validation, mode
+    resolution, and near-transit guard; this then derives ``el_bore`` so the
+    pass starts approximately at the anchor (when it was omitted) and returns
+    a forward search ``window`` opening at the anchor. The caller runs the
+    existing kernel with the returned values, so the classic paths are
+    untouched.
+    """
+    anchor, coords, resolved_mode, el_at_anchor = _resolve_anchor_prefix(
+        start_time=start_time,
+        el_bore=el_bore,
+        mode=mode,
+        night=night,
+        window=window,
+        body=body,
+        ra=ra,
+        dec=dec,
+        pm_ra=pm_ra,
+        pm_dec=pm_dec,
+        ref_epoch=ref_epoch,
+        site=site,
+        atmosphere=atmosphere,
+    )
+
+    horizon = TimeDelta(_DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
+    resolved_window = (anchor, anchor + horizon)
+
+    if el_bore is None:
+        el_bore = _derive_anchored_el_bore(
+            anchor=anchor,
+            el_at_anchor=el_at_anchor,
+            mode=resolved_mode,
+            coords=coords,
+            fp=_resolve_footprint(footprint),
+            body=body,
+            ra=ra,
+            dec=dec,
+            pm_ra=pm_ra,
+            pm_dec=pm_dec,
+            ref_epoch=ref_epoch,
+            boresight_rot=boresight_rot,
+            site=site,
+            atmosphere=atmosphere,
+            sampling_step_seconds=sampling_step_seconds,
+            az_accel=az_accel,
+            az_padding=az_padding,
+            az_branch=az_branch,
+        )
+
+    return float(el_bore), resolved_window, resolved_mode
+
+
 def compute_source_ces_params(
     *,
     # --- Source ---
@@ -912,11 +1343,12 @@ def compute_source_ces_params(
     # --- Footprint ---
     footprint: InstrumentOffset | str | Sequence[InstrumentOffset] | ArrayFootprint,
     # --- Geometry ---
-    el_bore: float,
+    el_bore: float | None = None,
     boresight_rot: float | None = None,
     # --- Time window ---
     window: tuple[Time, Time] | None = None,
     night: Time | None = None,
+    start_time: Time | str | None = None,
     mode: Literal["rising", "setting"] | None = None,
     # --- Site / atmosphere ---
     site: Site,
@@ -958,14 +1390,22 @@ def compute_source_ces_params(
         Reference epoch for ``ra``/``dec``.
     footprint : InstrumentOffset, str, sequence of InstrumentOffset, or ArrayFootprint
         On-sky cover that the source must traverse.
-    el_bore : float
-        Fixed boresight elevation in degrees.
+    el_bore : float, optional
+        Fixed boresight elevation in degrees. Required unless
+        ``start_time`` is given, in which case it is derived so the pass
+        starts near the anchor (pass it explicitly to instead force a
+        forward search from the anchor for that elevation).
     boresight_rot : float, optional
         Mechanical boresight rotation in degrees.
     window : (Time, Time), optional
         Explicit search window.
     night : Time, optional
         Start of the search window (use with ``mode``).
+    start_time : Time or str, optional
+        Approximate anchor: plan the pass to begin near this time.
+        Mutually exclusive with ``night`` and ``window``. When given,
+        ``el_bore`` and ``mode`` are derived if omitted. See
+        :func:`plan_source_ces` for the full semantics.
     mode : {"rising", "setting"}, optional
         Direction of the source arc.
     site : Site
@@ -1047,6 +1487,31 @@ def compute_source_ces_params(
     ... )
     >>> # params is a SourceCESComputedParams (TypedDict / plain dict).
     """
+    if start_time is not None:
+        el_bore, window, mode = _resolve_start_time_anchor(
+            start_time=start_time,
+            el_bore=el_bore,
+            mode=mode,
+            night=night,
+            window=window,
+            footprint=footprint,
+            body=body,
+            ra=ra,
+            dec=dec,
+            pm_ra=pm_ra,
+            pm_dec=pm_dec,
+            ref_epoch=ref_epoch,
+            boresight_rot=boresight_rot,
+            site=site,
+            atmosphere=atmosphere,
+            sampling_step_seconds=sampling_step_seconds,
+            az_accel=az_accel,
+            az_padding=az_padding,
+            az_branch=az_branch,
+        )
+    elif el_bore is None:
+        raise ValueError("el_bore is required unless 'start_time' is given")
+
     core = _compute_source_ces_core(
         body=body,
         ra=ra,
@@ -1112,11 +1577,12 @@ def plan_source_ces(
     # --- Footprint ---
     footprint: InstrumentOffset | str | Sequence[InstrumentOffset] | ArrayFootprint,
     # --- Geometry ---
-    el_bore: float,
+    el_bore: float | None = None,
     boresight_rot: float | None = None,
     # --- Time window ---
     window: tuple[Time, Time] | None = None,
     night: Time | None = None,
+    start_time: Time | str | None = None,
     mode: Literal["rising", "setting"] | None = None,
     # --- Site / atmosphere ---
     site: Site,
@@ -1174,9 +1640,13 @@ def plan_source_ces(
         * **ArrayFootprint** — explicit (center, cover) representation;
           mirrors the ``array_info`` dict that SO ``make_source_ces``
           consumes.
-    el_bore : float
+    el_bore : float, optional
         Fixed boresight elevation in degrees. Must lie within
-        ``site.telescope_limits.elevation``.
+        ``site.telescope_limits.elevation``. Required for the classic
+        ``night``/``window`` forms. Optional when ``start_time`` is
+        given: if omitted it is derived so the pass starts near the
+        anchor; if supplied it forces a forward search from the anchor
+        for that elevation.
     boresight_rot : float, optional
         Mechanical boresight rotation in degrees, added to the focal-
         plane rotation when projecting the cover. ``None`` (default)
@@ -1192,13 +1662,29 @@ def plan_source_ces(
         Start of the search window. Used with ``mode`` to pick the
         first rising or setting pass of the source within the next
         24 h.
+    start_time : Time or str, optional
+        Approximate anchor: plan the pass to begin near this time,
+        mirroring ``plan_constant_el_scan``'s ``start_time`` (an
+        approximate search anchor, not a literal start). Mutually
+        exclusive with ``night`` and ``window`` (``ValueError`` if
+        combined). The search runs forward from the anchor over the
+        default 24 h horizon. When ``el_bore`` is omitted it is derived
+        so the resolved start typically lands within about a minute
+        after the anchor (the window opens at the anchor, so the pass
+        cannot begin earlier). When ``mode`` is omitted it is taken
+        from the sign of the source's elevation slope at the anchor.
+        Anchors within a small drift rate of transit are rejected with
+        :class:`~fyst_trajectories.TargetNotObservableError`; anchor
+        away from transit or pass ``el_bore`` explicitly.
     mode : {"rising", "setting"}, optional
         Which monotonic arc of the source to use. Required when
         ``night`` is given. With ``window``, omitting ``mode``
         auto-detects: the planner picks the longest monotonic arc
         inside the window whose elevation range covers ``el_bore`` and
         sets ``mode`` to ``"rising"`` or ``"setting"`` based on its
-        slope. Pass an explicit ``mode`` to override.
+        slope. With ``start_time``, omitting ``mode`` takes it from the
+        elevation slope sign at the anchor. Pass an explicit ``mode``
+        to override.
     site : Site
         Telescope site.
     atmosphere : AtmosphericConditions, optional
@@ -1295,11 +1781,15 @@ def plan_source_ces(
     (limits −180° to 360°), ``az_branch`` values near −180° can
     produce out-of-range scans even when geometrically valid.
 
-    ``plan_source_ces`` is planner-only: it is consumed at dispatch time
-    by the PCS ``source_scan`` task, not by the in-tree
-    :mod:`fyst_trajectories.overhead` simulator. See
-    ``docs/planning.rst`` "Source CES" for the wider conventions
-    discussion.
+    ``plan_source_ces`` has two consumers. At dispatch time the
+    PCS ``source_scan`` task re-plans the pass with fresh
+    ephemeris. Offline, the :mod:`fyst_trajectories.overhead` simulator
+    calls the source-CES planners on both sides of its planet-calibration
+    path: ``CalibrationPolicy.planet_cal_scan`` emits each calibration as
+    a pass sequence (via :func:`plan_source_ces_passes`), and
+    ``schedule_to_trajectories(science_only=False)`` rebuilds those
+    passes from their recorded parameters. See ``docs/planning.rst``
+    "Source CES" for the wider conventions discussion.
 
     Examples
     --------
@@ -1316,7 +1806,42 @@ def plan_source_ces(
     ...     mode="rising",
     ...     site=get_fyst_site(),
     ... )
+
+    Or anchor the pass to begin near an approximate ``start_time`` and let
+    the planner derive ``el_bore`` and ``mode`` (rising, here) for you:
+
+    >>> block = plan_source_ces(  # doctest: +SKIP
+    ...     body="jupiter",
+    ...     footprint="c",
+    ...     start_time=Time("2026-03-15T21:41:00", scale="utc"),
+    ...     site=get_fyst_site(),
+    ... )
     """
+    if start_time is not None:
+        el_bore, window, mode = _resolve_start_time_anchor(
+            start_time=start_time,
+            el_bore=el_bore,
+            mode=mode,
+            night=night,
+            window=window,
+            footprint=footprint,
+            body=body,
+            ra=ra,
+            dec=dec,
+            pm_ra=pm_ra,
+            pm_dec=pm_dec,
+            ref_epoch=ref_epoch,
+            boresight_rot=boresight_rot,
+            site=site,
+            atmosphere=atmosphere,
+            sampling_step_seconds=sampling_step_seconds,
+            az_accel=az_accel,
+            az_padding=az_padding,
+            az_branch=az_branch,
+        )
+    elif el_bore is None:
+        raise ValueError("el_bore is required unless 'start_time' is given")
+
     core = _compute_source_ces_core(
         body=body,
         ra=ra,
@@ -1428,3 +1953,464 @@ def plan_source_ces(
         computed_params=computed,
         summary=summary,
     )
+
+
+def _offset_footprint_eta(fp: ArrayFootprint, d_eta_deg: float) -> ArrayFootprint:
+    """Return a copy of ``fp`` shifted by ``d_eta_deg`` along the eta axis.
+
+    The eta (elevation-direction) shift moves both the footprint center
+    and every cover vertex, so the whole array footprint slides along the
+    focal-plane elevation axis while keeping its cross-elevation (xi)
+    geometry unchanged.
+
+    Parameters
+    ----------
+    fp : ArrayFootprint
+        Base footprint to shift.
+    d_eta_deg : float
+        Eta offset in degrees (positive = toward increasing elevation).
+
+    Returns
+    -------
+    ArrayFootprint
+        A new footprint with ``center_eta_deg`` and ``cover_eta_deg``
+        shifted by ``d_eta_deg``.
+    """
+    return ArrayFootprint(
+        center_xi_deg=fp.center_xi_deg,
+        center_eta_deg=fp.center_eta_deg + d_eta_deg,
+        cover_xi_deg=fp.cover_xi_deg.copy(),
+        cover_eta_deg=fp.cover_eta_deg + d_eta_deg,
+    )
+
+
+def _tag_pass_block(
+    block: ScanBlock,
+    *,
+    pass_index: int,
+    n_passes: int,
+    eta_offset_deg: float,
+    el_bore_deg: float,
+) -> ScanBlock:
+    """Attach per-pass metadata to a source-CES ``ScanBlock``.
+
+    Records the pass index, total pass count, focal-plane eta offset
+    (the row this pass drags the source through), and the stepped
+    ``el_bore`` in the trajectory metadata's ``pattern_params`` and
+    prepends a one-line header to the summary, so a consumer can tell
+    which stripe a pass covers without re-deriving it. The trajectory
+    arrays, config, computed_params, and duration are untouched.
+    """
+    meta = block.trajectory.metadata
+    new_params = dict(meta.pattern_params)
+    new_params.update(
+        {
+            "pass_index": int(pass_index),
+            "n_passes": int(n_passes),
+            "pass_eta_offset_deg": float(eta_offset_deg),
+            "pass_el_bore_deg": float(el_bore_deg),
+        }
+    )
+    new_meta = dataclasses.replace(meta, pattern_params=new_params)
+    new_traj = dataclasses.replace(block.trajectory, metadata=new_meta)
+    header = (
+        f"[Pass {pass_index + 1}/{n_passes}: eta_offset={eta_offset_deg:+.3f} deg "
+        f"(focal-plane row), el_bore={el_bore_deg:.2f} deg]\n"
+    )
+    return dataclasses.replace(block, trajectory=new_traj, summary=header + block.summary)
+
+
+def _resolve_pass_offsets(
+    *,
+    n_passes: int | None,
+    eta_offsets: Sequence[float] | None,
+    step: float | None,
+    footprint_eta_extent: float,
+) -> list[float]:
+    """Resolve the pass controls into a sorted list of eta offsets.
+
+    Either ``eta_offsets`` (explicit) or ``n_passes`` (+ optional
+    ``step``) must be supplied, not both. When ``n_passes`` is used the
+    offsets form the symmetric grid ``step * (k - (n_passes - 1) / 2)``;
+    with the default ``step = footprint_eta_extent / n_passes`` the pass
+    centers spread evenly across ``[-extent/2, +extent/2]``. The grid
+    positions the track centers only: each pass's on-sky eta coverage is
+    wider than ``step`` (focal-plane rotation mixes the azimuth throw
+    into eta), so successive passes interleave and densify the coverage
+    rather than painting disjoint bands.
+    """
+    has_n = n_passes is not None
+    has_list = eta_offsets is not None
+    if has_n and has_list:
+        raise ValueError("specify either 'n_passes' or 'eta_offsets', not both")
+    if not has_n and not has_list:
+        raise ValueError("must specify either 'n_passes' or 'eta_offsets'")
+    if step is not None and not has_n:
+        raise ValueError("'step' is only valid together with 'n_passes'")
+
+    if has_list:
+        assert eta_offsets is not None  # narrow for type-checker
+        offsets = [float(o) for o in eta_offsets]
+        if not offsets:
+            raise ValueError("eta_offsets cannot be empty")
+        if not all(np.isfinite(o) for o in offsets):
+            raise ValueError("eta_offsets must all be finite")
+        if len(set(offsets)) != len(offsets):
+            raise ValueError("eta_offsets must be unique")
+        return sorted(offsets)
+
+    assert n_passes is not None  # narrow for type-checker
+    if n_passes < 1:
+        raise ValueError(f"n_passes must be at least 1, got {n_passes}")
+    if step is None:
+        step_val = footprint_eta_extent / n_passes
+    else:
+        step_val = float(step)
+        if step_val <= 0.0:
+            raise ValueError(f"step must be positive, got {step}")
+    return [step_val * (k - (n_passes - 1) / 2.0) for k in range(n_passes)]
+
+
+def plan_source_ces_passes(
+    *,
+    # --- Source ---
+    body: str | None = None,
+    ra: float | None = None,
+    dec: float | None = None,
+    pm_ra: float = 0.0,
+    pm_dec: float = 0.0,
+    ref_epoch: Time | None = None,
+    # --- Footprint ---
+    footprint: InstrumentOffset | str | Sequence[InstrumentOffset] | ArrayFootprint,
+    # --- Geometry ---
+    el_bore: float | None = None,
+    boresight_rot: float | None = None,
+    # --- Pass controls ---
+    n_passes: int | None = None,
+    step: float | None = None,
+    eta_offsets: Sequence[float] | None = None,
+    el_step: float | None = None,
+    # --- Time window ---
+    window: tuple[Time, Time] | None = None,
+    night: Time | None = None,
+    start_time: Time | str | None = None,
+    mode: Literal["rising", "setting"] | None = None,
+    # --- Site / atmosphere ---
+    site: Site,
+    atmosphere: AtmosphericConditions | None = None,
+    # --- Algorithm ---
+    timestep: float = 0.1,
+    sampling_step_seconds: float = 30.0,
+    az_accel: float = 1.0,
+    az_padding: float = 0.5,
+    az_branch: float | None = None,
+    allow_partial: bool = False,
+    v_az: float | None = None,
+    sun_safe: SunSafePredicate | None = None,
+) -> list[ScanBlock]:
+    """Plan a sequence of source-CES passes for full focal-plane coverage.
+
+    A single :func:`plan_source_ces` drags a moving source across the
+    array footprint at one fixed boresight elevation, so the source only
+    paints a sparse raster along one band of the focal plane. Nearly
+    every calibration source is larger than a detector beam but much
+    smaller than a module, so covering every detector needs several drift
+    passes with the source stepped through different rows of the array.
+    This wrapper builds that sequence: it returns ``list[ScanBlock]``,
+    one per pass, each an ordinary :func:`plan_source_ces` block, ordered
+    in time.
+
+    Two knobs are stepped between passes, and they are independent:
+
+    * **Coverage** is moved by offsetting the *footprint* along the
+      focal-plane eta (elevation) axis. This is the correct knob: it
+      slides the source's track to a different row 1:1. Stepping
+      ``el_bore`` alone does *not* move the coverage, because a
+      source-tracking CES re-centres on the source at every boresight
+      elevation, so each ``el_bore`` reproduces the same focal-plane
+      band.
+    * **Timing** is set by stepping ``el_bore``. A rising source crosses
+      a lower boresight elevation earlier and a higher one later, so
+      stepping ``el_bore`` by ``el_step`` sequences the passes in time.
+      ``el_step`` defaults to the footprint eta extent, which keeps the
+      per-pass source windows from overlapping (the source must climb
+      past the whole footprint height between passes).
+
+    Because these two knobs are decoupled, the sequence both densifies
+    coverage across the footprint (fine eta offsets) and stays
+    non-overlapping in time (an ``el_step`` of order the footprint
+    extent). Reducing ``el_step`` below the footprint extent will overlap
+    the passes in time, and a :class:`PointingWarning` is emitted when
+    the returned pass windows overlap.
+
+    Parameters
+    ----------
+    body : str, optional
+        Solar-system body name; mutually exclusive with ``ra``/``dec``.
+    ra, dec : float, optional
+        Sidereal source position in degrees.
+    pm_ra, pm_dec : float, optional
+        Proper motion in mas/yr. Default 0.0.
+    ref_epoch : Time, optional
+        Reference epoch for ``ra``/``dec``; required with non-zero proper
+        motion.
+    footprint : InstrumentOffset, str, sequence of InstrumentOffset, or ArrayFootprint
+        Base array footprint the source must traverse. Each pass shifts a
+        copy of this footprint along the eta axis. See
+        :func:`plan_source_ces` for the accepted forms.
+    el_bore : float, optional
+        Central boresight elevation in degrees. The passes step
+        symmetrically around this value in ``el_step`` increments; for an
+        odd ``n_passes`` the middle pass uses ``el_bore`` itself, while an
+        even count straddles it. Required for the classic
+        ``night``/``window`` forms. When ``start_time`` is given and this
+        is omitted, the central elevation is derived so the first pass in
+        time starts near the anchor.
+    boresight_rot : float, optional
+        Mechanical boresight rotation in degrees, forwarded to every pass.
+    n_passes : int, optional
+        Number of passes. Mutually exclusive with ``eta_offsets``; one of
+        the two is required. Must be at least 1.
+    step : float, optional
+        Eta spacing in degrees between adjacent pass centers. Only valid
+        with ``n_passes``. Defaults to ``footprint_eta_extent / n_passes``,
+        which spreads the pass centers evenly across the footprint eta
+        extent.
+    eta_offsets : sequence of float, optional
+        Explicit focal-plane eta offsets in degrees, one per pass. The
+        source is dragged through the row at each offset. Mutually
+        exclusive with ``n_passes``/``step``. Sorted internally, so the
+        input order does not matter.
+    el_step : float, optional
+        Boresight-elevation spacing in degrees between consecutive passes.
+        Defaults to the footprint eta extent, chosen so the source climbs
+        past the full footprint height between passes and the source
+        windows do not overlap. Must be positive.
+    window : (Time, Time), optional
+        Explicit search window, forwarded to each pass. Mutually
+        exclusive with ``night``.
+    night : Time, optional
+        Start of the 24 h search window, forwarded to each pass. Used with
+        ``mode``.
+    start_time : Time or str, optional
+        Approximate anchor for the first pass in time. Mutually exclusive
+        with ``night`` and ``window``. When given, ``el_bore`` and
+        ``mode`` are derived if omitted (see :func:`plan_source_ces`); the
+        first chronological pass then starts near the anchor and the rest
+        follow at the usual ``el_step`` spacing.
+    mode : {"rising", "setting"}, optional
+        Direction of the source arc, forwarded to each pass. With
+        ``start_time`` and no ``mode``, taken from the elevation slope
+        sign at the anchor.
+    site : Site
+        Telescope site.
+    atmosphere : AtmosphericConditions, optional
+        Refraction model, forwarded to each pass. Default vacuum.
+    timestep : float, optional
+        Trajectory sample spacing in seconds. Default 0.1.
+    sampling_step_seconds : float, optional
+        Coarse source-sampling step in seconds. Default 30.0.
+    az_accel : float, optional
+        Azimuth acceleration in deg/s^2. Default 1.0.
+    az_padding : float, optional
+        Extra azimuth padding per side in degrees. Default 0.5.
+    az_branch : float, optional
+        Centre of the azimuth wrap branch.
+    allow_partial : bool, optional
+        Forwarded to each pass. Default ``False``.
+    v_az : float, optional
+        Override the solved azimuth drift rate for every pass (deg/s).
+    sun_safe : SunSafePredicate, optional
+        Sun-safety predicate forwarded to each pass.
+
+    Returns
+    -------
+    list of ScanBlock
+        One block per pass, ordered by start time. Each block is an
+        ordinary :func:`plan_source_ces` result (same guarantees and
+        ``computed_params`` schema) with per-pass metadata added to
+        ``trajectory.metadata.pattern_params`` (``pass_index``,
+        ``n_passes``, ``pass_eta_offset_deg``, ``pass_el_bore_deg``) and
+        to the summary header.
+
+    Raises
+    ------
+    ValueError
+        If neither or both of ``n_passes`` and ``eta_offsets`` are given,
+        if ``n_passes < 1``, if ``step``/``el_step`` are non-positive, or
+        if ``step`` is passed without ``n_passes``.
+    TargetNotObservableError
+        If a pass steps the footprint to a row the source never reaches
+        within the search window (propagated from :func:`plan_source_ces`).
+    ElevationBoundsError
+        If a stepped ``el_bore`` falls outside the telescope elevation
+        limits.
+
+    See Also
+    --------
+    plan_source_ces : Plan a single source-CES pass.
+
+    Examples
+    --------
+    Three Jupiter-rising passes tiling PrimeCam's centre module:
+
+    >>> from astropy.time import Time
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.planning import plan_source_ces_passes
+    >>> blocks = plan_source_ces_passes(  # doctest: +SKIP
+    ...     body="jupiter",
+    ...     footprint="c",
+    ...     el_bore=35.0,
+    ...     n_passes=3,
+    ...     night=Time("2026-03-15T00:00:00", scale="utc"),
+    ...     mode="rising",
+    ...     site=get_fyst_site(),
+    ... )
+    >>> [
+    ...     b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]  # doctest: +SKIP
+    ...     for b in blocks
+    ... ]
+    """
+    base_fp = _resolve_footprint(footprint)
+    eta_extent = float(base_fp.cover_eta_deg.max() - base_fp.cover_eta_deg.min())
+
+    offsets = _resolve_pass_offsets(
+        n_passes=n_passes,
+        eta_offsets=eta_offsets,
+        step=step,
+        footprint_eta_extent=eta_extent,
+    )
+    n = len(offsets)
+
+    if el_step is None:
+        el_step_val = eta_extent
+    else:
+        el_step_val = float(el_step)
+        if el_step_val <= 0.0:
+            raise ValueError(f"el_step must be positive, got {el_step}")
+
+    if start_time is not None:
+        # Resolve the anchor into (central el_bore, window, mode). The anchor
+        # applies to the first pass chronologically; the central el_bore the
+        # grid below expects is offset from that first pass by half the total
+        # el_step span. The per-pass planning then runs unchanged on the
+        # classic window path.
+        anchor, coords, resolved_mode, el_at_anchor = _resolve_anchor_prefix(
+            start_time=start_time,
+            el_bore=el_bore,
+            mode=mode,
+            night=night,
+            window=window,
+            body=body,
+            ra=ra,
+            dec=dec,
+            pm_ra=pm_ra,
+            pm_dec=pm_dec,
+            ref_epoch=ref_epoch,
+            site=site,
+            atmosphere=atmosphere,
+        )
+        if el_bore is None:
+            drift_sign = 1.0 if resolved_mode == "rising" else -1.0
+            # The first pass in time uses the lowest boresight elevation for a
+            # rising source (offsets[0]) and the highest for a setting one
+            # (offsets[-1]); derive that pass's el_bore, then step out to the
+            # central value.
+            first_eta = offsets[0] if resolved_mode == "rising" else offsets[-1]
+            first_fp = _offset_footprint_eta(base_fp, first_eta)
+            first_el_bore = _derive_anchored_el_bore(
+                anchor=anchor,
+                el_at_anchor=el_at_anchor,
+                mode=resolved_mode,
+                coords=coords,
+                fp=first_fp,
+                body=body,
+                ra=ra,
+                dec=dec,
+                pm_ra=pm_ra,
+                pm_dec=pm_dec,
+                ref_epoch=ref_epoch,
+                boresight_rot=boresight_rot,
+                site=site,
+                atmosphere=atmosphere,
+                sampling_step_seconds=sampling_step_seconds,
+                az_accel=az_accel,
+                az_padding=az_padding,
+                az_branch=az_branch,
+            )
+            el_bore = first_el_bore + drift_sign * el_step_val * (n - 1) / 2.0
+        horizon = TimeDelta(_DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
+        window = (anchor, anchor + horizon)
+        mode = resolved_mode
+    elif el_bore is None:
+        raise ValueError("el_bore is required unless 'start_time' is given")
+
+    # Shared per-pass keyword arguments (everything the passes have in
+    # common). ``footprint`` and ``el_bore`` are overridden per pass.
+    common = dict(
+        body=body,
+        ra=ra,
+        dec=dec,
+        pm_ra=pm_ra,
+        pm_dec=pm_dec,
+        ref_epoch=ref_epoch,
+        boresight_rot=boresight_rot,
+        window=window,
+        night=night,
+        mode=mode,
+        site=site,
+        atmosphere=atmosphere,
+        timestep=timestep,
+        sampling_step_seconds=sampling_step_seconds,
+        az_accel=az_accel,
+        az_padding=az_padding,
+        az_branch=az_branch,
+        allow_partial=allow_partial,
+        v_az=v_az,
+        sun_safe=sun_safe,
+    )
+
+    # Pair the lowest coverage row with the lowest boresight elevation so
+    # the footprint's sky elevation (``el_bore + eta_offset``) is
+    # monotonic across passes; that keeps the source windows sequential
+    # (and, at the default ``el_step``, non-overlapping) for both rising
+    # and setting sources.
+    planned: list[ScanBlock] = []
+    for k, eta in enumerate(offsets):
+        el_bore_k = el_bore + el_step_val * (k - (n - 1) / 2.0)
+        fp_k = _offset_footprint_eta(base_fp, eta)
+        block = plan_source_ces(footprint=fp_k, el_bore=el_bore_k, **common)
+        planned.append(block)
+
+    # Order the blocks by start time (setting sources cross higher
+    # elevations first, so coverage order and time order are reversed).
+    order = sorted(range(n), key=lambda i: Time(planned[i].computed_params["t0_iso"]).unix)
+    tagged: list[ScanBlock] = []
+    for pass_index, i in enumerate(order):
+        block = planned[i]
+        tagged.append(
+            _tag_pass_block(
+                block,
+                pass_index=pass_index,
+                n_passes=n,
+                eta_offset_deg=offsets[i],
+                el_bore_deg=float(block.computed_params["el_bore"]),
+            )
+        )
+
+    # A consumer sequencing the blocks back to back would double-book the
+    # mount if adjacent pass windows overlap (possible when ``el_step`` is
+    # reduced below the footprint eta extent), so surface it.
+    n_overlaps = sum(
+        1
+        for a, b in zip(tagged, tagged[1:])
+        if Time(b.computed_params["t0_iso"]).unix < Time(a.computed_params["t1_iso"]).unix
+    )
+    if n_overlaps:
+        warnings.warn(
+            f"{n_overlaps} adjacent source-CES pass window(s) overlap in time; "
+            "increase el_step or schedule the passes with the overlap in mind",
+            PointingWarning,
+            stacklevel=2,
+        )
+    return tagged

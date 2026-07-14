@@ -9,7 +9,7 @@ from typing import cast
 
 import numpy as np
 from astropy import units as u
-from astropy.time import TimeDelta
+from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
 from ..planning import (
@@ -18,7 +18,9 @@ from ..planning import (
     plan_constant_el_scan,
     plan_daisy_scan,
     plan_pong_scan,
+    plan_source_ces,
 )
+from ..planning.source_ces import _offset_footprint_eta, _resolve_footprint
 from ..site import Site
 from .models import (
     BlockType,
@@ -27,6 +29,7 @@ from .models import (
     ObservingTimeline,
     PongScanParams,
     TimelineBlock,
+    TimelineBlockMetadata,
     validate_scan_params,
 )
 
@@ -38,6 +41,14 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# Symmetric time buffer (seconds) added to each side of a recorded
+# source-CES pass window before re-solving. The exact stored [t0, t1] sits
+# on the elevation-crossing edges where the planner's cover-vs-arc guard is
+# most sensitive, so widening the search window keeps the re-solve clear of
+# those edges while still landing on the same crossing (the rebuilt t0/t1
+# match the recorded window to within a coarse sampling step).
+_SOURCE_CES_WINDOW_BUFFER_SEC = 300.0
+
 
 def schedule_to_trajectories(
     timeline: ObservingTimeline,
@@ -45,27 +56,59 @@ def schedule_to_trajectories(
 ) -> list[tuple[TimelineBlock, ScanBlock]]:
     """Generate trajectories for timeline blocks.
 
-    For each science block, reconstructs the planning parameters from
-    block metadata and calls the appropriate ``plan_*`` function.
+    Reconstructs planning parameters from each block's metadata and calls
+    the appropriate ``plan_*`` function, returning one
+    ``(TimelineBlock, ScanBlock)`` pair per reconstructed block.
 
     Parameters
     ----------
     timeline : ObservingTimeline
         Input timeline.
     science_only : bool
-        If True (default), only generate trajectories for science blocks.
+        Which blocks to reconstruct.
+
+        * ``True`` (default): science blocks only.
+        * ``False``: science blocks **plus** calibration blocks whose
+          metadata carries a ``scan_params`` dict. Today those are the
+          source-CES planet-calibration passes emitted when
+          ``CalibrationPolicy.planet_cal_scan`` is set; each is rebuilt with
+          :func:`~fyst_trajectories.plan_source_ces` from its recorded
+          parameters.
+
+        Calibration blocks with **no** ``scan_params`` (parked planet cals,
+        retunes, pointing, focus, skydip) are placeholders with no
+        trajectory to rebuild and are skipped silently, not logged as
+        failures. Slew and idle blocks are always skipped.
 
     Returns
     -------
     list of (TimelineBlock, ScanBlock)
         Pairs of timeline blocks and their generated trajectories.
+
+    Notes
+    -----
+    Blocks that attempt reconstruction but fail (a ``ValueError``,
+    ``KeyError``, or ``TypeError`` from the planner, e.g. a source no longer
+    reachable at the recorded geometry) are logged at ``WARNING`` and
+    skipped so one bad block does not abort the whole timeline.
     """
     site = timeline.site
     blocks = timeline.science_blocks if science_only else timeline.blocks
     results = []
 
     for sblock in blocks:
-        if sblock.block_type != BlockType.SCIENCE:
+        block_type = sblock.block_type
+        if block_type == BlockType.SCIENCE:
+            reconstructable = True
+        elif block_type == BlockType.CALIBRATION:
+            # Only source-CES planet-cal passes record replayable scan_params.
+            # Parked cals, retunes, pointing/focus/skydip carry none - skip
+            # them silently (placeholders, not reconstruction failures).
+            reconstructable = "scan_params" in sblock.metadata
+        else:
+            # Slew / idle blocks carry no trajectory.
+            reconstructable = False
+        if not reconstructable:
             continue
 
         try:
@@ -110,8 +153,18 @@ def _generate_trajectory_for_block(
         If ``scan_params`` contains keys not allowed for
         ``sblock.scan_type`` (see
         :func:`~fyst_trajectories.overhead.validate_scan_params`).
+
+    Notes
+    -----
+    Calibration blocks are dispatched to :func:`_generate_source_ces_trajectory`,
+    which rebuilds the recorded source-CES planet-calibration pass. Science
+    blocks take the ``ra_center``/``dec_center`` geometry path below.
     """
     meta = sblock.metadata
+
+    if sblock.block_type == BlockType.CALIBRATION:
+        return _generate_source_ces_trajectory(meta, site)
+
     required = ("ra_center", "dec_center", "width", "height", "velocity")
     missing = [k for k in required if k not in meta]
     if missing:
@@ -184,6 +237,71 @@ def _generate_trajectory_for_block(
         )
     else:
         raise ValueError(f"Unknown scan type: {sblock.scan_type}")
+
+
+def _generate_source_ces_trajectory(
+    meta: TimelineBlockMetadata,
+    site: Site,
+) -> ScanBlock:
+    """Rebuild a source-CES planet-calibration pass from its recorded params.
+
+    Consumes the :class:`~fyst_trajectories.overhead.SourceCESScanParams`
+    stored under ``meta["scan_params"]`` when a planet calibration was planned
+    as a source-CES pass sequence
+    (``CalibrationPolicy.planet_cal_scan``) and replays it through
+    :func:`~fyst_trajectories.plan_source_ces`, returning the same
+    :class:`~fyst_trajectories.planning.ScanBlock` the pass produced at emit
+    time (to within the coarse-sampling re-solve tolerance).
+
+    Parameters
+    ----------
+    meta : TimelineBlockMetadata
+        Calibration-block metadata carrying ``scan_params``.
+    site : Site
+        Observatory site.
+
+    Returns
+    -------
+    ScanBlock
+        The rebuilt source-CES pass.
+
+    Raises
+    ------
+    KeyError
+        If ``scan_params`` is absent or carries keys not allowed for
+        ``source_ces`` (see
+        :func:`~fyst_trajectories.overhead.validate_scan_params`).
+    ValueError, TypeError
+        Propagated from :func:`~fyst_trajectories.plan_source_ces` when the
+        recorded geometry can no longer be solved.
+    """
+    params = meta["scan_params"]
+    validate_scan_params(params, "source_ces")
+
+    t0 = Time(params["window"][0], scale="utc")
+    t1 = Time(params["window"][1], scale="utc")
+    buffer = TimeDelta(_SOURCE_CES_WINDOW_BUFFER_SEC, format="sec")
+
+    # The eta offset is load-bearing geometry, not provenance: each pass drags
+    # the source through a different focal-plane row, so the rebuilt pass must
+    # use the base footprint shifted by the recorded offset. Resolve the base
+    # tag then shift it, exactly as plan_source_ces_passes does.
+    base_footprint = _resolve_footprint(params["footprint"])
+    pass_footprint = _offset_footprint_eta(base_footprint, params["eta_offset_deg"])
+
+    # Widen the stored [t0, t1] symmetrically before re-solving: the exact
+    # window edges trip the planner's cover-vs-arc guard, and the buffer keeps
+    # the search off those edges while landing on the same elevation crossing.
+    return plan_source_ces(
+        body=params["body"],
+        footprint=pass_footprint,
+        el_bore=params["el_bore"],
+        boresight_rot=params["boresight_rot"],
+        timestep=params["timestep"],
+        window=(t0 - buffer, t1 + buffer),
+        mode=params["mode"],
+        site=site,
+    )
 
 
 def accumulate_hitmaps(

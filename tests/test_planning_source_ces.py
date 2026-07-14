@@ -24,6 +24,7 @@ from fyst_trajectories import (
     ArrayFootprint,
     AzimuthBoundsError,
     Coordinates,
+    ElevationBoundsError,
     InstrumentOffset,
     PointingWarning,
     ScanBlock,
@@ -34,6 +35,7 @@ from fyst_trajectories import (
     compute_source_ces_params,
     get_primecam_offset,
     plan_source_ces,
+    plan_source_ces_passes,
 )
 from fyst_trajectories.planning._types import _SCAN_TYPE_TO_KEYS
 
@@ -1340,3 +1342,504 @@ def test_off_centre_module_lands_on_source_during_pass(site):
         f"at sample {k_best}/{n_walk} (t={diagnostics[k_best][0]}). "
         f"diagnostics={diagnostics[k_best]}. computed_params={dict(cp)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# plan_source_ces_passes (multi-pass full-coverage sequence)
+# ---------------------------------------------------------------------------
+
+
+def _source_focalplane_eta_mean(block, site, coords, body="jupiter"):
+    """Mean focal-plane eta of the source over a pass's source window.
+
+    Recovers the source's position in the pass's focal-plane frame by
+    un-rotating the (source - boresight) sky offset by the mechanical
+    focal-plane rotation (the same horizon-frame convention the planner
+    uses). For a footprint offset by ``eta`` this mean tracks ``eta``,
+    which is what proves the offset moves the coverage 1:1.
+    """
+    traj = block.trajectory
+    cp = block.computed_params
+    el_bore = float(cp["el_bore"])
+    t0 = (Time(cp["t0_iso"]) - traj.start_time).to_value(u.s)
+    t1 = (Time(cp["t1_iso"]) - traj.start_time).to_value(u.s)
+    ts = np.linspace(t0, t1, 60)
+    times = traj.start_time + TimeDelta(ts * u.s)
+    src_az, src_el = coords.get_body_altaz(body, times)
+    src_az = np.asarray(src_az, dtype=float)
+    src_el = np.asarray(src_el, dtype=float)
+    bore_az = np.interp(ts, traj.times, traj.az)
+    bore_el = np.interp(ts, traj.times, traj.el)
+    # Wrap the azimuth difference into [-180, 180] so a coordinate that
+    # straddles the 0/360 boundary does not blow up the cross-el term.
+    d_az = ((src_az - bore_az + 180.0) % 360.0) - 180.0
+    dxi_sky = d_az * np.cos(np.deg2rad(el_bore))
+    deta_sky = src_el - bore_el
+    rot = np.deg2rad(
+        compute_focal_plane_rotation(el=el_bore, site=site, offset=InstrumentOffset(dx=0.0, dy=0.0))
+    )
+    eta = -dxi_sky * np.sin(rot) + deta_sky * np.cos(rot)
+    return float(np.mean(eta))
+
+
+def test_passes_time_ordered_and_non_overlapping(site):
+    """A 3-pass Jupiter-rising sequence is time-ordered and non-overlapping."""
+    blocks = plan_source_ces_passes(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        n_passes=3,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    assert len(blocks) == 3
+    assert all(isinstance(b, ScanBlock) for b in blocks)
+
+    # Full-block occupancy windows [start, start + duration].
+    occ = [
+        (b.trajectory.start_time.unix, b.trajectory.start_time.unix + b.duration) for b in blocks
+    ]
+    # Strictly time-ordered by start.
+    assert all(occ[k][0] < occ[k + 1][0] for k in range(len(occ) - 1))
+    # Non-overlapping: each pass starts at or after the previous one ends.
+    assert all(occ[k + 1][0] >= occ[k][1] - 1e-6 for k in range(len(occ) - 1)), (
+        f"passes overlap in time: {occ}"
+    )
+    # pass_index metadata matches the returned (time) order.
+    assert [b.trajectory.metadata.pattern_params["pass_index"] for b in blocks] == [0, 1, 2]
+
+
+def test_passes_tile_footprint_extent(site):
+    """The passes' eta offsets tile the footprint extent, and coverage tracks them."""
+    coords = Coordinates(site)
+    n_passes = 3
+    blocks = plan_source_ces_passes(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        n_passes=n_passes,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+
+    # Footprint eta extent, computed exactly as the wrapper does (the
+    # 50-vertex circular cover inscribes slightly inside 2 * radius).
+    from fyst_trajectories.planning.source_ces import _resolve_footprint
+
+    base_fp = _resolve_footprint("c")
+    extent = float(base_fp.cover_eta_deg.max() - base_fp.cover_eta_deg.min())
+    step = extent / n_passes  # the documented default step
+
+    offsets = sorted(b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks)
+    # Distinct, monotonic, symmetric about 0.
+    assert len(set(offsets)) == n_passes
+    assert offsets == sorted(offsets)
+    # The n bands of width ``step`` centred on the offsets tile
+    # [-extent/2, +extent/2] edge to edge.
+    assert offsets[0] - step / 2.0 == pytest.approx(-extent / 2.0, abs=1e-6)
+    assert offsets[-1] + step / 2.0 == pytest.approx(extent / 2.0, abs=1e-6)
+
+    # The offset is not a cosmetic label: the source's mean focal-plane
+    # eta actually tracks each pass's offset (this is what a bare el_bore
+    # step would fail to do). Sort by offset and check monotonic tracking.
+    by_offset = sorted(
+        blocks, key=lambda b: b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
+    )
+    measured = [_source_focalplane_eta_mean(b, site, coords) for b in by_offset]
+    assert measured == sorted(measured), f"coverage centres not monotonic: {measured}"
+    for b, m in zip(by_offset, measured):
+        expected = b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
+        assert m == pytest.approx(expected, abs=0.1), (
+            f"coverage centre {m:.3f} does not track eta offset {expected:.3f}"
+        )
+    # The measured coverage centres span ~the full offset range (tiling).
+    assert (measured[-1] - measured[0]) == pytest.approx(offsets[-1] - offsets[0], abs=0.1)
+
+
+def test_each_pass_is_valid_source_ces(site):
+    """Every pass validates exactly like a standalone plan_source_ces block."""
+    blocks = plan_source_ces_passes(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        n_passes=3,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    for b in blocks:
+        # Same computed_params schema as a single source-CES block.
+        assert set(b.computed_params) == set(SourceCESComputedParams.__required_keys__)
+        assert b.computed_params["mode"] == "rising"
+        assert b.computed_params["n_scans"] >= 1
+        assert b.duration > 0
+        # Constant elevation at this pass's stepped el_bore.
+        el_bore = b.computed_params["el_bore"]
+        assert np.allclose(b.trajectory.el, el_bore, atol=1e-6)
+        # Azimuth velocity within the hardware limit (bounds were validated
+        # inside plan_source_ces).
+        assert np.all(np.abs(b.trajectory.az_vel) <= FYST_AZ_MAX_VELOCITY)
+    # The stepped boresight elevations are symmetric about el_bore.
+    el_bores = sorted(b.computed_params["el_bore"] for b in blocks)
+    assert el_bores[1] == pytest.approx(35.0)
+    assert (el_bores[2] - el_bores[1]) == pytest.approx(el_bores[1] - el_bores[0])
+
+
+def test_explicit_eta_offsets_honored(site):
+    """An explicit eta_offsets list produces one pass per row, coverage tracking."""
+    coords = Coordinates(site)
+    requested = [0.3, -0.3, 0.0]  # deliberately unsorted
+    blocks = plan_source_ces_passes(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        eta_offsets=requested,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    assert len(blocks) == 3
+    offsets = sorted(b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks)
+    assert offsets == pytest.approx(sorted(requested))
+    # Coverage tracks the explicit rows.
+    for b in blocks:
+        m = _source_focalplane_eta_mean(b, site, coords)
+        expected = b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
+        assert m == pytest.approx(expected, abs=0.1)
+
+
+def test_passes_setting_source_time_ordered(site):
+    """A setting source (coverage order reversed vs time) still returns time-ordered."""
+    blocks = plan_source_ces_passes(
+        ra=180.0,
+        dec=-30.0,
+        footprint="c",
+        el_bore=40.0,
+        n_passes=3,
+        night=_JUPITER_NIGHT,
+        mode="setting",
+        site=site,
+    )
+    occ = [
+        (b.trajectory.start_time.unix, b.trajectory.start_time.unix + b.duration) for b in blocks
+    ]
+    assert all(occ[k][0] < occ[k + 1][0] for k in range(len(occ) - 1))
+    assert all(occ[k + 1][0] >= occ[k][1] - 1e-6 for k in range(len(occ) - 1)), (
+        f"setting-source passes overlap in time: {occ}"
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param(dict(n_passes=0), id="n_passes-zero"),
+        pytest.param(dict(n_passes=-1), id="n_passes-negative"),
+        pytest.param(dict(), id="neither-n_passes-nor-eta_offsets"),
+        pytest.param(dict(n_passes=3, eta_offsets=[0.0, 0.5]), id="both-n_passes-and-eta_offsets"),
+        pytest.param(dict(eta_offsets=[]), id="empty-eta_offsets"),
+        pytest.param(dict(step=0.2), id="step-without-n_passes"),
+        pytest.param(dict(n_passes=3, step=-0.1), id="negative-step"),
+        pytest.param(dict(n_passes=3, el_step=0.0), id="zero-el_step"),
+    ],
+)
+def test_passes_invalid_controls_raise_value_error(site, kwargs):
+    """Degenerate pass-control combinations raise ValueError before astronomy runs."""
+    full = dict(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    full.update(kwargs)
+    with pytest.raises(ValueError):
+        plan_source_ces_passes(**full)
+
+
+def test_passes_offset_beyond_reach_raises(site):
+    """An eta offset that steps a pass past the source's reachable arc raises cleanly."""
+    # A +30 deg eta offset drives one pass's footprint (and its stepped
+    # el_bore) far above Jupiter's accessible arc, so the underlying
+    # plan_source_ces gate rejects it.
+    with pytest.raises((TargetNotObservableError, ElevationBoundsError)):
+        plan_source_ces_passes(
+            body="jupiter",
+            footprint="c",
+            el_bore=35.0,
+            eta_offsets=[0.0, 30.0],
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_passes_duplicate_eta_offsets_raise(site):
+    """Duplicate eta offsets are rejected: identical passes are never intended."""
+    with pytest.raises(ValueError, match="unique"):
+        plan_source_ces_passes(
+            body="jupiter",
+            footprint="c",
+            el_bore=35.0,
+            eta_offsets=[0.0, 0.0],
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_passes_small_el_step_overlap_warns(site):
+    """Shrinking el_step below the footprint extent overlaps pass windows and warns."""
+    with pytest.warns(PointingWarning, match="overlap"):
+        blocks = plan_source_ces_passes(
+            body="jupiter",
+            footprint="c",
+            el_bore=35.0,
+            n_passes=2,
+            el_step=0.05,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+    # Still time-ordered even when the occupancy windows overlap.
+    starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
+    assert starts == sorted(starts)
+
+
+# ---------------------------------------------------------------------------
+# Approximate start_time anchor ("plan a pass starting about now")
+# ---------------------------------------------------------------------------
+
+# A Jupiter rising anchor on the test night (el ~ 32.6 deg, climbing). Reuses
+# the ~21:41 UTC rising window the pass tests above lean on.
+_JUPITER_RISING_ANCHOR = Time("2026-03-15T21:41:00", scale="utc")
+
+
+def _jupiter_el_track(site):
+    """Sample Jupiter (az, el) across the test night at 60 s cadence."""
+    coords = Coordinates(site)
+    dt = np.arange(0.0, 24 * 3600.0, 60.0)
+    times = _JUPITER_NIGHT + TimeDelta(dt * u.s)
+    _, el = coords.get_body_altaz("jupiter", times)
+    return times, np.asarray(el, dtype=float)
+
+
+def _jupiter_transit_anchor(site):
+    """Time of Jupiter's culmination (elevation maximum) on the test night."""
+    times, el = _jupiter_el_track(site)
+    return times[int(np.argmax(el))]
+
+
+def _jupiter_setting_anchor(site, target_el=40.0):
+    """First post-transit time Jupiter descends through ``target_el``."""
+    times, el = _jupiter_el_track(site)
+    i_max = int(np.argmax(el))
+    after = np.arange(len(el)) > i_max
+    idx = np.where(after & (el <= target_el))[0]
+    assert len(idx), "no setting Jupiter sample found"
+    return times[idx[0]]
+
+
+def test_anchored_plan_source_ces_rising(site):
+    """Anchored plan_source_ces derives a rising pass starting near the anchor."""
+    coords = Coordinates(site)
+    anchor = _JUPITER_RISING_ANCHOR
+    _, el_at_anchor = coords.get_body_altaz("jupiter", anchor)
+    el_at_anchor = float(el_at_anchor)
+
+    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
+    cp = block.computed_params
+
+    assert cp["mode"] == "rising"
+    t0 = Time(cp["t0_iso"])
+    delta = (t0 - anchor).to_value(u.s)
+    # Anchor, not literal start: t0 lands at or just after the anchor.
+    assert delta >= -1e-6, f"t0 must be >= anchor, got {delta:+.3f}s"
+    assert delta <= 120.0, f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
+
+    el_limits = site.telescope_limits.elevation
+    assert el_limits.min <= cp["el_bore"] <= el_limits.max
+    # For a centred module the boresight sits a little above the source
+    # elevation at the anchor (roughly the cover half-height plus the lead).
+    assert el_at_anchor < cp["el_bore"] < el_at_anchor + 1.5
+
+
+def test_anchored_plan_source_ces_setting(site):
+    """A setting anchor resolves mode='setting' and starts at or after the anchor."""
+    anchor = _jupiter_setting_anchor(site)
+    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
+    cp = block.computed_params
+
+    assert cp["mode"] == "setting"
+    delta = (Time(cp["t0_iso"]) - anchor).to_value(u.s)
+    assert delta >= -1e-6, f"t0 must be >= anchor, got {delta:+.3f}s"
+    assert delta <= 120.0, f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
+
+
+def test_anchored_explicit_el_bore_is_forward_search(site):
+    """Explicit el_bore + start_time forward-searches from the anchor, el_bore respected."""
+    anchor = _JUPITER_RISING_ANCHOR
+    block = plan_source_ces(
+        body="jupiter", footprint="c", el_bore=35.0, start_time=anchor, site=site
+    )
+    cp = block.computed_params
+    # el_bore is honoured exactly (no derivation).
+    assert cp["el_bore"] == pytest.approx(35.0)
+    # Jupiter is below 35 deg at the anchor and climbs to it later, so the
+    # forward search lands the pass strictly after the anchor.
+    assert (Time(cp["t0_iso"]) - anchor).to_value(u.s) >= -1e-6
+
+
+def test_anchored_matches_classic_window(site):
+    """An anchored call equals the classic window call with its derived params."""
+    anchor = _JUPITER_RISING_ANCHOR
+    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
+    cp = block.computed_params
+
+    # Rebuild the window and el_bore the anchor resolved to and run the classic
+    # form; the two must agree bit-for-bit on the pass endpoints.
+    horizon = _source_ces_module._DEFAULT_SEARCH_HORIZON_HOURS * 3600.0
+    window = (anchor, anchor + TimeDelta(horizon * u.s))
+    classic = plan_source_ces(
+        body="jupiter",
+        footprint="c",
+        el_bore=cp["el_bore"],
+        window=window,
+        mode=cp["mode"],
+        site=site,
+    )
+    assert classic.computed_params["t0_iso"] == cp["t0_iso"]
+    assert classic.computed_params["t1_iso"] == cp["t1_iso"]
+
+
+def test_anchored_compute_params_matches_plan(site):
+    """compute_source_ces_params anchored path matches plan_source_ces's derived t0."""
+    anchor = _JUPITER_RISING_ANCHOR
+    params = compute_source_ces_params(body="jupiter", footprint="c", start_time=anchor, site=site)
+    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
+
+    assert set(params) == set(SourceCESComputedParams.__required_keys__)
+    for key in SourceCESComputedParams.__required_keys__:
+        expected = block.computed_params[key]
+        actual = params[key]
+        if isinstance(expected, float):
+            assert actual == pytest.approx(expected), f"mismatch on key {key!r}"
+        else:
+            assert actual == expected, f"mismatch on key {key!r}"
+
+
+def test_anchored_passes_first_pass_near_anchor(site):
+    """Anchored plan_source_ces_passes starts the first pass near the anchor."""
+    anchor = _JUPITER_RISING_ANCHOR
+    blocks = plan_source_ces_passes(
+        body="jupiter", footprint="c", n_passes=3, start_time=anchor, site=site
+    )
+    assert len(blocks) == 3
+    assert all(isinstance(b, ScanBlock) for b in blocks)
+
+    # The first pass in time is anchored; later passes follow.
+    delta0 = (Time(blocks[0].computed_params["t0_iso"]) - anchor).to_value(u.s)
+    assert delta0 >= -1e-6, f"first pass t0 must be >= anchor, got {delta0:+.3f}s"
+    assert delta0 <= 120.0, f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
+
+    # Blocks time-ordered by start, with intact per-pass metadata.
+    starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
+    assert starts == sorted(starts)
+    assert [b.trajectory.metadata.pattern_params["pass_index"] for b in blocks] == [0, 1, 2]
+    for b in blocks:
+        assert set(b.computed_params) == set(SourceCESComputedParams.__required_keys__)
+        assert b.computed_params["mode"] == "rising"
+
+
+def test_anchored_mutual_exclusion_with_night_and_window(site):
+    """start_time may not be combined with night or window."""
+    with pytest.raises(ValueError, match="'start_time' or 'night'"):
+        plan_source_ces(
+            body="jupiter",
+            footprint="c",
+            start_time=_JUPITER_RISING_ANCHOR,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+    with pytest.raises(ValueError, match="'start_time' or 'window'"):
+        plan_source_ces(
+            body="jupiter",
+            footprint="c",
+            start_time=_JUPITER_RISING_ANCHOR,
+            window=(_JUPITER_NIGHT, _JUPITER_NIGHT + TimeDelta(1 * u.hour)),
+            site=site,
+        )
+
+
+def test_missing_el_bore_without_start_time_raises(site):
+    """Omitting el_bore in the classic (night/window) form raises a clear ValueError."""
+    with pytest.raises(ValueError, match="el_bore is required"):
+        plan_source_ces(
+            body="jupiter",
+            footprint="c",
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+        )
+
+
+def test_anchored_near_transit_guard(site):
+    """Anchoring at transit (near-zero elevation drift) raises mentioning drift."""
+    transit = _jupiter_transit_anchor(site)
+    with pytest.raises(TargetNotObservableError, match="drift"):
+        plan_source_ces(body="jupiter", footprint="c", start_time=transit, site=site)
+
+
+def test_anchored_passes_first_pass_near_anchor_setting(site):
+    """A setting anchor puts the highest pass first, starting near the anchor."""
+    anchor = _jupiter_setting_anchor(site)
+    blocks = plan_source_ces_passes(
+        body="jupiter", footprint="c", n_passes=3, start_time=anchor, site=site
+    )
+    assert len(blocks) == 3
+    assert all(b.computed_params["mode"] == "setting" for b in blocks)
+
+    # The first pass in time is anchored.
+    delta0 = (Time(blocks[0].computed_params["t0_iso"]) - anchor).to_value(u.s)
+    assert delta0 >= -1e-6, f"first pass t0 must be >= anchor, got {delta0:+.3f}s"
+    assert delta0 <= 120.0, f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
+
+    # Blocks time-ordered with intact per-pass metadata.
+    starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
+    assert starts == sorted(starts)
+    assert [b.trajectory.metadata.pattern_params["pass_index"] for b in blocks] == [0, 1, 2]
+
+    # A setting source crosses higher elevations first, so the anchored first
+    # pass must carry the highest boresight elevation and the top coverage row
+    # (the largest eta offset of the default symmetric grid).
+    etas = [b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks]
+    el_bores = [b.trajectory.metadata.pattern_params["pass_el_bore_deg"] for b in blocks]
+    assert etas[0] == pytest.approx(max(etas))
+    assert etas[0] > 0.0  # the top row of a symmetric grid is strictly positive
+    assert el_bores[0] == pytest.approx(max(el_bores))
+
+
+def test_anchored_below_elevation_floor_raises_target_not_observable(site):
+    """Anchoring a source below the elevation floor raises an anchor-relative error."""
+    times, el = _jupiter_el_track(site)
+    floor = site.telescope_limits.elevation.min
+    i_max = int(np.argmax(el))
+    after = np.arange(len(el)) > i_max
+    idx = np.where(after & (el <= floor - 5.0))[0]
+    assert len(idx), "no below-floor Jupiter sample found on the test night"
+    anchor = times[idx[0]]
+
+    with pytest.raises(TargetNotObservableError, match="floor") as excinfo:
+        plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
+    msg = str(excinfo.value)
+    assert "Jupiter" in msg
+    assert str(anchor.iso) in msg
+    # The message reports the telescope floor and the source's elevation at
+    # the anchor, not the internal probe boresight the derivation attempted.
+    assert f"floor {floor}" in msg
+    assert f"{float(el[idx[0]]):.2f}" in msg
+    # The kernel's original bounds rejection is preserved for structured access.
+    assert isinstance(excinfo.value.__cause__, ElevationBoundsError)

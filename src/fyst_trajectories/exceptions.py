@@ -214,6 +214,13 @@ class TargetNotObservableError(PointingError):
         Human-readable time description (e.g., "2026-06-15T04:00:00").
     bounds_error : TrajectoryBoundsError
         The underlying bounds error with structured limit data.
+    message : str, optional
+        Override for the human-readable message. When ``None`` (default) the
+        message is composed from ``target``, ``time_info``, and
+        ``bounds_error`` as before. Supply an explicit string when the
+        infeasibility is not a plain limit overshoot (e.g. a rate below a
+        minimum) and the composed "exceeds limits" wording would misdescribe
+        it; ``bounds_error`` is still stored for structured access.
 
     Examples
     --------
@@ -234,15 +241,17 @@ class TargetNotObservableError(PointingError):
         target: str,
         time_info: str,
         bounds_error: TrajectoryBoundsError,
+        message: str | None = None,
     ):
         self.target = target
         self.time_info = time_info
         self.bounds_error = bounds_error
-        message = (
-            f"{target} is not fully observable at {time_info}. "
-            f"The trajectory {bounds_error.axis} "
-            f"[{bounds_error.actual_min:.2f}, {bounds_error.actual_max:.2f}] "
-            f"exceeds limits [{bounds_error.limit_min}, {bounds_error.limit_max}]. "
-            f"Try a different observation time or shorter duration."
-        )
+        if message is None:
+            message = (
+                f"{target} is not fully observable at {time_info}. "
+                f"The trajectory {bounds_error.axis} "
+                f"[{bounds_error.actual_min:.2f}, {bounds_error.actual_max:.2f}] "
+                f"exceeds limits [{bounds_error.limit_min}, {bounds_error.limit_max}]. "
+                f"Try a different observation time or shorter duration."
+            )
         super().__init__(message)

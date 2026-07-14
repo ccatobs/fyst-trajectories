@@ -51,10 +51,20 @@ calibration type entirely::
         beam_map_cadence=None,        # default: manual injection only
         planet_targets=("jupiter", "saturn", "mars", "uranus", "neptune"),
         planet_min_elevation=20.0,    # planet must be above this
+        planet_cal_scan=False,        # plan planet cals as source-CES passes
+        planet_cal_passes=3,          # passes per planet cal when scanning
+        planet_cal_el_step=None,      # None = planner default (footprint extent)
+        planet_cal_footprint="c",     # Prime-Cam module tag the passes tile
     )
 
 Planet calibrations and beam maps are only scheduled when at least one
 planet target in ``planet_targets`` is above ``planet_min_elevation``.
+
+The ``planet_cal_scan`` / ``planet_cal_passes`` / ``planet_cal_el_step`` /
+``planet_cal_footprint`` group controls how a planet calibration is
+realised (see :ref:`planet-cal-source-ces` below). Like the cadences and
+durations, these are commissioning-era placeholders for the
+instrument/operations team to confirm.
 
 Scheduling Beam Maps
 ~~~~~~~~~~~~~~~~~~~~
@@ -77,6 +87,45 @@ schedule in to cadence-driven beam mapping using the same
 
 Beam maps and planet calibrations share planet-target visibility checking
 but have independent cadences and durations.
+
+.. _planet-cal-source-ces:
+
+Planet Calibrations as Source-CES Scans
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default a planet calibration is a single fixed-duration parked block
+(``OverheadModel.planet_cal_duration``): the telescope holds its current
+pose while the calibration runs, and no scan geometry is recorded.
+
+Setting ``planet_cal_scan=True`` instead plans each planet calibration as
+a real multi-pass source-CES sequence via
+:func:`~fyst_trajectories.plan_source_ces_passes`, anchored at the
+scheduler clock. The planet is dragged across the Prime-Cam focal plane at
+a fixed boresight elevation, once per pass, with the passes stepped in
+elevation so they run sequentially:
+
+.. code-block:: python
+
+    policy = CalibrationPolicy(
+        planet_cal_scan=True,
+        planet_cal_passes=3,          # three drift passes per calibration
+        planet_cal_el_step=None,      # None = planner default spacing
+        planet_cal_footprint="c",     # tile Prime-Cam module "c"
+    )
+
+Each pass becomes its own calibration block (``scan_type="planet_cal"``),
+carrying the full source-CES parameters in
+``metadata["scan_params"]`` (a
+:class:`~fyst_trajectories.overhead.SourceCESScanParams`) and the true
+scan start in ``metadata["t0_scan"]``. If the sequence is not feasible at
+the anchor (the planet never reaches the required geometry in the search
+window), the calibration is skipped and left due, so it is retried on a
+later scheduler iteration, exactly like a planet cal with no visible
+planet.
+
+``planet_cal_passes`` must be at least 1, and ``planet_cal_el_step`` (when
+given) must be positive; ``None`` uses the planner default (the footprint
+elevation extent).
 
 Default values are commissioning-era placeholders that should be
 confirmed by the instrument team.

@@ -140,6 +140,7 @@ from .planning import (
     plan_pong_rotation_sequence,
     plan_pong_scan,
     plan_source_ces,
+    plan_source_ces_passes,
     validate_computed_params,
 )
 from .plotting import plot_hit_map
@@ -340,6 +341,7 @@ __all__ = [
     "plan_daisy_scan",
     "plan_daisy_altaz_scan",
     "plan_source_ces",
+    "plan_source_ces_passes",
     "compute_source_ces_params",
     "validate_computed_params",
     # Instrument offsets

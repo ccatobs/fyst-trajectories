@@ -71,7 +71,10 @@ FYST_NASMYTH_PORT: str = "right"
 # at every off-axis Prime-Cam module. Confirmation essential before
 # first-light science.
 
-# Tier 2: Mechanical limits (from FYST TCS commands.go)
+# Tier 2: Mechanical limits (from FYST TCS commands.go:18-28). Two envelopes:
+# the ENCODER/SLEW envelope (az [-180, 360], el [-90, 180]) is enforced by Go
+# TCS and matches P-INCM-ICD-0003-A sections 2/5; the narrower OBSERVING
+# envelope (el [20, 90]) is enforced by the planners and validate_trajectory.
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
 # The velocity and acceleration limits below — the conservative operational
 # values may need to be relaxed once commissioning ratifies the TCS

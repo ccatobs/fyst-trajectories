@@ -22,7 +22,7 @@ from .daisy import plan_daisy_scan
 from .daisy_altaz import plan_daisy_altaz_scan
 from .pong import plan_pong_rotation_sequence, plan_pong_scan
 from .pong_altaz import plan_pong_altaz_scan
-from .source_ces import compute_source_ces_params, plan_source_ces
+from .source_ces import compute_source_ces_params, plan_source_ces, plan_source_ces_passes
 
 __all__ = [
     "ArrayFootprint",
@@ -43,5 +43,6 @@ __all__ = [
     "plan_pong_rotation_sequence",
     "plan_pong_scan",
     "plan_source_ces",
+    "plan_source_ces_passes",
     "validate_computed_params",
 ]

@@ -283,7 +283,10 @@ class TestConstantElPropertyBased:
     )
     @settings(
         max_examples=50,
-        deadline=5000,
+        # No per-example deadline: wall-clock deadlines flake under CPU
+        # contention (parallel test runs, loaded CI runners) for a pure
+        # numpy workload with no hang risk.
+        deadline=None,
         suppress_health_check=[HealthCheck.function_scoped_fixture],
     )
     def test_invariants(self, site, az_start, az_throw, elevation, az_speed, az_accel, duration):

@@ -448,6 +448,100 @@ margin, default 0.5 deg), ``az_branch`` (centre of the azimuth wrap branch),
 and ``allow_partial`` (clip to the observable arc and warn instead of
 raising when the source does not fully cover the footprint at ``el_bore``).
 
+Anchoring to an approximate start time
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A scheduler often knows only "it is now *T* and the telescope is free", not the
+boresight elevation to use. Pass ``start_time`` (mutually exclusive with
+``night`` and ``window``) to plan a pass that begins near that time, mirroring
+the approximate-anchor semantics of
+:func:`~fyst_trajectories.planning.plan_constant_el_scan`. With ``el_bore``
+omitted the planner derives it so the pass starts at (or just after) the
+anchor, and with ``mode`` omitted it reads the rising/setting direction from
+the source's elevation slope at the anchor::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_source_ces
+
+    site = get_fyst_site()
+
+    block = plan_source_ces(
+        body="jupiter",
+        footprint="c",
+        start_time=Time("2026-03-15T21:41:00", scale="utc"),
+        site=site,
+    )
+    cp = block.computed_params
+    print(f"mode={cp['mode']}  el_bore={cp['el_bore']:.2f}  start={cp['t0_iso'][:19]}")
+
+The resolved start is an anchor, not a literal start: it typically lands within
+about a minute after ``start_time`` because the search window opens at the
+anchor and the pass cannot begin earlier. Supplying ``el_bore`` explicitly
+alongside ``start_time`` instead forward-searches from the anchor for that
+elevation. Anchors within a small drift rate of transit are rejected with
+:class:`~fyst_trajectories.TargetNotObservableError` (the elevation-crossing
+inversion is ill-conditioned there); anchor away from transit or pass
+``el_bore``. :func:`~fyst_trajectories.planning.compute_source_ces_params` and
+:func:`~fyst_trajectories.planning.plan_source_ces_passes` accept ``start_time``
+on the same terms; for the multi-pass form the anchor applies to the first pass
+in time.
+
+Multiple passes for full focal-plane coverage
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A single :func:`~fyst_trajectories.planning.plan_source_ces` drags the source
+across the array at one boresight elevation, so it paints only a sparse raster
+along one band of the focal plane. A calibration source is typically larger than
+a detector beam but much smaller than a module, so covering every detector needs
+several drift passes that step the source through different rows of the array.
+
+:func:`~fyst_trajectories.planning.plan_source_ces_passes` builds that sequence.
+It offsets the *footprint* along the focal-plane elevation (eta) axis to move the
+coverage to a new row, because stepping ``el_bore`` alone does not move the
+coverage (a source-tracking scan re-centres on the source at every elevation, so
+each ``el_bore`` reproduces the same focal-plane band). Independently it steps
+``el_bore`` to sequence the passes in time so they do not overlap. The result is
+a time-ordered ``list`` of ordinary source-CES blocks::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_source_ces_passes
+
+    site = get_fyst_site()
+
+    passes = plan_source_ces_passes(
+        body="jupiter",
+        footprint="c",          # one PrimeCam module
+        el_bore=35.0,
+        n_passes=3,             # three drift passes tiling the module in eta
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="rising",
+        site=site,
+    )
+
+    for block in passes:
+        pp = block.trajectory.metadata.pattern_params
+        print(
+            f"pass {pp['pass_index']}: eta_offset={pp['pass_eta_offset_deg']:+.2f} deg, "
+            f"el_bore={pp['pass_el_bore_deg']:.2f} deg, {block.duration:.0f}s"
+        )
+
+Specify the pass grid with either ``n_passes`` (plus an optional ``step``,
+defaulting to the footprint eta extent divided by ``n_passes``, which spreads
+the pass centers evenly across the extent) or an explicit ``eta_offsets`` list
+of focal-plane elevation offsets in degrees. Each pass's on-sky coverage is
+wider than the step itself (focal-plane rotation mixes the azimuth throw into
+eta), so successive passes interleave and densify the coverage of the array
+rather than painting disjoint bands. The ``el_step`` knob (default: the
+footprint eta extent) sets how far ``el_bore`` moves between passes; lowering
+it below the extent packs the passes closer, lets their source windows overlap
+in time, and emits a warning. Each returned block is an
+ordinary source-CES block and carries its ``pass_index``, ``pass_eta_offset_deg``,
+and ``pass_el_bore_deg`` in ``trajectory.metadata.pattern_params``.
+
 Params-only mode (emit-time)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

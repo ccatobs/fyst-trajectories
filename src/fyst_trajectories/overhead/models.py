@@ -31,6 +31,7 @@ __all__ = [
     "PongScanParams",
     "ScanParamsDict",
     "ScienceBlockMetadata",
+    "SourceCESScanParams",
     "TimelineBlock",
     "TimelineBlockMetadata",
     "validate_scan_params",
@@ -141,6 +142,70 @@ class DaisyScanParams(TypedDict, total=False):
     timestep: float
 
 
+class SourceCESScanParams(TypedDict, total=False):
+    """Replay parameters for one source-CES pass of a planet calibration.
+
+    Attached to a calibration :class:`TimelineBlock` under
+    ``metadata["scan_params"]`` when a planet calibration is planned as a
+    multi-pass source-CES sequence (``CalibrationPolicy.planet_cal_scan``).
+    All keys are optional at the type level (``total=False``); the emit
+    path populates every key so the pass geometry is fully recorded.
+
+    The fields together record one pass of
+    :func:`~fyst_trajectories.plan_source_ces_passes`: a single
+    :func:`~fyst_trajectories.plan_source_ces` call that drags the planet
+    across a focal-plane row at a fixed boresight elevation.
+
+    Attributes
+    ----------
+    body : str
+        Solar-system body the pass tracked (e.g. ``"jupiter"``).
+    footprint : str
+        Base Prime-Cam module tag (e.g. ``"c"``) before the per-pass eta
+        shift. ``eta_offset_deg`` records the shift applied to it.
+    el_bore : float
+        Fixed boresight elevation of this pass in degrees. Passes step
+        this value monotonically so the source crosses each footprint row
+        in sequence.
+    mode : str
+        Direction of the source arc, ``"rising"`` or ``"setting"``.
+    window : list of str
+        The pass extent as ``[t0_iso, t1_iso]``: the UTC times the source
+        enters and exits the projected footprint. This is the boresight
+        pass window, not the search horizon.
+    boresight_rot : float
+        Mechanical boresight rotation in degrees (``0.0`` when the
+        rotator is not commanded).
+    timestep : float
+        Trajectory sample spacing in seconds used to build the pass.
+    eta_offset_deg : float
+        Focal-plane eta (elevation-axis) offset in degrees applied to the
+        base footprint for this pass. This is a load-bearing geometry
+        parameter, not provenance: rebuilding the pass trajectory requires
+        shifting the base footprint by this offset (each offset selects a
+        different focal-plane row, so the source-tracking track and its
+        azimuth throw differ between passes even at the same ``el_bore``).
+    pass_index : int
+        0-based index of this pass within the sequence, ordered by start
+        time.
+    n_passes : int
+        Total number of passes requested for the sequence. Unchanged by
+        end-of-night truncation, so a truncated sequence still reports the
+        full count.
+    """
+
+    body: str
+    footprint: str
+    el_bore: float
+    mode: str
+    window: list[str]
+    boresight_rot: float
+    timestep: float
+    eta_offset_deg: float
+    pass_index: int
+    n_passes: int
+
+
 # Umbrella alias used by :attr:`ObservingPatch.scan_params`. Which
 # concrete TypedDict applies depends on the patch's ``scan_type``.
 ScanParamsDict = CEScanParams | PongScanParams | DaisyScanParams
@@ -149,10 +214,14 @@ ScanParamsDict = CEScanParams | PongScanParams | DaisyScanParams
 # Allowed keys per scan type, derived from each TypedDict's
 # ``__optional_keys__`` so the table cannot drift from the declared
 # schemas (each TypedDict is ``total=False`` with no required members).
+# ``source_ces`` is registered here so a planet calibration planned as a
+# source-CES pass sequence can validate the parameters it records; the
+# science planners never emit it (``ObservingPatch`` rejects the type).
 _SCAN_TYPE_TO_SCAN_PARAM_KEYS: dict[str, frozenset[str]] = {
     "constant_el": CEScanParams.__optional_keys__,
     "pong": PongScanParams.__optional_keys__,
     "daisy": DaisyScanParams.__optional_keys__,
+    "source_ces": SourceCESScanParams.__optional_keys__,
 }
 
 
@@ -169,14 +238,19 @@ def validate_scan_params(params: Mapping[str, object], scan_type: str) -> None:
     params : mapping of str to object
         The candidate ``scan_params`` dict.
     scan_type : str
-        One of ``"constant_el"``, ``"pong"``, or ``"daisy"``. Must
-        match the scan type of the enclosing block.
+        One of ``"constant_el"``, ``"pong"``, ``"daisy"``, or
+        ``"source_ces"``. The first three are the science scan types an
+        :class:`ObservingPatch` carries; ``"source_ces"`` validates the
+        :class:`SourceCESScanParams` recorded on planet-calibration
+        blocks planned as source-CES pass sequences. Must match the
+        scan type the enclosing block declares for its ``scan_params``.
 
     Raises
     ------
     KeyError
-        If ``scan_type`` is unknown, or if ``params`` contains any key
-        not declared by the matching TypedDict.
+        If ``scan_type`` is not one of the four registered types, or if
+        ``params`` contains any key not declared by the matching
+        TypedDict.
     """
     if scan_type not in _SCAN_TYPE_TO_SCAN_PARAM_KEYS:
         raise KeyError(
@@ -234,10 +308,22 @@ class CalibrationBlockMetadata(TypedDict, total=False):
     target : str or None, optional
         Target identifier (e.g. ``"jupiter"`` for a planet calibration);
         None for in-place operations.
+    scan_params : SourceCESScanParams, optional
+        Per-pass source-CES parameters, present only when a planet
+        calibration is planned as a source-CES pass sequence
+        (``CalibrationPolicy.planet_cal_scan``). Absent for parked
+        (fixed-duration) calibrations.
+    t0_scan : str, optional
+        ISO UTC time the scan geometry actually begins, present alongside
+        ``scan_params``. The block's ``t_start`` may precede this when
+        inter-pass repointing and acquisition time are folded into the
+        block.
     """
 
     cal_type: str
     target: str | None
+    scan_params: "SourceCESScanParams"
+    t0_scan: str
 
 
 class EmptyBlockMetadata(TypedDict, total=False):
@@ -610,8 +696,12 @@ class TimelineBlock:
         scan_index: int,
         *,
         target: str | None = None,
+        az_end: float | None = None,
+        scan_params: "SourceCESScanParams | None" = None,
+        t0_scan: str | None = None,
+        rising: bool = True,
     ) -> "TimelineBlock":
-        """Construct a CALIBRATION block in place at a single azimuth.
+        """Construct a CALIBRATION block at a single azimuth or across a range.
 
         Factory for the common case where the telescope is parked
         (``az_start == az_end == az``) while a calibration operation runs.
@@ -620,6 +710,13 @@ class TimelineBlock:
         For retune calibrations emitted *between* subscans, use
         :meth:`retune` instead — that variant carries the parent scan's
         azimuth range so ECSV round-trips preserve the subscan geometry.
+
+        The optional ``az_end`` / ``scan_params`` / ``t0_scan`` / ``rising``
+        keywords support a planet calibration planned as a source-CES pass:
+        pass ``az_end`` to record the swept azimuth envelope and
+        ``scan_params`` / ``t0_scan`` to record the pass geometry. All four
+        default to the parked single-pose behavior, so a call that omits
+        them is unchanged.
 
         Parameters
         ----------
@@ -632,7 +729,8 @@ class TimelineBlock:
         duration : float
             Block duration in seconds.
         az, el : float
-            Parked telescope pose during the calibration, in degrees.
+            Telescope pose during the calibration, in degrees. ``az`` is
+            the lower azimuth bound (equal to the upper bound when parked).
         site : Site
             Observatory site (supplies ``nasmyth_sign`` and latitude
             needed by ``compute_nasmyth_rotation``).
@@ -641,27 +739,47 @@ class TimelineBlock:
         target : str or None, optional
             Calibration target (e.g. ``"jupiter"`` for a planet cal);
             stored in ``metadata["target"]``.
+        az_end : float or None, optional
+            Upper azimuth bound of a swept calibration. ``None`` (default)
+            parks at ``az`` (``az_start == az_end == az``). When given, the
+            boresight angle is evaluated at the az-range midpoint.
+        scan_params : SourceCESScanParams or None, optional
+            Per-pass source-CES parameters; stored in
+            ``metadata["scan_params"]`` when not ``None``.
+        t0_scan : str or None, optional
+            ISO UTC time the scan geometry begins; stored in
+            ``metadata["t0_scan"]`` when not ``None``.
+        rising : bool, optional
+            Whether the calibration observes the rising side. Default
+            ``True`` (matches the parked default).
 
         Returns
         -------
         TimelineBlock
-            A CALIBRATION block with ``az_start == az_end == az``.
+            A CALIBRATION block. Parked (``az_end is None``) blocks have
+            ``az_start == az_end == az``.
         """
         from .utils import compute_nasmyth_rotation
 
         cal_name = str(CalibrationType.coerce(cal_type))
         meta: CalibrationBlockMetadata = {"cal_type": cal_name, "target": target}
+        if t0_scan is not None:
+            meta["t0_scan"] = t0_scan
+        if scan_params is not None:
+            meta["scan_params"] = scan_params
+        az_hi = az if az_end is None else az_end
         return cls(
             t_start=t_start,
             t_stop=t_start + TimeDelta(duration, format="sec"),
             block_type=BlockType.CALIBRATION,
             patch_name=cal_name,
             az_start=az,
-            az_end=az,
+            az_end=az_hi,
             elevation=el,
             scan_index=scan_index,
+            rising=rising,
             scan_type=cal_name,
-            boresight_angle=compute_nasmyth_rotation(az, el, site),
+            boresight_angle=compute_nasmyth_rotation(0.5 * (az + az_hi), el, site),
             metadata=meta,
         )
 
@@ -1025,6 +1143,30 @@ class CalibrationPolicy:
     planet_min_elevation : float
         Minimum altitude in degrees for a planet to be considered visible
         for calibration. Default is 20.0 degrees.
+    planet_cal_scan : bool
+        When ``True``, plan each planet calibration as a real multi-pass
+        source-CES sequence (via
+        :func:`~fyst_trajectories.plan_source_ces_passes`) anchored at the
+        scheduler clock, instead of a single fixed-duration parked block.
+        Default ``False`` (parked). Instrument/operations-team placeholder.
+    planet_cal_passes : int
+        Number of source-CES passes per planet calibration when
+        ``planet_cal_scan`` is set. Must be at least 1. Default 3.
+        Instrument/operations-team placeholder.
+    planet_cal_el_step : float or None
+        Boresight-elevation spacing in degrees between consecutive passes.
+        ``None`` (default) uses the planner default (the footprint eta
+        extent). Must be positive when given. Values smaller than the
+        footprint's elevation extent make adjacent pass windows overlap
+        in time, and the planner emits a
+        :class:`~fyst_trajectories.PointingWarning` when they do.
+        Instrument/operations-team placeholder.
+    planet_cal_footprint : str
+        Prime-Cam module tag defining the base footprint the passes tile
+        (e.g. ``"c"``). Must be a known module tag (see
+        :func:`~fyst_trajectories.get_primecam_offset`); an unknown tag
+        raises :class:`ValueError` at construction. Default ``"c"``.
+        Instrument/operations-team placeholder.
     """
 
     retune_cadence: float = 0.0
@@ -1035,6 +1177,10 @@ class CalibrationPolicy:
     beam_map_cadence: float | None = None
     planet_targets: tuple[str, ...] = ("jupiter", "saturn", "mars", "uranus", "neptune")
     planet_min_elevation: float = 20.0
+    planet_cal_scan: bool = False
+    planet_cal_passes: int = 3
+    planet_cal_el_step: float | None = None
+    planet_cal_footprint: str = "c"
 
     def __post_init__(self) -> None:
         for fld in (
@@ -1051,6 +1197,22 @@ class CalibrationPolicy:
             raise ValueError(
                 f"beam_map_cadence must be non-negative or None, got {self.beam_map_cadence}"
             )
+        if self.planet_cal_passes < 1:
+            raise ValueError(f"planet_cal_passes must be at least 1, got {self.planet_cal_passes}")
+        if self.planet_cal_el_step is not None and self.planet_cal_el_step <= 0:
+            raise ValueError(
+                f"planet_cal_el_step must be positive when given, got {self.planet_cal_el_step}"
+            )
+        # Validate the footprint tag at construction (regardless of
+        # planet_cal_scan) so a bad tag fails fast here instead of escaping
+        # as a KeyError from the first planet-cal emission and aborting
+        # generate_timeline.
+        from ..primecam import get_primecam_offset
+
+        try:
+            get_primecam_offset(self.planet_cal_footprint)
+        except KeyError as exc:
+            raise ValueError(f"planet_cal_footprint: {exc.args[0]}") from None
 
 
 # ObservingTimeline is intentionally non-frozen: the scheduler builds it

@@ -591,8 +591,11 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     ``{"start_time": <abs Unix s>, "coordsys": "Horizon", "points": [...]}``:
 
     - ``coordsys`` is **required** and must be ``"Horizon"``; these are
-      geometric az/el rows, and ICRS ``/path`` velocities are unimplemented
-      in Go TCS. Omitting ``coordsys`` or adding any extra key yields HTTP 400.
+      nominal (vacuum) az/el rows per P-INCM-ICD-0003-A Eq.(1), carrying no
+      refraction, SPEM, or non-repeatable pointing terms (those are applied
+      downstream at OCS and/or the ACU), and ICRS ``/path`` velocities are
+      unimplemented in Go TCS. Omitting ``coordsys`` or adding any extra key
+      yields HTTP 400.
     - ``points`` times are **relative** seconds; ``start_time`` is **absolute**
       Unix seconds (``trajectory.start_time.unix``). Do not conflate the two.
 
@@ -644,8 +647,10 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
     coordsys : str, optional
         Coordinate system for the points. Must be ``"Horizon"`` (default)
         or ``"ICRS"``. Use ``"Horizon"`` for trajectory upload: the rows are
-        geometric az/el and ICRS ``/path`` velocities are unimplemented in
-        Go TCS.
+        nominal (vacuum) az/el per P-INCM-ICD-0003-A Eq.(1), carrying no
+        refraction, SPEM, or non-repeatable pointing terms (those are applied
+        downstream at OCS and/or the ACU), and ICRS ``/path`` velocities are
+        unimplemented in Go TCS.
 
     Returns
     -------

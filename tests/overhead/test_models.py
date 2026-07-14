@@ -308,6 +308,69 @@ class TestTimelineBlockFactories:
         assert block.az_end == 160.0
         assert abs(block.duration - 5.0) < 0.01
 
+    def test_calibration_factory_source_ces_kwargs(self, site):
+        """The optional source-CES kwargs are honored and recorded in metadata."""
+        t0 = self._t0()
+        scan_params = {
+            "body": "jupiter",
+            "footprint": "c",
+            "el_bore": 35.0,
+            "mode": "rising",
+            "window": ["2026-06-15 02:00:00", "2026-06-15 02:07:00"],
+            "boresight_rot": 0.0,
+            "timestep": 0.1,
+            "eta_offset_deg": -0.43,
+            "pass_index": 0,
+            "n_passes": 3,
+        }
+        block = TimelineBlock.calibration(
+            cal_type="planet_cal",
+            t_start=t0,
+            duration=420.0,
+            az=48.0,
+            el=35.0,
+            site=site,
+            scan_index=2,
+            target="jupiter",
+            az_end=52.0,
+            scan_params=scan_params,
+            t0_scan="2026-06-15 02:00:16",
+            rising=True,
+        )
+        assert block.block_type is BlockType.CALIBRATION
+        assert block.patch_name == "planet_cal"
+        assert block.scan_type == "planet_cal"
+        # az_end honored: the block spans a swept azimuth range, not parked.
+        assert block.az_start == 48.0
+        assert block.az_end == 52.0
+        assert block.elevation == 35.0
+        assert block.rising is True
+        assert block.metadata["cal_type"] == "planet_cal"
+        assert block.metadata["target"] == "jupiter"
+        assert block.metadata["t0_scan"] == "2026-06-15 02:00:16"
+        assert block.metadata["scan_params"] == scan_params
+
+    def test_calibration_factory_default_no_key_leakage(self, site):
+        """The parked default path emits exactly the legacy 2-key metadata.
+
+        No ``scan_params`` / ``t0_scan`` keys leak in when the source-CES
+        kwargs are omitted, and the block stays parked (az_start == az_end).
+        """
+        t0 = self._t0()
+        block = TimelineBlock.calibration(
+            cal_type="planet_cal",
+            t_start=t0,
+            duration=600.0,
+            az=90.0,
+            el=30.0,
+            site=site,
+            scan_index=0,
+            target="saturn",
+        )
+        assert set(block.metadata.keys()) == {"cal_type", "target"}
+        assert block.az_start == block.az_end == 90.0
+        assert block.rising is True
+
 
 class TestBlockType:
     """Tests for the BlockType enum."""
@@ -360,6 +423,17 @@ class TestCalibrationPolicy:
         """A zero cadence is allowed (always due), same as the others."""
         policy = CalibrationPolicy(beam_map_cadence=0.0)
         assert policy.beam_map_cadence == 0.0
+
+    def test_unknown_planet_cal_footprint_rejected(self):
+        """An unknown module tag is rejected at construction, regardless of ``planet_cal_scan``."""
+        with pytest.raises(ValueError, match="planet_cal_footprint.*'zzz'.*Available"):
+            CalibrationPolicy(planet_cal_footprint="zzz")
+
+    def test_valid_planet_cal_footprint_accepted(self):
+        """Known module tags construct cleanly, with or without the scan flag."""
+        assert CalibrationPolicy(planet_cal_footprint="i1").planet_cal_footprint == "i1"
+        policy = CalibrationPolicy(planet_cal_footprint="center", planet_cal_scan=True)
+        assert policy.planet_cal_footprint == "center"
 
 
 class TestBeamMapScheduling:

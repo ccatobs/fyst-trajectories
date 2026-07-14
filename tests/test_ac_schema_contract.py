@@ -471,16 +471,27 @@ def test_ce_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
 # source_ces contract (keyword-only; body / ra+dec / el_bore inputs).
 # ---------------------------------------------------------------------------
 def test_source_ces_required_keyword_only_params():
-    """``plan_source_ces`` requires footprint, el_bore, site as keyword-only.
+    """``plan_source_ces`` requires footprint and site as keyword-only.
 
-    These three have no default and are keyword-only (leading bare ``*``). A
-    schedlib FYST policy / PCS source_scan task calling this must supply all
-    three. Fails if the required surface changes (e.g. el_bore gains a default or
-    footprint is renamed).
+    These have no default and are keyword-only (leading bare ``*``). A
+    schedlib FYST policy / PCS source_scan task calling this must supply both.
+    ``el_bore`` is now optional: a caller may instead anchor with an
+    approximate ``start_time`` and let the planner derive the boresight
+    elevation. Callers on the classic ``night``/``window`` forms must still
+    supply ``el_bore`` (enforced at runtime, see
+    ``test_source_ces_el_bore_required_without_start_time``). Fails if the
+    required surface changes (e.g. footprint is renamed or site gains a
+    default).
     """
     required = _required_planner_params(plan_source_ces)
-    assert required == {"footprint", "el_bore", "site"}, (
+    assert required == {"footprint", "site"}, (
         f"plan_source_ces required params changed: {sorted(required)}"
+    )
+    # el_bore remains an accepted (now optional) selector param, and the
+    # start_time anchor that makes it optional is present alongside it.
+    accepted = _planner_param_names(plan_source_ces)
+    assert {"el_bore", "start_time"} <= accepted, (
+        f"plan_source_ces lost el_bore/start_time selectors: {sorted(accepted)}"
     )
     # All params are keyword-only (the leading ``*`` makes the whole signature
     # keyword-only). The adapter must pass everything by keyword.
@@ -492,6 +503,25 @@ def test_source_ces_required_keyword_only_params():
     assert kinds == {inspect.Parameter.KEYWORD_ONLY}, (
         f"plan_source_ces is no longer fully keyword-only: {kinds}"
     )
+
+
+def test_source_ces_el_bore_required_without_start_time(site):
+    """The classic (non-anchored) source_ces contract still requires el_bore.
+
+    Making ``el_bore`` optional in the signature must not let a classic
+    ``night``/``window`` call through without it; the runtime guard keeps the
+    A->C contract intact for callers that do not anchor with ``start_time``.
+    """
+    from astropy.time import Time
+
+    with pytest.raises(ValueError, match="el_bore is required"):
+        plan_source_ces(
+            body="jupiter",
+            footprint="c",
+            night=Time("2026-03-15T00:00:00", scale="utc"),
+            mode="rising",
+            site=site,
+        )
 
 
 def test_source_ces_target_selector_params_exist():

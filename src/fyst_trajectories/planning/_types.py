@@ -433,22 +433,23 @@ class ScanBlock:
 #
 # NOTE: ``source_ces`` is intentionally NOT registered here.
 # :class:`SourceCESComputedParams` exists as a static-type schema for
-# :func:`~fyst_trajectories.plan_source_ces` returns, but source-CES is
-# a planner-only scan type: it is consumed at dispatch time, not by the
-# in-tree :mod:`fyst_trajectories.overhead` timeline simulator.
-# Keeping it out of this dispatch table keeps the planning<->overhead
-# boundary explicit: ``overhead.schedule_to_trajectories`` only knows
-# ``pong``/``constant_el``/``daisy`` and ``ObservingPatch`` rejects
-# ``"source_ces"`` at construction time, so the table here would only
-# ever be consulted by the planner's own self-check on its return
-# value, which we now do directly against
-# :attr:`SourceCESComputedParams.__required_keys__` inside
-# :func:`plan_source_ces`. If a future use case wants source-CES blocks
-# in :func:`~fyst_trajectories.overhead.generate_timeline`, add the
+# :func:`~fyst_trajectories.plan_source_ces` returns, and the planner
+# self-checks its return value directly against
+# :attr:`SourceCESComputedParams.__required_keys__`, so this table is
+# never consulted for source-CES. ``ObservingPatch`` still rejects
+# ``"source_ces"`` as a science scan type. The
+# :mod:`fyst_trajectories.overhead` simulator does now consume
+# source-CES, but through calibration-block ``scan_params``
+# (planet-cal passes emitted by ``CalibrationPolicy.planet_cal_scan``
+# and rebuilt by ``schedule_to_trajectories(science_only=False)``),
+# which validate against the overhead-side registry
+# ``overhead/models.py:_SCAN_TYPE_TO_SCAN_PARAM_KEYS``
+# (``SourceCESScanParams``) rather than this computed-params table.
+# If a future use case wants source-CES *science* blocks in
+# :func:`~fyst_trajectories.overhead.generate_timeline`, add the
 # entry here AND wire it through
 # ``overhead/simulation.py:_generate_trajectory_for_block`` AND
-# ``overhead/models.py:ObservingPatch`` AND add a matching
-# ``SourceCESScanParams`` TypedDict in ``overhead/models.py``.
+# ``overhead/models.py:ObservingPatch``.
 _SCAN_TYPE_TO_KEYS: dict[str, frozenset[str]] = {
     "pong": PongComputedParams.__required_keys__,
     "pong_altaz": PongAltAzComputedParams.__required_keys__,
