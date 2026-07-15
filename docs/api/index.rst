@@ -20,3 +20,4 @@ API Reference
    overhead_scheduler
    overhead_simulation
    overhead_io
+   overhead_plotting

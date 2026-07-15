@@ -45,6 +45,7 @@ docs = [
     "matplotlib>=3.5",
 ]
 dev = [
+    "matplotlib>=3.5",
     "numba>=0.57",
     "pytest>=7.0",
     "pytest-cov>=4.0",
