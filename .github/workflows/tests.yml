@@ -68,6 +68,66 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # ``-m slow`` only selects the slow tests; the conftest skip-guard
+      # (tests/conftest.py::pytest_collection_modifyitems) still skips every
+      # one of them unless ``--run-slow`` is also passed. Without ``--run-slow``
+      # this job collected the slow tests and then skipped all of them (0 run),
+      # so the skyfield and KOSMA cross-validation tests never executed in CI.
+      # ``--run-slow`` actually runs them (skyfield ships with ``[dev]``).
+      #
+      # This job installs only ``.[dev]``, so it still skips the slow tests that
+      # need extra packages. The two scan_patterns AltAz parity tests
+      # (test_planning_pong_altaz, test_planning_daisy_altaz) skip because the
+      # ``scanning`` package is not installed here; they run in the dedicated
+      # ``oracle-tests`` job below, which does install it. And
+      # test_cross_validate_so_make_source_ces skips because it needs so3g plus
+      # schedlib and the not-yet-written schedlib.policies.fyst module
+      # (importorskip; so3g has no Windows wheels) - a documented skip that
+      # stays skipped everywhere.
       - name: Run slow tests
-        run: pytest -m slow -v
+        run: pytest -m slow --run-slow -v
+        timeout-minutes: 15
+
+  oracle-tests:
+    runs-on: ubuntu-latest
+    needs: fast-tests
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Install the scan_patterns cross-validation oracle (imported as
+      # ``scanning``). ``--no-deps`` is mandatory: scan_patterns pins
+      # ``fyst-trajectories @ ...@v0.5.1`` in its install_requires, and without
+      # ``--no-deps`` pip would resolve that URL and clobber the editable 0.6.0
+      # checkout under test. pandas and fast-histogram are the runtime imports
+      # ``--no-deps`` skips, so they are installed explicitly. The pin is the
+      # refactor/fyst-trajectories HEAD, the branch that consumes this library.
+      - name: Install scan_patterns oracle
+        run: |
+          pip install pandas fast-histogram
+          pip install --no-deps "git+https://github.com/ccatobs/scan_patterns.git@6e18650e9dbcbb389a5ab92cd0d23927a8f70d9c"
+
+      # Hard env check: fail red, not skip-green, if the oracle install is
+      # broken. Assert ``scanning`` imports and that fyst_trajectories still
+      # resolves to the editable checkout rather than a site-packages copy a
+      # dependency might have pulled in.
+      - name: Verify oracle environment
+        run: |
+          python -c "import scanning, fyst_trajectories as f; assert 'site-packages' not in f.__file__, f.__file__; print('oracle env OK', f.__version__)"
+
+      # Runs the two scan_patterns AltAz parity tests now that ``scanning`` is
+      # installed. test_cross_validate_so_make_source_ces still skips here (it
+      # needs so3g + schedlib.policies.fyst); expect 2 passed, 1 skipped.
+      - name: Run oracle tests
+        run: pytest -m slow --run-slow tests/test_planning_pong_altaz.py tests/test_planning_daisy_altaz.py tests/test_planning_source_ces.py
         timeout-minutes: 10

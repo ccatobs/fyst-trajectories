@@ -9,7 +9,7 @@ constraints, time window) that every phase reads but never mutates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from astropy.time import Time
@@ -94,6 +94,11 @@ class SchedulerContext:
     start_time: Time
     end_time: Time
     time_step: float
+    #: Per-run memo of constant-elevation crossing-pass solves, keyed
+    #: ``(patch_name, rising)`` with values ``("ok", t_open, t_close)`` or
+    #: ``("miss", solved_from)``. Written only by the scheduler helpers
+    #: (:func:`.helpers._ce_crossing_corridor`); a cache, not state.
+    ce_corridors: dict = field(default_factory=dict)
 
     @classmethod
     def build(

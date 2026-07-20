@@ -100,7 +100,7 @@ The ``patterns`` package provides ``TrajectoryBuilder`` and config classes
 for generating telescope trajectories compatible with the ACU ProgramTrack mode.
 
 The pattern type is automatically inferred from the config class you provide.
-Available patterns: ``constant_el``, ``daisy``, ``linear``, ``planet``, ``pong``, ``satellite``, ``sidereal``.
+Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``.
 
 **Track a celestial source** (sidereal tracking)::
 

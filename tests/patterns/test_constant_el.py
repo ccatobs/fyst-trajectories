@@ -382,7 +382,7 @@ class TestPositionContinuity:
     # (az_start, az_stop, az_speed, az_accel), spans both directions,
     # several throws, and a range of speed/accel ratios. All chosen so the
     # quintic peak acceleration (1.5 * az_accel) stays at or below the FYST
-    # az acceleration limit (1.0 deg/s^2), so a clean trajectory is warning-free.
+    # az acceleration limit (1.5 deg/s^2), so a clean trajectory is warning-free.
     CONFIGS = [
         (130.0, 150.0, 0.5, 0.5),
         (150.0, 130.0, 0.5, 0.5),

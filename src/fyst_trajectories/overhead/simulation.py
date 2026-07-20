@@ -195,12 +195,21 @@ def _generate_trajectory_for_block(
 
     if sblock.scan_type == "constant_el":
         ce_params = cast(CEScanParams, scan_params)
+        # CE subscans are slices of one physical crossing scan; the visit
+        # anchor recorded at emission (metadata["t0_scan"]) is the anchor
+        # the scheduler's corridor gate guaranteed the crossing solve
+        # succeeds from. A subscan's own t_start may lie past the opening
+        # crossing (where the forward search can no longer find it), so
+        # blocks without the key (pre-2026-07-16 timelines) fall back to
+        # t_start and reconstruct only when that anchor happens to precede
+        # the pass opening.
+        anchor = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
         return plan_constant_el_scan(
             field=field,
             elevation=sblock.elevation,
             velocity=velocity,
             site=site,
-            start_time=sblock.t_start,
+            start_time=anchor,
             rising=sblock.rising,
             az_accel=ce_params.get("az_accel", 1.0),
             timestep=ce_params.get("timestep", 0.1),

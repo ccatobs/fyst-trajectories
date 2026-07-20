@@ -23,6 +23,8 @@ from the velocity arrays using ``np.gradient``.
 
 Example::
 
+    import numpy as np
+
     accel = trajectory.az_accel          # np.ndarray, same shape as times
     max_jerk = np.abs(trajectory.el_jerk).max()
 
@@ -52,8 +54,25 @@ for science samples, making it easy to filter trajectory data::
     import numpy as np
     from fyst_trajectories import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
-    # After generating a CE trajectory:
-    traj = pattern.generate(site, duration=3600.0, start_time=t0)
+    # Build a constant-elevation (AltAz) trajectory; no start_time needed.
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
+
+    traj = (
+        TrajectoryBuilder(get_fyst_site())
+        .with_config(
+            ConstantElScanConfig(
+                timestep=0.1,
+                az_start=120.0,
+                az_stop=180.0,
+                elevation=45.0,
+                az_speed=1.0,
+                az_accel=0.5,
+            )
+        )
+        .duration(3600.0)
+        .build()
+    )
 
     # Get only science samples (excludes turnarounds)
     science_data = traj.az[traj.science_mask]
@@ -122,11 +141,13 @@ Usage Examples
 
 **Absolute times**::
 
+    import dataclasses
+
     from astropy.time import Time
 
     from fyst_trajectories.trajectory_utils import get_absolute_times
 
-    trajectory.start_time = Time("2026-03-15T04:00:00", scale="utc")
+    trajectory = dataclasses.replace(trajectory, start_time=Time("2026-03-15T04:00:00", scale="utc"))
 
     abs_times = get_absolute_times(trajectory)
 
@@ -149,7 +170,7 @@ Usage Examples
 
 **Plot trajectory**::
 
-    from fyst_trajectories.trajectory_utils import plot_trajectory
+    from fyst_trajectories.visualization import plot_trajectory
 
     # Display interactive plot
     fig = plot_trajectory(trajectory, show=True)

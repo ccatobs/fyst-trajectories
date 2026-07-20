@@ -14,6 +14,10 @@ from fyst_trajectories.overhead.models import (
     TimelineBlock,
 )
 
+# Block durations come from a Time subtraction converted to seconds; 0.01 s
+# (10 ms) absorbs the float round-off in that conversion.
+_DURATION_TOL_SEC = 0.01
+
 
 class TestObservingPatch:
     """Tests for ObservingPatch dataclass."""
@@ -123,7 +127,7 @@ class TestTimelineBlock:
             elevation=50.0,
             scan_index=0,
         )
-        assert abs(block.duration - 300.0) < 0.01
+        assert abs(block.duration - 300.0) < _DURATION_TOL_SEC
 
     def test_invalid_block_type(self):
         t0 = Time("2026-06-15T02:00:00", scale="utc")
@@ -196,7 +200,7 @@ class TestTimelineBlockFactories:
         assert block.az_start == block.az_end == 120.0
         assert block.elevation == 45.0
         assert block.scan_index == 3
-        assert abs(block.duration - 180.0) < 0.01
+        assert abs(block.duration - 180.0) < _DURATION_TOL_SEC
         assert block.metadata == {"cal_type": "pointing_cal", "target": None}
 
     def test_calibration_factory_accepts_enum_and_target(self, site):
@@ -230,7 +234,7 @@ class TestTimelineBlockFactories:
         assert block.az_start == block.az_end == 10.0
         assert block.elevation == 20.0
         assert block.scan_index == 7
-        assert abs(block.duration - 60.0) < 0.01
+        assert abs(block.duration - 60.0) < _DURATION_TOL_SEC
 
     def test_slew_factory(self, site):
         t0 = self._t0()
@@ -250,7 +254,7 @@ class TestTimelineBlockFactories:
         assert block.az_start == 100.0
         assert block.az_end == 160.0
         assert block.elevation == 40.0
-        assert abs(block.duration - 25.0) < 0.01
+        assert abs(block.duration - 25.0) < _DURATION_TOL_SEC
 
     def test_science_factory(self, site):
         t0 = self._t0()
@@ -306,7 +310,7 @@ class TestTimelineBlockFactories:
         assert block.scan_type == "retune"
         assert block.az_start == 100.0
         assert block.az_end == 160.0
-        assert abs(block.duration - 5.0) < 0.01
+        assert abs(block.duration - 5.0) < _DURATION_TOL_SEC
 
     def test_calibration_factory_source_ces_kwargs(self, site):
         """The optional source-CES kwargs are honored and recorded in metadata."""
@@ -523,6 +527,7 @@ class TestObservingTimeline:
             calibration_policy=CalibrationPolicy(),
         )
         assert tl.n_science_scans == 1
+        # efficiency is a dimensionless science/total ratio; 0.01 = one percentage point.
         assert abs(tl.efficiency - 0.5) < 0.01
 
     def test_validate_clean(self, site):

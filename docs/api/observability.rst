@@ -1,14 +1,14 @@
 Observability Reporting
 =======================
 
-The observability module answers a single operational question — *"which of
-these targets can we observe now (or over the next* N *hours), and why not?"* —
+The observability module answers a single operational question, *"which of
+these targets can we observe now (or over the next* N *hours), and why not?"*,
 for a list of solar-system flux calibrators. It is the **assess-only** sibling
 of the trajectory builders
 (:class:`~fyst_trajectories.patterns.PlanetTrackPattern`, ``plan_*_scan``):
 :func:`~fyst_trajectories.observability.check_observability` returns a per-target
 :class:`~fyst_trajectories.observability.ObservabilityReport`, never builds a
-trajectory, and **never raises** for an unobservable target — the reason is
+trajectory, and **never raises** for an unobservable target: the reason is
 reported, not excepted.
 
 It is importable in isolation: it depends only on
@@ -17,13 +17,13 @@ It is importable in isolation: it depends only on
 
 Two physically distinct kinds of avoidance are kept structurally separate:
 
-- **Sun** — always-on thermal/hardware safety, read from
+- **Sun**: always-on thermal/hardware safety, read from
   ``site.sun_avoidance`` (45° by default). Reported in the dedicated
   ``sun_separation_deg`` / ``sun_clear`` fields with a
   :attr:`~fyst_trajectories.observability.ReasonCode.SUN_TOO_CLOSE` reason. It is
   never an :class:`~fyst_trajectories.observability.AvoidZone` and cannot be
   weakened via the ``avoid`` list.
-- **Bright-source contamination** — caller-specified, variable, per-body
+- **Bright-source contamination**: caller-specified, variable, per-body
   exclusion zones (the Moon, Jupiter, …). Reported as
   :class:`~fyst_trajectories.observability.AvoidSeparation` entries with an
   :attr:`~fyst_trajectories.observability.ReasonCode.AVOID_TOO_CLOSE` reason.
@@ -34,7 +34,7 @@ Two physically distinct kinds of avoidance are kept structurally separate:
 .. note::
 
    The orchestration that turns ``schedule(OBSERVE=[...], AVOID=[...])`` into
-   selected, sequenced observing blocks lives **one layer up** — in the
+   selected, sequenced observing blocks lives **one layer up**, in the
    scheduling layer, not here. This module supplies the stateless
    observability primitive that the scheduler calls; it does not select,
    sequence, or trim blocks.
@@ -43,11 +43,18 @@ Two physically distinct kinds of avoidance are kept structurally separate:
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: FLUX_CALIBRATORS
+
+Data Catalogs
+-------------
+
+.. autodata:: fyst_trajectories.observability.FLUX_CALIBRATORS
+   :no-value:
 
 Usage Examples
 --------------
 
-**Instant verdict** (``horizon_hours=0``, the default — evaluate at one time)::
+**Instant verdict** (``horizon_hours=0``, the default, evaluate at one time)::
 
     from astropy.time import Time
 
@@ -99,7 +106,7 @@ up/down/sun-safe verdict and is flagged on the report::
 
 .. note::
 
-   Visibility (*is Titan up and sun-safe?*) needs **no** ephemeris kernel — the
+   Visibility (*is Titan up and sun-safe?*) needs **no** ephemeris kernel: the
    Saturn proxy is computed from astropy's built-in ephemeris and works offline.
    Arcsecond-accurate **tracking** (pointing at Titan) is a separate concern
    handled by :class:`~fyst_trajectories.patterns.SatelliteTrackConfig`, which

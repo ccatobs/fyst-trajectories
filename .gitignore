@@ -1,3 +1,12 @@
+# Planning and review docs (kept locally, not shipped)
+docs/reviews/
+
+# Doc-example artifacts written to the repo root when snippets are run by hand.
+# The doc-example test writes these into a tmp dir; these root copies are never committed.
+/coverage_map.png
+/trajectory.png
+/retunes.csv
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -194,6 +203,7 @@ cython_debug/
 
 # Ephemeris files (downloaded by Skyfield for tests)
 *.bsp
+# ...but the small vendored SPK excerpts ARE tracked test fixtures
 !tests/data/titan_excerpt.bsp
 !tests/data/de421_excerpt.bsp
 

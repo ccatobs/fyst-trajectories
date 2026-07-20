@@ -22,18 +22,19 @@ Optional dependencies
 The minimal install pulls only the core runtime dependencies (astropy,
 numpy, pyyaml, scipy). The following extras are available for opt-in features:
 
-- ``plotting`` — adds ``matplotlib``; required by
-  :mod:`fyst_trajectories.plotting` (``plot_trajectory``, ``plot_hit_map``).
-- ``performance`` — adds ``numba`` for JIT-compiled hot paths.
-- ``ephemeris`` — adds ``jplephem`` for high-precision solar-system body
+- ``plotting`` - adds ``matplotlib``; required by
+  :mod:`fyst_trajectories.visualization` (``plot_trajectory``,
+  ``plot_hit_map``, ``plot_timeline_gantt``, ``plot_sky_coverage``).
+- ``performance`` - adds ``numba`` for JIT-compiled hot paths.
+- ``ephemeris`` - adds ``jplephem`` for high-precision solar-system body
   positions.
-- ``overhead`` — adds ``healpy`` for hit-map accumulation in
+- ``overhead`` - adds ``healpy`` for hit-map accumulation in
   :func:`fyst_trajectories.overhead.accumulate_hitmaps`.
-- ``docs`` — adds Sphinx and the rendering extensions used to build
+- ``docs`` - adds Sphinx and the rendering extensions used to build
   this site.
-- ``dev`` — superset of testing and development tools (pytest,
+- ``dev`` - superset of testing and development tools (pytest,
   pytest-cov, hypothesis, ruff, pre-commit, skyfield, numba).
-- ``all`` — installs every extra above.
+- ``all`` - installs every extra above.
 
 Install one or more by passing them to ``pip``::
 

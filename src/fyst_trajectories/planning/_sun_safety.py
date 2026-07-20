@@ -25,6 +25,7 @@ def _check_field_sun_safety(
     start_time: Time,
     site: Site,
     sun_safe: SunSafePredicate | None = None,
+    stacklevel_offset: int = 0,
 ) -> None:
     """Quick pre-flight check that a field center is not near the sun.
 
@@ -52,6 +53,11 @@ def _check_field_sun_safety(
         predicate is injected it is consulted in place of the scalar check, so
         the directional sun-avoidance model (future shared library) is honored
         end-to-end. See :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
+    stacklevel_offset : int, optional
+        Added to the base ``stacklevel=2`` of the emitted warning so a wrapper
+        that calls this check one frame deeper (for example
+        :func:`_check_altaz_center_sun_safety`) still attributes the warning to
+        the originating planner module. Default is 0, which direct callers use.
 
     Warns
     -----
@@ -72,7 +78,7 @@ def _check_field_sun_safety(
                 f"(exclusion radius: {site.sun_avoidance.exclusion_radius}\u00b0) "
                 f"at {start_time.iso}. The telescope hardware may refuse this trajectory.",
                 PointingWarning,
-                stacklevel=2,
+                stacklevel=2 + stacklevel_offset,
             )
     elif not sun_safe(float(az), float(el), start_time):
         warnings.warn(
@@ -80,5 +86,53 @@ def _check_field_sun_safety(
             f"el={float(el):.1f}\u00b0) is inside the Sun avoidance zone at "
             f"{start_time.iso}. The telescope hardware may refuse this trajectory.",
             PointingWarning,
-            stacklevel=2,
+            stacklevel=2 + stacklevel_offset,
         )
+
+
+def _check_altaz_center_sun_safety(
+    *,
+    site: Site,
+    az_center: float,
+    el_center: float,
+    start_time: Time,
+    sun_safe: SunSafePredicate | None = None,
+) -> None:
+    """Sun-safety pre-flight for a fixed AltAz-center scan.
+
+    The AltAz planners fix a horizon-frame center, but the shared field
+    check works in RA/Dec, so convert the center to RA/Dec at ``start_time``
+    and defer to :func:`_check_field_sun_safety`. Passing
+    ``stacklevel_offset=1`` keeps any warning attributed to the calling
+    planner module, matching the celestial planners' direct calls.
+
+    Parameters
+    ----------
+    site : Site
+        Site configuration with sun avoidance settings.
+    az_center, el_center : float
+        Azimuth and elevation of the fixed pattern center in degrees.
+    start_time : Time
+        Observation start time.
+    sun_safe : SunSafePredicate, optional
+        Forwarded to :func:`_check_field_sun_safety`; see that function.
+
+    Warns
+    -----
+    PointingWarning
+        If the converted center is within the sun exclusion radius (default)
+        or the injected ``sun_safe`` predicate reports it unsafe.
+    """
+    # Sun-safety pre-flight works in RA/Dec (like the other planners), so
+    # convert the fixed AltAz center to RA/Dec at the start time. Vacuum
+    # (default) Coordinates matches the geometry the trajectory is built in.
+    coords = Coordinates(site)
+    ra_center, dec_center = coords.altaz_to_radec(az_center, el_center, start_time)
+    _check_field_sun_safety(
+        float(ra_center),
+        float(dec_center),
+        start_time,
+        site,
+        sun_safe=sun_safe,
+        stacklevel_offset=1,
+    )

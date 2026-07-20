@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fyst-trajectories"
-version = "0.5.1"
+dynamic = ["version"]
 description = "Coordinate transformation and trajectory generation for FYST telescope"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "astropy>=5.0",
@@ -51,6 +52,7 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.9",
     "skyfield>=1.45",
+    "jplephem>=2.18",
     "hypothesis>=6.0",
     "pre-commit>=3.0",
 ]
@@ -63,6 +65,9 @@ Homepage = "https://github.com/ccatobs/fyst-trajectories"
 Documentation = "https://fyst-trajectories.readthedocs.io/"
 Repository = "https://github.com/ccatobs/fyst-trajectories"
 "Bug Tracker" = "https://github.com/ccatobs/fyst-trajectories/issues"
+
+[tool.hatch.version]
+path = "src/fyst_trajectories/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fyst_trajectories"]

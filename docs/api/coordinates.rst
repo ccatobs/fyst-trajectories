@@ -13,6 +13,17 @@ checks) where the output is NOT sent to the ACU.
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: SOLAR_SYSTEM_BODIES, SATELLITE_BODIES, FRAME_ALIASES
+
+Data Catalogs
+-------------
+
+.. autodata:: fyst_trajectories.coordinates.SOLAR_SYSTEM_BODIES
+
+.. autodata:: fyst_trajectories.coordinates.SATELLITE_BODIES
+
+.. autodata:: fyst_trajectories.coordinates.FRAME_ALIASES
+   :no-value:
 
 Frame Aliases
 -------------

@@ -187,6 +187,13 @@ class SourceCESComputedParams(TypedDict):
 
 # Umbrella alias used by :attr:`ScanBlock.computed_params`. The concrete
 # dict shape depends on which ``plan_*`` function produced the block.
+#
+# Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
+# section in docs/overhead_integration.rst). This union has 6 members and
+# INCLUDES ``SourceCESComputedParams``. Its mirror-inverted partner is the
+# overhead-side ``ScanParamsDict`` union (overhead/models.py), which has 3
+# members and EXCLUDES the source-CES schema. Each union tracks a TypedDict
+# attribute annotation; the inversion is by design and must not be equalized.
 ComputedParams = (
     PongComputedParams
     | PongAltAzComputedParams
@@ -450,6 +457,13 @@ class ScanBlock:
 # entry here AND wire it through
 # ``overhead/simulation.py:_generate_trajectory_for_block`` AND
 # ``overhead/models.py:ObservingPatch``.
+#
+# Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
+# section in docs/overhead_integration.rst). This table has 5 keys and
+# EXCLUDES ``source_ces``. Its mirror-inverted partner is the overhead-side
+# ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS`` (overhead/models.py), which has 4 keys
+# and INCLUDES ``source_ces``. Each table tracks a runtime validator's call
+# sites; the inversion is by design and must not be equalized.
 _SCAN_TYPE_TO_KEYS: dict[str, frozenset[str]] = {
     "pong": PongComputedParams.__required_keys__,
     "pong_altaz": PongAltAzComputedParams.__required_keys__,
@@ -485,6 +499,15 @@ def validate_computed_params(params: Mapping[str, object], scan_type: str) -> No
         If ``scan_type`` is unknown or ``params`` is missing any key
         required by that scan type.
     """
+    if scan_type == "source_ces":
+        raise KeyError(
+            "source_ces computed_params are not validated by "
+            "validate_computed_params; plan_source_ces self-checks its return "
+            "against SourceCESComputedParams.__required_keys__, and overhead "
+            "source-CES scan_params validate via "
+            "fyst_trajectories.overhead.validate_scan_params. This validator "
+            f"accepts only {sorted(_SCAN_TYPE_TO_KEYS)}."
+        )
     if scan_type not in _SCAN_TYPE_TO_KEYS:
         raise KeyError(
             f"Unknown scan_type {scan_type!r}; expected one of {sorted(_SCAN_TYPE_TO_KEYS)}"

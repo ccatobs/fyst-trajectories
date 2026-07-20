@@ -253,6 +253,22 @@ class TestCEGeometryWrapHandling:
         assert duration > 0
         assert duration < 30 * 60  # 30 min; true value ~10 min for 3 deg width
 
+    def test_compute_ce_duration_rejects_non_positive_step(self, site):
+        """``_compute_ce_duration`` rejects a non-positive ``step_seconds``."""
+        coords = Coordinates(site)
+        field = FieldRegion(ra_center=1.0, dec_center=-25.0, width=3.0, height=3.0)
+        base_time = Time("2026-09-15T00:00:00", scale="utc")
+        with pytest.raises(ValueError, match="step_seconds must be positive"):
+            _compute_ce_duration(
+                field,
+                angle=0.0,
+                elevation=40.0,
+                coords_obj=coords,
+                base_search_time=base_time,
+                rising=True,
+                step_seconds=0,
+            )
+
     def test_north_transit_planning_succeeds(self, site):
         """End-to-end: ``plan_constant_el_scan`` works for a north-transiting source.
 
@@ -702,6 +718,7 @@ class TestPlanConstantElLsaWindow:
             coords_obj=coords,
             base_search_time=base_time,
         )
+        # 60 deg LSA window / 15 deg per hr = 4 h = 14400 s exactly; abs=1e-6 s absorbs round-off.
         assert duration == pytest.approx(4.0 * 3600.0, abs=1e-6)
         # The crossing of LST = 0.0001 deg lies just past the wrap.
         lst_at_start = coords.get_lst(t_start)
@@ -941,6 +958,7 @@ class TestPlanConstantElLsaWindow:
             coords_obj=coords,
             base_search_time=base_time,
         )
+        # 60 deg LSA window / 15 deg per hr = 4 h = 14400 s exactly; abs=1e-6 s absorbs round-off.
         assert duration == pytest.approx(4.0 * 3600.0, abs=1e-6)
         lst_at_start = coords.get_lst(t_start)
         diff = (lst_at_start - 0.0 + 180.0) % 360.0 - 180.0

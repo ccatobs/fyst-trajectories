@@ -45,6 +45,12 @@ from fyst_trajectories.planning._types import _SCAN_TYPE_TO_KEYS
 _JUPITER_NIGHT = Time("2026-03-15T00:00:00", scale="utc")
 _FULL_PRIMECAM_MODULES = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
 
+# Tolerance for the "anchored pass starts near the anchor" assertions. The
+# derivation leads by _ANCHOR_START_LEAD_DEG of elevation, which at the minimum
+# permitted drift rate crosses in _ANCHOR_START_LEAD_DEG / _MIN_ANCHOR_EL_DRIFT_DEG_S
+# = 60 s; doubled to cover crossing-solver slack.
+_ANCHOR_START_TOL_SEC = 120.0
+
 
 def _full_primecam_block(site, **overrides):
     """Build a full-PrimeCam Jupiter-rising CES block (test convenience)."""
@@ -1657,7 +1663,9 @@ def test_anchored_plan_source_ces_rising(site):
     delta = (t0 - anchor).to_value(u.s)
     # Anchor, not literal start: t0 lands at or just after the anchor.
     assert delta >= -1e-6, f"t0 must be >= anchor, got {delta:+.3f}s"
-    assert delta <= 120.0, f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
+    assert delta <= _ANCHOR_START_TOL_SEC, (
+        f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
+    )
 
     el_limits = site.telescope_limits.elevation
     assert el_limits.min <= cp["el_bore"] <= el_limits.max
@@ -1675,7 +1683,9 @@ def test_anchored_plan_source_ces_setting(site):
     assert cp["mode"] == "setting"
     delta = (Time(cp["t0_iso"]) - anchor).to_value(u.s)
     assert delta >= -1e-6, f"t0 must be >= anchor, got {delta:+.3f}s"
-    assert delta <= 120.0, f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
+    assert delta <= _ANCHOR_START_TOL_SEC, (
+        f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
+    )
 
 
 def test_anchored_explicit_el_bore_is_forward_search(site):
@@ -1742,7 +1752,9 @@ def test_anchored_passes_first_pass_near_anchor(site):
     # The first pass in time is anchored; later passes follow.
     delta0 = (Time(blocks[0].computed_params["t0_iso"]) - anchor).to_value(u.s)
     assert delta0 >= -1e-6, f"first pass t0 must be >= anchor, got {delta0:+.3f}s"
-    assert delta0 <= 120.0, f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
+    assert delta0 <= _ANCHOR_START_TOL_SEC, (
+        f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
+    )
 
     # Blocks time-ordered by start, with intact per-pass metadata.
     starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
@@ -1805,7 +1817,9 @@ def test_anchored_passes_first_pass_near_anchor_setting(site):
     # The first pass in time is anchored.
     delta0 = (Time(blocks[0].computed_params["t0_iso"]) - anchor).to_value(u.s)
     assert delta0 >= -1e-6, f"first pass t0 must be >= anchor, got {delta0:+.3f}s"
-    assert delta0 <= 120.0, f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
+    assert delta0 <= _ANCHOR_START_TOL_SEC, (
+        f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
+    )
 
     # Blocks time-ordered with intact per-pass metadata.
     starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
@@ -1843,3 +1857,18 @@ def test_anchored_below_elevation_floor_raises_target_not_observable(site):
     assert f"{float(el[idx[0]]):.2f}" in msg
     # The kernel's original bounds rejection is preserved for structured access.
     assert isinstance(excinfo.value.__cause__, ElevationBoundsError)
+
+
+class TestNumericParameterGuards:
+    """The shared source-CES core rejects non-positive algorithm parameters."""
+
+    @pytest.mark.parametrize("bad", [0, -30])
+    def test_non_positive_sampling_step_raises(self, site, bad):
+        with pytest.raises(ValueError, match="sampling_step_seconds must be positive"):
+            _full_primecam_block(site, sampling_step_seconds=bad)
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_non_positive_az_accel_raises(self, site, bad):
+        # az_accel=-1 previously returned a silently wrong duration instead of raising.
+        with pytest.raises(ValueError, match="az_accel must be positive"):
+            _full_primecam_block(site, az_accel=bad)

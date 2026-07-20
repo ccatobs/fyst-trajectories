@@ -167,6 +167,83 @@ class TestReadTimeline:
         assert scan_types == ["retune", "pong", "retune"]
 
 
+class TestTimelineWindowRoundTrip:
+    """The declared timeline window (start_time/end_time) survives a round-trip."""
+
+    def _padded_timeline(self):
+        """Build a timeline whose window pads past the block extents on both ends.
+
+        A single one-hour science block sits in the middle of a two-hour
+        declared window with idle-free padding at each edge, so ``total_time``
+        (and thus ``efficiency``) depends on the persisted window rather than
+        the block extents.
+        """
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        blocks = [
+            TimelineBlock(
+                t_start=t0 + TimeDelta(1800, format="sec"),
+                t_stop=t0 + TimeDelta(5400, format="sec"),
+                block_type="science",
+                patch_name="deep_field",
+                az_start=120.0,
+                az_end=240.0,
+                elevation=50.0,
+                scan_index=0,
+                rising=True,
+                scan_type="pong",
+                metadata={
+                    "ra_center": 180.0,
+                    "dec_center": -30.0,
+                    "width": 4.0,
+                    "height": 4.0,
+                    "velocity": 0.5,
+                    "scan_params": {},
+                },
+            ),
+        ]
+        return ObservingTimeline(
+            blocks=blocks,
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(7200, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+
+    def test_window_and_efficiency_survive_round_trip(self, tmp_path):
+        timeline = self._padded_timeline()
+        assert timeline.total_time == pytest.approx(7200.0)
+        assert timeline.efficiency == pytest.approx(0.5)
+
+        path = tmp_path / "padded.ecsv"
+        write_timeline(timeline, path)
+        loaded = read_timeline(path)
+
+        assert loaded.start_time.unix == pytest.approx(timeline.start_time.unix, abs=1e-3)
+        assert loaded.end_time.unix == pytest.approx(timeline.end_time.unix, abs=1e-3)
+        assert loaded.total_time == pytest.approx(7200.0, abs=1.0)
+        assert loaded.efficiency == pytest.approx(0.5, abs=1e-3)
+
+    def test_older_file_falls_back_to_block_extents(self, tmp_path):
+        timeline = self._padded_timeline()
+        path = tmp_path / "padded.ecsv"
+        write_timeline(timeline, path)
+
+        # Simulate an older file written before the window keys existed by
+        # stripping them from the table metadata.
+        table = Table.read(str(path), format="ascii.ecsv")
+        del table.meta["timeline_start_time"]
+        del table.meta["timeline_end_time"]
+        legacy_path = tmp_path / "legacy.ecsv"
+        table.write(str(legacy_path), format="ascii.ecsv", overwrite=True)
+
+        loaded = read_timeline(legacy_path)
+        # The window collapses onto the block extents: the one-hour block span.
+        assert loaded.total_time == pytest.approx(3600.0, abs=1.0)
+        assert loaded.efficiency == pytest.approx(1.0, abs=1e-3)
+
+
 class TestCanonicalColumnNames:
     """F-2: verify write_timeline produces TOAST canonical column names."""
 

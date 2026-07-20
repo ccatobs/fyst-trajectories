@@ -109,7 +109,7 @@ class RetuneEvent:
             raise ValueError(f"duration must be positive, got {self.duration}")
 
 
-@dataclass
+@dataclass(frozen=True)
 class Trajectory:
     """Container for a telescope trajectory.
 
@@ -166,6 +166,14 @@ class Trajectory:
         Center RA from metadata, if available.
     center_dec : float or None
         Center Dec from metadata, if available.
+
+    Notes
+    -----
+    Instances are immutable: the dataclass is ``frozen=True``, so rebinding a
+    field (for example ``trajectory.az = new_array``) raises
+    :class:`dataclasses.FrozenInstanceError`. Derive a modified copy with
+    :func:`dataclasses.replace` instead. Freezing prevents field rebinding
+    only; the contents of the stored NumPy arrays are not made read-only.
     """
 
     times: np.ndarray
@@ -200,12 +208,12 @@ class Trajectory:
                     f"Array length mismatch: times has {n} elements "
                     f"but scan_flag has {len(self.scan_flag)}"
                 )
-            # Coerce scan_flag to int8; downstream code indexes with the
-            # SCAN_FLAG_* constants, which are int, and the ECSV writer
-            # expects a fixed dtype. Assignment on the non-frozen dataclass
-            # is safe.
+            # Coerce scan_flag to int8; downstream indexes with the int-valued
+            # SCAN_FLAG_* constants and the ECSV writer expects a fixed dtype.
+            # object.__setattr__ performs the one-time canonicalisation under
+            # frozen=True (the sibling value types coerce the same way).
             if self.scan_flag.dtype != np.int8:
-                self.scan_flag = np.asarray(self.scan_flag, dtype=np.int8)
+                object.__setattr__(self, "scan_flag", np.asarray(self.scan_flag, dtype=np.int8))
         for name, arr in [
             ("times", self.times),
             ("az", self.az),

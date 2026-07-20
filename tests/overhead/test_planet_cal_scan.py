@@ -187,6 +187,7 @@ def _assert_reconstruction_faithful(block, scan_block, site, *, atol=1e-3):
     w1 = Time(sp["window"][1], scale="utc")
     rebuilt_t0 = Time(scan_block.computed_params["t0_iso"], scale="utc")
     rebuilt_t1 = Time(scan_block.computed_params["t1_iso"], scale="utc")
+    # 2.0 s absorbs the coarse crossing-search sampling step (seconds) of the re-solve.
     assert abs((rebuilt_t0 - w0).sec) <= 2.0
     assert abs((rebuilt_t1 - w1).sec) <= 2.0
 
@@ -222,6 +223,8 @@ class TestPlanetCalScanEmit:
         # The first block starts exactly at the pre-cal clock; the blocks
         # then tile with no gaps (each t_stop is the next t_start).
         assert blocks[0].t_start.unix == anchor.unix
+        # Tiling holds to 1e-6 s: each t_stop is constructed as the next t_start, so
+        # unix-second float round-off is the only gap (same tolerance elsewhere in this file).
         for a, b in zip(blocks, blocks[1:]):
             assert abs(a.t_stop.unix - b.t_start.unix) < 1e-6
 
@@ -265,6 +268,12 @@ class TestPlanetCalScanEmit:
             # and inter-pass repointing fold into the block).
             assert Time(meta["t0_scan"]).unix >= block.t_start.unix - 1e-6
 
+        # The three passes tile module-c in eta on a [-1, 0, +1] x (extent/3) grid,
+        # where extent is the footprint eta span (1.2974 deg), so the step is ~0.4325 deg.
+        eta_offsets = [b.metadata["scan_params"]["eta_offset_deg"] for b in blocks]
+        # abs=1e-3 deg: milli-degree tolerance on the geometric eta offsets.
+        assert eta_offsets == pytest.approx([-0.4325, 0.0, 0.4325], abs=1e-3)
+
     def test_el_bore_steps_monotonically_with_mode(self):
         anchor = Time(_ANCHOR, scale="utc")
         ctx = _ctx(_scan_policy(planet_cal_passes=3))
@@ -283,6 +292,11 @@ class TestPlanetCalScanEmit:
         el_bores = [b.elevation for b in blocks]
         assert el_bores == sorted(el_bores)
         assert all(a < b for a, b in zip(el_bores, el_bores[1:]))
+        # Each pass steps el_bore by the full footprint eta extent (1.2974 deg),
+        # so consecutive passes tile the source in elevation with no overlap or gap.
+        deltas = [b - a for a, b in zip(el_bores, el_bores[1:])]
+        # abs=1e-3 deg: milli-degree tolerance on the geometric el_bore steps.
+        assert deltas == pytest.approx([1.2974, 1.2974], abs=1e-3)
 
     def test_setting_planet_steps_el_bore_down(self):
         """A setting anchor produces a descending, contiguous setting sequence.
@@ -345,6 +359,7 @@ class TestPlanetCalScanEmit:
         # Blocks tile [anchor, last t_stop] with no holes.
         span = (blocks[-1].t_stop - anchor).sec
         block_total = sum(b.duration for b in blocks)
+        # 1e-3 s: durations sum to the span to within milli-second round-off (seconds).
         assert abs(block_total - span) < 1e-3
         assert timeline.validate() == []
 

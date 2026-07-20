@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
+from ..exceptions import PointingWarning
 from ..offsets import apply_detector_offset
 from ..site import AtmosphericConditions, Site
 from ..trajectory import Trajectory
@@ -367,6 +368,7 @@ class TrajectoryBuilder:
             if self._ra is not None or self._dec is not None:
                 warnings.warn(
                     f"ra/dec values are ignored for {pattern_cls.__name__} (AltAz pattern)",
+                    PointingWarning,
                     stacklevel=2,
                 )
 

@@ -437,14 +437,14 @@ class TestFYSTConstants:
         assert FYST_AZ_MIN == -180.0
         assert FYST_AZ_MAX == 360.0
         assert FYST_AZ_MAX_VELOCITY == 3.0
-        assert FYST_AZ_MAX_ACCELERATION == 1.0
+        assert FYST_AZ_MAX_ACCELERATION == 1.5
 
     def test_tier2_elevation_limits(self):
         """Test Tier 2 elevation mechanical limits match FYST TCS commands.go."""
         assert FYST_EL_MIN == 20.0
         assert FYST_EL_MAX == 90.0
         assert FYST_EL_MAX_VELOCITY == 1.0
-        assert FYST_EL_MAX_ACCELERATION == 0.5
+        assert FYST_EL_MAX_ACCELERATION == 0.75
 
     def test_tier3_sun_avoidance_defaults(self):
         """Test Tier 3 operational defaults."""

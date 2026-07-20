@@ -5,10 +5,12 @@ Trajectory generation for the FYST (Fred Young Submillimeter
 Telescope).  Wraps astropy with FYST-specific site coordinates, telescope
 limits, and scan pattern generators.
 
-This release adds AltAz-native Pong and Daisy planners (a fixed
-horizon-frame center, no RA/Dec tracking) and an ``lsa_window`` option on
-constant-elevation planning that pins timing to a Local Sidereal Angle
-window. See :doc:`planning`.
+This release adds multi-pass source-CES sequences
+(``plan_source_ces_passes``) that step the focal plane across a source in
+elevation for complete calibration coverage, ``start_time`` anchoring on the
+source-CES planners, opt-in planet calibrations run as real source-CES scans
+in the overhead simulator (reconstructible from the saved timeline), and
+night-level visualization figures. See :doc:`planning`.
 
 Scope and boundaries
 --------------------
@@ -21,11 +23,14 @@ estimates. A few concerns deliberately live outside its scope:
 - **PWV / atmospheric opacity** affects sky brightness and absolute
   flux calibration but does not affect trajectory geometry; opacity
   modelling lives downstream in the calibration pipeline / sky model.
-- **Hard interlocks** (sun, elevation, scan-velocity limits) are the
-  TCS's responsibility. This library emits ``PointingWarning`` when a
-  trajectory approaches the configured envelopes but never refuses to
-  generate; downstream consumers must enforce the actual hardware
-  limits.
+- **Hard interlocks** are enforced downstream by the TCS at execution
+  time. The library's own checks split two ways: elevation and azimuth
+  position bounds *raise* (``ElevationBoundsError``,
+  ``TargetNotObservableError``) and refuse to return an out-of-bounds
+  trajectory, while dynamics (scan velocity, acceleration) and Sun
+  proximity are advisory only, emitting ``PointingWarning`` without
+  refusing to generate. Downstream consumers must still enforce the
+  actual hardware limits.
 
 .. toctree::
    :maxdepth: 2
@@ -74,7 +79,7 @@ use.
      - 3.0 / 1.0 deg/s
      - ``get_fyst_site()`` kwargs
    * - Az/El acceleration limits
-     - 1.0 / 0.5 deg/s²
+     - 1.5 / 0.75 deg/s²
      - ``get_fyst_site()`` kwargs
    * - Plate scale
      - 13.89 arcsec/mm

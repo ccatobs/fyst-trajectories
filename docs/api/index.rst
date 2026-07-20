@@ -13,11 +13,10 @@ API Reference
    planning
    dispatch
    observability
-   plotting
+   visualization
    exceptions
    overhead_models
    overhead_timeline
    overhead_scheduler
    overhead_simulation
    overhead_io
-   overhead_plotting

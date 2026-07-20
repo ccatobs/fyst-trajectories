@@ -9,7 +9,7 @@ Utilities for handling detector offsets from telescope boresight.
    :no-index:
 
 .. automodule:: fyst_trajectories.primecam
-   :members: resolve_offset, resolve_module_tag, get_primecam_offset, PRIMECAM_MODULES, INNER_RING_RADIUS_MM
+   :members: resolve_offset, resolve_module_tag, get_primecam_offset, primecam_geometry_dict, PRIMECAM_MODULES, INNER_RING_RADIUS_MM
    :undoc-members:
    :no-index:
 
@@ -90,6 +90,8 @@ PrimeCam Modules
 
    Dictionary mapping module names to InstrumentOffset objects.
    Keys: ``"c"``, ``"center"``, ``"i1"`` through ``"i6"``.
+
+.. autodata:: fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG
 
 Offset Calculation
 ------------------

@@ -39,27 +39,25 @@ Common Operations
 
 **Absolute times**::
 
+    import dataclasses
+
     from astropy.time import Time
 
     from fyst_trajectories.trajectory_utils import get_absolute_times
 
-    trajectory.start_time = Time("2026-03-15T04:00:00", scale="utc")
+    trajectory = dataclasses.replace(trajectory, start_time=Time("2026-03-15T04:00:00", scale="utc"))
     abs_times = get_absolute_times(trajectory)  # Returns Time array
 
-**Visualization**::
+**Formatted display**::
 
-    from fyst_trajectories.trajectory_utils import plot_trajectory, print_trajectory
+    from fyst_trajectories.trajectory_utils import print_trajectory
 
     # Print formatted table
     print_trajectory(trajectory)              # First 5 and last 5 points
     print_trajectory(trajectory, head=10)     # Customize display
 
-    # Plot 3-panel figure (Az vs Time, El vs Time, Sky Track)
-    fig = plot_trajectory(trajectory, show=True)
-
-    # Get figure without displaying
-    fig = plot_trajectory(trajectory, show=False)
-    fig.savefig("trajectory.png")
+Plotting lives in the :doc:`visualization subpackage <visualization>`
+(``fyst_trajectories.visualization.plot_trajectory``).
 
 Validation Functions
 --------------------
@@ -78,6 +76,9 @@ Low-level validation utilities:
         validate_trajectory_bounds,
         validate_trajectory_dynamics,
     )
+
+    az_array, el_array = trajectory.az, trajectory.el
+    times_array = trajectory.times
 
     # Check only position bounds (raises exception if out of range)
     validate_trajectory_bounds(site, az_array, el_array)

@@ -29,7 +29,14 @@ from ..models import (
     validate_scan_params,
 )
 from ..utils import estimate_slew_time
-from .helpers import _compute_az_range, _compute_scan_duration, _evaluate_patch, _normalize_az
+from .helpers import (
+    _CE_READY_SLEW_ALLOWANCE_SEC,
+    _ce_visit_plan,
+    _compute_az_range,
+    _compute_scan_duration,
+    _evaluate_patch,
+    _normalize_az,
+)
 from .state import SchedulerState
 
 if TYPE_CHECKING:
@@ -289,6 +296,52 @@ def _emit_planet_cal_passes(
     return True, blocks, new_state
 
 
+def _due_retune_spec(state: SchedulerState, ctx: SchedulerContext) -> CalibrationSpec | None:
+    """Return the retune's spec if one is due at the current time, else None.
+
+    With ``retune_cadence=0.0`` the tracker always reports one due; a
+    nonzero cadence reports one only once elapsed. Peeking the spec
+    separately from emitting lets :class:`ScienceScanPhase` verify a
+    minimum-duration subscan still fits after the retune BEFORE booking
+    it, so a visit never ends on a dangling retune.
+    """
+    needed = state.cal_state.needs_calibration(
+        state.current_time,
+        ctx.calibration_policy,
+        ctx.overhead_model,
+        coords=ctx.coords,
+    )
+    for spec in needed:
+        if spec.name == CalibrationType.RETUNE:
+            return spec
+    return None
+
+
+def _emit_retune_block(
+    state: SchedulerState,
+    ctx: SchedulerContext,
+    spec: CalibrationSpec,
+    az_start: float,
+    az_end: float,
+    el: float,
+) -> tuple[SchedulerState, TimelineBlock]:
+    """Emit one retune block at the current time and advance past it."""
+    block = TimelineBlock.retune(
+        t_start=state.current_time,
+        duration=spec.duration,
+        az_start=az_start,
+        az_end=az_end,
+        el=el,
+        site=ctx.site,
+        scan_index=state.scan_counter,
+    )
+    state = state.advanced(
+        cal_state=state.cal_state.update("retune", state.current_time),
+        current_time=state.current_time + TimeDelta(spec.duration, format="sec"),
+    )
+    return state, block
+
+
 class CalibrationPhase(Phase):
     """Emit any calibration blocks whose cadence has elapsed.
 
@@ -297,6 +350,13 @@ class CalibrationPhase(Phase):
     at ``state.current_time``. Emits each due calibration as a
     CALIBRATION block, updates the cadence tracker, and advances
     ``current_time`` past each block.
+
+    Exception: a scan-coupled retune (``retune_cadence == 0.0``, the
+    "every scan boundary" convention) is NOT emitted here after the
+    startup burst. This phase runs on every outer-loop iteration,
+    including idle ticks, and retuning a parked telescope every tick
+    serves nothing; scan-coupled retunes fire in
+    :class:`ScienceScanPhase` immediately before each subscan instead.
 
     Clamps each cal block's duration against the remaining schedule
     window so no block extends past ``ctx.end_time``. Stops early if
@@ -322,6 +382,17 @@ class CalibrationPhase(Phase):
         for cal_spec in needed_cals:
             if state.current_time.unix >= ctx.end_time.unix:
                 break
+
+            # Scan-coupled retunes (cadence 0) belong to ScienceScanPhase's
+            # subscan boundaries, not this per-tick path; only the startup
+            # burst (last_retune is None) fires one here so the night
+            # begins tuned.
+            if (
+                cal_spec.name == CalibrationType.RETUNE
+                and ctx.calibration_policy.retune_cadence == 0.0
+                and state.cal_state.last_retune is not None
+            ):
+                continue
 
             if (
                 cal_spec.name == CalibrationType.PLANET_CAL
@@ -396,6 +467,27 @@ class PatchSelectionPhase(Phase):
             if score > 0.0 and "rising" in patch.scan_params:
                 ha = ctx.coords.get_hour_angle(patch.ra_center, state.current_time)
                 if bool(patch.scan_params["rising"]) != (ha < 0.0):
+                    score = 0.0
+
+            # A constant-elevation patch is selectable only while a crossing
+            # pass is still plannable from now (the same forward solve
+            # plan_constant_el_scan runs at reconstruction). Without this
+            # gate the hour-angle default keeps the patch scoring until
+            # transit, hours after the pass's opening crossing, and every
+            # block emitted there is unreconstructable (2026-07-15 repro:
+            # 5 of 8 CE blocks lost).
+            if score > 0.0 and patch.scan_type == "constant_el":
+                gate_el = patch.elevation if patch.elevation is not None else el
+                plan = _ce_visit_plan(
+                    patch,
+                    gate_el,
+                    state.current_time,
+                    ctx.end_time,
+                    ctx.coords,
+                    ctx.ce_corridors,
+                    ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC,
+                )
+                if plan is None:
                     score = 0.0
 
             if score > best_score:
@@ -509,9 +601,13 @@ class ScienceScanPhase(Phase):
        scan: advance ``current_time`` by ``ctx.time_step`` and set
        ``skip_to_next_iter=True``.
     3. Otherwise split the scan into ``n_subscans`` (capped by
-       ``ctx.overhead_model.max_scan_duration``), compute the rising
-       flag from the hour angle, and compute the ordered-bounds
-       azimuth range ``(az_start, az_end)``.
+       ``ctx.overhead_model.max_scan_duration``). For constant-elevation
+       patches the rising flag and the visit anchor come from the
+       crossing pass chosen by :func:`_ce_visit_plan` (the anchor is
+       stamped on every subscan as ``metadata["t0_scan"]`` so each one
+       reconstructs); for other scan types the rising flag falls back
+       to the hour-angle sign. Compute the ordered-bounds azimuth range
+       ``(az_start, az_end)``.
     4. Emit subscans back-to-back via
        :meth:`_emit_subscans_with_retunes`, which injects a retune
        calibration block between subscans whenever the cadence tracker
@@ -538,7 +634,25 @@ class ScienceScanPhase(Phase):
             ctx.coords,
             ctx.overhead_model,
             best_el,
+            ce_cache=ctx.ce_corridors,
+            ce_ready_lead=ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC,
         )
+
+        ce_plan = None
+        if best_patch.scan_type == "constant_el":
+            gate_el = best_patch.elevation if best_patch.elevation is not None else best_el
+            # Cache-hit re-fetch of the pass _compute_scan_duration just
+            # solved with identical arguments, to obtain the chosen half
+            # and the visit anchor for stamping.
+            ce_plan = _ce_visit_plan(
+                best_patch,
+                gate_el,
+                state.current_time,
+                ctx.end_time,
+                ctx.coords,
+                ctx.ce_corridors,
+                ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC,
+            )
 
         if scan_duration < ctx.overhead_model.min_scan_duration:
             advance = min(ctx.time_step, (ctx.end_time - state.current_time).sec)
@@ -550,8 +664,13 @@ class ScienceScanPhase(Phase):
         n_subscans = max(1, math.ceil(scan_duration / ctx.overhead_model.max_scan_duration))
         subscan_duration = scan_duration / n_subscans
 
-        ha = ctx.coords.get_hour_angle(best_patch.ra_center, state.current_time)
-        rising = best_patch.scan_params.get("rising", ha < 0.0)
+        if ce_plan is not None:
+            rising = ce_plan[0]
+            t0_scan = state.current_time.isot
+        else:
+            ha = ctx.coords.get_hour_angle(best_patch.ra_center, state.current_time)
+            rising = best_patch.scan_params.get("rising", ha < 0.0)
+            t0_scan = None
 
         az_start_sci, az_end_sci = _compute_az_range(best_patch, best_az, best_el, ctx.site)
 
@@ -565,7 +684,20 @@ class ScienceScanPhase(Phase):
             rising=rising,
             az_start_sci=az_start_sci,
             az_end_sci=az_end_sci,
+            t0_scan=t0_scan,
         )
+
+        if not sub_blocks:
+            # The room checks ended the visit before any block fit (for
+            # example a sliver window where the boundary retune plus a
+            # minimum-duration subscan no longer fit together); tick
+            # forward like the too-short-scan path so the outer loop
+            # cannot spin in place.
+            advance = min(ctx.time_step, (ctx.end_time - state.current_time).sec)
+            new_state = state.advanced(
+                current_time=state.current_time + TimeDelta(advance, format="sec"),
+            )
+            return PhaseResult(state=new_state, blocks=[], skip_to_next_iter=True)
 
         state = state.advanced(
             current_az=az_end_sci,
@@ -587,30 +719,43 @@ class ScienceScanPhase(Phase):
         rising: bool,
         az_start_sci: float,
         az_end_sci: float,
+        t0_scan: str | None = None,
     ) -> tuple[SchedulerState, list[TimelineBlock]]:
-        """Emit ``n_subscans`` science blocks with retunes between them.
+        """Emit ``n_subscans`` science blocks with retunes at scan boundaries.
 
-        Retune interleaving rule: after every subscan **except the last**,
-        query the cadence tracker for a retune; if one is due, emit a
-        CALIBRATION retune block and advance ``current_time`` by the
-        retune duration before starting the next subscan.
+        Retune rule: **before every subscan**, query the cadence tracker;
+        if a retune is due (always, under the cadence-0 "every scan
+        boundary" convention), emit it and advance ``current_time`` before
+        the subscan starts. A boundary retune is booked only when a
+        minimum-duration subscan still fits after it inside the schedule
+        window, so a visit can never end on a dangling retune or push one
+        past ``ctx.end_time``.
 
-        Note that retunes are only checked **between** subscans. A retune
-        that becomes due during the final subscan is not injected here;
-        it will be handled by the :class:`CalibrationPhase` on the next
-        outer-loop iteration.
-
-        Breaks early if the schedule window is exhausted mid-scan.
+        A retune that becomes due during the final subscan is not injected
+        here; the next visit's leading boundary (or, for nonzero cadences,
+        :class:`CalibrationPhase`) picks it up.
         """
         blocks: list[TimelineBlock] = []
 
+        if subscan_duration < ctx.overhead_model.min_scan_duration:
+            # Splitting produced sub-minimum slices; nothing can be emitted.
+            return state, blocks
+
         for sub_idx in range(n_subscans):
-            if state.current_time.unix >= ctx.end_time.unix:
+            remaining = (ctx.end_time - state.current_time).sec
+            retune_spec = _due_retune_spec(state, ctx)
+            retune_dur = retune_spec.duration if retune_spec is not None else 0.0
+            # The boundary retune plus a minimum-duration subscan must both
+            # fit inside the window; otherwise the visit ends here.
+            if remaining < retune_dur + ctx.overhead_model.min_scan_duration:
                 break
+            if retune_spec is not None:
+                state, retune_block = _emit_retune_block(
+                    state, ctx, retune_spec, az_start_sci, az_end_sci, best_el
+                )
+                blocks.append(retune_block)
 
             actual_duration = min(subscan_duration, (ctx.end_time - state.current_time).sec)
-            if actual_duration < ctx.overhead_model.min_scan_duration:
-                break
 
             sci_el = best_el if best_patch.elevation is None else best_patch.elevation
             science_block = TimelineBlock.science(
@@ -624,35 +769,11 @@ class ScienceScanPhase(Phase):
                 scan_index=state.scan_counter,
                 subscan_index=sub_idx,
                 rising=rising,
+                t0_scan=t0_scan,
             )
             blocks.append(science_block)
             state = state.advanced(
                 current_time=state.current_time + TimeDelta(actual_duration, format="sec"),
             )
-
-            if sub_idx < n_subscans - 1:
-                retune_needed = state.cal_state.needs_calibration(
-                    state.current_time,
-                    ctx.calibration_policy,
-                    ctx.overhead_model,
-                    coords=ctx.coords,
-                )
-                retune_specs = [c for c in retune_needed if c.name == "retune"]
-                if retune_specs:
-                    retune_dur = retune_specs[0].duration
-                    retune_block = TimelineBlock.retune(
-                        t_start=state.current_time,
-                        duration=retune_dur,
-                        az_start=az_start_sci,
-                        az_end=az_end_sci,
-                        el=best_el,
-                        site=ctx.site,
-                        scan_index=state.scan_counter,
-                    )
-                    blocks.append(retune_block)
-                    state = state.advanced(
-                        cal_state=state.cal_state.update("retune", state.current_time),
-                        current_time=state.current_time + TimeDelta(retune_dur, format="sec"),
-                    )
 
         return state, blocks

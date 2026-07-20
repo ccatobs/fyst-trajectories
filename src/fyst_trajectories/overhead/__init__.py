@@ -82,7 +82,6 @@ from .models import (
     validate_scan_params,
 )
 from .overhead import CalibrationState
-from .plotting import plot_sky_coverage, plot_timeline_gantt
 from .simulation import (
     accumulate_hitmaps,
     compute_budget,
@@ -129,8 +128,6 @@ __all__ = [
     "get_max_elevation",
     "get_observable_windows",
     "get_transit_time",
-    "plot_sky_coverage",
-    "plot_timeline_gantt",
     "read_timeline",
     "schedule_to_trajectories",
     "validate_scan_params",

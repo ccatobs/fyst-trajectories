@@ -187,6 +187,13 @@ def write_timeline(
     for _deg_col in ("azmin", "azmax", "el", "boresight_angle"):
         table[_deg_col].unit = u.deg
 
+    # Persist the declared timeline window so total_time / efficiency survive
+    # a round-trip even when the blocks do not reach the window edges (a padded
+    # window would otherwise shrink to the block extents on read). Stored as ISO
+    # strings, mirroring the block time columns. Older files without these keys
+    # fall back to the block-extent derivation in ``read_timeline``.
+    table.meta["timeline_start_time"] = timeline.start_time.iso
+    table.meta["timeline_end_time"] = timeline.end_time.iso
     table.meta["site_name"] = timeline.site.name
     table.meta["site_description"] = timeline.site.description
     table.meta["telescope_name"] = timeline.site.name
@@ -417,7 +424,14 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
         )
         blocks.append(block)
 
-    if blocks:
+    # Prefer the persisted timeline window; fall back to the block extents for
+    # older files written before these keys existed (and for the empty case).
+    _meta_start = meta.get("timeline_start_time")
+    _meta_end = meta.get("timeline_end_time")
+    if _meta_start is not None and _meta_end is not None:
+        tl_start = Time(str(_meta_start), scale="utc")
+        tl_end = Time(str(_meta_end), scale="utc")
+    elif blocks:
         tl_start = min(b.t_start for b in blocks)
         tl_end = max(b.t_stop for b in blocks)
     else:
@@ -544,6 +558,8 @@ def _empty_row() -> dict:
 
 _KNOWN_META_KEYS = frozenset(
     {
+        "timeline_start_time",
+        "timeline_end_time",
         "site_name",
         "site_description",
         "telescope_name",

@@ -1,4 +1,4 @@
-"""Execute every code example in ``docs/*.rst`` so the published snippets cannot drift.
+"""Execute every code example under ``docs/`` (top level and ``api/``) so snippets cannot drift.
 
 The docs' Python snippets are reStructuredText literal blocks (a paragraph ending in
 ``::`` followed by an indented block) and ``.. code-block:: python`` directives. Sphinx
@@ -20,6 +20,9 @@ example configs) are expected and silenced. Outcome-value assertions live in
 ``test_doc_examples.py``, which this guard complements rather than replaces.
 """
 
+import contextlib
+import io
+import os
 import re
 import textwrap
 import warnings
@@ -30,6 +33,9 @@ from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
+
+# Force a headless matplotlib backend before any doc block imports it (plotting pages).
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
@@ -95,6 +101,27 @@ def _is_python(code):
         return False
 
 
+_VISUALIZATION_IMPORT_RE = re.compile(
+    r"from\s+fyst_trajectories\.visualization\s+import\s+([^\n]+)"
+)
+
+
+def _visualization_symbols(text):
+    """Names imported from ``fyst_trajectories.visualization`` anywhere on a page.
+
+    Lets the matplotlib gate act per block: without the ``plotting`` extra, a page's
+    plotting blocks are skipped while its non-plotting blocks still run, instead of
+    skipping the whole page just because it references the visualization subpackage.
+    """
+    names = set()
+    for match in _VISUALIZATION_IMPORT_RE.finditer(text):
+        for part in match.group(1).replace("(", "").replace(")", "").split(","):
+            name = part.strip().split(" as ")[-1].strip()
+            if name:
+                names.add(name)
+    return names
+
+
 # Blocks that are illustrative by design and must not be executed. Keyed by page;
 # each entry matches a substring of the block's first non-blank line and records why.
 _SKIP = {
@@ -114,6 +141,19 @@ _SKIP = {
     "trajectory_examples.rst": [
         ("# Inside ACUAgent", "agent-internal pseudo-code (undefined params/self)"),
         ("import requests", "live HTTP POST to a local TCS server"),
+    ],
+    "api/exceptions.rst": [
+        (
+            "import warnings",
+            "abbreviated plan_constant_el_scan(...) placeholder; illustrates the "
+            "PointingWarning-catch pattern",
+        ),
+    ],
+    "api/visualization.rst": [
+        (
+            "from fyst_trajectories.overhead import read_timeline",
+            "loads a user-provided ECSV timeline and renders it; illustrative I/O + plotting",
+        ),
     ],
 }
 
@@ -189,7 +229,10 @@ def _seed_namespace(tmp_path, trajectory, site):
     }
 
 
-@pytest.mark.parametrize("rst", sorted(DOCS.glob("*.rst")), ids=lambda p: p.name)
+_RST_PAGES = sorted(DOCS.glob("*.rst")) + sorted((DOCS / "api").glob("*.rst"))
+
+
+@pytest.mark.parametrize("rst", _RST_PAGES, ids=lambda p: p.relative_to(DOCS).as_posix())
 def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory):
     """Every Python code block on the page executes without error.
 
@@ -198,20 +241,38 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
     by-design-illustrative blocks in :data:`_SKIP` are not executed.
     """
     monkeypatch.chdir(tmp_path)
+    text = rst.read_text(encoding="utf-8")
+    key = rst.relative_to(DOCS).as_posix()
+    # matplotlib gates only the plotting blocks. Without the ``plotting`` extra we skip
+    # blocks that touch matplotlib or the plot functions per block, so the page's other
+    # blocks still run.
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        have_matplotlib = True
+    except ImportError:
+        have_matplotlib = False
+    visualization_symbols = _visualization_symbols(text)
     ns = _seed_namespace(tmp_path, _doc_seed_trajectory, get_fyst_site())
-    skips = _SKIP.get(rst.name, [])
-    for lineno, kind, code in _extract_blocks(rst.read_text(encoding="utf-8")):
+    skips = _SKIP.get(key, [])
+    for lineno, kind, code in _extract_blocks(text):
         if not code.strip() or not _is_python(code):
             continue
         first = next((ln for ln in code.splitlines() if ln.strip()), "")
         if any(sub in first for sub, _reason in skips):
             continue
+        if not have_matplotlib and (
+            "matplotlib" in code
+            or any(re.search(rf"\b{re.escape(name)}\b", code) for name in visualization_symbols)
+        ):
+            continue
         try:
-            with warnings.catch_warnings():
+            with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):
                 warnings.simplefilter("ignore")
-                exec(compile(code, f"{rst.name}:{lineno}", "exec"), ns)
+                exec(compile(code, f"{key}:{lineno}", "exec"), ns)
         except Exception as exc:  # noqa: BLE001
             pytest.fail(
-                f"{rst.name}:{lineno} [{kind}] raised {type(exc).__name__}: {exc}\n"
+                f"{key}:{lineno} [{kind}] raised {type(exc).__name__}: {exc}\n"
                 f"--- block ---\n{code}\n--- end ---"
             )

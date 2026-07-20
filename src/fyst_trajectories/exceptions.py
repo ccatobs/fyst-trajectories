@@ -65,7 +65,10 @@ class PointingError(ValueError):
 
     Examples
     --------
-    Catch any pointing-related error:
+    ``except ValueError`` catches everything this library raises, since the
+    ``PointingError`` family subclasses ``ValueError`` (bare input-validation
+    errors plus the physical-infeasibility and bounds errors). Narrow to
+    ``except PointingError`` to catch only the physical and bounds family:
 
     >>> from fyst_trajectories import validate_trajectory
     >>> from fyst_trajectories.exceptions import PointingError

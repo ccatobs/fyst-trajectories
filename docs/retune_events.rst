@@ -42,7 +42,7 @@ Explicit event list:
 (``trajectory.times[0]``). Events are sorted and validated for overlap
 by :func:`~fyst_trajectories.inject_retune`; events past the trajectory
 end are skipped with a :class:`~fyst_trajectories.PointingWarning`.
-Per-module staggering in event-list mode is handled by composition —
+Per-module staggering in event-list mode is handled by composition:
 call :func:`~fyst_trajectories.inject_retune` once per module with its
 own event list.
 

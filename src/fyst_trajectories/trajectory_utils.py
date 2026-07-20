@@ -1,6 +1,6 @@
 """Trajectory utility functions.
 
-Free functions for validating, exporting, formatting, and plotting
+Free functions for validating, exporting, and formatting
 Trajectory objects. These are the primary API; the
 :class:`~fyst_trajectories.trajectory.Trajectory` container itself
 exposes no methods that delegate here.
@@ -42,8 +42,6 @@ from .trajectory import (
 # structural piece of :class:`Trajectory`.
 
 if TYPE_CHECKING:
-    from matplotlib.figure import Figure
-
     # Annotation-only import to avoid an import cycle: ``dispatch`` imports
     # ``coordinates``/``site``/``exceptions`` at runtime, all of which this
     # module also imports. The predicate is invoked structurally, so only the
@@ -795,63 +793,6 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
             }
         )
     return rows
-
-
-def plot_trajectory(trajectory: Trajectory, show: bool) -> "Figure":
-    """Plot trajectory az/el vs time and sky track.
-
-    Creates a 3-panel figure showing azimuth vs time, elevation vs time,
-    and azimuth vs elevation (sky track).
-
-    Parameters
-    ----------
-    trajectory : Trajectory
-        The trajectory to plot.
-    show : bool
-        Whether to call plt.show() after creating the figure.
-
-    Returns
-    -------
-    Figure
-        The matplotlib figure.
-
-    Raises
-    ------
-    ImportError
-        If matplotlib is not installed.
-    """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_trajectory(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
-
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-
-    axes[0].plot(trajectory.times, trajectory.az)
-    axes[0].set_xlabel("Time (s)")
-    axes[0].set_ylabel("Azimuth (deg)")
-    axes[0].set_title("Az vs Time")
-
-    axes[1].plot(trajectory.times, trajectory.el)
-    axes[1].set_xlabel("Time (s)")
-    axes[1].set_ylabel("Elevation (deg)")
-    axes[1].set_title("El vs Time")
-
-    axes[2].plot(trajectory.az, trajectory.el)
-    axes[2].set_xlabel("Azimuth (deg)")
-    axes[2].set_ylabel("Elevation (deg)")
-    axes[2].set_title("Sky Track")
-    axes[2].set_aspect("equal")
-
-    fig.tight_layout()
-
-    if show:
-        plt.show()
-
-    return fig
 
 
 # Tolerance for treating consecutive events as non-overlapping. A gap

@@ -4,12 +4,11 @@ from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
-from ..coordinates import Coordinates
 from ..patterns.configs import PongAltAzScanConfig, PongScanConfig
 from ..patterns.pong import compute_pong_period
 from ..site import AtmosphericConditions, Site
-from ._helpers import _build_altaz_trajectory
-from ._sun_safety import _check_field_sun_safety
+from ._helpers import _build_altaz_trajectory, _coerce_start_time
+from ._sun_safety import _check_altaz_center_sun_safety
 from ._types import PongAltAzComputedParams, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
@@ -136,8 +135,7 @@ def plan_pong_altaz_scan(
     if n_cycles < 1:
         raise ValueError(f"n_cycles must be at least 1, got {n_cycles}")
 
-    if isinstance(start_time, str):
-        start_time = Time(start_time, scale="utc")
+    start_time = _coerce_start_time(start_time)
 
     # Building the config first validates el_center, so a bad value raises the
     # config's clear message instead of an astropy latitude error below.
@@ -153,13 +151,12 @@ def plan_pong_altaz_scan(
         timestep=timestep,
     )
 
-    # Sun-safety pre-flight works in RA/Dec (like the other planners), so
-    # convert the fixed AltAz center to RA/Dec at the start time. Vacuum
-    # (default) Coordinates matches the geometry the trajectory is built in.
-    coords = Coordinates(site)
-    ra_center, dec_center = coords.altaz_to_radec(az_center, el_center, start_time)
-    _check_field_sun_safety(
-        float(ra_center), float(dec_center), start_time, site, sun_safe=sun_safe
+    _check_altaz_center_sun_safety(
+        site=site,
+        az_center=az_center,
+        el_center=el_center,
+        start_time=start_time,
+        sun_safe=sun_safe,
     )
 
     # The period depends only on the on-sky geometry, which is shared with the

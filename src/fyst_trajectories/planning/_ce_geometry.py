@@ -162,6 +162,12 @@ def _compute_ce_duration(
     ValueError
         If elevation crossings cannot be found in the search window.
     """
+    if step_seconds <= 0:
+        raise ValueError(
+            f"step_seconds must be positive, got {step_seconds}; "
+            f"cannot sample the elevation-crossing search on a non-positive step"
+        )
+
     corners = _field_region_corners(
         field.ra_center, field.dec_center, field.width, field.height, angle
     )
@@ -451,3 +457,47 @@ def _compute_ce_duration_from_lsa(
         )
 
     return t_start, t_end, duration_seconds
+
+
+def _quantize_ce_duration(
+    *,
+    az_throw: float,
+    velocity: float,
+    duration: float,
+    az_accel: float,
+) -> tuple[int, float]:
+    """Quantise a constant-elevation window into whole azimuth legs.
+
+    Rounds the requested ``duration`` to an integer number of azimuth legs
+    (each sweeping ``az_throw`` at ``velocity``) and returns the leg count
+    together with the exact duration the trajectory builder produces for that
+    count. Shared by :func:`plan_constant_el_scan` and the source-CES planner
+    so both quantise a CE window identically.
+
+    Parameters
+    ----------
+    az_throw : float
+        Azimuth sweep of a single leg in degrees.
+    velocity : float
+        Azimuth scan speed in degrees/second.
+    duration : float
+        Requested window duration in seconds; rounded to whole legs.
+    az_accel : float
+        Azimuth acceleration in degrees/second^2 (sets the turnaround time).
+
+    Returns
+    -------
+    n_scans : int
+        Number of azimuth legs (at least 1).
+    actual_duration : float
+        Duration in seconds for ``n_scans`` legs including turnarounds.
+    """
+    scan_leg_time = az_throw / velocity
+    n_scans = max(1, round(duration / scan_leg_time))
+    # Factor 2: trapezoidal velocity profile = ramp-up time (v/a) + ramp-down time (v/a)
+    t_turnaround = 2.0 * velocity / az_accel
+    t_cruise = az_throw / velocity
+    # ``n_scans`` cruises with ``n_scans - 1`` inter-leg turnarounds (the
+    # trailing turnaround of the final leg is unused).
+    actual_duration = n_scans * t_cruise + max(0, n_scans - 1) * t_turnaround
+    return n_scans, actual_duration

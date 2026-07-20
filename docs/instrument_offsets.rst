@@ -65,7 +65,7 @@ identically, and no celestial metadata is consumed.
     ``rotation = nasmyth_sign * elevation + instrument_rotation + parallactic_angle``
 
     This is the quantity needed for sky-map orientation, image rotation,
-    and polarization angles — see ``Coordinates.get_field_rotation``.
+    and polarization angles. See ``Coordinates.get_field_rotation``.
 
 The helper ``compute_focal_plane_rotation`` computes either frame's
 rotation (the ``parallactic_angle`` argument defaults to 0.0, the

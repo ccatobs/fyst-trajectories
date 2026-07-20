@@ -20,6 +20,18 @@ if TYPE_CHECKING:
     from ..offsets import InstrumentOffset
 
 
+def _coerce_start_time(start_time: str | Time) -> Time:
+    """Coerce a ``start_time`` argument to an :class:`~astropy.time.Time`.
+
+    The ``plan_*_scan`` entry points accept ``start_time`` as either an ISO
+    string or a :class:`~astropy.time.Time`. A bare string is parsed in the
+    UTC scale; an existing ``Time`` is returned unchanged.
+    """
+    if isinstance(start_time, str):
+        return Time(start_time, scale="utc")
+    return start_time
+
+
 def _build_trajectory_with_options(
     *,
     builder: TrajectoryBuilder,

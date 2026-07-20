@@ -144,6 +144,12 @@ FLUX_CALIBRATORS: dict[str, Target] = {
     "moon": Target("moon", TargetKind.BODY, aliases=("luna",)),
     "titan": Target("titan", TargetKind.SATELLITE, parent_body="saturn"),
 }
+"""Built-in submm flux-calibrator catalog mapping names to :class:`Target` positions.
+
+Resolution only; it carries no avoidance defaults. Titan is a ``SATELLITE``
+proxied by its parent body. Looked up (after any caller ``extra``) by
+``resolve_target`` and ``check_observability``.
+"""
 
 
 def resolve_target(

@@ -29,11 +29,10 @@ from fyst_trajectories.overhead import (  # noqa: E402
     OverheadModel,
     TimelineBlock,
     generate_timeline,
-    plot_sky_coverage,
-    plot_timeline_gantt,
 )
 from fyst_trajectories.patterns.configs import ScanConfig  # noqa: E402
 from fyst_trajectories.planning import ScanBlock  # noqa: E402
+from fyst_trajectories.visualization import plot_sky_coverage, plot_timeline_gantt  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -268,11 +267,12 @@ def test_sky_missing_start_time_raises_without_figure_leak():
 
 
 def test_import_isolation():
-    """Importing the package (incl. overhead) must not import matplotlib."""
+    """Importing the package (incl. overhead and visualization) must not import matplotlib."""
     code = (
         "import sys\n"
         "import fyst_trajectories\n"
         "import fyst_trajectories.overhead\n"
+        "import fyst_trajectories.visualization\n"
         "leaked = sorted(m for m in sys.modules if m.startswith('matplotlib'))\n"
         "sys.exit(1 if leaked else 0)\n"
     )

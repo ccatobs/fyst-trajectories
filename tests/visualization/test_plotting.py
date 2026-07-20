@@ -20,10 +20,9 @@ from fyst_trajectories import (  # noqa: E402
     InstrumentOffset,
     Trajectory,
     get_fyst_site,
-    plot_hit_map,
-    plot_trajectory,
 )
-from fyst_trajectories.plotting import (  # noqa: E402
+from fyst_trajectories.visualization import plot_hit_map, plot_trajectory  # noqa: E402
+from fyst_trajectories.visualization.hitmap import (  # noqa: E402
     _format_dec_deg,
     _format_ra_hm,
     _make_disk_kernel,

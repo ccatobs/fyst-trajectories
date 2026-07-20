@@ -62,9 +62,9 @@ class TestNorthStraddleSlew:
         assert abs(nb - na) == pytest.approx(20.0, abs=1e-6)
 
         t_norm = estimate_slew_time(na, 50.0, nb, 50.0, site)
-        # 20 deg az slew (FYST az vel=3, accel=1): d_accel=9 < 20, so
-        # t = 2*t_accel + (20 - 9)/3 = 6 + 3.667 = 9.667 s.
-        assert t_norm == pytest.approx(9.667, abs=0.05)
+        # 20 deg az slew (FYST az vel=3, accel=1.5): d_accel=6 < 20, so
+        # t = 2*t_accel + (20 - 6)/3 = 4 + 4.667 = 8.667 s.
+        assert t_norm == pytest.approx(8.667, abs=0.05)
 
         # The un-normalized direct path would be abs(10 - 350) = 340 deg,
         # an order of magnitude longer, the bug this fix removes.

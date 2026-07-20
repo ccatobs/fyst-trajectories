@@ -442,8 +442,6 @@ def get_transit_time(
             frac = -ha_values[i] / (ha_values[i + 1] - ha_values[i])
             transit_dt = dt[i] + frac * 60.0
             return start_time + TimeDelta(transit_dt, format="sec")
-        if ha_values[i] > 90 and ha_values[i + 1] < -90:
-            continue
 
     return None
 
@@ -470,8 +468,8 @@ def get_max_elevation(
     Returns
     -------
     float
-        Maximum elevation in degrees. May exceed 90 for circumpolar
-        sources at the site (capped to 90).
+        Maximum elevation in degrees. At most 90 (reached when ``dec``
+        equals the site latitude); can be negative for sources that never
+        rise at this site.
     """
-    max_el = 90.0 - abs(site.latitude - dec)
-    return min(max_el, 90.0)
+    return 90.0 - abs(site.latitude - dec)

@@ -105,7 +105,7 @@ Field Rotation vs. Focal Plane Rotation
 ``Coordinates.get_field_rotation()`` returns the **celestial-frame**
 orientation of the focal plane
 (``nasmyth_sign * elevation + parallactic_angle``) with no instrument
-rotation — the quantity needed for sky-map orientation, image rotation, and
+rotation, the quantity needed for sky-map orientation, image rotation, and
 polarization angles. The Nasmyth sign is determined by ``site.nasmyth_port``
 (+1 for Right, -1 for Left, 0 for Cassegrain).
 

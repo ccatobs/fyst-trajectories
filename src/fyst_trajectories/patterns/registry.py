@@ -22,8 +22,9 @@ Retrieve a pattern:
 
 List available patterns:
 
->>> print(list_patterns())
-['constant_el', 'daisy', 'linear', 'planet', 'pong', 'pong_altaz', 'satellite', 'sidereal']
+>>> print(list_patterns())  # doctest: +NORMALIZE_WHITESPACE
+['constant_el', 'daisy', 'daisy_altaz', 'linear', 'planet', 'pong',
+ 'pong_altaz', 'satellite', 'sidereal']
 """
 
 from typing import TYPE_CHECKING
@@ -32,6 +33,13 @@ if TYPE_CHECKING:
     from .base import ScanPattern
     from .configs import ScanConfig
 
+# Scan-type vocabulary (one of six; see the "Scan-type vocabularies" section
+# in docs/overhead_integration.rst). Surfaced by ``list_patterns``, this is the
+# widest scan-name vocabulary: the 9 buildable scan patterns. ``source_ces`` is
+# planner-only (``plan_source_ces``), NOT a registered pattern, so it never
+# appears here; the narrower planning-side (``ComputedParams`` /
+# ``_SCAN_TYPE_TO_KEYS``) and overhead-side (``ScanParamsDict`` /
+# ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``) vocabularies are differently scoped.
 _PATTERN_REGISTRY: dict[str, type["ScanPattern"]] = {}
 _CONFIG_TO_PATTERN_NAME: dict[type, str] = {}
 
@@ -147,7 +155,8 @@ def list_patterns() -> list[str]:
 
     Examples
     --------
-    >>> print(list_patterns())
-    ['constant_el', 'daisy', 'linear', 'planet', 'pong', 'pong_altaz', 'satellite', 'sidereal']
+    >>> print(list_patterns())  # doctest: +NORMALIZE_WHITESPACE
+    ['constant_el', 'daisy', 'daisy_altaz', 'linear', 'planet', 'pong',
+     'pong_altaz', 'satellite', 'sidereal']
     """
     return sorted(_PATTERN_REGISTRY.keys())

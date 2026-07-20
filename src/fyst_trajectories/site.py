@@ -89,10 +89,14 @@ FYST_AZ_MAX: float = 360.0
 FYST_AZ_MAX_VELOCITY: float = 3.0
 """Maximum azimuth velocity in degrees/second. Source: FYST TCS."""
 
-FYST_AZ_MAX_ACCELERATION: float = 1.0
+FYST_AZ_MAX_ACCELERATION: float = 1.5
 """Maximum azimuth acceleration in degrees/second^2.
 
 Conservative operational limit (TCS hardware limit: 6.0 deg/s^2).
+The operational value sits at the quintic scan turnaround peak
+(1.5 * az_accel, which equals 1.5 for the planner's default az_accel of
+1.0 deg/s^2), so a default constant-elevation plan does not warn about the
+acceleration of its own trajectory.
 """
 
 FYST_EL_MIN: float = 20.0
@@ -115,10 +119,13 @@ FYST_EL_MAX_VELOCITY: float = 1.0
 Conservative operational limit (TCS hardware limit: 1.5 deg/s).
 """
 
-FYST_EL_MAX_ACCELERATION: float = 0.5
+FYST_EL_MAX_ACCELERATION: float = 0.75
 """Maximum elevation acceleration in degrees/second^2.
 
 Conservative operational limit (TCS hardware limit: 1.5 deg/s^2).
+Raised in tandem with the azimuth limit (1.5x the previous floor) as a
+companion consistency adjustment; it clears the near-limit elevation band
+for aggressive pong scans, while genuinely over-limit plans still warn.
 """
 
 # Tier 3: Operational defaults (may change between observing seasons)

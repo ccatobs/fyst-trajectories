@@ -66,6 +66,12 @@ SOLAR_SYSTEM_BODIES = [
     "uranus",
     "neptune",
 ]
+"""Solar-system bodies resolvable through astropy's built-in ephemeris.
+
+Accepted by the body-tracking coordinate methods (for example
+``Coordinates.get_body_altaz``); these require no external kernel. Planetary
+satellites are addressed separately, see ``SATELLITE_BODIES``.
+"""
 
 
 # Known planetary-satellite NAIF kernel chains (SSB -> ... -> satellite). astropy's
@@ -80,6 +86,12 @@ _SATELLITE_NAIF_CHAINS: dict[str, tuple[tuple[int, int], ...]] = {
 # kernel (parallel to ``SOLAR_SYSTEM_BODIES``). Unlike the builtin bodies these
 # require a kernel (``satellite_kernel`` / ``FYST_SATELLITE_KERNEL``).
 SATELLITE_BODIES = tuple(_SATELLITE_NAIF_CHAINS)
+"""Public names of the planetary satellites resolvable via a JPL satellite SPK kernel.
+
+Parallel to ``SOLAR_SYSTEM_BODIES`` but, unlike the built-in bodies, each name
+requires a satellite kernel supplied through ``Coordinates(satellite_kernel=...)``
+or the ``FYST_SATELLITE_KERNEL`` environment variable.
+"""
 
 # Environment variable holding the path to a JPL satellite SPK kernel. Read
 # lazily, only when a satellite body is requested (never at import).
@@ -156,6 +168,11 @@ FRAME_ALIASES: MappingProxyType[str, str] = MappingProxyType(
         "HORIZON": "altaz",
     }
 )
+"""Frame-name aliases mapping KOSMA/OCS names to astropy frame names.
+
+Only spherical RA/Dec frames are aliased; ``"J2000"`` maps to ICRS (not FK5
+J2000.0), which is harmless for telescope pointing. Consumed by ``normalize_frame``.
+"""
 
 
 def normalize_frame(frame: str) -> str:
@@ -921,8 +938,8 @@ class Coordinates:
         the result is referenced to the **apparent** celestial pole. Computing
         the angle from ``HA = LST − RA`` instead would mix the apparent-equinox
         LST with the catalogue (ICRS/J2000) RA, leaving an uncorrected
-        precession term (~0.3° in 2026, growing ~0.018°/yr) in the parallactic
-        angle. This is the same AltAz form used by
+        precession term (~0.3° in 2026, growing ~0.013-0.018°/yr depending on
+        declination) in the parallactic angle. This is the same AltAz form used by
         ``overhead.utils.compute_nasmyth_rotation``, so the two paths agree.
 
         A vacuum (zero-pressure) transform is used regardless of the

@@ -208,6 +208,13 @@ class SourceCESScanParams(TypedDict, total=False):
 
 # Umbrella alias used by :attr:`ObservingPatch.scan_params`. Which
 # concrete TypedDict applies depends on the patch's ``scan_type``.
+#
+# Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
+# section in docs/overhead_integration.rst). This union has 3 members and
+# EXCLUDES ``SourceCESScanParams``. Its mirror-inverted partner is the
+# planning-side ``ComputedParams`` union (planning/_types.py), which has 6
+# members and INCLUDES the source-CES schema. Each union tracks a TypedDict
+# attribute annotation; the inversion is by design and must not be equalized.
 ScanParamsDict = CEScanParams | PongScanParams | DaisyScanParams
 
 
@@ -217,6 +224,13 @@ ScanParamsDict = CEScanParams | PongScanParams | DaisyScanParams
 # ``source_ces`` is registered here so a planet calibration planned as a
 # source-CES pass sequence can validate the parameters it records; the
 # science planners never emit it (``ObservingPatch`` rejects the type).
+#
+# Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
+# section in docs/overhead_integration.rst). This table has 4 keys and
+# INCLUDES ``source_ces``. Its mirror-inverted partner is the planning-side
+# ``_SCAN_TYPE_TO_KEYS`` (planning/_types.py), which has 5 keys and EXCLUDES
+# ``source_ces``. Each table tracks a runtime validator's call sites; the
+# inversion is by design and must not be equalized.
 _SCAN_TYPE_TO_SCAN_PARAM_KEYS: dict[str, frozenset[str]] = {
     "constant_el": CEScanParams.__optional_keys__,
     "pong": PongScanParams.__optional_keys__,
@@ -288,6 +302,11 @@ class ScienceBlockMetadata(TypedDict, total=False):
         Scan velocity in deg/s.
     scan_params : ScanParamsDict
         Scan-type-specific parameters (see :class:`ScanParamsDict`).
+    t0_scan : str, optional
+        ISO timestamp of the visit's planner anchor (constant-elevation
+        subscans only): the time the scheduler gated the crossing solve
+        on, used by :func:`schedule_to_trajectories` as the
+        reconstruction anchor instead of the subscan's own start.
     """
 
     ra_center: float
@@ -296,6 +315,7 @@ class ScienceBlockMetadata(TypedDict, total=False):
     height: float
     velocity: float
     scan_params: ScanParamsDict
+    t0_scan: str
 
 
 class CalibrationBlockMetadata(TypedDict, total=False):
@@ -494,6 +514,12 @@ class ObservingPatch:
             raise ValueError(f"width must be positive, got {self.width}")
         if self.height <= 0:
             raise ValueError(f"height must be positive, got {self.height}")
+        # Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
+        # section in docs/overhead_integration.rst). This guard admits only the
+        # 3 science scan types the offline simulator emits directly. source_ces
+        # is deliberately rejected here: source-CES geometry reaches the timeline
+        # only as planet-calibration passes, whose params validate against the
+        # 4-key ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS`` (which does include source_ces).
         if self.scan_type not in ("constant_el", "pong", "daisy"):
             raise ValueError(
                 f"scan_type must be 'constant_el', 'pong', or 'daisy', got '{self.scan_type}'"
@@ -971,6 +997,7 @@ class TimelineBlock:
         *,
         subscan_index: int = 0,
         rising: bool = True,
+        t0_scan: str | None = None,
     ) -> "TimelineBlock":
         """Construct a SCIENCE block for a subscan of ``patch``.
 
@@ -1001,6 +1028,13 @@ class TimelineBlock:
             0-based index within a split scan. Default 0.
         rising : bool, optional
             Whether this is a rising-side observation. Default True.
+        t0_scan : str or None, optional
+            ISO timestamp of the visit's planner anchor, stored as
+            ``metadata["t0_scan"]`` when not ``None``. Constant-elevation
+            subscans record their visit anchor here so
+            :func:`~fyst_trajectories.overhead.schedule_to_trajectories`
+            re-solves the crossing from the anchor the scheduler gated on,
+            not from the subscan's own (possibly post-crossing) start.
 
         Returns
         -------
@@ -1018,6 +1052,8 @@ class TimelineBlock:
             "width": patch.width,
             "height": patch.height,
         }
+        if t0_scan is not None:
+            meta["t0_scan"] = t0_scan
         return cls(
             t_start=t_start,
             t_stop=t_start + TimeDelta(duration, format="sec"),
@@ -1122,7 +1158,10 @@ class CalibrationPolicy:
     Parameters
     ----------
     retune_cadence : float
-        Seconds between KID retunes. 0 = every scan boundary.
+        Seconds between KID retunes. 0 = scan-coupled: a retune fires
+        immediately before every science subscan (and once at startup),
+        never on idle ticks. Placeholder pending Prime-Cam confirmation
+        (Q-7/Q-3 in ``docs/reviews/fyst_team_questions.md``).
     pointing_cadence : float
         Seconds between pointing corrections. Default ``3600.0`` (1 h).
         A value of ``1800.0`` may be appropriate for commissioning.

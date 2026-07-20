@@ -11,8 +11,9 @@ from ._ce_geometry import (
     _compute_ce_az_range,
     _compute_ce_duration,
     _compute_ce_duration_from_lsa,
+    _quantize_ce_duration,
 )
-from ._helpers import _build_altaz_trajectory
+from ._helpers import _build_altaz_trajectory, _coerce_start_time
 from ._sun_safety import _check_field_sun_safety
 from ._types import ConstantElComputedParams, FieldRegion, ScanBlock, validate_computed_params
 
@@ -190,8 +191,7 @@ def plan_constant_el_scan(
     if velocity <= 0:
         raise ValueError(f"velocity must be positive, got {velocity}")
 
-    if isinstance(start_time, str):
-        start_time = Time(start_time, scale="utc")
+    start_time = _coerce_start_time(start_time)
 
     # Pre-flight sun-safety check at the *search anchor*. For the
     # elevation-crossing path this is the only check; the resolved
@@ -234,20 +234,15 @@ def plan_constant_el_scan(
     az_min, az_max = _compute_ce_az_range(field, angle, coords_obj, obs_start, obs_end, az_padding)
 
     az_throw = az_max - az_min
-    scan_leg_time = az_throw / velocity
-    n_scans = max(1, round(duration / scan_leg_time))
-
-    # Compute the actual duration from the CE pattern's cycle geometry so
-    # the trajectory length matches n_scans exactly, rather than using the
-    # elevation-crossing duration which may differ.
-    # Factor 2: trapezoidal velocity profile = ramp-up time (v/a) + ramp-down time (v/a)
-    t_turnaround = 2.0 * velocity / az_accel
-    t_cruise = az_throw / velocity
-    # ``n_scans`` cruises with ``n_scans - 1`` inter-leg turnarounds (the
-    # trailing turnaround of the final leg is unused). The original
-    # ``n_scans * (t_cruise + t_turnaround)`` form over-counted by one
-    # turnaround for odd ``n_scans``.
-    actual_duration = n_scans * t_cruise + max(0, n_scans - 1) * t_turnaround
+    # Quantise the elevation-crossing window into whole azimuth legs so the
+    # trajectory length matches n_scans exactly, rather than using the raw
+    # crossing duration which may differ.
+    n_scans, actual_duration = _quantize_ce_duration(
+        az_throw=az_throw,
+        velocity=velocity,
+        duration=duration,
+        az_accel=az_accel,
+    )
 
     config = ConstantElScanConfig(
         timestep=timestep,

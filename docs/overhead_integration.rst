@@ -140,6 +140,73 @@ silently. At dispatch time the live PCS ``source_scan`` task consumes
 :func:`~fyst_trajectories.plan_source_ces` directly. See the "Planning a
 Source CES" section in :doc:`planning` for details.
 
+.. _scan-type-vocabularies:
+
+Scan-type vocabularies
+----------------------
+
+Six constructs across the planning and overhead subpackages enumerate scan
+types at different granularities and for different purposes. Their
+near-identical names invite the assumption that they should be equal; they
+should not. Each is individually correct, and the table below is the map.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 8 12 48
+
+   * - Construct
+     - Members
+     - ``source_ces``?
+     - Role
+   * - ``_PATTERN_REGISTRY`` (:func:`~fyst_trajectories.list_patterns`)
+     - 9
+     - no
+     - Every buildable scan pattern. ``source_ces`` is planner-only
+       (:func:`~fyst_trajectories.plan_source_ces`), not a registered pattern.
+   * - ``ComputedParams`` union
+     - 6
+     - yes
+     - Static type of :attr:`ScanBlock.computed_params`; one member per
+       ``plan_*`` return schema, including ``SourceCESComputedParams``.
+   * - ``_SCAN_TYPE_TO_KEYS``
+     - 5
+     - no
+     - Call-site table for
+       :func:`~fyst_trajectories.planning.validate_computed_params`;
+       ``source_ces`` self-validates inside
+       :func:`~fyst_trajectories.plan_source_ces`.
+   * - ``ObservingPatch`` scan-type guard
+     - 3
+     - no
+     - The science scan types the offline simulator emits directly
+       (``constant_el`` / ``pong`` / ``daisy``).
+   * - ``ScanParamsDict`` union
+     - 3
+     - no
+     - Static type of :attr:`ObservingPatch.scan_params`; the three science
+       schemas, excluding ``SourceCESScanParams``.
+   * - ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``
+     - 4
+     - yes
+     - Call-site table for
+       :func:`~fyst_trajectories.overhead.validate_scan_params`; adds
+       ``source_ces`` so planet-calibration passes recorded as
+       ``SourceCESScanParams`` validate.
+
+Each **union** (``ComputedParams``, ``ScanParamsDict``) tracks a
+dataclass/TypedDict attribute annotation, the static shape of a
+``computed_params`` or ``scan_params`` mapping. Each **table**
+(``_SCAN_TYPE_TO_KEYS``, ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``) tracks the call
+sites a runtime validator accepts. The two subpackages are mirror-inverted
+about ``source_ces``: on the planning side the union is the superset of its
+table (6 vs 5, the union adds ``source_ces``), while on the overhead side the
+table is the superset of its union (4 vs 3, the table adds ``source_ces``).
+The inversion is intentional and must not be equalized. ``source_ces``
+computed_params are validated only inside
+:func:`~fyst_trajectories.plan_source_ces`, whereas source-CES ``scan_params``
+recorded on planet-calibration blocks are validated by
+:func:`~fyst_trajectories.overhead.validate_scan_params`.
+
 Parameter Ownership
 -------------------
 

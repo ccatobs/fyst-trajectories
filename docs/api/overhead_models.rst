@@ -104,6 +104,12 @@ DaisyScanParams
 .. autoclass:: fyst_trajectories.overhead.DaisyScanParams
    :members:
 
+SourceCESScanParams
+~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: fyst_trajectories.overhead.SourceCESScanParams
+   :members:
+
 ScanParamsDict
 ~~~~~~~~~~~~~~
 
@@ -115,7 +121,10 @@ ScanParamsDict
    concrete schema depends on the patch's ``scan_type``. All keys
    are optional, so any subset (including ``{}``) is valid.
    Typos and scan-type/parameter mismatches can be caught with
-   :func:`validate_scan_params`.
+   :func:`validate_scan_params`, whose accepted set is one wider than
+   this union: it also validates ``"source_ces"`` params recorded on
+   planet-calibration blocks, which this union deliberately omits. See
+   :ref:`scan-type-vocabularies`.
 
 EmptyBlockMetadata
 ~~~~~~~~~~~~~~~~~~

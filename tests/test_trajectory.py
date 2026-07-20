@@ -1,5 +1,6 @@
 """Tests for the Trajectory container class."""
 
+import dataclasses
 import io
 import warnings
 
@@ -358,6 +359,33 @@ class TestTrajectory:
             validate_trajectory(traj, site)
             vel_warnings = [x for x in w if "velocity" in str(x.message).lower()]
             assert len(vel_warnings) >= 1
+
+    def test_trajectory_is_frozen(self):
+        """Trajectory is immutable: rebinding raises, replace works, dtype coerces."""
+        traj = Trajectory(
+            times=np.array([0, 1, 2], dtype=float),
+            az=np.array([100, 101, 102], dtype=float),
+            el=np.full(3, 45.0),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+        )
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            traj.az = np.zeros(traj.n_points)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            traj.start_time = Time("2026-03-15T04:00:00", scale="utc")
+
+        assert dataclasses.replace(traj, coordsys="radec").coordsys == "radec"
+
+        flagged = Trajectory(
+            times=np.array([0, 1, 2], dtype=float),
+            az=np.array([100, 101, 102], dtype=float),
+            el=np.full(3, 45.0),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+            scan_flag=np.array([1, 0, 2]),
+        )
+        assert flagged.scan_flag.dtype == np.int8
 
 
 class TestAccelerationJerkProperties:

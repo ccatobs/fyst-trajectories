@@ -18,6 +18,8 @@ from fyst_trajectories.overhead.scheduler.helpers import _time_until_set
 def assert_timeline_valid(timeline, site):
     blocks = sorted(timeline.blocks, key=lambda b: b.t_start.unix)
 
+    # 0.1 s slack on the time comparisons here: block edges are unix seconds
+    # that abut to within scheduler round-off, not exactly.
     for i in range(len(blocks) - 1):
         assert blocks[i].t_stop.unix <= blocks[i + 1].t_start.unix + 0.1, (
             f"Overlap: '{blocks[i].patch_name}' ends at {blocks[i].t_stop.iso} "
@@ -28,6 +30,7 @@ def assert_timeline_valid(timeline, site):
         assert b.t_start.unix >= timeline.start_time.unix - 0.1
         assert b.t_stop.unix <= timeline.end_time.unix + 0.1
 
+    # 0.1 deg slack on the elevation-limit comparisons below (degrees, not seconds).
     for b in blocks:
         if b.block_type == "science":
             assert b.elevation >= site.telescope_limits.elevation.min - 0.1
@@ -161,7 +164,9 @@ class TestGenerateTimeline:
             overhead_model=overhead,
         )
         assert_timeline_valid(timeline, site)
+        assert timeline.science_blocks, "expected the timeline to carry science blocks"
         for b in timeline.science_blocks:
+            # +1.0 s: a whole-second cushion (seconds) on the max-scan-duration cap.
             assert b.duration <= overhead.max_scan_duration + 1.0
 
     def test_sun_avoidance_respected(self):
@@ -191,6 +196,7 @@ class TestGenerateTimeline:
         assert_timeline_valid(timeline, site)
 
         coords = Coordinates(site)
+        assert timeline.science_blocks, "expected the timeline to carry science blocks"
         for b in timeline.science_blocks:
             mid_time = b.t_start + (b.t_stop - b.t_start) / 2
             az_mid = (b.az_start + b.az_end) / 2.0
@@ -267,10 +273,12 @@ class TestGenerateTimeline:
         assert_timeline_valid(timeline, site)
 
         el_min = site.telescope_limits.elevation.min
+        assert timeline.science_blocks, "expected the timeline to carry science blocks"
         for b in timeline.science_blocks:
             # Verify the source is above el_min at both start and end of scan.
             _, el_start = coords.radec_to_altaz(np.array([60.0]), np.array([-30.0]), b.t_start)
             _, el_end = coords.radec_to_altaz(np.array([60.0]), np.array([-30.0]), b.t_stop)
+            # -1.0 deg: allow the source to dip up to a degree below el_min within a scan.
             assert float(el_start[0]) >= el_min - 1.0, (
                 f"Source below el_min at scan start: {float(el_start[0]):.1f} deg"
             )
@@ -333,9 +341,11 @@ class TestTimeUntilSet:
         """A source already below el_min should return 0."""
         site = get_fyst_site()
         coords = Coordinates(site)
-        # RA=60 at 12:00 UTC, source should be well set at FYST
-        t = Time("2026-06-15T12:00:00", scale="utc")
+        # RA=60/dec=-30 at 03:00 UTC is well below the horizon at FYST (el ~ -37),
+        # a deliberately-set input. Assert that precondition so the test cannot
+        # pass vacuously, then require the "already set" return of 0.
+        t = Time("2026-06-15T03:00:00", scale="utc")
         _, el = coords.radec_to_altaz(np.array([60.0]), np.array([-30.0]), t)
-        if float(el[0]) < 20.0:
-            dur = _time_until_set(60.0, -30.0, t, 3600.0, coords, 20.0)
-            assert dur == 0.0
+        assert float(el[0]) < 20.0, f"source unexpectedly above el_min: {float(el[0]):.1f} deg"
+        dur = _time_until_set(60.0, -30.0, t, 3600.0, coords, 20.0)
+        assert dur == 0.0

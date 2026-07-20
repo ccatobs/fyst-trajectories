@@ -14,7 +14,7 @@ from fyst_trajectories.overhead import (
 from fyst_trajectories.overhead.simulation import _generate_trajectory_for_block
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def one_night_timeline():
     """Generate a short timeline for testing."""
     site = get_fyst_site()

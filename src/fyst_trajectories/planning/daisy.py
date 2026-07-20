@@ -6,7 +6,7 @@ from astropy.time import Time
 
 from ..patterns.configs import DaisyScanConfig
 from ..site import AtmosphericConditions, Site
-from ._helpers import _build_celestial_trajectory
+from ._helpers import _build_celestial_trajectory, _coerce_start_time
 from ._sun_safety import _check_field_sun_safety
 from ._types import DaisyComputedParams, ScanBlock, validate_computed_params
 
@@ -109,8 +109,7 @@ def plan_daisy_scan(
     ...     duration=300.0,
     ... )
     """
-    if isinstance(start_time, str):
-        start_time = Time(start_time, scale="utc")
+    start_time = _coerce_start_time(start_time)
 
     _check_field_sun_safety(ra, dec, start_time, site, sun_safe=sun_safe)
 

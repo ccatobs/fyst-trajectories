@@ -1,4 +1,4 @@
-"""FYST Pointing Library.
+"""FYST Trajectories Library.
 
 A FYST-specific astronomy utilities library that wraps astropy with
 telescope-specific defaults, conventions, and safety checks.
@@ -51,7 +51,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -143,7 +143,6 @@ from .planning import (
     plan_source_ces_passes,
     validate_computed_params,
 )
-from .plotting import plot_hit_map
 from .primecam import (
     MODULE_FOV_RADIUS_DEG,
     PRIMECAM_CENTER,
@@ -194,7 +193,6 @@ from .trajectory import (
 from .trajectory_utils import (
     get_absolute_times,
     inject_retune,
-    plot_trajectory,
     print_trajectory,
     sample_retune_events,
     to_arrays,
@@ -286,8 +284,6 @@ __all__ = [
     "to_path_format",
     "to_path_payload",
     "to_trackpoint_format",
-    "plot_trajectory",
-    "plot_hit_map",
     # Pattern registry
     "register_pattern",
     "get_pattern",

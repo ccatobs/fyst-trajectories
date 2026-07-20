@@ -11,12 +11,20 @@ from astropy.time import Time, TimeDelta
 
 from ...coordinates import Coordinates
 from ...patterns.utils import normalize_azimuth
+from ...planning import FieldRegion
+
+# Private planner reuse, on purpose: the scheduler must gate constant-elevation
+# emission on exactly the crossing solve that plan_constant_el_scan runs at
+# reconstruction (planning = execution), so it calls the planner's own solver
+# rather than approximating it.
+from ...planning._ce_geometry import _compute_ce_duration
 from ...site import Site
 from ..constraints import Constraint, ElevationConstraint, SunAvoidanceConstraint
 from ..models import ObservingPatch, OverheadModel
-from ..utils import get_observable_windows
 
 __all__ = [
+    "_ce_crossing_corridor",
+    "_ce_visit_plan",
     "_compute_az_range",
     "_compute_scan_duration",
     "_default_constraints",
@@ -24,6 +32,22 @@ __all__ = [
     "_normalize_az",
     "_time_until_set",
 ]
+
+#: Cached corridor hits are only trusted for anchors at least this many
+#: seconds before the pass's opening crossing: the planner's 30 s-step
+#: crossing search needs the leading edge still below the target elevation
+#: at the anchor, so boundary anchors re-solve instead of trusting the cache.
+_CE_ANCHOR_MARGIN_SEC = 60.0
+
+#: Minimum scheduler time between re-solves after a corridor miss. A miss
+#: costs a full 12-hour forward search; without a rate limit an infeasible
+#: patch would re-run it every selection tick for the rest of the night.
+_CE_MISS_RESOLVE_SEC = 600.0
+
+#: Slew allowance folded into the CE readiness lead: a visit may start this
+#: many seconds (plus one scheduler tick) before the pass's opening crossing
+#: so the pre-scan slew never pushes the anchor past the opening.
+_CE_READY_SLEW_ALLOWANCE_SEC = 180.0
 
 
 def _normalize_az(az: float, site: Site) -> float:
@@ -84,6 +108,137 @@ def _evaluate_patch(
             return 0.0
         score *= s
     return score
+
+
+def _ce_crossing_corridor(
+    patch: ObservingPatch,
+    elevation: float,
+    rising: bool,
+    start_time: Time,
+    coords: Coordinates,
+    cache: dict,
+) -> tuple[Time, Time] | None:
+    """Return the next plannable CE crossing pass ``(t_open, t_close)``, or None.
+
+    Feasibility mirrors the constant-elevation planner exactly: the pass is
+    plannable from ``start_time`` iff the planner's own crossing solver
+    (:func:`~fyst_trajectories.planning._ce_geometry._compute_ce_duration`,
+    the one :func:`~fyst_trajectories.planning.plan_constant_el_scan` runs at
+    reconstruction) finds both RA-edge crossings forward of it. Once the
+    leading edge is above the target elevation, the forward search cannot
+    find its crossing again within the planner's 12-hour horizon, so a block
+    anchored there is unreconstructable - the condition this gate exists to
+    prevent (2026-07-15 repro).
+
+    Solves are memoized in ``cache`` per ``(patch.name, elevation,
+    rising)``: a hit is trusted while the anchor precedes the pass opening
+    by :data:`_CE_ANCHOR_MARGIN_SEC`; a miss is re-solved at most every
+    :data:`_CE_MISS_RESOLVE_SEC` of scheduler time. Elevation is part of
+    the key because a patch without a pinned ``elevation`` is gated at its
+    instantaneous fallback elevation, which varies between calls; patch
+    names are assumed unique (an ``ObservingPatch`` documented
+    precondition).
+
+    Parameters
+    ----------
+    patch : ObservingPatch
+        Constant-elevation patch supplying the field geometry.
+    elevation : float
+        Target scan elevation in degrees.
+    rising : bool
+        Which crossing half to solve for.
+    start_time : Time
+        Prospective anchor (the planner searches forward from here).
+    coords : Coordinates
+        Site coordinate transformer.
+    cache : dict
+        The per-run memo (``SchedulerContext.ce_corridors``).
+
+    Returns
+    -------
+    tuple of (Time, Time) or None
+        ``(t_open, t_close)`` of the pass (first and last RA-edge crossing),
+        or None when no pass is plannable from ``start_time``.
+    """
+    key = (patch.name, float(elevation), bool(rising))
+    hit = cache.get(key)
+    if hit is not None:
+        if hit[0] == "ok":
+            _, t_open, t_close = hit
+            if start_time.unix <= t_open.unix - _CE_ANCHOR_MARGIN_SEC:
+                return t_open, t_close
+            # The anchor has reached the pass opening; fall through and
+            # re-solve (typically a miss until the other half's pass).
+        else:  # ("miss", solved_from)
+            if (start_time - hit[1]).sec < _CE_MISS_RESOLVE_SEC:
+                return None
+
+    field = FieldRegion(
+        ra_center=patch.ra_center,
+        dec_center=patch.dec_center,
+        width=patch.width,
+        height=patch.height,
+    )
+    try:
+        t_open, t_close, _ = _compute_ce_duration(field, 0.0, elevation, coords, start_time, rising)
+    except ValueError:
+        cache[key] = ("miss", start_time)
+        return None
+    cache[key] = ("ok", t_open, t_close)
+    return t_open, t_close
+
+
+def _ce_visit_plan(
+    patch: ObservingPatch,
+    elevation: float,
+    start_time: Time,
+    end_time: Time,
+    coords: Coordinates,
+    cache: dict,
+    ready_lead: float,
+) -> tuple[bool, Time, Time] | None:
+    """Choose the crossing half and pass for a CE visit starting at ``start_time``.
+
+    An explicit ``scan_params["rising"]`` request pins the half (None is
+    returned when that half has no plannable pass). Without a request both
+    halves are tried and the earlier-opening plannable pass wins, so a patch
+    whose rising pass has already begun falls over to its setting pass
+    instead of being emitted unreconstructable.
+
+    Two window conditions apply on top of plannability:
+
+    - readiness: the pass must open within ``ready_lead`` seconds of
+      ``start_time``. A CE drift scan only observes the field while its
+      edges cross the scan elevation, so starting the visit hours early
+      would book science blocks that point at empty sky (and, before
+      2026-07-16, inflated the science accounting by the full wait).
+      The patch simply stays unselected (idle, cals, or other patches)
+      until the pass is imminent.
+    - the opening crossing must precede ``end_time``: a pass that opens
+      after the schedule window can never start inside it.
+
+    Returns
+    -------
+    tuple of (bool, Time, Time) or None
+        ``(rising, t_open, t_close)`` for the chosen pass, or None when
+        neither half has a plannable pass that is ready and opens within
+        the window.
+    """
+    requested = patch.scan_params.get("rising")
+    halves = (bool(requested),) if requested is not None else (True, False)
+    best: tuple[bool, Time, Time] | None = None
+    for rising in halves:
+        window = _ce_crossing_corridor(patch, elevation, rising, start_time, coords, cache)
+        if window is None:
+            continue
+        t_open, t_close = window
+        if t_open.unix > end_time.unix:
+            continue
+        if t_open.unix - start_time.unix > ready_lead:
+            continue  # plannable, but the pass is not imminent yet
+        if best is None or t_open.unix < best[1].unix:
+            best = (rising, t_open, t_close)
+    return best
 
 
 def _time_until_set(
@@ -193,11 +348,17 @@ def _compute_scan_duration(
     coords: Coordinates,
     overhead: OverheadModel,
     center_el: float = 50.0,
+    ce_cache: dict | None = None,
+    ce_ready_lead: float = 480.0,
 ) -> float:
     """Compute how long we can observe this patch.
 
-    For constant-elevation scans, the duration is determined by how long
-    the field crosses the elevation.  For pong/daisy, we start with the
+    For constant-elevation scans, the visit runs until the chosen crossing
+    pass closes (:func:`_ce_visit_plan`): a CE drift scan is only plannable
+    while its RA-edge crossings lie ahead of the anchor, so the old
+    field-center-above-elevation window (which stays open long after the
+    pass, all the way to transit and beyond) over-emitted blocks the
+    planner could never reconstruct. For pong/daisy, we start with the
     max scan duration (or remaining schedule time) and then clip to the
     observability window so the source never drops below the telescope
     elevation limit mid-scan.
@@ -207,27 +368,45 @@ def _compute_scan_duration(
     center_el : float
         Computed elevation of the patch center at the current time.
         Used as fallback when patch.elevation is None.
+    ce_cache : dict, optional
+        Per-run corridor memo (``SchedulerContext.ce_corridors``) for the
+        constant-elevation branch. Default None uses a throwaway dict.
+    ce_ready_lead : float, optional
+        Readiness lead (seconds) passed to :func:`_ce_visit_plan`.
+        Default 480.0 for direct/helper callers; the scheduler always
+        passes ``ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC``.
     """
     remaining = (end_time - start_time).sec
 
     if patch.scan_type == "constant_el":
         el = patch.elevation if patch.elevation is not None else center_el
-        windows = get_observable_windows(
-            patch.ra_center,
-            patch.dec_center,
+        plan = _ce_visit_plan(
+            patch,
+            el,
             start_time,
             end_time,
-            site,
-            min_elevation=el - 1.0,  # Slightly below target elevation
-            check_sun=site.sun_avoidance.enabled,
+            coords,
+            {} if ce_cache is None else ce_cache,
+            ce_ready_lead,
         )
-        if not windows:
+        if plan is None:
             return 0.0
-        for w_start, w_end in windows:
-            if w_end.unix > start_time.unix:
-                window_dur = (w_end - max(w_start, start_time, key=lambda t: t.unix)).sec
-                return min(window_dur, remaining)
-        return 0.0
+        _, _, t_close = plan
+        corridor_dur = min((t_close - start_time).sec, remaining)
+        # Preserve the sun-safety clip the old window check provided: trim
+        # the visit before the field center drifts inside the exclusion
+        # radius (the planner re-validates the trajectory at rebuild).
+        if site.sun_avoidance.enabled:
+            sun_safe_dur = _time_until_sun_unsafe(
+                patch.ra_center,
+                patch.dec_center,
+                start_time,
+                corridor_dur,
+                coords,
+                site.sun_avoidance.exclusion_radius,
+            )
+            corridor_dur = min(corridor_dur, sun_safe_dur)
+        return corridor_dur
     else:
         max_dur = min(overhead.max_scan_duration, remaining)
         el_min = site.telescope_limits.elevation.min

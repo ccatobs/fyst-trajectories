@@ -8,7 +8,7 @@ from astropy.time import Time
 from ..patterns.configs import PongScanConfig
 from ..patterns.pong import compute_pong_period
 from ..site import AtmosphericConditions, Site
-from ._helpers import _build_celestial_trajectory
+from ._helpers import _build_celestial_trajectory, _coerce_start_time
 from ._sun_safety import _check_field_sun_safety
 from ._types import FieldRegion, PongComputedParams, ScanBlock, validate_computed_params
 
@@ -110,8 +110,7 @@ def plan_pong_scan(
     if n_cycles < 1:
         raise ValueError(f"n_cycles must be at least 1, got {n_cycles}")
 
-    if isinstance(start_time, str):
-        start_time = Time(start_time, scale="utc")
+    start_time = _coerce_start_time(start_time)
 
     _check_field_sun_safety(field.ra_center, field.dec_center, start_time, site, sun_safe=sun_safe)
 

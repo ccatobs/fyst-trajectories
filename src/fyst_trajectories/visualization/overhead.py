@@ -24,7 +24,7 @@ Examples
 Render a recorded night from its ECSV timeline:
 
 >>> from fyst_trajectories.overhead import read_timeline
->>> from fyst_trajectories.overhead.plotting import (
+>>> from fyst_trajectories.visualization import (
 ...     plot_sky_coverage,
 ...     plot_timeline_gantt,
 ... )
@@ -42,15 +42,15 @@ import numpy as np
 from astropy import units as u
 
 from ..coordinates import Coordinates
-from .models import BlockType
-from .simulation import compute_budget, schedule_to_trajectories
+from ..overhead.models import BlockType
+from ..overhead.simulation import compute_budget, schedule_to_trajectories
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from ..overhead.models import ObservingTimeline, TimelineBlock
     from ..planning import ScanBlock
-    from .models import ObservingTimeline, TimelineBlock
 
 __all__ = [
     "plot_sky_coverage",

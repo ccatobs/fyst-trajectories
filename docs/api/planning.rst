@@ -47,3 +47,7 @@ Each planner function returns a :class:`ScanBlock` whose
    ``validate_computed_params``. :func:`plan_source_ces` is
    planner-only and self-validates against
    :attr:`SourceCESComputedParams.__required_keys__` directly.
+   The overhead-side :func:`~fyst_trajectories.overhead.validate_scan_params`
+   *does* accept ``"source_ces"`` (for planet-calibration passes recorded as
+   ``SourceCESScanParams``); the two validators track deliberately different
+   scan-type sets. See :ref:`scan-type-vocabularies`.

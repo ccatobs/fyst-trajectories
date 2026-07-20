@@ -14,7 +14,7 @@ Two modes of operation:
 
 - **Module coverage** (``module_fov`` set): Convolves the track with a
   circular disk kernel representing the module's field of view. Useful
-  for observation planning — shows approximate sky coverage. Reports
+  for observation planning â€” shows approximate sky coverage. Reports
   absolute area statistics in square degrees.
 
 These functions require ``matplotlib`` (install via
@@ -27,7 +27,7 @@ Plot detector-center tracks for two PrimeCam modules:
 
 >>> from fyst_trajectories import get_fyst_site
 >>> from fyst_trajectories.primecam import get_primecam_offset
->>> from fyst_trajectories.plotting import plot_hit_map
+>>> from fyst_trajectories.visualization import plot_hit_map
 >>> site = get_fyst_site()
 >>> offsets = [
 ...     (get_primecam_offset("i1"), "f280"),
@@ -41,7 +41,7 @@ Plot with module footprint convolution for realistic coverage:
 ...     trajectory,
 ...     offsets,
 ...     site,
-...     module_fov=1.1,
+...     module_fov=1.3,
 ...     show=True,
 ... )
 """
@@ -51,9 +51,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
-    from .offsets import InstrumentOffset
-    from .site import Site
-    from .trajectory import Trajectory
+    from ..offsets import InstrumentOffset
+    from ..site import Site
+    from ..trajectory import Trajectory
 
 
 def _make_disk_kernel(radius_bins: float) -> np.ndarray:
@@ -177,9 +177,9 @@ def plot_hit_map(
     if trajectory.start_time is None:
         raise ValueError("Trajectory must have start_time for RA/Dec conversion")
 
-    from .coordinates import Coordinates  # pylint: disable=import-outside-toplevel
-    from .offsets import boresight_to_detector, compute_focal_plane_rotation
-    from .trajectory_utils import get_absolute_times
+    from ..coordinates import Coordinates  # pylint: disable=import-outside-toplevel
+    from ..offsets import boresight_to_detector, compute_focal_plane_rotation
+    from ..trajectory_utils import get_absolute_times
 
     coords = Coordinates(site)
     abs_times = get_absolute_times(trajectory)

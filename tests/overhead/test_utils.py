@@ -19,18 +19,18 @@ class TestEstimateSlewTime:
         assert t == 0.0
 
     def test_az_only(self, site):
-        # 10 deg azimuth slew, trapezoidal profile (FYST az vel=3.0, accel=1.0):
-        # t_accel=3, d_accel=9; distance 10 > 9, so
-        # t = 2*t_accel + (10 - d_accel)/vel = 6 + 1/3 = 6.333 s.
+        # 10 deg azimuth slew, trapezoidal profile (FYST az vel=3.0, accel=1.5):
+        # t_accel=2, d_accel=6; distance 10 > 6, so
+        # t = 2*t_accel + (10 - d_accel)/vel = 4 + 4/3 = 5.333 s.
         t = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
-        assert t == pytest.approx(6.333, abs=0.01)
+        assert t == pytest.approx(5.333, abs=0.01)
 
     def test_el_only(self, site):
-        # 10 deg elevation slew, trapezoidal (FYST el vel=1.0, accel=0.5):
-        # t_accel=2, d_accel=2; distance 10 > 2, so
-        # t = 2*t_accel + (10 - d_accel)/vel = 4 + 8 = 12.0 s.
+        # 10 deg elevation slew, trapezoidal (FYST el vel=1.0, accel=0.75):
+        # t_accel=1.333, d_accel=1.333; distance 10 > 1.333, so
+        # t = 2*t_accel + (10 - d_accel)/vel = 2.667 + 8.667 = 11.333 s.
         t = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
-        assert t == pytest.approx(12.0, abs=0.01)
+        assert t == pytest.approx(11.333, abs=0.01)
 
     def test_el_slower_than_az(self, site):
         t_az = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
@@ -42,10 +42,10 @@ class TestEstimateSlewTime:
         assert t > 30.0
 
     def test_short_az_slew_is_triangular(self, site):
-        # A 2 deg az slew never reaches cruise: d_accel = v^2/a = 9 deg > 2 deg, so
-        # the triangular branch gives t = 2*sqrt(distance/a) = 2*sqrt(2/1) = 2.828 s.
+        # A 2 deg az slew never reaches cruise: d_accel = v^2/a = 6 deg > 2 deg, so
+        # the triangular branch gives t = 2*sqrt(distance/a) = 2*sqrt(2/1.5) = 2.309 s.
         t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site)
-        assert t == pytest.approx(2.828, abs=0.01)
+        assert t == pytest.approx(2.309, abs=0.01)
 
 
 class TestGetMaxElevation:
