@@ -640,7 +640,10 @@ class Coordinates:
         Returns
         -------
         bool
-            True if position is outside the Sun exclusion radius.
+            True if the Sun separation is strictly greater than the site's
+            exclusion radius; a position exactly at the exclusion radius
+            counts as unsafe. Returns True unconditionally when the site's
+            sun avoidance is disabled.
         """
         if not self.site.sun_avoidance.enabled:
             return True

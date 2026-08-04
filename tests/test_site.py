@@ -224,10 +224,12 @@ class TestSunAvoidanceConfig:
         with pytest.raises(ValueError, match="exclusion_radius"):
             SunAvoidanceConfig(enabled=True, exclusion_radius=-5.0, warning_radius=50.0)
 
-    def test_equal_radii_allowed(self):
-        # warning == exclusion is degenerate (empty warning band) but valid.
-        cfg = SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=45.0)
-        assert cfg.warning_radius == cfg.exclusion_radius
+    def test_equal_radii_rejected(self):
+        # warning == exclusion leaves an empty warning band (every
+        # warning-worthy pointing is already excluded), so it now raises
+        # (boundary-unification slice of the sun-avoidance integration plan).
+        with pytest.raises(ValueError, match="strictly greater"):
+            SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=45.0)
 
     def test_disabled_config_skips_validation(self):
         # When disabled the radii are inert; misordered/negative values are allowed.
@@ -447,9 +449,13 @@ class TestFYSTConstants:
         assert FYST_EL_MAX_ACCELERATION == 0.75
 
     def test_tier3_sun_avoidance_defaults(self):
-        """Test Tier 3 operational defaults."""
-        assert FYST_SUN_EXCLUSION_RADIUS == 45.0
-        assert FYST_SUN_WARNING_RADIUS == 50.0
+        """Test Tier 3 operational defaults (Q-1 ratified 2026-08-03).
+
+        50 is the floor (inscribed cone) of the directional CAD table; 55
+        keeps 5 deg of warning margin above it.
+        """
+        assert FYST_SUN_EXCLUSION_RADIUS == 50.0
+        assert FYST_SUN_WARNING_RADIUS == 55.0
         assert FYST_SUN_AVOIDANCE_ENABLED is True
 
 

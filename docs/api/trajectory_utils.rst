@@ -1,9 +1,6 @@
 Trajectory Utilities
 ====================
 
-Utility functions for working with ``Trajectory`` objects. These free functions
-are the primary API for trajectory operations.
-
 .. automodule:: fyst_trajectories.trajectory_utils
    :members:
    :undoc-members:
@@ -62,15 +59,10 @@ Plotting lives in the :doc:`visualization subpackage <visualization>`
 Validation Functions
 --------------------
 
-Low-level validation utilities:
-
-.. autofunction:: fyst_trajectories.trajectory_utils.validate_trajectory_bounds
-   :no-index:
-
-.. autofunction:: fyst_trajectories.trajectory_utils.validate_trajectory_dynamics
-   :no-index:
-
-**Example usage**::
+``validate_trajectory`` is the recommended entry point: it runs the bounds
+check, the dynamics check, and (when ``check_sun=True``) the advisory sun
+check. The three low-level functions documented above can also be called
+directly::
 
     from fyst_trajectories.trajectory_utils import (
         validate_trajectory_bounds,
@@ -86,10 +78,8 @@ Low-level validation utilities:
     # Check only dynamics (emits warning if limits exceeded)
     validate_trajectory_dynamics(site, az_array, el_array, times_array)
 
-.. autofunction:: fyst_trajectories.trajectory_utils.validate_sun_avoidance
-   :no-index:
-
-**Sun avoidance validation**::
+Sun avoidance is advisory: it warns but never raises, so telescope control
+systems must enforce their own hard sun-avoidance limits independently::
 
     from fyst_trajectories import get_fyst_site, validate_sun_avoidance
     from fyst_trajectories.trajectory_utils import get_absolute_times
@@ -98,14 +88,3 @@ Low-level validation utilities:
     # trajectory must have start_time set
     abs_times = get_absolute_times(trajectory)
     validate_sun_avoidance(site, trajectory.az, trajectory.el, abs_times)
-
-.. note::
-
-   ``validate_sun_avoidance`` is advisory only -- it emits warnings but
-   never raises exceptions.  Telescope control systems must enforce their
-   own hard sun-avoidance limits independently.
-
-.. note::
-
-   The high-level ``validate_trajectory()`` function calls both of these
-   internally and is the recommended API for most use cases.

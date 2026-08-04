@@ -46,7 +46,7 @@ INNER_RING_RADIUS_MM = 461.3
 MODULE_FOV_RADIUS_DEG: float = 0.65
 """Per-module on-sky FOV radius in degrees.
 
-Used by :func:`fyst_trajectories.plan_source_ces` to build a circular
+Used by :func:`fyst_trajectories.planning.plan_source_ces` to build a circular
 cover polygon when the caller passes a single ``InstrumentOffset``
 (or a module name) instead of an explicit
 :class:`~fyst_trajectories.planning.ArrayFootprint`.
@@ -159,8 +159,8 @@ def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
 
     Expands a comma-separated tag of module names into the
     ``list[InstrumentOffset]`` accepted by
-    :func:`fyst_trajectories.plan_source_ces` /
-    :func:`fyst_trajectories.compute_source_ces_params` via their ``footprint``
+    :func:`fyst_trajectories.planning.plan_source_ces` /
+    :func:`fyst_trajectories.planning.compute_source_ces_params` via their ``footprint``
     argument, which averages the module centres so the centroid of the selected
     modules lands on the source. Adds no geometry.
 
@@ -306,7 +306,7 @@ def primecam_geometry_dict(
 
     The duplicate ``"center"`` alias of ``"c"`` in :data:`PRIMECAM_MODULES` is
     dropped, so the result has one slot per physical module, ``"c"`` plus
-    ``"i1"``..``"i6"`` (seven entries). A duplicate would double the cover
+    ``"i1"`` .. ``"i6"`` (seven entries). A duplicate would double the cover
     polygon when the consumer merges queried slots.
 
     Parameters

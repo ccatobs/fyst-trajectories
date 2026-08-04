@@ -21,12 +21,15 @@ from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.observability import (
     AvoidZone,
     ReasonCode,
+    SunEventKind,
     Target,
     TargetKind,
+    _all_windows,
     _build_time_grid,
-    _first_window,
+    _threshold_crossings,
     check_observability,
     resolve_target,
+    sun_events,
 )
 
 T_NIGHT = Time("2026-06-15T05:00:00", scale="utc")
@@ -48,7 +51,8 @@ def test_instant_happy_path(coordinates):
     r = check_observability([tgt], t, site=coordinates.site)[0]
     assert r.observable is True
     assert r.reasons == ()
-    assert r.window is None
+    assert r.windows is None
+    assert r.total_observable_hours == 0.0  # windows not evaluated => 0.0, not an error
     assert r.sun_clear is True
     assert 80.0 < r.el_deg < 90.0
     assert r.position_approximate is False
@@ -60,11 +64,13 @@ def test_horizon_window(coordinates):
     tgt = _near_zenith_fixed(coordinates, t)
     r = check_observability([tgt], t, site=coordinates.site, horizon_hours=24.0)[0]
     assert r.observable is True
-    assert r.window is not None
-    assert r.window.duration_hours > 0.0
-    # Observable now => the window opens at t and is truncated at the horizon start.
-    assert r.window.truncated_start is True
-    assert abs((r.window.start - t).to_value("s")) < 1.0
+    assert r.windows
+    first = r.windows[0]
+    assert first.duration_hours > 0.0
+    # Observable now => the first window opens at t and is truncated at the horizon start.
+    assert first.truncated_start is True
+    assert abs((first.start - t).to_value("s")) < 1.0
+    assert r.total_observable_hours >= first.duration_hours
 
 
 # 3
@@ -196,7 +202,7 @@ def test_fixed_target(coordinates):
     )[0]
     assert r.name == "src1"
     assert r.target.kind == TargetKind.FIXED
-    assert r.window is not None
+    assert r.windows
 
 
 # 13
@@ -262,17 +268,34 @@ def test_satellite_self_exclusion(coordinates):
     assert [s.body for s in r2.avoid_separations] == ["jupiter"]
 
 
-# 18 - _first_window picks the FIRST contiguous run (deterministic, no ephemeris)
-def test_first_window_picks_first_run():
+# 18 - _all_windows returns EVERY contiguous run in time order (deterministic, no ephemeris)
+def test_all_windows_returns_every_run():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = t0 + TimeDelta(np.arange(7) * 600.0, format="sec")  # 7 samples, 10 min apart
     ok = np.array([True, True, False, False, True, True, True])
-    w = _first_window(ok, grid)
-    assert w is not None
-    assert w.truncated_start is True  # run starts at sample 0
-    assert w.truncated_end is False  # first run ends before the grid end
-    assert w.duration_hours == pytest.approx(10.0 / 60.0)  # samples 0..1 => 10 min
-    assert _first_window(np.zeros(7, dtype=bool), grid) is None
+    windows = _all_windows(ok, grid)
+    assert len(windows) == 2
+    first, second = windows
+    assert first.truncated_start is True  # first run starts at sample 0
+    assert first.truncated_end is False  # first run ends before the grid end
+    assert first.duration_hours == pytest.approx(10.0 / 60.0)  # samples 0..1 => 10 min
+    assert second.truncated_start is False
+    assert second.truncated_end is True  # second run abuts the grid end
+    assert second.duration_hours == pytest.approx(20.0 / 60.0)  # samples 4..6 => 20 min
+    assert second.start.mjd > first.end.mjd  # time order, disjoint
+    assert _all_windows(np.zeros(7, dtype=bool), grid) == ()
+    # A single-sample run is a zero-duration window, not a dropped one.
+    lone = _all_windows(np.array([False, True, False, False, False, False, False]), grid)
+    assert len(lone) == 1
+    assert lone[0].duration_hours == 0.0
+    # Quantization worst case: an interior window is short by up to TWO steps
+    # (one per endpoint). True criterion just misses samples 1 and 5, so the
+    # reported run 2..4 (20 min) understates the true ~40 min interval by
+    # exactly 2 x 10 min. Locks the total_observable_hours docstring bound.
+    interior = _all_windows(np.array([False, False, True, True, True, False, False]), grid)
+    assert len(interior) == 1
+    assert interior[0].truncated_start is False and interior[0].truncated_end is False
+    assert interior[0].duration_hours == pytest.approx(20.0 / 60.0)  # true window ~40 min
 
 
 # 19 - window_step_minutes must be positive when a horizon is requested
@@ -288,7 +311,7 @@ def test_window_step_must_be_positive(coordinates):
         )
     # Without a horizon the step is unused, so it does not raise.
     r = check_observability([tgt], T_NIGHT, site=coordinates.site, window_step_minutes=0.0)[0]
-    assert r.window is None
+    assert r.windows is None
 
 
 # 20 - el_min > el_max is a caller error
@@ -354,13 +377,14 @@ def test_summary_text(coordinates):
     assert "NOT observable" in bad.summary
 
 
-# 27 - T6: window is None when a target is never observable over the horizon
-def test_window_none_when_never_observable(coordinates):
-    # dec=+80 deg never rises from FYST; with a horizon, _first_window finds no run.
+# 27 - T6: windows is EMPTY (not None) when a horizon was evaluated and none exists
+def test_windows_empty_when_never_observable(coordinates):
+    # dec=+80 deg never rises from FYST; with a horizon, _all_windows finds no run.
     tgt = Target("far_north", TargetKind.FIXED, ra_deg=0.0, dec_deg=80.0)
     r = check_observability([tgt], T_NIGHT, site=coordinates.site, horizon_hours=24.0)[0]
     assert r.observable is False
-    assert r.window is None
+    assert r.windows == ()
+    assert r.total_observable_hours == 0.0
     assert ReasonCode.BELOW_EL_MIN in r.reasons
 
 
@@ -528,13 +552,13 @@ def test_injected_predicate_drives_window(coordinates):
 
     # Default: a window exists over the horizon.
     r_default = check_observability([tgt], t, site=coordinates.site, horizon_hours=6.0)[0]
-    assert r_default.window is not None
+    assert r_default.windows
 
     # A predicate that blocks every sample leaves no observable window.
     r_blocked = check_observability(
         [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_block_everything
     )[0]
-    assert r_blocked.window is None
+    assert r_blocked.windows == ()
     assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
 
 
@@ -569,3 +593,191 @@ def test_injected_predicate_default_none_unchanged(coordinates):
     assert r_explicit_none.observable == r_implicit.observable
     assert r_explicit_none.reasons == r_implicit.reasons
     assert r_explicit_none.sun_separation_deg == pytest.approx(r_implicit.sun_separation_deg)
+
+
+# 42 - a 24 h horizon catches BOTH daily passes of a transiting source (the
+# pre-fix single-window report hid the second one).
+def test_two_daily_passes_both_reported(coordinates):
+    t = T_NIGHT
+    tgt = _near_zenith_fixed(coordinates, t)  # transits at t; ~10 h above el_min=20
+    r = check_observability([tgt], t, site=coordinates.site, horizon_hours=24.0)[0]
+    assert r.windows is not None
+    assert len(r.windows) == 2
+    first, second = r.windows
+    # Mid-pass at t: the first window is the tail of today's pass.
+    assert first.truncated_start is True
+    assert first.truncated_end is False
+    # The second window is tomorrow's pass, cut off by the horizon end.
+    assert second.truncated_start is False
+    assert second.truncated_end is True
+    assert second.start.mjd > first.end.mjd
+    assert r.total_observable_hours == pytest.approx(first.duration_hours + second.duration_hours)
+
+
+# 43 - sun_events: one FYST day from local noon yields the full 8-event
+# sequence, dusk side first, in strict time order with sane times.
+def test_sun_events_full_day_sequence():
+    t = Time("2026-11-15T16:00:00", scale="utc")  # ~13:00 Chile local
+    events = sun_events(t)
+    kinds = [e.kind for e in events]
+    assert kinds == [
+        SunEventKind.SUNSET,
+        SunEventKind.CIVIL_DUSK,
+        SunEventKind.NAUTICAL_DUSK,
+        SunEventKind.ASTRONOMICAL_DUSK,
+        SunEventKind.ASTRONOMICAL_DAWN,
+        SunEventKind.NAUTICAL_DAWN,
+        SunEventKind.CIVIL_DAWN,
+        SunEventKind.SUNRISE,
+    ]
+    assert [e.rising for e in events] == [False] * 4 + [True] * 4
+    mjds = [e.time.mjd for e in events]
+    assert mjds == sorted(mjds)
+    sunset = events[0]
+    sunrise = events[-1]
+    # Geometric (0 deg) crossings for this date are ~22:47 set / ~09:43 rise UTC
+    # (cross-checked against get_rise_set_times); the -0.8333 deg almanac
+    # threshold shifts set ~5 min later and rise ~5 min earlier.
+    assert Time("2026-11-15T22:45:00", scale="utc") <= sunset.time
+    assert sunset.time <= Time("2026-11-15T23:00:00", scale="utc")
+    assert Time("2026-11-16T09:25:00", scale="utc") <= sunrise.time
+    assert sunrise.time <= Time("2026-11-16T09:45:00", scale="utc")
+
+
+# 44 - sun_events: the Sun's geometric altitude at each event time equals the
+# event's threshold (locks the interpolation and the vacuum convention).
+def test_sun_events_altitude_invariant(site):
+    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"), site=site)
+    coords = Coordinates(site)  # vacuum, matching the implementation
+    assert events
+    for event in events:
+        _, el = coords.get_sun_altaz(event.time)
+        # Locks the "seconds level" interpolation claim: 1e-3 deg is ~0.3 s
+        # of solar altitude motion at FYST twilight rates.
+        assert el == pytest.approx(event.altitude_deg, abs=1e-3)
+
+
+# 45 - sun_events: parameter validation (incl. the NaN/inf hole: NaN passes
+# a bare `<= 0` and would silently return an empty tuple).
+def test_sun_events_validation():
+    t = Time("2026-11-15T16:00:00", scale="utc")
+    for bad_horizon in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            sun_events(t, horizon_hours=bad_horizon)
+    for bad_step in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            sun_events(t, step_minutes=bad_step)
+
+
+# 45b - a predicate exposing the optional `batch` extension is evaluated in
+# ONE vectorized call; its verdicts flow through to reasons and windows.
+def test_batch_predicate_used_vectorized(coordinates):
+    t = T_NIGHT
+    tgt = _near_zenith_fixed(coordinates, t)
+    calls = {"batch": 0, "scalar": 0}
+
+    class _AllowBatch:
+        def __call__(self, az, el, time):
+            calls["scalar"] += 1
+            return True
+
+        def batch(self, az, el, times):
+            calls["batch"] += 1
+            return np.ones(np.shape(np.atleast_1d(az)), dtype=bool)
+
+    r = check_observability(
+        [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_AllowBatch()
+    )[0]
+    assert calls == {"batch": 1, "scalar": 0}
+    assert r.sun_clear is True
+    assert r.windows
+
+    class _BlockBatch:
+        def __call__(self, az, el, time):
+            return False
+
+        def batch(self, az, el, times):
+            return np.zeros(np.shape(np.atleast_1d(az)), dtype=bool)
+
+    r_blocked = check_observability(
+        [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_BlockBatch()
+    )[0]
+    assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
+    assert r_blocked.windows == ()
+
+    class _WrongShapeBatch:
+        def __call__(self, az, el, time):
+            return True
+
+        def batch(self, az, el, times):
+            return np.ones(3, dtype=bool)  # wrong length: must not broadcast
+
+    with pytest.raises(ValueError, match="sun_safe.batch"):
+        check_observability(
+            [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_WrongShapeBatch()
+        )
+
+
+# 46 - _threshold_crossings: synthetic arrays lock the crossing partition,
+# the interpolation, and the clipped-final-cell handling (no ephemeris).
+def test_threshold_crossings_synthetic():
+    t0 = Time("2026-06-15T00:00:00", scale="utc")
+    grid4 = t0 + TimeDelta(np.arange(4) * 600.0, format="sec")
+
+    # Plain interior crossing: linear interpolation between samples.
+    up = _threshold_crossings(np.array([-2.0, -1.0, 0.5, 2.0]), grid4, 0.0, rising=True)
+    assert len(up) == 1
+    assert (up[0] - t0).to_value("s") == pytest.approx(600.0 + 600.0 * (1.0 / 1.5), abs=1e-6)
+
+    # A value exactly AT the threshold on a grid sample: exactly one event,
+    # landing exactly on that sample (frac = 1 in the preceding cell).
+    grid3 = t0 + TimeDelta(np.arange(3) * 600.0, format="sec")
+    exact = _threshold_crossings(np.array([-1.0, 0.0, 1.0]), grid3, 0.0, rising=True)
+    assert len(exact) == 1
+    assert abs((exact[0] - grid3[1]).to_value("s")) < 1e-9
+
+    # Plateau at the threshold: still a single event, not one per sample.
+    plateau = _threshold_crossings(np.array([-1.0, 0.0, 0.0, 1.0]), grid4, 0.0, rising=True)
+    assert len(plateau) == 1
+
+    # Tangential touch: landing exactly ON the threshold yields no events
+    # (the >=/< partition), while dipping infinitesimally below yields a
+    # set+rise pair. Pins the boundary semantics.
+    assert _threshold_crossings(np.array([1.0, 0.0, 1.0]), grid3, 0.0, rising=True) == []
+    assert _threshold_crossings(np.array([1.0, 0.0, 1.0]), grid3, 0.0, rising=False) == []
+    dip = np.array([1.0, -1e-9, 1.0])
+    assert len(_threshold_crossings(dip, grid3, 0.0, rising=False)) == 1
+    assert len(_threshold_crossings(dip, grid3, 0.0, rising=True)) == 1
+
+    # No crossings => empty.
+    assert _threshold_crossings(np.array([1.0, 2.0, 3.0]), grid3, 0.0, rising=True) == []
+
+    # Clipped final cell from _build_time_grid (horizon 9 min @ 4 min step =>
+    # cells of 240/240/60 s): interpolation must use the actual 60 s spacing.
+    grid_clip = _build_time_grid(t0, horizon_hours=0.15, step_minutes=4.0)
+    assert (grid_clip[-1] - grid_clip[-2]).to_value("s") == pytest.approx(60.0)
+    clipped = _threshold_crossings(np.array([-3.0, -2.0, -1.0, 1.0]), grid_clip, 0.0, rising=True)
+    assert len(clipped) == 1
+    assert (clipped[0] - t0).to_value("s") == pytest.approx(480.0 + 0.5 * 60.0, abs=1e-6)
+
+
+# 47 - sun_events: a sub-day evening span returns only the dusk side.
+def test_sun_events_subday_dusk_only():
+    events = sun_events(Time("2026-11-15T21:00:00", scale="utc"), horizon_hours=4.0)
+    assert [e.kind for e in events] == [
+        SunEventKind.SUNSET,
+        SunEventKind.CIVIL_DUSK,
+        SunEventKind.NAUTICAL_DUSK,
+        SunEventKind.ASTRONOMICAL_DUSK,
+    ]
+    assert all(e.rising is False for e in events)
+
+
+# 48 - sun_events: a 48 h horizon returns two full days of events, sorted,
+# in alternating dusk-block / dawn-block order.
+def test_sun_events_two_days():
+    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"), horizon_hours=48.0)
+    assert len(events) == 16
+    mjds = [e.time.mjd for e in events]
+    assert mjds == sorted(mjds)
+    assert [e.rising for e in events] == [False] * 4 + [True] * 4 + [False] * 4 + [True] * 4

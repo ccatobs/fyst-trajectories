@@ -116,3 +116,37 @@ import shutil; shutil.copyfile(download_file(iers.conf.iers_auto_url, cache=True
 'tests/data/finals2000A.all')"
 ```
 This is the same forward-maintenance trigger as the de421/Titan excerpt windows.
+
+## `sun_avoidance_parity_e6fa12a.npz` — sun-model parity record (record-replay fixture)
+
+The record half of the sun-model record-replay harness (~17 KB).
+Verdicts and geometric thresholds for every `fyst_trajectories.sun_models` configuration
+(`scalar`, `cone45`, `cone50`, `cad`, `cad_msa0`, `cad_island`) over a deterministic
+72-azimuth x 29-elevation x 8-epoch grid (includes negative encoder wraps and exactly
+el=90), plus the loaded CAD table and the SHA pins.
+**Not** on the runtime path.
+
+### How it is used
+- `tests/test_sun_models_fixture.py` (always, offline): fixture integrity, the CAD table's
+  properties, regeneration of the no-library `scalar` rows, cross-model containment.
+- `tests/test_sun_models_live.py` (skipped without the `sun_avoidance` library): the drift
+  detector — regenerates every row from the installed library through the adapter and
+  requires bit-equality.
+
+### Provenance
+- **Generated against:** `ccatobs/sun-avoidance` @ `e6fa12a` (the filename carries the
+  pin; `fyst_trajectories.sun_models.SUN_AVOIDANCE_PINNED_SHA` / `CAD_TABLE_SHA256` must
+  match the recorded values).
+- **Scalar rows:** pinned 45/50 deg radii (explicit, NOT the site defaults), so a
+  site-default policy bump never forces a re-cut.
+- **IERS:** recorded under the vendored `finals2000A.all` pin above; all 8 epochs sit
+  inside its range.
+
+### Regenerating (deliberate re-pin only)
+Update the two SHA constants in `sun_models.py`, then:
+```bash
+python tests/test_sun_models_live.py
+```
+(the `__main__` block applies the same IERS pin as `conftest.py` and rewrites this file).
+Never regenerate to make a red drift test pass without first deciding the new library
+revision is the one to pin.

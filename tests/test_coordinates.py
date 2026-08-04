@@ -862,10 +862,17 @@ class TestSunBoundaryParity:
         sun_az, sun_el = coords.get_sun_altaz(t)
         assert sun_el > 0.0
 
-        # Offset along the meridian, in whichever direction keeps the target
-        # elevation inside [20, 90] so the position is genuinely observable.
-        pa = 180.0 if (sun_el + excl) > 88.0 else 0.0
+        # Pick an offset direction that keeps the target elevation inside
+        # [20, 90] at this radius: a 50 deg span from a mid-sky Sun leaves
+        # the observable band along the meridian, so sideways offsets are
+        # tried too (0.1 deg of guard band covers the +/-0.05 deltas).
         sun = SkyCoord(sun_az * u.deg, sun_el * u.deg, frame="altaz")
+        for pa in (0.0, 180.0, 90.0, 270.0):
+            probe = sun.directional_offset_by(pa * u.deg, excl * u.deg)
+            if 20.1 <= float(probe.alt.deg) <= 89.9:
+                break
+        else:
+            pytest.fail("no offset direction keeps the boundary probe observable")
 
         for delta, expect_safe in [(-0.05, False), (0.05, True)]:
             tgt = sun.directional_offset_by(pa * u.deg, (excl + delta) * u.deg)

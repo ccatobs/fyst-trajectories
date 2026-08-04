@@ -72,7 +72,7 @@ def schedule_to_trajectories(
           metadata carries a ``scan_params`` dict. Today those are the
           source-CES planet-calibration passes emitted when
           ``CalibrationPolicy.planet_cal_scan`` is set; each is rebuilt with
-          :func:`~fyst_trajectories.plan_source_ces` from its recorded
+          :func:`~fyst_trajectories.planning.plan_source_ces` from its recorded
           parameters.
 
         Calibration blocks with **no** ``scan_params`` (parked planet cals,
@@ -320,10 +320,11 @@ def accumulate_hitmaps(
 ) -> np.ndarray:
     """Accumulate a boresight-level HEALPix hitmap from trajectories.
 
-    For each trajectory, converts az/el to RA/Dec at each timestep,
-    bins into HEALPix pixels, and sums across all trajectories.
+    For each trajectory, converts every 10th sample from az/el to
+    RA/Dec, bins the result into HEALPix pixels, and sums across all
+    trajectories. Flagged trajectories contribute science samples only.
 
-    This is a simplified boresight-level hitmap (one sample per timestep,
+    This is a simplified boresight-level hitmap (boresight samples only,
     not per detector). For full detector-level hitmaps, use
     primecam_camera_mapping_simulations with the schedule output.
 
@@ -338,7 +339,7 @@ def accumulate_hitmaps(
 
     Returns
     -------
-    np.ndarray
+    numpy.ndarray
         HEALPix map of hit counts per pixel.
 
     Raises
@@ -411,8 +412,13 @@ def compute_budget(timeline: ObservingTimeline) -> dict:
     Returns
     -------
     dict
-        Summary statistics including efficiency, time breakdowns,
-        and per-patch information.
+        ``total_time``, ``science_time``, ``calibration_time``,
+        ``slew_time``, ``idle_time`` (all seconds), ``efficiency``
+        (science fraction of total), ``n_science_scans``,
+        ``n_calibration_blocks``, ``per_patch`` (per patch:
+        ``science_time``, ``n_scans``, ``n_unique_scans``), and
+        ``calibration_breakdown`` (per calibration type: ``count``,
+        ``total_time``).
     """
     stats = {
         "total_time": timeline.total_time,

@@ -65,13 +65,6 @@ class InstrumentOffset:
         in degrees. This accounts for instruments that are mounted at a
         rotational offset from the default orientation. Default is 0.0.
 
-    Attributes
-    ----------
-    dx_deg : float
-        X offset in degrees.
-    dy_deg : float
-        Y offset in degrees.
-
     Examples
     --------
     Create an offset for a detector module:
@@ -525,7 +518,7 @@ def compute_focal_plane_rotation(
 
     The mechanical part (the default, with ``parallactic_angle=0.0``) is
     the orientation of the focal plane relative to the horizon (az/el)
-    axes — the rotation used by the az/el projections
+    axes, the rotation used by the az/el projections
     (:func:`boresight_to_detector`, :func:`detector_to_boresight`,
     :func:`apply_detector_offset`). Adding the parallactic angle gives
     the orientation relative to the celestial (equatorial) axes, used
@@ -611,8 +604,8 @@ def apply_detector_offset(
     -----
     **Precondition: the input trajectory must be in geometric (vacuum)
     coordinates.** This holds on every live path: ``Coordinates(site)``
-    defaults to vacuum and the ACU/Go TCS owns refraction (see
-    ``CLAUDE.md`` "vacuum-by-default"). The mechanical Nasmyth term consumes
+    defaults to vacuum and the FYST ACU applies atmospheric refraction
+    downstream. The mechanical Nasmyth term consumes
     ``trajectory.el`` directly; if the trajectory was instead built with
     ``AtmosphericConditions.for_fyst()`` (refracted, a planning/sim-only
     path), its ``el`` is in the apparent frame and the mechanical rotation

@@ -16,7 +16,7 @@ the solved drift baked into the azimuth track.
 
 ``plan_source_ces`` is consumed at dispatch time by the
 PCS ``source_scan`` task and offline by the
-:mod:`fyst_trajectories.overhead` simulator, whose planet-calibration
+``fyst_trajectories.overhead`` simulator, whose planet-calibration
 path both emits source-CES pass sequences
 (``CalibrationPolicy.planet_cal_scan``) and rebuilds them from recorded
 parameters (``schedule_to_trajectories(science_only=False)``). The
@@ -350,7 +350,8 @@ def _check_arc_sun_safety(
     When ``sun_safe`` is ``None`` (default) the built-in vectorised
     scalar-radius check runs unchanged. When a predicate is injected it
     is consulted per-sample ``(az_i, el_i, time_i)`` instead, so the
-    directional sun-avoidance model (future shared library) is honored;
+    directional sun-avoidance model
+    (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored;
     the warn-only semantics are preserved either way.
     """
     if not site.sun_avoidance.enabled:
@@ -996,7 +997,7 @@ def compute_source_ces_params(
     dispatch.
 
     All keyword arguments are identical to :func:`plan_source_ces`
-    except that ``timestep`` is omitted — only the trajectory builder
+    except that ``timestep`` is omitted - only the trajectory builder
     consumes it. See :func:`plan_source_ces` for full parameter
     documentation.
 
@@ -1051,13 +1052,14 @@ def compute_source_ces_params(
         :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract. ``None``
         (default) keeps the built-in scalar exclusion-radius arc check; an
         injected predicate is consulted per-sample along the planned arc
-        instead, so the directional sun-avoidance model (future shared library)
-        is honored. Warn-only either way.
+        instead, so the directional sun-avoidance model
+        (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored.
+        Warn-only either way.
 
     Returns
     -------
     SourceCESComputedParams
-        Scalar parameters describing the planned source-CES — the same
+        Scalar parameters describing the planned source-CES - the same
         dict that ``plan_source_ces(...).computed_params`` returns.
 
     Raises
@@ -1087,7 +1089,7 @@ def compute_source_ces_params(
     See :func:`plan_source_ces` for the same computation plus per-sample
     trajectory generation. The params-only path avoids ~370 KB of
     trajectory arrays and ~10-20 ms of vectorised compute on a typical
-    15-minute Jupiter scan at ``timestep=0.1`` — a meaningful saving
+    15-minute Jupiter scan at ``timestep=0.1`` - a meaningful saving
     when an upstream scheduler emits dozens of source_ces blocks per
     tactical pass and discards the trajectory.
 
@@ -1236,7 +1238,7 @@ def plan_source_ces(
     ----------
     body : str, optional
         Solar-system body name (one of
-        :data:`fyst_trajectories.SOLAR_SYSTEM_BODIES`). Mutually
+        :data:`fyst_trajectories.coordinates.SOLAR_SYSTEM_BODIES`). Mutually
         exclusive with ``ra``/``dec``.
     ra, dec : float, optional
         Sidereal source position in degrees. Mutually exclusive with
@@ -1251,15 +1253,15 @@ def plan_source_ces(
         Specification of the on-sky cover that the source must traverse.
         Accepted forms:
 
-        * **InstrumentOffset** — a single offset (e.g. one PrimeCam
+        * **InstrumentOffset** - a single offset (e.g. one PrimeCam
           module). Built as a 50-vertex circle around ``(dx, dy)``
           with radius :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG`.
-        * **str** — a named PrimeCam module ("c", "i1", …); resolved
-          via :func:`~fyst_trajectories.get_primecam_offset`.
-        * **sequence of InstrumentOffset** — one entry per module;
+        * **str** - a named PrimeCam module ("c", "i1", …); resolved
+          via :func:`~fyst_trajectories.primecam.get_primecam_offset`.
+        * **sequence of InstrumentOffset** - one entry per module;
           footprint is the union of per-module circles; the aggregate
           center is the arithmetic mean of per-module ``(dx, dy)``.
-        * **ArrayFootprint** — explicit (center, cover) representation;
+        * **ArrayFootprint** - explicit (center, cover) representation;
           mirrors the ``array_info`` dict that SO ``make_source_ces``
           consumes.
     el_bore : float, optional
@@ -1274,7 +1276,7 @@ def plan_source_ces(
         plane rotation when projecting the cover. ``None`` (default)
         is treated as ``0.0`` for footprint geometry but signals to the
         downstream consumer that the boresight rotator is not
-        commanded — matches SO ``make_source_ces``'s "do not rotate
+        commanded - matches SO ``make_source_ces``'s "do not rotate
         the cover" semantics. Pass an explicit ``0.0`` if you want a
         commanded zero rotation.
     window : (Time, Time), optional
@@ -1296,7 +1298,7 @@ def plan_source_ces(
         cannot begin earlier). When ``mode`` is omitted it is taken
         from the sign of the source's elevation slope at the anchor.
         Anchors within a small drift rate of transit are rejected with
-        :class:`~fyst_trajectories.TargetNotObservableError`; anchor
+        :class:`~fyst_trajectories.exceptions.TargetNotObservableError`; anchor
         away from transit or pass ``el_bore`` explicitly.
     mode : {"rising", "setting"}, optional
         Which monotonic arc of the source to use. Required when
@@ -1311,7 +1313,7 @@ def plan_source_ces(
         Telescope site.
     atmosphere : AtmosphericConditions, optional
         Refraction model passed to the underlying :class:`Coordinates`.
-        Default ``None`` (vacuum) — matches the rest of the planning
+        Default ``None`` (vacuum) - matches the rest of the planning
         subpackage. The FYST ACU applies refraction at execution.
     timestep : float, optional
         Time between trajectory samples in seconds. Default 0.1.
@@ -1334,9 +1336,9 @@ def plan_source_ces(
         Behaviour when the source's elevation span does not cover the
         full footprint at ``el_bore`` (i.e. some cover vertices fall
         outside the source's elevation range). Default ``False``
-        raises :class:`~fyst_trajectories.TargetNotObservableError`.
+        raises :class:`~fyst_trajectories.exceptions.TargetNotObservableError`.
         Pass ``True`` to clip ``(t0, t1)`` to the overlap and emit a
-        :class:`~fyst_trajectories.PointingWarning` instead — useful
+        :class:`~fyst_trajectories.exceptions.PointingWarning` instead - useful
         for sources observed near the limit of their accessible arc.
     v_az : float, optional
         Override the solved azimuth drift rate (deg/s) instead of
@@ -1349,8 +1351,8 @@ def plan_source_ces(
         position is clear of the Sun. ``None`` (default) keeps the built-in
         scalar exclusion-radius check along the planned arc; an injected
         predicate is consulted per-sample instead, so the directional
-        sun-avoidance model (future shared library) is honored end-to-end.
-        Warn-only either way. See
+        sun-avoidance model (see :func:`~fyst_trajectories.sun_models.make_sun_safe`)
+        is honored end-to-end. Warn-only either way. See
         :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
 
     Returns
@@ -1358,7 +1360,7 @@ def plan_source_ces(
     ScanBlock
         Planned observation. ``trajectory`` is a constant-elevation
         scan with the solved drift baked in. ``config`` is a
-        :class:`~fyst_trajectories.ConstantElScanConfig`.
+        :class:`~fyst_trajectories.patterns.ConstantElScanConfig`.
         ``computed_params`` is a :class:`SourceCESComputedParams`.
 
     Raises
@@ -1399,19 +1401,19 @@ def plan_source_ces(
     If ``az_branch`` produces an az interval outside
     ``site.telescope_limits.azimuth``, the post-build
     :func:`~fyst_trajectories.trajectory_utils.validate_trajectory_bounds`
-    raises :class:`~fyst_trajectories.AzimuthBoundsError`. For FYST
+    raises :class:`~fyst_trajectories.exceptions.AzimuthBoundsError`. For FYST
     (limits −180° to 360°), ``az_branch`` values near −180° can
     produce out-of-range scans even when geometrically valid.
 
     ``plan_source_ces`` has two consumers. At dispatch time the
     PCS ``source_scan`` task re-plans the pass with fresh
-    ephemeris. Offline, the :mod:`fyst_trajectories.overhead` simulator
+    ephemeris. Offline, the ``fyst_trajectories.overhead`` simulator
     calls the source-CES planners on both sides of its planet-calibration
     path: ``CalibrationPolicy.planet_cal_scan`` emits each calibration as
     a pass sequence (via :func:`plan_source_ces_passes`), and
     ``schedule_to_trajectories(science_only=False)`` rebuilds those
-    passes from their recorded parameters. See ``docs/planning.rst``
-    "Source CES" for the wider conventions discussion.
+    passes from their recorded parameters. See :doc:`/planning`
+    ("Source CES") for the wider conventions discussion.
 
     Examples
     --------
@@ -1762,7 +1764,8 @@ def plan_source_ces_passes(
     coverage across the footprint (fine eta offsets) and stays
     non-overlapping in time (an ``el_step`` of order the footprint
     extent). Reducing ``el_step`` below the footprint extent will overlap
-    the passes in time, and a :class:`PointingWarning` is emitted when
+    the passes in time, and a
+    :class:`~fyst_trajectories.exceptions.PointingWarning` is emitted when
     the returned pass windows overlap.
 
     Parameters

@@ -2,20 +2,8 @@ Trajectory Generation Examples
 ==============================
 
 Examples for generating telescope trajectories using the patterns package.
-Trajectories are compatible with the ACU ProgramTrack mode and OCS ``/path`` endpoint.
-
-Setup
------
-
-::
-
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import TrajectoryBuilder
-
-    site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+Trajectories serialize to the Go TCS ``/path`` request body and to ACU
+ProgramTrack ``TrackPoint`` rows.
 
 The ``Trajectory`` Object
 -------------------------
@@ -27,22 +15,19 @@ Pattern generation returns a ``Trajectory`` containing:
 - ``az_vel``, ``el_vel`` - Velocities in deg/s (numpy arrays)
 - ``start_time`` - Absolute start (astropy Time)
 - ``scan_flag`` - Per-sample flags: 0=unclassified, 1=science, 2=turnaround, 3=retune
+- ``retune_events`` - Tuple of ``RetuneEvent`` populated by ``inject_retune``
+  (see :doc:`retune_events`)
 - ``science_mask`` - Boolean property: True for science-quality samples
 - ``pattern_type``, ``pattern_params`` - Metadata (from ``TrajectoryMetadata``)
 - ``duration``, ``n_points`` - Computed properties
 
-**Export for OCS**::
+**Export for Go TCS**::
 
-    from fyst_trajectories.trajectory_utils import to_path_format
+    from fyst_trajectories.trajectory_utils import to_path_payload
 
-    # List of [time, az, el, az_vel, el_vel]
-    points = to_path_format(trajectory)
-
-    payload = {
-        "start_time": trajectory.start_time.unix,
-        "coordsys": "Horizon",
-        "points": points,
-    }
+    # {"start_time": <abs Unix s>, "coordsys": "Horizon",
+    #  "points": [[t, az, el, az_vel, el_vel], ...]}
+    payload = to_path_payload(trajectory)
 
 **Print formatted summary**::
 
@@ -240,7 +225,7 @@ In production the PCS ACU agent receives scan parameters from the OCS
 scheduler, calls fyst-trajectories to build a trajectory, and uploads it
 via ``aculib``::
 
-    OCS Scheduler --[scan config]--> agent.execute_scan()
+    OCS Scheduler --[scan config]--> agent.pong_scan()
                                         |
                                         v
                                     fyst-trajectories  (trajectory planning)
@@ -254,7 +239,7 @@ via ``aculib``::
 fyst-trajectories is a library dependency of the PCS agent, not an OCS
 agent itself. Inside an agent task, a typical scan looks like::
 
-    # Inside ACUAgent.execute_pong_scan() -- an OCS task
+    # Inside ACUAgent.pong_scan() - an OCS task
     from astropy.time import Time
 
     from fyst_trajectories import get_fyst_site, resolve_offset
@@ -297,25 +282,15 @@ For local testing without the PCS agent, POST the same payload directly::
 
     import requests
 
-    from fyst_trajectories.trajectory_utils import to_path_format
+    from fyst_trajectories.trajectory_utils import to_path_payload
 
-    payload = {
-        "start_time": trajectory.start_time.unix,
-        "coordsys": "Horizon",
-        "points": to_path_format(trajectory),
-    }
-    response = requests.post("http://localhost:8000/path", json=payload)
+    response = requests.post(
+        "http://localhost:5600/path", json=to_path_payload(trajectory)
+    )
 
 The planning and simulation pipelines import the same library, so
 trajectories used for coverage analysis match what the telescope executes
 at runtime.
-
-.. tip::
-
-   For field-based constant-elevation observations, use
-   :func:`~fyst_trajectories.planning.plan_constant_el_scan` instead of manually
-   constructing ``ConstantElScanConfig``. It auto-computes the azimuth range,
-   duration, and number of scans from a ``FieldRegion``. See :doc:`planning`.
 
 Drift Scan (Planet Calibration)
 -------------------------------

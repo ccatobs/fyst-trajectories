@@ -6,6 +6,7 @@ in the fyst-trajectories API needed by the scheduler.
 """
 
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy import units as u
@@ -14,6 +15,9 @@ from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
 from ..site import Site
+
+if TYPE_CHECKING:
+    from ..dispatch import SunSafePredicate
 
 __all__ = [
     "circular_mean_deg",
@@ -59,10 +63,10 @@ def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
     :meth:`fyst_trajectories.coordinates.Coordinates.get_field_rotation`,
     which needs RA/Dec.
 
-    ``coordinates.get_parallactic_angle`` derives the parallactic angle from
-    the same transformed (vacuum) Az/El, so this function and that method
-    return the same value to machine precision; see ``TestNasmythConsistency``
-    in ``tests/overhead/test_io.py`` for the cross-check.
+    :meth:`~fyst_trajectories.coordinates.Coordinates.get_parallactic_angle`
+    derives the parallactic angle from the same transformed (vacuum) Az/El,
+    so this function and that method return the same value to machine
+    precision.
 
     Parameters
     ----------
@@ -122,9 +126,8 @@ def estimate_slew_time(
        ``[az_min, az_max] = [-180, 360]`` range). Mixing raw astropy
        ``[0, 360]`` azimuth with telescope-normalised ``[-180, 360]``
        azimuth produces a 360°-off slew estimate; the function does not
-       enforce or check this. The scheduler phases (which always
-       normalise via :func:`_compute_az_range`) are the only intended
-       callers.
+       enforce or check this. The overhead scheduler normalises azimuth
+       before every call; standalone callers must do the same.
 
     Parameters
     ----------
@@ -155,6 +158,10 @@ def estimate_slew_time(
 
 def _axis_slew_time(distance: float, max_vel: float, max_accel: float) -> float:
     """Compute slew time for a single axis with trapezoidal profile.
+
+    Same profile as ``sun_models._axis_slew_duration`` (deliberate
+    duplication: this subpackage sits above ``sun_models`` in the import
+    graph).
 
     Parameters
     ----------
@@ -191,6 +198,7 @@ def get_observable_windows(
     site: Site,
     min_elevation: float = 30.0,
     check_sun: bool = True,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> list[tuple[Time, Time]]:
     """Find all time windows when a target is observable.
 
@@ -214,12 +222,29 @@ def get_observable_windows(
         Minimum elevation in degrees (default: 30).
     check_sun : bool
         Whether to check sun avoidance (default: True).
+    sun_safe : SunSafePredicate, optional
+        Injected sun-safety model
+        (:class:`~fyst_trajectories.dispatch.SunSafePredicate`, e.g. from
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`) used for the
+        sun sub-window filtering instead of the site's scalar exclusion
+        radius. Default ``None``. Only consulted when ``check_sun`` is
+        true and the site has Sun avoidance enabled.
 
     Returns
     -------
     list of (Time, Time)
         List of (window_start, window_end) pairs.
+
+    Raises
+    ------
+    ValueError
+        If ``sun_safe`` is given while ``check_sun`` is False (the model
+        would be silently ignored).
     """
+    if sun_safe is not None and not check_sun:
+        raise ValueError(
+            "sun_safe was given but check_sun is False; enable check_sun or drop the model."
+        )
     coords = Coordinates(site)
     windows = []
     search_start = start_time
@@ -271,7 +296,13 @@ def get_observable_windows(
         if check_sun and site.sun_avoidance.enabled:
             # Sub-divide the window, removing sun-unsafe intervals
             safe_windows = _filter_sun_unsafe(
-                ra, dec, rise, set_time, coords, site.sun_avoidance.exclusion_radius
+                ra,
+                dec,
+                rise,
+                set_time,
+                coords,
+                site.sun_avoidance.exclusion_radius,
+                sun_safe=sun_safe,
             )
             windows.extend(safe_windows)
         else:
@@ -291,6 +322,7 @@ def _filter_sun_unsafe(
     coords: Coordinates,
     min_sun_angle: float,
     step_minutes: float = 5.0,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> list[tuple[Time, Time]]:
     """Filter out sun-unsafe portions of an observable window.
 
@@ -303,9 +335,11 @@ def _filter_sun_unsafe(
     coords : Coordinates
         Coordinate transformer.
     min_sun_angle : float
-        Minimum angular separation from Sun in degrees.
+        Minimum angular separation from Sun in degrees (scalar mode).
     step_minutes : float
         Time resolution for sun safety sampling.
+    sun_safe : SunSafePredicate, optional
+        Injected model whose verdicts replace the scalar separation test.
 
     Returns
     -------
@@ -319,11 +353,30 @@ def _filter_sun_unsafe(
     )
 
     az_arr, el_arr = coords.radec_to_altaz(ra, dec, times)
-    sun_az_arr, sun_alt_arr = coords.get_sun_altaz(times)
-    c_target = SkyCoord(az=az_arr * u.deg, alt=el_arr * u.deg, frame="altaz")
-    c_sun = SkyCoord(az=sun_az_arr * u.deg, alt=sun_alt_arr * u.deg, frame="altaz")
-    sep = c_target.separation(c_sun).deg
-    safe_mask = sep > min_sun_angle
+    if sun_safe is not None:
+        if hasattr(sun_safe, "batch"):
+            safe_mask = np.atleast_1d(np.asarray(sun_safe.batch(az_arr, el_arr, times), dtype=bool))
+            if safe_mask.shape != (n_steps,):
+                # A scalar/short result would silently broadcast one verdict
+                # over the whole window; fail loudly instead.
+                raise ValueError(
+                    f"sun_safe.batch returned shape {safe_mask.shape}, expected "
+                    f"({n_steps},) verdicts for the window grid"
+                )
+        else:
+            safe_mask = np.array(
+                [
+                    bool(sun_safe(float(az_arr[i]), float(el_arr[i]), times[i]))
+                    for i in range(n_steps)
+                ],
+                dtype=bool,
+            )
+    else:
+        sun_az_arr, sun_alt_arr = coords.get_sun_altaz(times)
+        c_target = SkyCoord(az=az_arr * u.deg, alt=el_arr * u.deg, frame="altaz")
+        c_sun = SkyCoord(az=sun_az_arr * u.deg, alt=sun_alt_arr * u.deg, frame="altaz")
+        sep = c_target.separation(c_sun).deg
+        safe_mask = sep > min_sun_angle
 
     windows = []
     in_safe = False

@@ -106,8 +106,14 @@ The set of FYST extension columns may grow over time; any
 as a dedicated column lands in ``block_meta_json`` so the round-trip remains
 lossless.
 
-Header metadata includes site coordinates, overhead model parameters, and
-calibration policy cadences.
+Header metadata carries the declared timeline window, the site (coordinates,
+Nasmyth port, plate scale, sun-avoidance radii), and every
+:class:`~fyst_trajectories.overhead.OverheadModel` and
+:class:`~fyst_trajectories.overhead.CalibrationPolicy` field. Any key missing
+from a file falls back to that dataclass's default on read, so a partial or
+hand-written header still loads. Telescope axis limits are not persisted: a
+non-FYST site reloads with the FYST limits and a
+:class:`~fyst_trajectories.exceptions.PointingWarning`.
 
 TOAST Compatibility
 -------------------
@@ -115,17 +121,18 @@ TOAST Compatibility
 Files written by fyst-trajectories use TOAST canonical column names for the
 common fields **and** attach ``u.deg`` units to the angle columns
 (``azmin``, ``azmax``, ``el``, ``boresight_angle``), with the site
-coordinates stored as ``Quantity`` header metadata. They can therefore be
-read directly by TOAST's ``GroundSchedule`` v5 reader, whose ``GroundScan``
-consumes those columns via ``to_value(u.degree)`` (it will ignore the FYST
-extension columns).
+coordinates stored as ``Quantity`` header metadata. TOAST's
+``GroundSchedule`` v5 reader can therefore read them directly, ignoring
+the FYST extension columns.
 
 Standard TOAST schedule files (without ``block_type``, ``scan_type``,
 ``rising``, or the patch-geometry extension columns) are also supported on
 read. They are interpreted as all-science timelines with sensible defaults
 for the missing FYST extension columns.
 
-To produce a TOAST-only file, filter to science blocks before writing::
+To hand TOAST a schedule with no calibration, slew, or idle rows, filter to
+science blocks before writing (the FYST extension columns are still written;
+TOAST ignores them)::
 
     from fyst_trajectories.overhead import ObservingTimeline, write_timeline
 

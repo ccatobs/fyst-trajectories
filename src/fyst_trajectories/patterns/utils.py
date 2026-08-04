@@ -76,11 +76,12 @@ def validate_sample_count(duration: float, timestep: float) -> int:
 
 @contextmanager
 def wrap_bounds_error(target: str, time_info: str) -> Iterator[None]:
-    """Convert :class:`TrajectoryBoundsError` into :class:`TargetNotObservableError`.
+    """Convert a bounds error into :class:`~fyst_trajectories.exceptions.TargetNotObservableError`.
 
     Many pattern generators need to wrap a call to
     :func:`~fyst_trajectories.trajectory_utils.validate_trajectory_bounds`
-    with identical boilerplate that re-raises the bounds error as a
+    with identical boilerplate that re-raises the
+    :class:`~fyst_trajectories.exceptions.TrajectoryBoundsError` as a
     target-not-observable error, suppressing the chained traceback.
 
     Parameters

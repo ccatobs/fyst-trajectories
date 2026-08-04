@@ -20,10 +20,10 @@ Frame Aliases
 +-------------------+----------------------------+
 
 Only spherical RA/Dec frames (``J2000``/``FK5``/``B1950``) are usable with
-:meth:`~fyst_trajectories.Coordinates.radec_to_altaz` /
-:meth:`~fyst_trajectories.Coordinates.altaz_to_radec`. ``GALACTIC`` and
-``ECLIPTIC`` are intentionally not aliased: those frames use ``l``/``b`` and
-``lon``/``lat`` and would raise in the transform methods.
+:meth:`~fyst_trajectories.coordinates.Coordinates.radec_to_altaz` /
+:meth:`~fyst_trajectories.coordinates.Coordinates.altaz_to_radec`.
+``GALACTIC`` and ``ECLIPTIC`` are intentionally not aliased: those frames use
+``l``/``b`` and ``lon``/``lat`` and would raise in the transform methods.
 
 .. [#j2k] ``J2000`` is a label of convenience: this library maps it to
    ``icrs``, but ICRS and FK5(J2000) differ by ~22 mas (the IAU 1997
@@ -78,11 +78,10 @@ Pattern-generated trajectories track coordinate provenance:
 Proper Motion
 -------------
 
-High proper motion stars are handled by ``radec_to_altaz_with_pm()``.
-For trajectory generation (output sent to the ACU), bare
-``Coordinates(site)`` is appropriate. The ACU applies atmospheric
-refraction downstream. For planning/simulation,
-``AtmosphericConditions.for_fyst()`` can be passed instead::
+``radec_to_altaz_with_pm()`` propagates a catalogue position from its
+reference epoch to the observation time before transforming to Az/El. Use it
+for stars whose proper motion has moved them by more than the beam since the
+catalogue epoch::
 
     from astropy.time import Time
 

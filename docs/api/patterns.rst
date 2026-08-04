@@ -218,8 +218,8 @@ determined at runtime::
     # Get pattern class by name (useful for plugins or config-driven selection)
     PatternClass = get_pattern("pong")
 
-    # Get pattern class from a config instance (used by TrajectoryBuilder)
-    PatternClass = get_pattern_for_config(PongScanConfig)
+    # Get the pattern NAME from a config class (used by TrajectoryBuilder)
+    pattern_name = get_pattern_for_config(PongScanConfig)   # "pong"
 
 .. autofunction:: fyst_trajectories.patterns.list_patterns
 
@@ -239,7 +239,9 @@ Boundary-Error Handling
 
 When a trajectory exceeds telescope limits, a
 :class:`~fyst_trajectories.exceptions.TargetNotObservableError` is raised
-identifying the target and start time. Custom pattern authors should use
-``wrap_bounds_error`` for consistent error messages.
+identifying the target and start time. Custom pattern authors should wrap
+their bounds check for consistent error messages::
+
+    from fyst_trajectories.patterns.utils import wrap_bounds_error
 
 .. autofunction:: fyst_trajectories.patterns.utils.wrap_bounds_error

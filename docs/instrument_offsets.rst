@@ -42,7 +42,7 @@ Field Rotation Decomposition
 For alt-az mounted telescopes like FYST, the focal plane rotates as objects
 are tracked. The total rotation applied to detector offsets is decomposed into:
 
-**Mechanical rotation** (always available):
+**Mechanical rotation** (needs no celestial metadata):
 
     ``nasmyth_sign * elevation + instrument_rotation``
 
@@ -142,12 +142,6 @@ Apply offset to entire trajectory with time-varying field rotation::
     offset = InstrumentOffset(dx=30.0, dy=0.0)
     adjusted = apply_detector_offset(trajectory, offset, site)
 
-.. note::
-
-   For AltAz trajectories (no RA/Dec), ``apply_detector_offset`` uses only
-   the mechanical rotation and emits a warning. This is physically correct
-   for focal-plane-to-AltAz conversion but does not include sky rotation.
-
 PrimeCam Offsets
 ----------------
 
@@ -175,7 +169,11 @@ Predefined offsets for PrimeCam focal plane:
 
 .. note::
 
-   These are illustrative values pending FYST instrument-team confirmation.
+   These positions are derived from the default plate scale (13.89 arcsec/mm)
+   and inner-ring radius (461.3 mm), both commissioning-era defaults awaiting
+   FYST instrument-team confirmation. Every off-axis offset scales linearly
+   with both, so a revision to either shifts the whole inner ring. See
+   :doc:`index` for the full list of parameters pending verification.
 
 **Access**::
 
@@ -282,17 +280,8 @@ the sky.
 Offset Calculation
 ------------------
 
-The library uses spherical trigonometry for all offset calculations, providing
-sub-milliarcsecond precision for both small and large offsets::
-
-    from fyst_trajectories import InstrumentOffset
-    from fyst_trajectories.offsets import boresight_to_detector
-
-    # Works for any offset size (small or large)
-    offset = InstrumentOffset(dx=180.0, dy=90.0, name="OuterRing")  # 3 degrees
-
-    det_az, det_el = boresight_to_detector(
-        az=180.0, el=45.0,
-        offset=offset,
-        field_rotation=30.0,
-    )
+All offset math uses exact spherical trigonometry (``offsets._offset_forward``
+rewrites the great-circle formulas through ``sinc(rho)`` for stability at
+``rho = 0``), so the calls shown above are equally accurate at any offset
+size: a 3-degree outer-ring offset costs no precision relative to a 5-arcmin
+one.

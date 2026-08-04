@@ -63,11 +63,11 @@ class CalibrationState:
         """Determine which calibrations are due.
 
         Checks each calibration type against its cadence. A cadence of 0
-        means "every scan boundary"; the retune is always reported due in
-        that case, and the scheduler inserts it before each subscan
-        (``ScienceScanPhase``) while its per-tick ``CalibrationPhase``
-        deliberately skips it after the startup burst, so idle ticks never
-        retune a parked telescope. Beam mapping has
+        keeps that calibration permanently due; the retune is always
+        reported due in that case, and the scheduler inserts it before
+        each science subscan (``ScienceScanPhase``) while its per-tick
+        ``CalibrationPhase`` deliberately skips it after the startup
+        burst, so idle ticks never retune a parked telescope. Beam mapping has
         a nullable cadence; ``policy.beam_map_cadence is None`` (the
         default) keeps beam maps off the automatic schedule entirely.
 

@@ -51,7 +51,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -60,7 +60,7 @@ from .coordinates import (
     Coordinates,
     normalize_frame,
 )
-from .dispatch import SunSafePredicate, choose_encoder_solution
+from .dispatch import SlewSafePredicate, SunSafePredicate, choose_encoder_solution
 from .exceptions import (
     AccelerationLimitWarning,
     AzimuthBoundsError,
@@ -72,16 +72,23 @@ from .exceptions import (
     VelocityLimitWarning,
 )
 from .observability import (
+    ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG,
+    CIVIL_TWILIGHT_ALTITUDE_DEG,
     FLUX_CALIBRATORS,
+    NAUTICAL_TWILIGHT_ALTITUDE_DEG,
+    SUN_RISE_SET_ALTITUDE_DEG,
     AvoidSeparation,
     AvoidZone,
     ObservabilityReport,
     ObservabilityWindow,
     ReasonCode,
+    SunEvent,
+    SunEventKind,
     Target,
     TargetKind,
     check_observability,
     resolve_target,
+    sun_events,
 )
 from .offsets import (
     InstrumentOffset,
@@ -254,6 +261,7 @@ __all__ = [
     # Dispatch-time helpers (execution layer)
     "choose_encoder_solution",
     "SunSafePredicate",
+    "SlewSafePredicate",
     # Observability (OBSERVE / EXCLUDE primitives)
     "check_observability",
     "resolve_target",
@@ -265,6 +273,13 @@ __all__ = [
     "ObservabilityWindow",
     "ReasonCode",
     "FLUX_CALIBRATORS",
+    "sun_events",
+    "SunEvent",
+    "SunEventKind",
+    "SUN_RISE_SET_ALTITUDE_DEG",
+    "CIVIL_TWILIGHT_ALTITUDE_DEG",
+    "NAUTICAL_TWILIGHT_ALTITUDE_DEG",
+    "ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG",
     # Trajectory
     "Trajectory",
     "SCAN_FLAG_UNCLASSIFIED",

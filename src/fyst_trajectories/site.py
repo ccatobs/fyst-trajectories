@@ -34,6 +34,7 @@ Get the default FYST site:
 
 Load a custom (non-FYST) configuration from YAML:
 
+>>> from fyst_trajectories.site import Site
 >>> site = Site.from_config("/path/to/custom_config.yaml")
 """
 
@@ -52,13 +53,16 @@ from astropy.coordinates import EarthLocation
 #   lat = -22d59m08.30s, lon = -67d44m25.00s, elev = 5611.8 m
 
 FYST_LATITUDE: float = -22.985639
-"""FYST latitude in degrees (South). Source: FYST TCS astro.go."""
+"""FYST latitude in degrees (South). Source: the FYST telescope control system (astro.go)."""
 
 FYST_LONGITUDE: float = -67.740278
-"""FYST longitude in degrees (West). Source: FYST TCS astro.go."""
+"""FYST longitude in degrees (West). Source: the FYST telescope control system (astro.go)."""
 
 FYST_ELEVATION: float = 5611.8
-"""FYST elevation in meters above sea level. Source: FYST TCS astro.go."""
+"""FYST elevation in meters above sea level.
+
+Source: the FYST telescope control system (astro.go).
+"""
 
 FYST_PLATE_SCALE: float = 13.89
 """FYST plate scale in arcsec/mm. Source: optical design."""
@@ -81,13 +85,13 @@ FYST_NASMYTH_PORT: str = "right"
 # hardware limits cited in commands.go.
 
 FYST_AZ_MIN: float = -180.0
-"""Minimum azimuth in degrees. Source: FYST TCS commands.go."""
+"""Minimum azimuth in degrees. Source: the FYST telescope control system (commands.go)."""
 
 FYST_AZ_MAX: float = 360.0
-"""Maximum azimuth in degrees. Source: FYST TCS commands.go."""
+"""Maximum azimuth in degrees. Source: the FYST telescope control system (commands.go)."""
 
 FYST_AZ_MAX_VELOCITY: float = 3.0
-"""Maximum azimuth velocity in degrees/second. Source: FYST TCS."""
+"""Maximum azimuth velocity in degrees/second. Source: the FYST telescope control system."""
 
 FYST_AZ_MAX_ACCELERATION: float = 1.5
 """Maximum azimuth acceleration in degrees/second^2.
@@ -103,14 +107,15 @@ FYST_EL_MIN: float = 20.0
 """Minimum elevation in degrees.
 
 Conservative operational limit (planning-layer choice), not a TCS bound: the
-Go TCS accepts el down to -90 deg (commands.go).
+FYST telescope control system accepts el down to -90 deg.
 """
 
 FYST_EL_MAX: float = 90.0
 """Maximum elevation in degrees.
 
 Conservative operational limit (planning-layer choice): Prime-Cam does not point
-over the top. The Go TCS hardware bound is 180 deg / el>90 (commands.go).
+over the top. The FYST telescope control system's hardware bound is 180 deg /
+el > 90.
 """
 
 FYST_EL_MAX_VELOCITY: float = 1.0
@@ -123,25 +128,33 @@ FYST_EL_MAX_ACCELERATION: float = 0.75
 """Maximum elevation acceleration in degrees/second^2.
 
 Conservative operational limit (TCS hardware limit: 1.5 deg/s^2).
-Raised in tandem with the azimuth limit (1.5x the previous floor) as a
-companion consistency adjustment; it clears the near-limit elevation band
-for aggressive pong scans, while genuinely over-limit plans still warn.
+It clears the near-limit elevation band for aggressive pong scans, while
+genuinely over-limit plans still warn.
 """
 
 # Tier 3: Operational defaults (may change between observing seasons)
 
-# FYST sun avoidance radii. The 45 deg exclusion is comparable to the
-# Simons Observatory SAT's 41 deg at similar altitude and submillimetre
-# wavelengths (Hoang et al. 2024, arXiv:2406.10905), supporting the
-# magnitude. ALMA uses 15 deg (much more permissive) at lower altitude
-# with different optical/thermal constraints.
-# UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-FYST_SUN_EXCLUSION_RADIUS: float = 45.0
-"""Sun exclusion radius in degrees."""
+# FYST sun avoidance radii. The 50 deg exclusion is the FLOOR (global
+# minimum) of FYST's own hardware model, the directional CAD-derived
+# table sa_safe_CAD_20231030.csv (minimum separation 50-90 deg depending
+# on the Sun's clock angle): the scalar is the inscribed cone of that
+# zone, so it never permits a pointing the CAD model forbids at its most
+# permissive direction, while the full directional model
+# (fyst_trajectories.sun_models.make_sun_safe("cad")) enforces the rest.
+# Ratified 2026-08-03 (Q-1 in docs/reviews/fyst_team_questions.md; the
+# earlier 45 deg heritage estimate sat BELOW the CAD floor). For scale:
+# SO SAT uses 41 deg at similar altitude/wavelengths (arXiv:2406.10905).
+FYST_SUN_EXCLUSION_RADIUS: float = 50.0
+"""Sun exclusion radius in degrees.
 
-# UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-FYST_SUN_WARNING_RADIUS: float = 50.0
-"""Sun warning radius in degrees."""
+The inscribed cone (floor) of FYST's directional CAD-derived avoidance
+zone, whose minimum Sun separation runs 50-90 deg with the Sun's
+direction in the mount frame. The full directional model is available via
+``fyst_trajectories.sun_models.make_sun_safe("cad")``.
+"""
+
+FYST_SUN_WARNING_RADIUS: float = 55.0
+"""Sun warning radius in degrees (5 deg of margin above the exclusion floor)."""
 
 FYST_SUN_AVOIDANCE_ENABLED: bool = True
 """Whether sun avoidance is enabled by default."""
@@ -435,8 +448,9 @@ class SunAvoidanceConfig:
     ------
     ValueError
         When ``enabled`` and either ``exclusion_radius < 0`` or
-        ``warning_radius < exclusion_radius`` (which would leave an empty
-        warning band, or silently disable avoidance entirely).
+        ``warning_radius <= exclusion_radius`` (equality would leave an
+        empty warning band: every warning-worthy pointing would already be
+        excluded, silently disabling the warning tier).
     """
 
     enabled: bool
@@ -452,10 +466,11 @@ class SunAvoidanceConfig:
             raise ValueError(
                 f"exclusion_radius ({self.exclusion_radius}) must be >= 0 when enabled"
             )
-        if self.warning_radius < self.exclusion_radius:
+        if self.warning_radius <= self.exclusion_radius:
             raise ValueError(
-                f"warning_radius ({self.warning_radius}) must be >= exclusion_radius "
-                f"({self.exclusion_radius}) when enabled"
+                f"warning_radius ({self.warning_radius}) must be strictly greater than "
+                f"exclusion_radius ({self.exclusion_radius}) when enabled (equal radii "
+                "leave an empty warning band)"
             )
 
 

@@ -1,8 +1,9 @@
-Planning Module
-===============
+Planning Package
+================
 
 High-level planning functions that translate astronomer-friendly inputs
-into pattern configurations and trajectories.
+into pattern configurations and trajectories. Worked examples for every
+scan type are in :doc:`/planning`.
 
 .. automodule:: fyst_trajectories.planning
    :members:
@@ -46,7 +47,7 @@ Each planner function returns a :class:`ScanBlock` whose
    ``"source_ces"`` is intentionally not accepted by
    ``validate_computed_params``. :func:`plan_source_ces` is
    planner-only and self-validates against
-   :attr:`SourceCESComputedParams.__required_keys__` directly.
+   ``SourceCESComputedParams.__required_keys__`` directly.
    The overhead-side :func:`~fyst_trajectories.overhead.validate_scan_params`
    *does* accept ``"source_ces"`` (for planet-calibration passes recorded as
    ``SourceCESScanParams``); the two validators track deliberately different

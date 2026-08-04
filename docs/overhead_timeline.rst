@@ -5,6 +5,8 @@ Timeline Generation
 and calibration activities over an observing window. At each time step it
 inserts any calibrations whose cadence has elapsed, picks the best-positioned
 observable patch, schedules a science scan on it, and advances the clock.
+A constant-elevation patch is only selectable while its elevation-crossing
+pass is imminent, so expect idle blocks before such a pass opens.
 
 ObservingPatch Setup
 --------------------
@@ -66,11 +68,10 @@ for all available fields.
 
     site = get_fyst_site()
 
-    # Aggressive calibration (commissioning override): pointing every
-    # 30 min, focus every hour. Overrides the default pointing_cadence
-    # of 3600 s.
+    # Aggressive commissioning cadences: pointing every 30 min, focus
+    # every hour.
     policy = CalibrationPolicy(
-        retune_cadence=0.0,          # every scan boundary
+        retune_cadence=0.0,          # before every science subscan
         pointing_cadence=1800.0,     # 30 min (override of 3600 s default)
         focus_cadence=3600.0,        # 1 hour
         skydip_cadence=7200.0,       # 2 hours
@@ -143,7 +144,8 @@ The returned :class:`~fyst_trajectories.overhead.ObservingTimeline` contains a l
 +===================+===============================================+
 | ``"science"``     | Science observation of a patch                |
 +-------------------+-----------------------------------------------+
-| ``"calibration"`` | Retune, pointing, focus, skydip, or planet cal|
+| ``"calibration"`` | Retune, pointing, focus, skydip, planet cal,  |
+|                   | or beam map                                   |
 +-------------------+-----------------------------------------------+
 | ``"slew"``        | Telescope slew between positions              |
 +-------------------+-----------------------------------------------+
@@ -164,11 +166,13 @@ Regenerating Trajectories
 A timeline stores scan geometry in ``block.metadata``, not motion arrays.
 To rebuild az/el/time arrays for every science block (e.g. for coverage
 simulation),
-:func:`~fyst_trajectories.overhead.schedule_to_trajectories` iterates the
+:func:`~fyst_trajectories.overhead.schedule_to_trajectories` walks the
 timeline, calls the appropriate ``plan_*_scan`` function for each science
-block, and yields ``(TimelineBlock, ScanBlock)`` pairs. Blocks that are
-no longer feasible at execution time (e.g. because of drifting
-elevation) are logged and skipped rather than raising.
+block, and returns a list of ``(TimelineBlock, ScanBlock)`` pairs. Pass
+``science_only=False`` to also rebuild planet calibrations that were
+planned as source-CES passes. Blocks that are no longer feasible at
+execution time (e.g. because of drifting elevation) are logged and
+skipped rather than raising.
 
 ::
 

@@ -5,16 +5,15 @@ The overhead subpackage is a **planning-time / simulation-only** tool. This
 page explains where it sits in the FYST observing pipeline, who owns each
 category of input, and what downstream integrations exist today.
 
-FYST hosts two instrument pipelines: Prime-Cam (SO-derived) and CHAI
-(KOSMA-derived). This library and the typed PCS scan tasks serve the
-Prime-Cam lane; the framing below is written for that lane.
+FYST hosts two instrument pipelines: Prime-Cam, whose control software is
+derived from the Simons Observatory stack, and CHAI, on the KOSMA stack.
+This library and the typed PCS scan tasks serve the Prime-Cam lane; the
+framing below is written for that lane.
 
 Three Scheduler Layers
 ----------------------
 
-FYST's observing workflow separates into three conceptual layers. The
-overhead subpackage is an offline simulator that mimics what the
-tactical layer produces; it does not drive live observing.
+FYST's observing workflow separates into three conceptual layers.
 
 .. list-table::
    :header-rows: 1
@@ -27,8 +26,8 @@ tactical layer produces; it does not drive live observing.
      - **Survey/visibility scheduler.** Decide which observing units are
        observable across many nights and enforce
        cadence/grouping/PWV constraints.
-     - An upstream survey planner selects observing units across nights
-       and records the selection for the tactical layer.
+     - Outside this library. An upstream survey planner records its
+       selection for the tactical layer.
    * - B
      - **Tactical scheduler / command emission.** Given a prioritized
        block list for one night, interleave science with calibrations
@@ -36,8 +35,8 @@ tactical layer produces; it does not drive live observing.
      - **Live:** the observatory scheduling layer expands the selected
        observing units and dispatches the typed PCS scan tasks
        (``pong_scan``, ``daisy_scan``, ``constant_el_scan``,
-       ``source_scan``), each of which calls the ``plan_*_scan``
-       planners at dispatch time.
+       ``source_scan``), each of which calls a fyst-trajectories planner
+       at dispatch time.
        **Offline simulation:** this subpackage,
        :func:`~fyst_trajectories.overhead.generate_timeline` produces a
        realistic minute-by-minute ECSV for survey-design studies and
@@ -48,11 +47,11 @@ tactical layer produces; it does not drive live observing.
      - The ``ccatobs/pcs`` ACU agent posts each trajectory to the
        telescope control system, which uploads the motion program to the
        Vertex ACU. The typed PCS scan tasks call
-       :func:`~fyst_trajectories.plan_pong_scan` etc. and
-       :func:`~fyst_trajectories.to_path_payload`.
+       :func:`~fyst_trajectories.planning.plan_pong_scan` etc. and
+       :func:`~fyst_trajectories.trajectory_utils.to_path_payload`.
 
-Where the Subpackage Fits (current architecture)
-------------------------------------------------
+Where the Subpackage Fits
+-------------------------
 
 The overhead subpackage feeds the offline simulation lane. Live operations
 run through a separate path::
@@ -85,50 +84,53 @@ fyst-trajectories sits *underneath* both lanes. The core library (Site,
 Coordinates, Patterns, Planning, Offsets, PrimeCam geometry) is imported
 in both. The ``overhead`` subpackage itself is only used in the sim lane.
 
-Planning = Execution invariant (still applies, narrower scope)
---------------------------------------------------------------
+Planning = Execution invariant
+------------------------------
 
 The invariant holds within fyst-trajectories: the same ``plan_*_scan``
 functions are called by ``overhead.generate_timeline`` (sim lane) and by
 the live PCS scan tasks (ops lane). This guarantees the sim's wall-clock
 prediction matches what the telescope will actually execute when the same
-parameters are dispatched. It is *not*, however, a contract
-between the overhead-emitted ECSV and the live execution. The ECSV is a
-sim artifact, not the schedule the telescope reads.
+parameters are dispatched. It is not a contract between the
+overhead-emitted ECSV and live execution: the ECSV is a sim artifact, not
+the schedule the telescope reads.
 
 Retunes are planning-side only
 ------------------------------
 
-:func:`~fyst_trajectories.inject_retune` is used to mark sample-level
-retune flags for accurate sim hitmaps (which exclude retune-flagged
-samples from coverage). It is not called at execution time;
+:func:`~fyst_trajectories.trajectory_utils.inject_retune` is used to mark
+sample-level retune flags for accurate sim hitmaps (which exclude
+retune-flagged samples from coverage). It is not called at execution time;
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` does not call
-it. At real execution, retunes are triggered by the Prime-Cam detector
-readout, which flags the data itself; the trajectory az/el is unaffected.
+it. Nothing on the live path reads those flags: the ``/path`` payload posted
+to the telescope control system is a list of ``[t, az, el, az_vel,
+el_vel]`` rows and carries no retune information. Detector retunes at
+execution are dispatched separately by the observatory scheduling layer;
+the trajectory az/el is unaffected either way.
 
 Planet calibrations and source-CES
 ----------------------------------
 
-The overhead simulator dispatches **science** blocks on
-``pong`` / ``constant_el`` / ``daisy`` only. Planet calibrations are, by
-default, fixed-duration parked blocks
-(``OverheadModel.planet_cal_duration``) with no scan geometry, emitted
-without invoking any ``plan_*`` function.
+The overhead simulator emits **science** blocks on
+``pong`` / ``constant_el`` / ``daisy`` only. Planet calibrations are
+fixed-duration parked blocks by default
+(``OverheadModel.planet_cal_duration``), with no scan geometry to
+reconstruct.
 
 Setting ``CalibrationPolicy.planet_cal_scan`` instead plans each planet
 calibration as a real multi-pass source-CES sequence via
-:func:`~fyst_trajectories.plan_source_ces_passes`, anchored at the
+:func:`~fyst_trajectories.planning.plan_source_ces_passes`, anchored at the
 scheduler clock: one calibration block per pass, each recording the full
 source-CES parameters in ``metadata["scan_params"]`` and the true scan
-start in ``metadata["t0_scan"]`` (see
-":ref:`planet-cal-source-ces`" in :doc:`overhead_model`).
+start in ``metadata["t0_scan"]`` (see :ref:`planet-cal-source-ces` in
+:doc:`overhead_model`).
 
 Those recorded parameters make each pass reconstructable from the
 timeline. :func:`~fyst_trajectories.overhead.schedule_to_trajectories`
 returns science blocks only by default (``science_only=True``), but with
 ``science_only=False`` it rebuilds every source-CES planet-cal block from
 its recorded parameters via
-:func:`~fyst_trajectories.plan_source_ces`::
+:func:`~fyst_trajectories.planning.plan_source_ces`::
 
     from fyst_trajectories.overhead import schedule_to_trajectories
 
@@ -137,8 +139,8 @@ its recorded parameters via
 Calibration blocks with no ``scan_params`` (parked planet cals, retunes,
 pointing/focus/skydip) carry no trajectory to rebuild and are skipped
 silently. At dispatch time the live PCS ``source_scan`` task consumes
-:func:`~fyst_trajectories.plan_source_ces` directly. See the "Planning a
-Source CES" section in :doc:`planning` for details.
+:func:`~fyst_trajectories.planning.plan_source_ces` directly. See the
+"Planning a Source CES" section in :doc:`planning` for details.
 
 .. _scan-type-vocabularies:
 
@@ -158,23 +160,26 @@ should not. Each is individually correct, and the table below is the map.
      - Members
      - ``source_ces``?
      - Role
-   * - ``_PATTERN_REGISTRY`` (:func:`~fyst_trajectories.list_patterns`)
+   * - ``_PATTERN_REGISTRY`` (:func:`~fyst_trajectories.patterns.list_patterns`)
      - 9
      - no
      - Every buildable scan pattern. ``source_ces`` is planner-only
-       (:func:`~fyst_trajectories.plan_source_ces`), not a registered pattern.
+       (:func:`~fyst_trajectories.planning.plan_source_ces`), not a
+       registered pattern.
    * - ``ComputedParams`` union
      - 6
      - yes
-     - Static type of :attr:`ScanBlock.computed_params`; one member per
-       ``plan_*`` return schema, including ``SourceCESComputedParams``.
+     - Static type of
+       :attr:`ScanBlock.computed_params <fyst_trajectories.planning.ScanBlock.computed_params>`;
+       one member per ``plan_*`` return schema, including
+       ``SourceCESComputedParams``.
    * - ``_SCAN_TYPE_TO_KEYS``
      - 5
      - no
      - Call-site table for
        :func:`~fyst_trajectories.planning.validate_computed_params`;
        ``source_ces`` self-validates inside
-       :func:`~fyst_trajectories.plan_source_ces`.
+       :func:`~fyst_trajectories.planning.plan_source_ces`.
    * - ``ObservingPatch`` scan-type guard
      - 3
      - no
@@ -183,8 +188,9 @@ should not. Each is individually correct, and the table below is the map.
    * - ``ScanParamsDict`` union
      - 3
      - no
-     - Static type of :attr:`ObservingPatch.scan_params`; the three science
-       schemas, excluding ``SourceCESScanParams``.
+     - Static type of
+       :attr:`ObservingPatch.scan_params <fyst_trajectories.overhead.ObservingPatch.scan_params>`;
+       the three science schemas, excluding ``SourceCESScanParams``.
    * - ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``
      - 4
      - yes
@@ -201,11 +207,7 @@ sites a runtime validator accepts. The two subpackages are mirror-inverted
 about ``source_ces``: on the planning side the union is the superset of its
 table (6 vs 5, the union adds ``source_ces``), while on the overhead side the
 table is the superset of its union (4 vs 3, the table adds ``source_ces``).
-The inversion is intentional and must not be equalized. ``source_ces``
-computed_params are validated only inside
-:func:`~fyst_trajectories.plan_source_ces`, whereas source-CES ``scan_params``
-recorded on planet-calibration blocks are validated by
-:func:`~fyst_trajectories.overhead.validate_scan_params`.
+The inversion is intentional and must not be equalized.
 
 Parameter Ownership
 -------------------
@@ -235,9 +237,6 @@ control.
      - ``ObservingPatch`` geometry, ``scan_type``, ``velocity``,
        ``elevation`` (for constant-el scans), time window.
 
-In practice, the FYST team will publish canonical ``OverheadModel`` and
-``CalibrationPolicy`` presets (commissioning vs. survey vs. deep-field) so
-that proposal authors do not need to invent cadence numbers themselves.
 :func:`~fyst_trajectories.overhead.generate_timeline` accepts bare
 ``OverheadModel()`` / ``CalibrationPolicy()`` defaults, but relying on those
 hides physical assumptions and should be avoided outside of quick
@@ -245,10 +244,8 @@ exploratory scripts.
 
 .. note::
 
-   The overhead subpackage is a planning-time tool and should **not** be
-   called from a live observing loop. Nothing live reads the ECSV it emits;
-   it is an offline artifact. Coverage tooling regenerates motion arrays
-   from the stored ``TimelineBlock`` metadata via
+   Coverage tooling regenerates motion arrays from the stored
+   ``TimelineBlock`` metadata via
    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rather than
    re-running the scheduler.
 

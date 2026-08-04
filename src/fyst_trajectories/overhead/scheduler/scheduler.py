@@ -25,19 +25,19 @@ class Scheduler:
     The scheduler holds a read-only :class:`SchedulerContext` and runs
     the four phases in sequence per iteration:
 
-    1. :class:`CalibrationPhase` — emit any due calibration blocks.
-    2. :class:`PatchSelectionPhase` — pick the best observable patch,
+    1. :class:`CalibrationPhase`: emit any due calibration blocks.
+    2. :class:`PatchSelectionPhase`: pick the best observable patch,
        or emit an IDLE block if none are observable.
-    3. :class:`SlewPhase` — emit a slew block if the telescope needs
+    3. :class:`SlewPhase`: emit a slew block if the telescope needs
        to move.
-    4. :class:`ScienceScanPhase` — emit science subscans with
+    4. :class:`ScienceScanPhase`: emit science subscans with
        interleaved retunes.
 
     ``Scheduler.run()`` returns the completed
-    :class:`ObservingTimeline`. Downstream code should call
-    :func:`generate_timeline` as the public entry point; direct
-    ``Scheduler`` use is for advanced extensions (custom phase lists,
-    lookahead, multi-night stitching).
+    :class:`~fyst_trajectories.overhead.ObservingTimeline`. Downstream
+    code should call :func:`~fyst_trajectories.overhead.generate_timeline`
+    as the public entry point; direct ``Scheduler`` use is for advanced
+    extensions (custom phase lists, lookahead, multi-night stitching).
 
     Notes
     -----

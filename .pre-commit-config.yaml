@@ -1,6 +1,7 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.1
+    # Keep in lockstep with the pin in .github/workflows/tests.yml.
+    rev: v0.15.16
     hooks:
       - id: ruff
         args: [--fix]

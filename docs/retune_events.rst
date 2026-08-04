@@ -1,13 +1,13 @@
 Retune Events
 =============
 
-:func:`~fyst_trajectories.inject_retune` has two modes: a uniform-cadence
-path that schedules retunes every ``retune_interval`` seconds, and an
-event-list path that applies a caller-supplied sequence of
-:class:`~fyst_trajectories.RetuneEvent` instances. Both paths populate
-:attr:`~fyst_trajectories.Trajectory.retune_events` on the returned
-trajectory, so introspection and ECSV round-trip work identically
-regardless of which mode produced the retunes.
+:func:`~fyst_trajectories.trajectory_utils.inject_retune` has two modes: a
+uniform-cadence path that schedules retunes every ``retune_interval``
+seconds, and an event-list path that applies a caller-supplied sequence of
+:class:`~fyst_trajectories.trajectory.RetuneEvent` instances. Both paths
+populate :attr:`~fyst_trajectories.trajectory.Trajectory.retune_events` on
+the returned trajectory, so introspection and ECSV round-trip work
+identically regardless of which mode produced the retunes.
 
 Dual-mode API
 -------------
@@ -38,29 +38,57 @@ Explicit event list:
     retuned = inject_retune(traj, retune_events=events)
     assert retuned.retune_events == tuple(events)
 
+Either mode overwrites only ``SCAN_FLAG_SCIENCE`` samples with
+``SCAN_FLAG_RETUNE``; turnaround flags are never modified, and
+``Trajectory.science_mask`` excludes the retuned samples.
+
 ``t_start`` is measured in seconds from the trajectory start
 (``trajectory.times[0]``). Events are sorted and validated for overlap
-by :func:`~fyst_trajectories.inject_retune`; events past the trajectory
-end are skipped with a :class:`~fyst_trajectories.PointingWarning`.
-Per-module staggering in event-list mode is handled by composition:
-call :func:`~fyst_trajectories.inject_retune` once per module with its
-own event list.
+by :func:`~fyst_trajectories.trajectory_utils.inject_retune`; events past
+the trajectory end are skipped with a
+:class:`~fyst_trajectories.exceptions.PointingWarning`. Per-module
+staggering in event-list mode is handled by composition: call
+:func:`~fyst_trajectories.trajectory_utils.inject_retune` once per module
+with its own event list.
+
+Sampled event lists
+-------------------
+
+:func:`~fyst_trajectories.trajectory_utils.sample_retune_events` draws a
+non-overlapping event list from caller-supplied samplers, for Monte Carlo
+studies of retune overhead. No distribution is baked in:
+
+.. code-block:: python
+
+    import numpy as np
+
+    from fyst_trajectories import inject_retune, sample_retune_events
+
+    rng = np.random.default_rng(seed=42)
+    events = sample_retune_events(
+        duration=traj.duration,
+        interval_sampler=lambda r: r.uniform(60.0, 120.0),
+        duration_sampler=lambda r: r.uniform(3.0, 8.0),
+        rng=rng,
+    )
+    retuned = inject_retune(traj, retune_events=events)
 
 CSV schema
 ----------
 
-The canonical on-disk shape is a two-or-three-column CSV. Downstream
-consumers such as the ``primecam_camera_mapping_simulations``
-``--retune_events`` CLI flag parse this format directly.
+Retune schedules are commonly stored as a two-or-three-column CSV.
+fyst-trajectories ships no CSV reader - the format is a convention that
+consumers implement, and the snippet below is all it takes. The
+``primecam_camera_mapping_simulations`` ``--retune_events`` CLI flag
+reads exactly this shape.
 
 - Header row required. Column names are compared case-insensitively.
 - Required columns: ``t_start_s`` (float, seconds from trajectory
   start) and ``duration_s`` (float, positive seconds).
 - Optional column: ``module_index`` (integer, 0-based, non-negative).
   When absent, all rows are treated as ``module_index == 0``.
-- Any other columns are ignored with a single
-  :class:`~fyst_trajectories.PointingWarning` listing the unused
-  column names.
+- Any other column is ignored; the reference consumer warns once,
+  naming the unused columns.
 
 Example::
 
@@ -69,8 +97,8 @@ Example::
     300.0,5.0,0
     600.0,8.0,0
 
-Reading a CSV into a list of :class:`~fyst_trajectories.RetuneEvent`
-is a two-line job using the standard library:
+Read one into a list of :class:`~fyst_trajectories.trajectory.RetuneEvent`
+with the standard library:
 
 .. code-block:: python
 
@@ -98,10 +126,10 @@ Per-block retune events persist through
 :func:`~fyst_trajectories.overhead.read_timeline` via the existing
 ``block_meta_json`` extra-payload channel on
 :class:`~fyst_trajectories.overhead.TimelineBlock`. The write side
-encodes each :class:`~fyst_trajectories.RetuneEvent` as a JSON-native
-``[t_start, duration]`` pair; the read side decodes those back into a
-tuple of :class:`~fyst_trajectories.RetuneEvent`, matching what
-:attr:`~fyst_trajectories.Trajectory.retune_events` exposes.
+encodes each :class:`~fyst_trajectories.trajectory.RetuneEvent` as a
+JSON-native ``[t_start, duration]`` pair; the read side decodes those back
+into a tuple of :class:`~fyst_trajectories.trajectory.RetuneEvent`, matching
+what :attr:`~fyst_trajectories.trajectory.Trajectory.retune_events` exposes.
 
 Attach retune events to a block before writing:
 
@@ -130,7 +158,8 @@ Read the timeline back and inspect the decoded tuple:
 
 .. note::
 
-    Plumbing from :func:`~fyst_trajectories.inject_retune`'s output
+    Plumbing from
+    :func:`~fyst_trajectories.trajectory_utils.inject_retune`'s output
     (``trajectory.retune_events``) into
     ``TimelineBlock.metadata["retune_events"]`` is currently manual; the
     overhead scheduler does not auto-propagate the generated event list

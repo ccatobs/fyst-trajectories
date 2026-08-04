@@ -22,7 +22,7 @@ from ..trajectory import Trajectory
 class TrajectoryMetadata:
     """Metadata about how a trajectory was generated.
 
-    Attached to a :class:`Trajectory` when you need to preserve the
+    Attached to a :class:`~fyst_trajectories.trajectory.Trajectory` when you need to preserve the
     pattern type and the parameters it was built from.
 
     Parameters

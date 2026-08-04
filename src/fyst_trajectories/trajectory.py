@@ -8,10 +8,11 @@ The trajectory data is intentionally minimal; metadata about pattern
 type, generation parameters, and input coordinates can be attached
 via the optional ``metadata`` attribute.
 
-All utility functions (validate, export, format, plot) are free
-functions in :mod:`fyst_trajectories.trajectory_utils`. They are the
-sole API for operating on a :class:`Trajectory` so the container itself
-stays dependency-free.
+All utility functions (validate, export, format) are free functions in
+:mod:`fyst_trajectories.trajectory_utils`; plotting lives in
+:mod:`fyst_trajectories.visualization`. Together they are the sole API for
+operating on a :class:`Trajectory`, so the container itself stays
+dependency-free.
 
 Examples
 --------
@@ -141,31 +142,17 @@ class Trajectory:
         documentation when the trajectory was derived from celestial coordinates.
         Default is None.
     scan_flag : np.ndarray or None, optional
-        Per-sample scan phase flag. Values follow the SO ACU convention:
-        0 = unclassified, 1 = constant-velocity science sweep,
-        2 = turnaround. None means no flagging info is available.
+        Per-sample scan phase flag: 0 = unclassified, 1 = constant-velocity
+        science sweep, 2 = turnaround (the SO ACU convention), 3 = retune
+        pause (``SCAN_FLAG_RETUNE``, written by ``inject_retune``). None
+        means no flagging info is available.
     retune_events : tuple of RetuneEvent, optional
-        Event-level provenance for the :data:`SCAN_FLAG_RETUNE` entries in
+        Event-level provenance for the ``SCAN_FLAG_RETUNE`` entries in
         ``scan_flag``. Populated by
         :func:`~fyst_trajectories.trajectory_utils.inject_retune` for both
         the uniform-cadence and explicit event-list code paths. Empty tuple
         (the default) means no retune events have been injected. See
         :class:`RetuneEvent`.
-
-    Attributes
-    ----------
-    duration : float
-        Total duration of trajectory in seconds.
-    n_points : int
-        Number of trajectory points.
-    pattern_type : str or None
-        Pattern type from metadata, if available.
-    pattern_params : dict or None
-        Pattern parameters from metadata, if available.
-    center_ra : float or None
-        Center RA from metadata, if available.
-    center_dec : float or None
-        Center Dec from metadata, if available.
 
     Notes
     -----

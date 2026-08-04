@@ -1,9 +1,11 @@
 Overhead Models
 ===============
 
-Data model for observation scheduling: patches, calibration specs,
-timeline blocks, overhead parameters, calibration policies, and complete
-timelines.
+Data model for observation scheduling: the
+:class:`~fyst_trajectories.overhead.ObservingPatch` inputs to
+:func:`~fyst_trajectories.overhead.generate_timeline`, the
+:class:`~fyst_trajectories.overhead.TimelineBlock` entries it returns,
+and the overhead/calibration parameters that shape them.
 
 ObservingPatch
 --------------
@@ -31,7 +33,6 @@ CalibrationSpec
 
 .. autoclass:: fyst_trajectories.overhead.CalibrationSpec
    :members:
-   :undoc-members:
 
 TimelineBlock
 -------------
@@ -45,28 +46,24 @@ OverheadModel
 
 .. autoclass:: fyst_trajectories.overhead.OverheadModel
    :members:
-   :undoc-members:
 
 CalibrationPolicy
 -----------------
 
 .. autoclass:: fyst_trajectories.overhead.CalibrationPolicy
    :members:
-   :undoc-members:
 
 CalibrationState
 -----------------
 
 .. autoclass:: fyst_trajectories.overhead.CalibrationState
    :members:
-   :undoc-members:
 
 ObservingTimeline
 -----------------
 
 .. autoclass:: fyst_trajectories.overhead.ObservingTimeline
    :members:
-   :undoc-members:
 
 Typed Metadata Schemas
 ----------------------

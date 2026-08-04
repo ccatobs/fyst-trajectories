@@ -33,19 +33,14 @@ class TrajectoryBuilder:
     with validation at build time. The pattern type is automatically
     inferred from the config class passed to `with_config()`.
 
-    Celestial patterns (Pong, Daisy, Sidereal) and planet tracking
-    require ``.starting_at()`` to be called before ``.build()``.
-    AltAz patterns (ConstantEl, Linear) do not require a start time.
+    ``pong``, ``daisy``, ``sidereal``, ``planet``, and ``satellite`` require
+    ``.starting_at()`` before ``.build()``. ``constant_el``, ``linear``,
+    ``pong_altaz``, and ``daisy_altaz`` do not.
 
     Parameters
     ----------
     site : Site
         Telescope site configuration.
-
-    Attributes
-    ----------
-    site : Site
-        The telescope site configuration.
 
     Examples
     --------

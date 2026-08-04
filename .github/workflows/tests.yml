@@ -12,8 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Pinned, in lockstep with .pre-commit-config.yaml: an unpinned latest
+      # ruff changes formatter style between minors and (as of 0.16) formats
+      # Python fences inside the 59 tracked Markdown files, so CI would drift
+      # red with zero repo changes. Upgrade both pins together, reformatting
+      # in the same commit.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.15.16
 
       - name: Ruff check
         run: ruff check .

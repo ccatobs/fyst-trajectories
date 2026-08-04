@@ -1,13 +1,9 @@
 Coordinate Transformations
 ==========================
 
-Coordinate transformation utilities with solar system ephemeris.
-``Coordinates(site)`` defaults to vacuum (geometric) coordinates --
-this is the correct default for trajectory generation because the
-FYST ACU applies atmospheric refraction downstream. Pass
-:meth:`~fyst_trajectories.site.AtmosphericConditions.for_fyst` for
-planning and simulation (visibility calculations, observability
-checks) where the output is NOT sent to the ACU.
+Coordinate transformations between RA/Dec and Az/El, with solar system
+ephemeris, sidereal time, hour angle, parallactic angle, field rotation,
+and sun-safety checks.
 
 .. automodule:: fyst_trajectories.coordinates
    :members:
@@ -25,38 +21,8 @@ Data Catalogs
 .. autodata:: fyst_trajectories.coordinates.FRAME_ALIASES
    :no-value:
 
-Frame Aliases
--------------
-
-+-------------------+----------------------------+
-| Alias             | Astropy Frame              |
-+===================+============================+
-| ``J2000`` [#j2k]_ | ``icrs``                   |
-+-------------------+----------------------------+
-| ``FK5``           | ``fk5``                    |
-+-------------------+----------------------------+
-| ``B1950``         | ``fk4``                    |
-+-------------------+----------------------------+
-| ``HORIZON``       | ``altaz``                  |
-+-------------------+----------------------------+
-
-Only spherical RA/Dec frames (``J2000``/``FK5``/``B1950``) work with the
-``radec_to_altaz`` / ``altaz_to_radec`` transform methods; ``GALACTIC`` and
-``ECLIPTIC`` are intentionally not aliased (they use ``l``/``b`` and
-``lon``/``lat`` and would raise).
-
-.. [#j2k] ``J2000`` is a label of convenience: this library maps it to
-   ``icrs``, but ICRS and FK5(J2000) differ by ~22 mas (the IAU 1997
-   alignment). Sub-arcsecond catalogue work should use ``FK5`` if the
-   inputs are FK5 J2000.0; for telescope pointing the offset is well
-   below the beam and is harmless.
-
-::
-
-    from fyst_trajectories import FRAME_ALIASES, normalize_frame
-
-    normalize_frame("J2000")    # "icrs"
-    normalize_frame("B1950")    # "fk4"
+The full alias table, with the frames that are deliberately *not*
+aliased, is documented in :doc:`../coordinate_systems`.
 
 Usage Examples
 --------------

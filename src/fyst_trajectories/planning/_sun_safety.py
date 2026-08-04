@@ -51,7 +51,8 @@ def _check_field_sun_safety(
         scalar exclusion-radius check (the field center's angular separation
         from the Sun against ``site.sun_avoidance.exclusion_radius``). When a
         predicate is injected it is consulted in place of the scalar check, so
-        the directional sun-avoidance model (future shared library) is honored
+        the directional sun-avoidance model (see
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
         end-to-end. See :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
     stacklevel_offset : int, optional
         Added to the base ``stacklevel=2`` of the emitted warning so a wrapper

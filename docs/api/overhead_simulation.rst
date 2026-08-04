@@ -1,8 +1,9 @@
 Overhead Simulation
 ===================
 
-Bridges timelines with ``fyst-trajectories`` to generate actual
-telescope trajectories and accumulate HEALPix hitmaps.
+Rebuilds the trajectory behind each timeline block and accumulates
+HEALPix coverage maps. For worked examples see
+:doc:`../overhead_timeline`.
 
 .. autofunction:: fyst_trajectories.overhead.schedule_to_trajectories
 

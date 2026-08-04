@@ -18,8 +18,8 @@ astronomer's inputs and the pattern config:
 - **AltAz Pong / Daisy** - run the Pong and Daisy patterns about a fixed
   horizon-frame center (no RA/Dec tracking).
 
-Sidereal, planet, and linear patterns have no non-trivial planning step;
-:class:`~fyst_trajectories.patterns.TrajectoryBuilder` can be used directly.
+Sidereal, planet, satellite, and linear patterns have no non-trivial planning
+step; use :class:`~fyst_trajectories.patterns.TrajectoryBuilder` directly.
 
 Quick Start
 -----------
@@ -47,26 +47,6 @@ Plan a Pong survey scan over a 2x2 degree field::
     print(block.summary)
     print(f"Duration: {block.duration:.1f}s ({block.duration / 3600:.1f}h)")
     print(f"Trajectory: {block.trajectory.n_points} points")
-
-Plan a constant-elevation scan over a field with auto-computed timing::
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
-
-    site = get_fyst_site()
-
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
-    block = plan_constant_el_scan(
-        field=field,
-        elevation=50.0,
-        velocity=0.5,
-        site=site,
-        start_time="2026-09-15T00:00:00",
-        rising=True,
-    )
-
-    print(block.summary)
-    print(f"Duration: {block.duration:.0f}s")
 
 Field Regions
 -------------
@@ -352,19 +332,12 @@ Planning an AltAz Daisy Scan
 
 :func:`~fyst_trajectories.planning.plan_daisy_altaz_scan` runs the same
 Constant-Velocity Daisy pattern as
-:func:`~fyst_trajectories.planning.plan_daisy_scan`, but about a fixed
-horizon-frame center (``az_center``, ``el_center``) with no sky tracking. The
-on-sky tangent-plane offsets are mapped into telescope coordinates by::
-
-    az = x_offset / cos(radians(el_center)) + az_center
-    el = y_offset + el_center
-
-so ``radius``, ``velocity``, ``turn_radius``, ``avoidance_radius``, and
-``start_acceleration`` keep their on-sky meaning from the celestial Daisy. The
-azimuth coordinate is stretched by ``1 / cos(el_center)``: the
-azimuth-coordinate extent is ``2 * radius / cos(el_center)`` and the
-azimuth-coordinate speed exceeds the on-sky ``velocity`` by the same factor
-(budget ``velocity`` against the mount azimuth rate limit accordingly).
+:func:`~fyst_trajectories.planning.plan_daisy_scan` about a fixed
+horizon-frame center, using the same ``1 / cos(el_center)`` azimuth mapping as
+:func:`~fyst_trajectories.planning.plan_pong_altaz_scan` above. ``radius``,
+``velocity``, ``turn_radius``, ``avoidance_radius``, and
+``start_acceleration`` keep their on-sky meaning from the celestial Daisy; the
+azimuth-coordinate extent is ``2 * radius / cos(el_center)``.
 
 Basic usage::
 
@@ -432,11 +405,13 @@ Worked example, Jupiter rising across the full PrimeCam array::
     print(f"Az range:    [{cp['az_start']:.2f}, {cp['az_start'] + cp['az_throw']:.2f}] deg")
 
 The ``footprint`` argument accepts a named module string (``"c"``,
-``"i1"`` .. ``"i6"``), a single :class:`~fyst_trajectories.InstrumentOffset`,
-a sequence of offsets (one per module), or an explicit
-:class:`~fyst_trajectories.ArrayFootprint`. For a multi-module footprint,
-:func:`~fyst_trajectories.resolve_module_tag` expands an SO-style tag
-(``resolve_module_tag("i1,i2")``, or ``"all"``) into that sequence.
+``"i1"`` .. ``"i6"``), a single
+:class:`~fyst_trajectories.offsets.InstrumentOffset`, a sequence of offsets
+(one per module), or an explicit
+:class:`~fyst_trajectories.planning.ArrayFootprint`. For a multi-module
+footprint, :func:`~fyst_trajectories.primecam.resolve_module_tag` expands an
+SO-style tag (``resolve_module_tag("i1,i2")``, or ``"all"``) into that
+sequence; see :doc:`instrument_offsets`.
 
 Select the time window with either ``night`` + ``mode`` (``"rising"`` or
 ``"setting"``; searches the next 24 h) or an explicit
@@ -481,9 +456,10 @@ about a minute after ``start_time`` because the search window opens at the
 anchor and the pass cannot begin earlier. Supplying ``el_bore`` explicitly
 alongside ``start_time`` instead forward-searches from the anchor for that
 elevation. Anchors within a small drift rate of transit are rejected with
-:class:`~fyst_trajectories.TargetNotObservableError` (the elevation-crossing
-inversion is ill-conditioned there); anchor away from transit or pass
-``el_bore``. :func:`~fyst_trajectories.planning.compute_source_ces_params` and
+:class:`~fyst_trajectories.exceptions.TargetNotObservableError` (the
+elevation-crossing inversion is ill-conditioned there); anchor away from
+transit or pass ``el_bore``.
+:func:`~fyst_trajectories.planning.compute_source_ces_params` and
 :func:`~fyst_trajectories.planning.plan_source_ces_passes` accept ``start_time``
 on the same terms; for the multi-pass form the anchor applies to the first pass
 in time.
@@ -625,8 +601,6 @@ containing:
       (``az_start``, ``az_throw``, ``v_az``, ``el_bore``,
       ``boresight_rot``, ``t0_iso``, ``t1_iso``, ``duration``,
       ``mode``, ``n_scans``).
-
-    Access the computed parameters as a standard ``dict``.
 
 ``summary``
     A human-readable string summarizing the planned observation.

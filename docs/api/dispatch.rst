@@ -24,7 +24,7 @@ first sample::
     obstime = Time("2026-03-15T18:00:00", scale="utc")
 
     enc_az, enc_el = choose_encoder_solution(
-        current_az=120.0,   # from the 200 Hz position broadcast
+        current_az=120.0,   # from the live ACU position broadcast
         current_el=45.0,
         goal_az=200.0,      # first sample of the scan trajectory
         goal_el=50.0,
@@ -33,7 +33,10 @@ first sample::
     )
     # command the slew to (enc_az, enc_el), then POST the trajectory.
 
-The sun-safety test is injectable via ``sun_safe`` (a
-:class:`~fyst_trajectories.dispatch.SunSafePredicate`), defaulting to the scalar
-exclusion check -- a directional sun-avoidance model can be supplied without
-changing the call sites.
+The Sun test is injectable at two levels: ``sun_safe`` judges the goal point
+(default: the site's scalar exclusion radius; a position exactly at the
+exclusion radius counts as unsafe), and ``slew_safe`` judges the direct slew
+path to it (default: no path check). Build either from
+:func:`~fyst_trajectories.sun_models.make_sun_safe` /
+:func:`~fyst_trajectories.sun_models.make_slew_safe` to run FYST's directional
+model instead, without touching a call site. See :doc:`sun_models`.

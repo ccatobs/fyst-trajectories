@@ -32,21 +32,19 @@ downstream, so vacuum (geometric) coordinates are correct::
 
 .. note::
 
-   ``Coordinates(site)`` defaults to vacuum because the FYST ACU
-   applies atmospheric refraction at execution time. Applying
-   refraction here would cause double-refraction errors in the
-   telescope pointing. For planning and simulation (visibility
-   calculations, observability checks) where results are NOT sent to
-   the ACU, use ``AtmosphericConditions.for_fyst()``, see
+   Applying refraction here would double-refract the trajectory. For
+   planning and simulation (visibility checks, observability, hitmap
+   simulations), where the result is NOT sent to the ACU, use
+   ``AtmosphericConditions.for_fyst()``; see
    :ref:`quickstart-planning-refraction` below.
 
 **Frame name translation** (string alias resolution)::
 
     from fyst_trajectories import FRAME_ALIASES, normalize_frame
 
-    # Translate common frame names to astropy equivalents
-    astropy_frame = normalize_frame("J2000")    # Returns "icrs"
-    astropy_frame = normalize_frame("B1950")    # Returns "fk4"
+    print(sorted(FRAME_ALIASES))     # ['B1950', 'FK5', 'HORIZON', 'J2000']
+    print(normalize_frame("J2000"))  # icrs
+    print(normalize_frame("B1950"))  # fk4
 
 **Proper motion support** (for high proper motion stars)::
 
@@ -99,8 +97,11 @@ Trajectory Generation
 The ``patterns`` package provides ``TrajectoryBuilder`` and config classes
 for generating telescope trajectories compatible with the ACU ProgramTrack mode.
 
-The pattern type is automatically inferred from the config class you provide.
-Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``.
+The pattern type is inferred from the config class you provide. Available
+patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``,
+``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``. The
+examples below are minimal; :doc:`trajectory_examples` documents every
+config field.
 
 **Track a celestial source** (sidereal tracking)::
 
@@ -241,9 +242,10 @@ Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``p
 
     site = get_fyst_site()
 
-    # A 2 deg field scanned at 0.5 deg/s with the target near zenith: cos(el)
-    # inflates the azimuth rate and acceleration past the telescope limits, so
-    # the builder emits PointingWarnings (it still returns the trajectory).
+    # A 2 deg field scanned at 0.5 deg/s with the target high in the sky:
+    # cos(el) inflates the mount-frame azimuth rate and pushes both
+    # accelerations past the telescope limits, so the builder emits
+    # PointingWarnings (it still returns the trajectory).
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         trajectory = (
@@ -254,7 +256,7 @@ Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``p
                 velocity=0.5, num_terms=4, angle=0.0,
             ))
             .duration(300.0)
-            .starting_at(Time("2026-03-15T04:00:00", scale="utc"))  # near zenith
+            .starting_at(Time("2026-03-15T04:00:00", scale="utc"))  # high elevation
             .build()
         )
 
@@ -262,11 +264,18 @@ Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``p
     # `flagged` lists the high-elevation azimuth-rate / acceleration warnings.
     # Observe at a lower elevation or reduce the scan velocity to clear them.
 
-**Convert trajectory for OCS /path endpoint**::
+The ``plan_*_scan`` planners run a Sun-proximity pre-flight and warn
+when a scan comes within the site exclusion radius, and
+``validate_sun_avoidance`` checks a built trajectory; the builder itself
+performs no Sun check. See :doc:`sun_avoidance` for the check, the
+selectable policies, and the dispatch-time gate.
+
+**Convert trajectory for the Go TCS /path endpoint**::
 
     from fyst_trajectories.trajectory_utils import to_path_format
 
-    # List of [time, az, el, az_vel, el_vel]
+    # Rows of [t_rel_s, az, el, az_vel, el_vel]; t_rel_s is seconds from
+    # trajectory.start_time, which the request body carries separately.
     points = to_path_format(trajectory)
 
 **Print formatted summary**::

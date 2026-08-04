@@ -34,7 +34,7 @@ from fyst_trajectories.overhead.utils import (
 )
 
 # A time/place where a target offset ~20 deg in RA from the Sun is well
-# above the FYST horizon but inside the 45 deg Sun exclusion radius.
+# above the FYST horizon but inside the 50 deg Sun exclusion radius.
 _SUN_TIME = Time("2026-06-15T17:30:00", scale="utc")
 
 
@@ -108,7 +108,7 @@ class TestSunAwarePongDuration:
     def test_time_until_sun_unsafe_immediate(self, coords, sun_radec, site):
         """A target already inside the exclusion radius is unsafe from t=0."""
         sun_ra, sun_dec = sun_radec
-        # ~20 deg in RA from the Sun -> ~18 deg separation, inside 45 deg.
+        # ~20 deg in RA from the Sun -> ~18 deg separation, inside 50 deg.
         ra = (sun_ra + 20.0) % 360
         dur = _time_until_sun_unsafe(
             ra, sun_dec, _SUN_TIME, 3600.0, coords, site.sun_avoidance.exclusion_radius

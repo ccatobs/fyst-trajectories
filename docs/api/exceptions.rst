@@ -24,7 +24,7 @@ Usage Examples
             spacing=0.1,
             num_terms=4,
             site=get_fyst_site(),
-            start_time=Time("2024-06-15T12:00:00", scale="utc"),
+            start_time=Time("2026-06-15T12:00:00", scale="utc"),
             timestep=0.1,
         )
     except TargetNotObservableError as e:
@@ -36,9 +36,11 @@ Usage Examples
 **Catch pointing warnings**::
 
     import warnings
+
+    from fyst_trajectories import plan_constant_el_scan
     from fyst_trajectories.exceptions import PointingWarning
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         block = plan_constant_el_scan(...)
-        sun_warnings = [x for x in w if issubclass(x.category, PointingWarning)]
+        pointing_warnings = [x for x in w if issubclass(x.category, PointingWarning)]

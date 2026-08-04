@@ -5,10 +5,8 @@ Basic Usage
 -----------
 
 Generate an 8-hour observing timeline with 2 patches.
-``generate_timeline`` also works without the ``overhead_model`` /
-``calibration_policy`` arguments and falls back to the defaults shown
-here (the same defaults used to fill in any field absent from a stored
-ECSV file's header metadata; see :doc:`overhead_io`).
+``overhead_model`` and ``calibration_policy`` are optional; omitting
+either uses the defaults spelled out below.
 ::
 
     from fyst_trajectories import get_fyst_site
@@ -44,9 +42,8 @@ ECSV file's header metadata; see :doc:`overhead_io`).
         ),
     ]
 
-    # Duration of each non-science activity, in seconds.
-    # These values set the per-event duration of calibrations and the
-    # min/max science-scan split thresholds. Defaults shown explicitly.
+    # Per-activity durations in seconds, plus the science-scan split
+    # thresholds. Every value below is the default, shown explicitly.
     overhead_model = OverheadModel(
         retune_duration=5.0,           # KID probe-tone reset
         pointing_cal_duration=180.0,   # 3 min cross-scan on a bright quasar
@@ -59,12 +56,11 @@ ECSV file's header metadata; see :doc:`overhead_io`).
         max_scan_duration=3600.0,      # force split past 1 h
     )
 
-    # How often each calibration type fires, in seconds.
-    # These cadences determine how many of each event end up in the timeline.
-    # ``beam_map_cadence=None`` (the default) keeps beam maps off the
-    # automatic schedule; set a positive value to opt in.
+    # How often each calibration type fires, in seconds. beam_map_cadence
+    # is None by default, which keeps beam maps off the automatic
+    # schedule; set a positive value to opt in.
     calibration_policy = CalibrationPolicy(
-        retune_cadence=0.0,            # 0 = between every science scan
+        retune_cadence=0.0,            # 0 = before every science subscan
         pointing_cadence=3600.0,       # every 1 hr
         focus_cadence=7200.0,          # every 2 hr
         skydip_cadence=10800.0,        # every 3 hr
@@ -85,7 +81,9 @@ ECSV file's header metadata; see :doc:`overhead_io`).
 
     print(f"{len(timeline)} blocks scheduled")
 
-A detailed breakdown is available via ``compute_budget`` (next section).
+``generate_timeline`` also takes ``sun_safe=`` to select the avoidance
+policy the night is simulated under; the default is the site's scalar
+exclusion radius. See :doc:`sun_avoidance`.
 
 Efficiency Statistics
 ---------------------

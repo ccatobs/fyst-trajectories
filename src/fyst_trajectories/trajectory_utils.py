@@ -301,7 +301,8 @@ def validate_trajectory(
         forwarded to :func:`validate_sun_avoidance`. ``None`` (default)
         keeps the built-in scalar exclusion/warning-radius check; an
         injected predicate is consulted per-subsample instead, so the
-        directional sun-avoidance model (future shared library) is honored
+        directional sun-avoidance model
+        (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
         end-to-end. Advisory either way. Has no effect when ``check_sun`` is
         ``False`` or ``trajectory.start_time`` is ``None``.
 
@@ -398,12 +399,13 @@ def validate_sun_avoidance(
         :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
         position is clear of the Sun. ``None`` (default) keeps the built-in
-        scalar exclusion/warning-radius check (the existing vectorised
-        subsampled separation computation, unchanged). When a predicate is
-        injected it is consulted per-subsample ``(az_i, el_i, time_i)``
-        instead, so the directional sun-avoidance model (future shared
-        library) is honored, using the same ~60 s subsampling for parity
-        and performance. The injected model owns its own boundary, so only
+        scalar exclusion/warning-radius check (vectorised, subsampled
+        separation computation). When a predicate is injected it is
+        consulted per-subsample ``(az_i, el_i, time_i)`` instead, so the
+        directional sun-avoidance model
+        (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored,
+        using the same ~60 s subsampling for parity and performance. The
+        injected model owns its own boundary, so only
         an "EXCLUSION ZONE" warning is emitted (no separate warning-radius
         band). Advisory either way. See
         :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
@@ -549,8 +551,8 @@ def to_arrays(
 
 
 #: Minimum spacing between consecutive ``/path`` samples accepted by Go TCS.
-#: ``pathCmd.Check()`` hard-rejects any pair closer than 50 ms (ACU ICD 2.0
-#: §8.9.3; ``telescope-control-system/commands.go:248-254``).
+#: The ``/path`` receiver hard-rejects any pair closer than 50 ms
+#: (ACU ICD 2.0 §8.9.3).
 GO_TCS_MIN_SAMPLE_INTERVAL_SEC: float = 0.05
 
 
@@ -960,7 +962,7 @@ def _inject_retune_events(
     """Event-list retune injection.
 
     Validates, sorts, clips, and applies a caller-supplied list of
-    :class:`RetuneEvent` instances, setting both ``scan_flag`` (the
+    :class:`~fyst_trajectories.trajectory.RetuneEvent` instances, setting both ``scan_flag`` (the
     per-sample array) and ``retune_events`` (the event-level provenance)
     on the returned trajectory. ``trajectory.metadata`` is left verbatim:
     pattern metadata and retune provenance are distinct concerns and
@@ -1059,12 +1061,11 @@ def inject_retune(
     ``retune_interval`` seconds; optional per-module staggering is
     controlled by ``module_index`` and ``n_modules``. In **event-list
     mode** (when ``retune_events`` is supplied), the caller provides an
-    explicit sequence of :class:`RetuneEvent` instances; the uniform-
+    explicit sequence of :class:`~fyst_trajectories.trajectory.RetuneEvent` instances; the uniform-
     cadence / per-module-stagger kwargs are not used.
 
-    The uniform-cadence behaviour is unchanged from earlier releases.
-    Walks forward through the trajectory timeline and places retune
-    events every ``retune_interval`` seconds. If ``prefer_turnarounds``
+    Uniform-cadence mode walks forward through the trajectory timeline and
+    places retune events every ``retune_interval`` seconds. If ``prefer_turnarounds``
     is True and a turnaround region exists within ``turnaround_window``
     seconds of the due time, the retune is snapped to start at the
     turnaround (zero additional dead time). Otherwise the retune is
@@ -1160,7 +1161,7 @@ def inject_retune(
 
     Examples
     --------
-    Uniform cadence, matching existing behaviour::
+    Uniform cadence::
 
         result = inject_retune(traj, retune_interval=300.0, retune_duration=5.0)
 

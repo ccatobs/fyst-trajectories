@@ -282,7 +282,7 @@ def test_partial_coverage_allow_true_warns(site):
 
 def test_sun_avoidance_warns_not_raises(site):
     """A planet near the Sun emits a PointingWarning but still returns."""
-    # Mercury on 2026-05-15 lies inside FYST's 45 deg sun exclusion at
+    # Mercury on 2026-05-15 lies inside FYST's 50 deg sun exclusion at
     # mid-Chilean-day (verified by hand).
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -317,7 +317,7 @@ def _allow_everything(az, el, t):
 def test_plan_source_ces_honors_injected_predicate(site):
     """An injected False predicate warns on an otherwise sun-safe Jupiter arc.
 
-    The Jupiter-rising arc at ``_JUPITER_NIGHT`` clears FYST's 45 deg scalar
+    The Jupiter-rising arc at ``_JUPITER_NIGHT`` clears FYST's 50 deg scalar
     exclusion (the happy-path tests above run it silently), so an EXCLUSION
     ZONE warning here proves the injected directional model, not the scalar
     radius, drives the arc verdict end-to-end.

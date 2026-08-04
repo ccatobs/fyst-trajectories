@@ -7,7 +7,7 @@ command, choosing among the telescope's redundant azimuth-wrap solutions so the
 commanded slew is sun-safe.
 
 The sun-safety test is injected via the ``sun_safe`` predicate so the directional
-sun-avoidance model (a separate shared library; future work) can be plugged in
+sun-avoidance model (bound in :mod:`fyst_trajectories.sun_models`) plugs in
 without changing call sites. The default binding is the scalar exclusion check
 :meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe`.
 
@@ -37,21 +37,33 @@ class SunSafePredicate(Protocol):
     structural :class:`typing.Protocol`, so any callable with the matching
     signature satisfies it; no base class or registration is required.
 
-    The current default binding is the scalar exclusion check
-    :meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe` (a single
-    isotropic radius). The intended future implementer is the shared FYST
-    directional sun-avoidance library (a 50-90 deg direction-dependent CAD
-    table, plus the non-trapping / "pocket" escapability logic): it implements
-    *this* signature and is dropped in through the ``sun_safe`` seam with **no
-    change to any call site**. The scalar default and the directional model are
-    interchangeable precisely because both honour this contract.
+    The default binding is the scalar exclusion check
+    :meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe` (one isotropic
+    radius). The directional alternative, ``make_sun_safe("cad")``
+    (:mod:`fyst_trajectories.sun_models`, FYST's own 50-90 deg
+    direction-dependent zone from the shared sun-avoidance library), implements
+    this same signature, so swapping models changes no call site.
 
     The query is instantaneous, a single ``(az, el, time)`` point. A caller may
     query it at several instants to cover a dwell window (see
     :func:`choose_encoder_solution`'s array-valued ``obstime``); implementations
     stay single-instant. Dwell / exit-window ("how soon does the Sun enter this
-    wrap") logic is *not* part of this contract; it belongs to the future
-    directional model's internal state, not its per-point verdict.
+    wrap") logic is *not* part of this contract; it belongs to the directional
+    model's internal state, not its per-point verdict.
+
+    **Optional batch extension.** An implementation MAY additionally expose
+    ``batch(az_deg, el_deg, times) -> numpy.ndarray[bool]`` (vectorized
+    verdicts over broadcastable inputs).
+    :func:`~fyst_trajectories.observability.check_observability` uses
+    ``batch`` when present and falls back to per-sample scalar calls
+    otherwise; the visibility renderer's ``sun_model`` parameter *requires*
+    the ``batch``/``threshold`` extensions; dispatch always uses the scalar
+    call. The predicates built by
+    :func:`~fyst_trajectories.sun_models.make_sun_safe` implement all of
+    it.
+
+    This contract judges a POINT. Whether the *slew path* to that point
+    stays clear is the separate :class:`SlewSafePredicate` contract.
     """
 
     def __call__(self, az_deg: float, el_deg: float, time: Time) -> bool:
@@ -76,6 +88,58 @@ class SunSafePredicate(Protocol):
         ...
 
 
+@runtime_checkable
+class SlewSafePredicate(Protocol):
+    """The path-level sibling of :class:`SunSafePredicate`.
+
+    Judges whether the telescope's DIRECT slew from the current encoder
+    position to a goal encoder position stays clear of the Sun for the
+    whole motion, with the Sun advanced along the path. A correct
+    single-point predicate is necessarily invariant under ``az -> az +
+    360`` (same sky direction), so it can never *choose* an azimuth wrap;
+    the paths to two wraps differ, which is exactly what this contract
+    evaluates. Built by
+    :func:`~fyst_trajectories.sun_models.make_slew_safe`, which sweeps a
+    point model along the trapezoidal kinematic path using the FYST axis
+    velocity/acceleration limits.
+
+    Consumed by :func:`choose_encoder_solution`'s optional ``slew_safe``
+    parameter to rank admissible wraps by path safety. When no direct path is
+    clear the dispatch layer raises rather than auto-rerouting; a caller wanting
+    a two-leg reroute plans it explicitly via
+    :func:`~fyst_trajectories.sun_models.find_sun_safe_detour`.
+    """
+
+    def __call__(
+        self,
+        current_az: float,
+        current_el: float,
+        goal_az: float,
+        goal_el: float,
+        time: Time,
+    ) -> bool:
+        """Return whether the direct slew is clear of the Sun throughout.
+
+        Parameters
+        ----------
+        current_az, current_el : float
+            Current encoder position in degrees.
+        goal_az, goal_el : float
+            Goal encoder position in degrees (``goal_az`` in the
+            telescope encoder range; the path is the literal encoder
+            travel, no wrapping).
+        time : Time
+            Slew start time (scalar); implementations advance the Sun
+            along the path from here.
+
+        Returns
+        -------
+        bool
+            ``True`` when the whole path is clear of the Sun.
+        """
+        ...
+
+
 def choose_encoder_solution(
     current_az: float,
     current_el: float,
@@ -85,6 +149,7 @@ def choose_encoder_solution(
     site: Site,
     *,
     sun_safe: SunSafePredicate | None = None,
+    slew_safe: SlewSafePredicate | None = None,
     goal_az_span: tuple[float, float] | None = None,
 ) -> tuple[float, float]:
     """Choose a sun-safe encoder ``(az, el)`` to slew to for a commanded trajectory.
@@ -140,8 +205,22 @@ def choose_encoder_solution(
         position is clear of the Sun. Defaults to
         :meth:`~fyst_trajectories.coordinates.Coordinates.is_sun_safe` (a scalar
         exclusion radius). This is the seam for the directional sun-avoidance
-        model (future shared library): pass that model's predicate here and the
-        call sites do not change. See :class:`SunSafePredicate` for the contract.
+        model (e.g. :func:`~fyst_trajectories.sun_models.make_sun_safe`): pass
+        that model's predicate here and the call sites do not change. See
+        :class:`SunSafePredicate` for the contract.
+    slew_safe : SlewSafePredicate, optional
+        Path-level sun-safety check (e.g. from
+        :func:`~fyst_trajectories.sun_models.make_slew_safe`). When given,
+        the point-safe wraps are additionally required to have a clear
+        DIRECT slew path from ``(current_az, current_el)``, evaluated at
+        the first ``obstime`` element (the slew happens now; the dwell
+        samples cover the goal). The minimum-slew choice then runs over the
+        path-safe candidates, making ``current_az``/``current_el``
+        load-bearing for safety, not only for distance. If no wrap has a
+        clear direct path, :class:`~fyst_trajectories.exceptions.PointingError`
+        is raised (dispatch rejects rather than auto-rerouting); a caller may
+        then plan a two-leg detour via
+        :func:`~fyst_trajectories.sun_models.find_sun_safe_detour`.
     goal_az_span : tuple of float, optional
         ``(span_min, span_max)``, the minimum and maximum azimuth of the full
         commanded trajectory in the SAME wrap frame as ``goal_az`` (e.g.
@@ -167,32 +246,31 @@ def choose_encoder_solution(
     PointingError
         If ``goal_el`` is outside the elevation limits, if no 360 deg image of
         ``goal_az`` lands within the azimuth limits, if no wrap keeps the whole
-        span within the azimuth limits, or if every admissible azimuth wrap is
-        sun-blocked at some element of ``obstime``.
+        span within the azimuth limits, if every admissible azimuth wrap is
+        sun-blocked at some element of ``obstime``, or (with ``slew_safe``)
+        if no point-safe wrap has a clear direct slew path.
 
     Notes
     -----
-    **Selection is minimum-slew, not yet "non-trapping".** Among the sun-safe,
-    in-range candidates this returns the one closest to ``current_az`` (smallest
-    azimuth travel), tie-broken toward the larger margin to the azimuth travel
-    limits, measured against the shifted span endpoints. This matches the Simons
-    Observatory scheduler's minimise-angular-deviation objective. The
-    "non-trapping / pocket" refinement, choosing a wrap you can always escape
-    from to the next target over the asymmetric directional avoidance map, is
-    future work that belongs in the shared sun-avoidance library; it plugs in
-    here through ``sun_safe`` (and a richer selection step) without changing this
-    function's call sites.
+    **Selection is minimum-slew.** Among the sun-safe, in-range candidates this
+    returns the one closest to ``current_az`` (smallest azimuth travel),
+    tie-broken toward the larger margin to the azimuth travel limits, measured
+    against the shifted span endpoints. This matches the Simons Observatory
+    scheduler's minimise-angular-deviation objective. It does not yet prefer a
+    wrap the telescope can always escape from to the next target ("non-trapping"
+    selection over the directional avoidance map); that refinement plugs in
+    through ``sun_safe`` and a richer selection step.
 
-    **Over-the-top (el > 90) is not enumerated.** FYST caps elevation at 90 deg
-    (``FYST_EL_MAX``) and over-the-top pointing is forbidden during the day, so
-    the third (el > 90, az + 180) encoder solution is intentionally omitted. When
-    that solution is admitted, ``current_el`` will inform the choice.
+    **Over-the-top (el > 90) is not enumerated.** The library caps elevation at
+    ``FYST_EL_MAX`` (90 deg; Prime-Cam does not point over the top), so the third
+    (el > 90, az + 180) encoder solution is intentionally omitted. If that
+    solution is ever admitted, ``current_el`` will inform the choice.
 
     **The default sun test is instantaneous.** ``Coordinates.is_sun_safe`` checks
     the angular separation at one instant; it has no notion of how soon the Sun
     enters a wrap (dwell / exit-window). Passing several ``obstime`` elements
     covers a dwell only by sampling; that ``min_sun_time``-style logic belongs in
-    the future directional / non-trapping model supplied via ``sun_safe``.
+    a richer non-trapping model supplied via ``sun_safe``.
 
     Examples
     --------
@@ -281,6 +359,27 @@ def choose_encoder_solution(
             f"in-range wrap {[round(az, 3) for az, _ in admissible]} is inside the "
             f"Sun exclusion zone."
         )
+
+    if slew_safe is not None:
+        # Path admissibility: the slew starts NOW, so evaluate at the first
+        # obstime element; the remaining elements cover the goal dwell and
+        # were already required point-safe above.
+        t_slew = check_times[0]
+        path_safe = [
+            (az, shift)
+            for az, shift in safe
+            if slew_safe(current_az, current_el, az, goal_el, t_slew)
+        ]
+        if not path_safe:
+            raise PointingError(
+                f"Every point-safe azimuth wrap {[round(az, 3) for az, _ in safe]} for "
+                f"sky position (az={goal_az:.3f}, el={goal_el:.3f}) deg has a direct "
+                f"slew path from (az={current_az:.3f}, el={current_el:.3f}) that "
+                f"crosses the Sun avoidance zone at {t_slew.iso}. No direct slew is "
+                "safe; a two-leg detour may be available "
+                "(fyst_trajectories.sun_models.find_sun_safe_detour)."
+            )
+        safe = path_safe
 
     # Minimum-slew selection (see Notes); the limit-margin tie-break is a coarse
     # nod to escapability, measured against the shifted span endpoints.

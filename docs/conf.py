@@ -45,4 +45,9 @@ html_theme = "sphinx_rtd_theme"
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
-autodoc_mock_imports = ["matplotlib"]
+# Optional dependencies absent from the docs build environment. matplotlib
+# backs the visualization subpackage; sun_avoidance is the shared
+# ccatobs/sun-avoidance library behind make_sun_safe("cone"/"cad") and the
+# TYPE_CHECKING-guarded AvoidanceData annotations in sun_models (installed
+# from a git clone, never from PyPI, so CI docs builds do not have it).
+autodoc_mock_imports = ["matplotlib", "sun_avoidance"]

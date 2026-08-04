@@ -18,6 +18,7 @@ from .helpers import _default_constraints
 
 if TYPE_CHECKING:
     from ...coordinates import Coordinates
+    from ...dispatch import SunSafePredicate
     from ...site import Site
     from ..constraints import Constraint
     from ..models import CalibrationPolicy, ObservingPatch, OverheadModel
@@ -94,6 +95,11 @@ class SchedulerContext:
     start_time: Time
     end_time: Time
     time_step: float
+    #: Injected sun-safety model (:class:`~fyst_trajectories.dispatch.SunSafePredicate`,
+    #: e.g. from :func:`~fyst_trajectories.sun_models.make_sun_safe`) driving
+    #: the mid-scan duration clips; ``None`` keeps the scalar site radius.
+    #: The Sun *constraint* is bound at construction time (see ``build``).
+    sun_safe: SunSafePredicate | None = None
     #: Per-run memo of constant-elevation crossing-pass solves, keyed
     #: ``(patch_name, rising)`` with values ``("ok", t_open, t_close)`` or
     #: ``("miss", solved_from)``. Written only by the scheduler helpers
@@ -111,8 +117,15 @@ class SchedulerContext:
         calibration_policy: CalibrationPolicy | None = None,
         constraints: list[Constraint] | None = None,
         time_step: float = 300.0,
+        sun_safe: SunSafePredicate | None = None,
     ) -> SchedulerContext:
-        """Assemble a context, filling in default overhead/policy/constraints."""
+        """Assemble a context, filling in default overhead/policy/constraints.
+
+        ``sun_safe`` reaches both consumers: the default constraint set
+        (when ``constraints`` is None) and the scan-duration clips. A
+        caller supplying an explicit ``constraints`` list owns its Sun
+        constraint; ``sun_safe`` then affects the duration clips only.
+        """
         from ...coordinates import Coordinates
         from ..models import CalibrationPolicy, OverheadModel
 
@@ -121,7 +134,7 @@ class SchedulerContext:
         if calibration_policy is None:
             calibration_policy = CalibrationPolicy()
         if constraints is None:
-            constraints = _default_constraints(site)
+            constraints = _default_constraints(site, sun_safe=sun_safe)
         return cls(
             patches=patches,
             site=site,
@@ -132,4 +145,5 @@ class SchedulerContext:
             start_time=start_time,
             end_time=end_time,
             time_step=time_step,
+            sun_safe=sun_safe,
         )

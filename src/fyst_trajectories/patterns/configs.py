@@ -128,7 +128,7 @@ class ConstantElScanConfig(ScanConfig):
     uniformity) must scale ``az_speed`` by ``1/cos(elevation)`` for
     each target; ``plan_constant_el_scan``'s ``velocity`` argument is
     the same mount-frame quantity, passed through unscaled. (Pong/daisy
-    ``velocity`` is on-sky — a different frame.)
+    ``velocity`` is on-sky, a different frame.)
     """
 
     az_start: float
@@ -393,7 +393,7 @@ class DaisyScanConfig(ScanConfig):
 
     A Daisy built with ``.duration(D)`` samples the integrator's own grid and
     spans ``[0, D - timestep]``, so ``trajectory.duration`` reports
-    ``D - timestep`` — one timestep short of the other patterns (which span
+    ``D - timestep``: one timestep short of the other patterns (which span
     ``[0, D]``). This is deliberate: sampling on the integrator grid avoids the
     ~1% velocity bias that a stretched ``linspace(0, D)`` time axis would inject.
     The per-sample ``times`` array is internally self-consistent, so serialized

@@ -263,7 +263,7 @@ class ArrayFootprint:
     extent the source must traverse. Coordinates are focal-plane
     degrees in the (xi, eta) convention where ``xi`` is the
     cross-elevation axis and ``eta`` is the elevation axis (matching
-    :class:`~fyst_trajectories.InstrumentOffset` ``dx``/``dy`` axes).
+    :class:`~fyst_trajectories.offsets.InstrumentOffset` ``dx``/``dy`` axes).
 
     Mirrors the ``array_info`` dict consumed by Simons Observatory's
     ``schedlib.source.make_source_ces``, which the SO scheduler uses
@@ -345,7 +345,7 @@ class ArrayFootprint:
         recommended entry point for SO ``schedlib`` integrators: one
         call converts the dict and its radian-valued xi/eta arrays
         into the degree-valued ``ArrayFootprint`` that
-        :func:`~fyst_trajectories.plan_source_ces` accepts.
+        :func:`~fyst_trajectories.planning.plan_source_ces` accepts.
 
         Parameters
         ----------
@@ -368,7 +368,7 @@ class ArrayFootprint:
         Examples
         --------
         Convert an SO ``array_info`` dict (radian xi/eta) to a footprint
-        ready for :func:`~fyst_trajectories.plan_source_ces`:
+        ready for :func:`~fyst_trajectories.planning.plan_source_ces`:
 
         >>> import numpy as np
         >>> from fyst_trajectories.planning import ArrayFootprint
@@ -440,7 +440,7 @@ class ScanBlock:
 #
 # NOTE: ``source_ces`` is intentionally NOT registered here.
 # :class:`SourceCESComputedParams` exists as a static-type schema for
-# :func:`~fyst_trajectories.plan_source_ces` returns, and the planner
+# :func:`~fyst_trajectories.planning.plan_source_ces` returns, and the planner
 # self-checks its return value directly against
 # :attr:`SourceCESComputedParams.__required_keys__`, so this table is
 # never consulted for source-CES. ``ObservingPatch`` still rejects
@@ -488,10 +488,9 @@ def validate_computed_params(params: Mapping[str, object], scan_type: str) -> No
     scan_type : str
         One of ``"pong"``, ``"pong_altaz"``, ``"constant_el"``,
         ``"daisy"``, or ``"daisy_altaz"``.
-        ``"source_ces"`` is intentionally NOT accepted — see the note
-        on :data:`_SCAN_TYPE_TO_KEYS`. :func:`plan_source_ces`
-        self-validates against
-        :attr:`SourceCESComputedParams.__required_keys__` directly.
+        ``"source_ces"`` is intentionally not accepted:
+        :func:`plan_source_ces` self-validates against
+        ``SourceCESComputedParams.__required_keys__`` directly.
 
     Raises
     ------

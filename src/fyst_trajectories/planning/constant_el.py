@@ -105,7 +105,7 @@ def plan_constant_el_scan(
         Wrap-around windows where ``max_lsa < min_lsa`` are supported
         (e.g. ``(310.0, 10.0)`` is a 60°/15 = 4 hour scan crossing the
         LSA = 0/360 boundary). Both endpoints must lie in ``[0, 360)``
-        and must not be equal. ``rising`` is still honored — it
+        and must not be equal. ``rising`` is still honored - it
         controls the azimuth-range computation (rising/setting half of
         the field's transit) but does NOT affect the LSA-derived
         ``obs_start`` / ``obs_end``. ``max_search_hours`` and
@@ -119,7 +119,9 @@ def plan_constant_el_scan(
         forwarded to the field-center pre-flight check(s). ``None``
         (default) keeps the built-in scalar exclusion-radius check; an
         injected predicate is consulted instead, so the directional
-        sun-avoidance model (future shared library) is honored end-to-end.
+        sun-avoidance model (see
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
+        end-to-end.
         Applied at both pre-flight checks when ``lsa_window`` is supplied
         (search anchor and resolved ``obs_start``). Warn-only.
 
@@ -150,7 +152,7 @@ def plan_constant_el_scan(
     once at ``start_time`` (the search anchor) and once at the
     resolved ``obs_start``. The LSA branch can delay the observation
     by several hours relative to ``start_time``, during which the
-    Sun moves ~15°/hour — a field that is safely far from the Sun
+    Sun moves ~15°/hour - a field that is safely far from the Sun
     at ``start_time`` may not be safe by the time the LSA window
     opens. The elevation-crossing path runs the check only at
     ``start_time``; the resolved ``obs_start`` can fall tens of minutes

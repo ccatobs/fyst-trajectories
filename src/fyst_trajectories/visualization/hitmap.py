@@ -137,12 +137,12 @@ def plot_hit_map(
     module_fov : float or None, optional
         Module field-of-view diameter in degrees. If set, the histogram
         is convolved with a circular disk kernel of this diameter,
-        approximating coverage from the full module. PrimeCam modules
-        are approximately 1.1 degrees. Requires scipy. Default is None.
+        approximating coverage from the full module. A PrimeCam module
+        subtends about 1.3 degrees on sky (twice the 0.65 deg
+        ``MODULE_FOV_RADIUS_DEG``). Default is None.
     smooth_sigma : float or None, optional
         If not None, apply Gaussian smoothing with this sigma (in bins)
-        after any module FOV convolution. Requires scipy. Default is
-        None (no smoothing).
+        after any module FOV convolution. Default is None (no smoothing).
     footprint_threshold : float, optional
         Fraction of max hit count to define the footprint boundary
         contour. Default 0.1 (10% of peak).

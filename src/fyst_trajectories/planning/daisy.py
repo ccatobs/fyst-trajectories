@@ -74,7 +74,8 @@ def plan_daisy_scan(
         forwarded to the field-center pre-flight check. ``None`` (default)
         keeps the built-in scalar exclusion-radius check; an injected
         predicate is consulted instead, so the directional sun-avoidance
-        model (future shared library) is honored end-to-end. Warn-only.
+        model (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is
+        honored end-to-end. Warn-only.
 
     Returns
     -------

@@ -243,6 +243,16 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
     monkeypatch.chdir(tmp_path)
     text = rst.read_text(encoding="utf-8")
     key = rst.relative_to(DOCS).as_posix()
+    # The optional shared sun-avoidance library gates its examples the way
+    # Without the shared sun-avoidance library, only the blocks that name
+    # the library-backed "cad" model are skipped; every doc page keeps its
+    # library-dependent blocks self-contained so no whole-page skip exists.
+    try:
+        import sun_avoidance  # noqa: F401
+
+        have_sun_avoidance = True
+    except ImportError:
+        have_sun_avoidance = False
     # matplotlib gates only the plotting blocks. Without the ``plotting`` extra we skip
     # blocks that touch matplotlib or the plot functions per block, so the page's other
     # blocks still run.
@@ -266,6 +276,8 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
             "matplotlib" in code
             or any(re.search(rf"\b{re.escape(name)}\b", code) for name in visualization_symbols)
         ):
+            continue
+        if not have_sun_avoidance and ('"cad"' in code or "'cad'" in code):
             continue
         try:
             with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):

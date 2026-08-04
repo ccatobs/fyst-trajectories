@@ -36,14 +36,17 @@ CalibrationPolicy
 -----------------
 
 Controls *when* each calibration type is triggered. Cadences are in seconds.
-A cadence of 0 means "every scan boundary"; a cadence of ``None`` (only
-valid for ``beam_map_cadence``) disables automatic scheduling for that
-calibration type entirely::
+A cadence of 0 keeps that calibration permanently due: retune then fires
+immediately before every science subscan (plus once at startup) and never on
+an idle tick, while every other calibration type fires on each scheduler
+iteration, idle ticks included. A cadence of ``None`` (valid only for
+``beam_map_cadence``) disables automatic scheduling for that calibration type
+entirely::
 
     from fyst_trajectories.overhead import CalibrationPolicy
 
     policy = CalibrationPolicy(
-        retune_cadence=0.0,           # every scan boundary
+        retune_cadence=0.0,           # before every science subscan
         pointing_cadence=3600.0,      # every 1 hour
         focus_cadence=7200.0,         # every 2 hours
         skydip_cadence=10800.0,       # every 3 hours
@@ -51,7 +54,7 @@ calibration type entirely::
         beam_map_cadence=None,        # default: manual injection only
         planet_targets=("jupiter", "saturn", "mars", "uranus", "neptune"),
         planet_min_elevation=20.0,    # planet must be above this
-        planet_cal_scan=False,        # plan planet cals as source-CES passes
+        planet_cal_scan=False,        # False = parked; True = source-CES passes
         planet_cal_passes=3,          # passes per planet cal when scanning
         planet_cal_el_step=None,      # None = planner default (footprint extent)
         planet_cal_footprint="c",     # Prime-Cam module tag the passes tile
@@ -69,14 +72,12 @@ instrument/operations team to confirm.
 Scheduling Beam Maps
 ~~~~~~~~~~~~~~~~~~~~
 
-``BEAM_MAP`` is a first-class :class:`~fyst_trajectories.overhead.CalibrationType`
+``BEAM_MAP`` is a :class:`~fyst_trajectories.overhead.CalibrationType`
 with its own cadence (``CalibrationPolicy.beam_map_cadence``) and
-duration (``OverheadModel.beam_map_duration``). The default
-``beam_map_cadence=None`` keeps beam maps off the automatic schedule
-so existing operators are not surprised by extra calibration blocks
-appearing in their timelines; setting it to a positive value opts the
-schedule in to cadence-driven beam mapping using the same
-``planet_targets`` machinery as ``planet_cal``.
+duration (``OverheadModel.beam_map_duration``). It is off the automatic
+schedule by default (``beam_map_cadence=None``); set a positive cadence
+to opt in. Beam maps then use the same ``planet_targets`` machinery as
+``planet_cal``.
 
 **Example: 6-hour beam-map cadence**
 
@@ -84,9 +85,6 @@ schedule in to cadence-driven beam mapping using the same
 
     # Beam map every 6 hours using the configured planet targets.
     policy = CalibrationPolicy(beam_map_cadence=21600.0)
-
-Beam maps and planet calibrations share planet-target visibility checking
-but have independent cadences and durations.
 
 .. _planet-cal-source-ces:
 
@@ -98,11 +96,11 @@ By default a planet calibration is a single fixed-duration parked block
 pose while the calibration runs, and no scan geometry is recorded.
 
 Setting ``planet_cal_scan=True`` instead plans each planet calibration as
-a real multi-pass source-CES sequence via
-:func:`~fyst_trajectories.plan_source_ces_passes`, anchored at the
-scheduler clock. The planet is dragged across the Prime-Cam focal plane at
-a fixed boresight elevation, once per pass, with the passes stepped in
-elevation so they run sequentially:
+a multi-pass source-CES sequence via
+:func:`~fyst_trajectories.planning.plan_source_ces_passes`, anchored at
+the scheduler clock. The planet is dragged across the Prime-Cam focal
+plane at a fixed boresight elevation, once per pass, with the passes
+stepped in elevation so they run sequentially:
 
 .. code-block:: python
 
@@ -123,9 +121,9 @@ window), the calibration is skipped and left due, so it is retried on a
 later scheduler iteration, exactly like a planet cal with no visible
 planet.
 
-``planet_cal_passes`` must be at least 1, and ``planet_cal_el_step`` (when
-given) must be positive; ``None`` uses the planner default (the footprint
-elevation extent).
-
-Default values are commissioning-era placeholders that should be
-confirmed by the instrument team.
+Rebuild the pass trajectories with
+``schedule_to_trajectories(timeline, science_only=False)``; the default
+``science_only=True`` returns science blocks only. An explicit
+``planet_cal_el_step`` smaller than the footprint's elevation extent makes
+adjacent pass windows overlap in time, and the planner emits a
+:class:`~fyst_trajectories.exceptions.PointingWarning` when they do.

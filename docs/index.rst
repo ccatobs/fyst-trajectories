@@ -5,12 +5,27 @@ Trajectory generation for the FYST (Fred Young Submillimeter
 Telescope).  Wraps astropy with FYST-specific site coordinates, telescope
 limits, and scan pattern generators.
 
-This release adds multi-pass source-CES sequences
-(``plan_source_ces_passes``) that step the focal plane across a source in
-elevation for complete calibration coverage, ``start_time`` anchoring on the
-source-CES planners, opt-in planet calibrations run as real source-CES scans
-in the overhead simulator (reconstructible from the saved timeline), and
-night-level visualization figures. See :doc:`planning`.
+What it does: nine scan patterns (pong, daisy, constant-elevation,
+linear, sidereal, planet and satellite tracking, plus AltAz-frame pong
+and daisy), focal-plane offsets for the PrimeCam modules, source-crossing
+constant-elevation planning (single- and multi-pass), target-visibility
+and Sun-almanac reporting, selectable sun-avoidance models (the site
+scalar radii by default; FYST's directional CAD zone is opt-in today and
+is expected to become the default in a future release), an offline
+observing-night overhead simulator, and matplotlib figures for
+trajectories, visibility, all-sky and coverage views, focal-plane
+footprints, hit maps, and night timelines.
+
+Start here:
+
+- :doc:`quickstart` - the site, coordinate transforms, and a first
+  trajectory.
+- :doc:`planning` - turn a field or a source into a scan block.
+- :doc:`sun_avoidance` - check a target against the Sun, choose an
+  avoidance policy, and gate a slew at dispatch.
+- :doc:`api/observability` - which calibrators are up, when, and why not.
+- :doc:`api/visualization` - visibility curves, the instantaneous all-sky
+  view, the focal-plane footprint, and night-level overhead figures.
 
 Scope and boundaries
 --------------------
@@ -18,19 +33,22 @@ Scope and boundaries
 This library generates planning-time trajectories and overhead
 estimates. A few concerns deliberately live outside its scope:
 
-- **Pointing-model corrections** are applied at execution time by the 
+- **Pointing-model corrections** are applied at execution time by the
   Telescope Control System. They are not computed here.
 - **PWV / atmospheric opacity** affects sky brightness and absolute
   flux calibration but does not affect trajectory geometry; opacity
   modelling lives downstream in the calibration pipeline / sky model.
 - **Hard interlocks** are enforced downstream by the TCS at execution
   time. The library's own checks split two ways: elevation and azimuth
-  position bounds *raise* (``ElevationBoundsError``,
-  ``TargetNotObservableError``) and refuse to return an out-of-bounds
-  trajectory, while dynamics (scan velocity, acceleration) and Sun
-  proximity are advisory only, emitting ``PointingWarning`` without
-  refusing to generate. Downstream consumers must still enforce the
-  actual hardware limits.
+  position bounds *raise* (``ElevationBoundsError``, ``AzimuthBoundsError``;
+  the planners wrap them as ``TargetNotObservableError``) and refuse to
+  return an out-of-bounds trajectory, while dynamics (scan velocity,
+  acceleration) and in-scan Sun proximity are advisory only, emitting
+  ``PointingWarning`` without refusing to generate. The dispatch-time
+  gate is stricter:
+  :func:`~fyst_trajectories.dispatch.choose_encoder_solution` raises
+  when no sun-safe azimuth wrap is available (see :doc:`sun_avoidance`).
+  Downstream consumers must still enforce the actual hardware limits.
 
 .. toctree::
    :maxdepth: 2
@@ -42,6 +60,7 @@ estimates. A few concerns deliberately live outside its scope:
    trajectory_examples
    instrument_offsets
    planning
+   sun_avoidance
    retune_events
    api/index
 
@@ -69,18 +88,17 @@ use.
    * - Parameter
      - Default
      - Override
-   * - Sun avoidance radius
-     - 45° exclusion / 50° warning
-     - ``get_fyst_site(sun_exclusion_radius=...)``
    * - Nasmyth port
      - ``"right"`` (+1 sign)
      - module constant ``site.FYST_NASMYTH_PORT`` (not a call-time option)
    * - Az/El velocity limits
      - 3.0 / 1.0 deg/s
-     - ``get_fyst_site()`` kwargs
+     - module constants ``site.FYST_AZ_MAX_VELOCITY`` /
+       ``site.FYST_EL_MAX_VELOCITY`` (not a call-time option)
    * - Az/El acceleration limits
      - 1.5 / 0.75 deg/s²
-     - ``get_fyst_site()`` kwargs
+     - module constants ``site.FYST_AZ_MAX_ACCELERATION`` /
+       ``site.FYST_EL_MAX_ACCELERATION`` (not a call-time option)
    * - Plate scale
      - 13.89 arcsec/mm
      - module constant ``site.FYST_PLATE_SCALE`` (not a call-time option)

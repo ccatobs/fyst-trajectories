@@ -101,9 +101,12 @@ def write_timeline(
     ``stop_time`` as ISO strings, ``name``, ``azmin``, ``azmax``,
     ``el``, ``boresight_angle``, ``scan_index``, ``subscan_index``)
     plus FYST extension columns (``block_type``, ``scan_type``,
-    ``rising``, plus metadata columns for science blocks:
-    ``ra_center``, ``dec_center``, ``width``, ``height``, ``velocity``,
-    ``scan_params_json``).
+    ``rising``, the science-block geometry columns ``ra_center``,
+    ``dec_center``, ``width``, ``height``, ``velocity``, and the JSON
+    payload columns ``scan_params_json`` and ``block_meta_json``).
+    The timeline window, site, overhead model, and calibration policy
+    are stored in the table header metadata, so ``read_timeline``
+    restores them.
 
     Parameters
     ----------
@@ -263,6 +266,12 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     -------
     ObservingTimeline
         Loaded timeline.
+
+    Warns
+    -----
+    PointingWarning
+        When the header describes a non-FYST site: telescope limits are
+        not persisted and are reset to FYST defaults.
     """
     path = Path(path)
     table = Table.read(str(path), format="ascii.ecsv")

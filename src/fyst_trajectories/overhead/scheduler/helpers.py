@@ -5,9 +5,13 @@ Dependency-free (no scheduler state); consumed by
 """
 
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy.time import Time, TimeDelta
+
+if TYPE_CHECKING:
+    from ...dispatch import SunSafePredicate
 
 from ...coordinates import Coordinates
 from ...patterns.utils import normalize_azimuth
@@ -75,8 +79,17 @@ def _normalize_az(az: float, site: Site) -> float:
     return float(normalize_azimuth(np.array([az], dtype=float), site)[0])
 
 
-def _default_constraints(site: Site) -> list[Constraint]:
-    """Create default constraints from site configuration."""
+def _default_constraints(
+    site: Site, sun_safe: "SunSafePredicate | None" = None
+) -> list[Constraint]:
+    """Create default constraints from site configuration.
+
+    With ``sun_safe`` (a :class:`~fyst_trajectories.dispatch.SunSafePredicate`,
+    e.g. from :func:`~fyst_trajectories.sun_models.make_sun_safe`) the Sun
+    constraint runs that model; otherwise it runs the site's scalar
+    exclusion radius. Either way it is only added when the site has Sun
+    avoidance enabled.
+    """
     constraints: list[Constraint] = [
         ElevationConstraint(
             el_min=site.telescope_limits.elevation.min,
@@ -84,7 +97,12 @@ def _default_constraints(site: Site) -> list[Constraint]:
         ),
     ]
     if site.sun_avoidance.enabled:
-        constraints.append(SunAvoidanceConstraint(min_angle=site.sun_avoidance.exclusion_radius))
+        if sun_safe is not None:
+            constraints.append(SunAvoidanceConstraint(sun_safe=sun_safe))
+        else:
+            constraints.append(
+                SunAvoidanceConstraint(min_angle=site.sun_avoidance.exclusion_radius)
+            )
     return constraints
 
 
@@ -296,18 +314,29 @@ def _time_until_sun_unsafe(
     coords: Coordinates,
     min_sun_angle: float,
     step_seconds: float = 60.0,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> float:
     """Compute how long a source stays sun-safe from *start_time*.
 
-    Samples target-Sun angular separation at ``step_seconds`` intervals up
-    to *max_duration*, then linearly interpolates to the crossing where the
-    separation first drops below *min_sun_angle*. Mirrors
-    :func:`_time_until_set` (which checks elevation) so the pong/daisy
-    duration clip can trim a scan that drifts into the exclusion radius
-    mid-scan, the same sun-safety guarantee the constant_el branch gets
-    from :func:`get_observable_windows`.
+    Samples the track at ``step_seconds`` intervals up to *max_duration*
+    and locates where it first stops being sun-safe. In scalar mode
+    (``sun_safe=None``) safety is separation strictly greater than
+    *min_sun_angle* (``<=`` at the boundary is unsafe, matching
+    ``is_sun_safe``) and the crossing is linearly interpolated on the
+    separation. With an injected
+    :class:`~fyst_trajectories.dispatch.SunSafePredicate` the model's
+    verdicts decide, and the crossing is refined by VERDICT BISECTION
+    inside the bracketing samples, returning the last verified-safe time
+    (conservative by construction). Bisection is used instead of margin
+    interpolation because a directional model's threshold is a staircase
+    over discrete table levels: a level step inside the bracket makes an
+    interpolated crossing anti-conservative by up to a full step.
+    Mirrors :func:`_time_until_set` (which checks elevation) so the
+    pong/daisy duration clip can trim a scan that drifts into the
+    exclusion zone mid-scan; the constant_el branch applies this same
+    clip after its corridor solve (:func:`_ce_visit_plan`).
 
-    Returns *max_duration* if the source never enters the exclusion zone.
+    Returns *max_duration* if the source never becomes unsafe.
     """
     n_steps = max(2, int(max_duration / step_seconds) + 1)
     dt = np.linspace(0.0, max_duration, n_steps)
@@ -318,14 +347,61 @@ def _time_until_sun_unsafe(
         np.full(n_steps, dec),
         times,
     )
-    sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
-    sep = coords.angular_separation(az_arr, el_arr, sun_az_arr, sun_el_arr)
 
-    unsafe = np.where(sep < min_sun_angle)[0]
-    if len(unsafe) == 0:
+    if sun_safe is not None:
+        has_batch = hasattr(sun_safe, "batch")
+        if has_batch:
+            safe = np.atleast_1d(np.asarray(sun_safe.batch(az_arr, el_arr, times), dtype=bool))
+            if safe.shape != (n_steps,):
+                # A scalar/short result would silently broadcast one verdict
+                # over the whole grid; fail loudly instead.
+                raise ValueError(
+                    f"sun_safe.batch returned shape {safe.shape}, expected "
+                    f"({n_steps},) verdicts for the duration grid"
+                )
+        else:
+            safe = np.array(
+                [
+                    bool(sun_safe(float(az_arr[i]), float(el_arr[i]), times[i]))
+                    for i in range(n_steps)
+                ],
+                dtype=bool,
+            )
+        unsafe = np.flatnonzero(~safe)
+        if unsafe.size == 0:
+            return max_duration
+        idx = int(unsafe[0])
+        if idx == 0:
+            return 0.0
+
+        def _verdict_at(offset_s: float) -> bool:
+            t_probe = start_time + TimeDelta(offset_s, format="sec")
+            az_p, el_p = coords.radec_to_altaz(ra, dec, t_probe)
+            if has_batch:
+                return bool(np.atleast_1d(sun_safe.batch([float(az_p)], [float(el_p)], t_probe))[0])
+            return bool(sun_safe(float(az_p), float(el_p), t_probe))
+
+        # Verdict bisection between the last-safe and first-unsafe samples:
+        # exact for any model shape (10 iterations resolve a 60 s step to
+        # ~0.06 s) and conservative (returns the last VERIFIED-safe time).
+        lo, hi = float(dt[idx - 1]), float(dt[idx])
+        for _ in range(10):
+            mid = 0.5 * (lo + hi)
+            if _verdict_at(mid):
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
+    sep = np.asarray(coords.angular_separation(az_arr, el_arr, sun_az_arr, sun_el_arr), dtype=float)
+
+    # `<=`: a sample exactly at the radius is unsafe, matching is_sun_safe.
+    unsafe = np.flatnonzero(sep <= min_sun_angle)
+    if unsafe.size == 0:
         return max_duration
 
-    idx = unsafe[0]
+    idx = int(unsafe[0])
     if idx == 0:
         return 0.0
 
@@ -350,6 +426,7 @@ def _compute_scan_duration(
     center_el: float = 50.0,
     ce_cache: dict | None = None,
     ce_ready_lead: float = 480.0,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> float:
     """Compute how long we can observe this patch.
 
@@ -375,6 +452,9 @@ def _compute_scan_duration(
         Readiness lead (seconds) passed to :func:`_ce_visit_plan`.
         Default 480.0 for direct/helper callers; the scheduler always
         passes ``ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC``.
+    sun_safe : SunSafePredicate, optional
+        Injected sun-safety model for the mid-scan drift clip. Default
+        ``None`` keeps the site's scalar exclusion radius.
     """
     remaining = (end_time - start_time).sec
 
@@ -404,6 +484,7 @@ def _compute_scan_duration(
                 corridor_dur,
                 coords,
                 site.sun_avoidance.exclusion_radius,
+                sun_safe=sun_safe,
             )
             corridor_dur = min(corridor_dur, sun_safe_dur)
         return corridor_dur
@@ -418,10 +499,10 @@ def _compute_scan_duration(
             coords,
             el_min,
         )
-        # Clip to the sun-safe sub-window too, mirroring the constant_el branch
-        # (which gets this from get_observable_windows). Without it a pong/daisy
-        # scan that is sun-safe at start but drifts into the exclusion radius
-        # mid-scan would not be trimmed.
+        # Clip to the sun-safe sub-window too, mirroring the constant_el
+        # branch's post-corridor clip. Without it a pong/daisy scan that is
+        # sun-safe at start but drifts into the exclusion radius mid-scan
+        # would not be trimmed.
         if site.sun_avoidance.enabled:
             sun_safe_dur = _time_until_sun_unsafe(
                 patch.ra_center,
@@ -430,6 +511,7 @@ def _compute_scan_duration(
                 max_dur,
                 coords,
                 site.sun_avoidance.exclusion_radius,
+                sun_safe=sun_safe,
             )
             observable_dur = min(observable_dur, sun_safe_dur)
         return min(max_dur, observable_dur)

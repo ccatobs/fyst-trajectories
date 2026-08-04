@@ -8,20 +8,12 @@ velocity setpoints for Az/El axes.
    :members:
    :undoc-members:
    :show-inheritance:
-   :no-index:
 
 Derived Dynamics Properties
 ---------------------------
 
-The following read-only properties compute higher-order derivatives
-from the velocity arrays using ``np.gradient``.
-
-- ``az_accel`` / ``el_accel``: Acceleration in degrees/second^2
-  (gradient of velocity with respect to time).
-- ``az_jerk`` / ``el_jerk``: Jerk in degrees/second^3
-  (gradient of acceleration with respect to time).
-
-Example::
+``az_accel``/``el_accel`` and ``az_jerk``/``el_jerk`` are read-only
+properties derived from the velocity arrays with ``np.gradient``::
 
     import numpy as np
 
@@ -126,47 +118,16 @@ Usage Examples
 
 **Export**::
 
-    from fyst_trajectories.trajectory_utils import to_path_format, to_arrays
+    from fyst_trajectories.trajectory_utils import to_arrays, to_path_payload
 
-    # For Go TCS /path endpoint
-    points = to_path_format(trajectory)
-    payload = {
-        "start_time": trajectory.start_time.unix,
-        "coordsys": "Horizon",
-        "points": points,
-    }
+    # Ready-to-POST Go TCS /path body: {"start_time", "coordsys", "points"}
+    payload = to_path_payload(trajectory)
 
     # Simple arrays
     times, az, el = to_arrays(trajectory)
 
-**Absolute times**::
-
-    import dataclasses
-
-    from astropy.time import Time
-
-    from fyst_trajectories.trajectory_utils import get_absolute_times
-
-    trajectory = dataclasses.replace(trajectory, start_time=Time("2026-03-15T04:00:00", scale="utc"))
-
-    abs_times = get_absolute_times(trajectory)
-
-**Validation**::
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.trajectory_utils import validate_trajectory
-
-    site = get_fyst_site()
-
-    validate_trajectory(trajectory, site)
-
-**Print formatted summary**::
-
-    from fyst_trajectories.trajectory_utils import print_trajectory
-
-    print_trajectory(trajectory)              # First 5 and last 5 points
-    print_trajectory(trajectory, head=10)     # Customize head count
-    print_trajectory(trajectory, tail=None)   # Skip tail section
+Absolute-time conversion, validation, and the formatted-table printer are
+covered in :doc:`trajectory_utils`.
 
 **Plot trajectory**::
 

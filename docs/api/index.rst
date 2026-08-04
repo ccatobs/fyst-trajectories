@@ -13,6 +13,7 @@ API Reference
    planning
    dispatch
    observability
+   sun_models
    visualization
    exceptions
    overhead_models

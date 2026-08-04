@@ -14,7 +14,7 @@ class SatelliteTrackPattern(PlanetTrackPattern):
     an unresolved submillimetre flux calibrator. All trajectory
     generation is inherited from :class:`PlanetTrackPattern`: the only
     difference is that the body is resolved from a JPL satellite SPK
-    kernel (configured via :class:`SatelliteTrackConfig.satellite_kernel`
+    kernel (configured via ``SatelliteTrackConfig.satellite_kernel``
     or the ``FYST_SATELLITE_KERNEL`` environment variable) rather than
     astropy's builtin ephemeris. As with planet tracking, ``start_time``
     is required and az normalisation, velocities, and bounds checking

@@ -2,7 +2,8 @@ Overhead Timeline Generation
 ============================
 
 Sequences science scans with calibration breaks and slew overhead
-over a given observing window.
+over a given observing window. See :doc:`../overhead_timeline` for
+worked examples.
 
 .. autofunction:: fyst_trajectories.overhead.generate_timeline
 

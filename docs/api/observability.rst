@@ -1,43 +1,10 @@
 Observability Reporting
 =======================
 
-The observability module answers a single operational question, *"which of
-these targets can we observe now (or over the next* N *hours), and why not?"*,
-for a list of solar-system flux calibrators. It is the **assess-only** sibling
-of the trajectory builders
-(:class:`~fyst_trajectories.patterns.PlanetTrackPattern`, ``plan_*_scan``):
-:func:`~fyst_trajectories.observability.check_observability` returns a per-target
-:class:`~fyst_trajectories.observability.ObservabilityReport`, never builds a
-trajectory, and **never raises** for an unobservable target: the reason is
-reported, not excepted.
-
-It is importable in isolation: it depends only on
-:mod:`fyst_trajectories.coordinates` and :mod:`fyst_trajectories.site` and does
-**not** import the offline ``overhead`` simulator.
-
-Two physically distinct kinds of avoidance are kept structurally separate:
-
-- **Sun**: always-on thermal/hardware safety, read from
-  ``site.sun_avoidance`` (45° by default). Reported in the dedicated
-  ``sun_separation_deg`` / ``sun_clear`` fields with a
-  :attr:`~fyst_trajectories.observability.ReasonCode.SUN_TOO_CLOSE` reason. It is
-  never an :class:`~fyst_trajectories.observability.AvoidZone` and cannot be
-  weakened via the ``avoid`` list.
-- **Bright-source contamination**: caller-specified, variable, per-body
-  exclusion zones (the Moon, Jupiter, …). Reported as
-  :class:`~fyst_trajectories.observability.AvoidSeparation` entries with an
-  :attr:`~fyst_trajectories.observability.ReasonCode.AVOID_TOO_CLOSE` reason.
-  There are **no library default zones**: every
-  :class:`~fyst_trajectories.observability.AvoidZone` carries its own
-  caller-supplied radius, so ``AvoidZone("moon")`` is a ``TypeError``.
-
-.. note::
-
-   The orchestration that turns ``schedule(OBSERVE=[...], AVOID=[...])`` into
-   selected, sequenced observing blocks lives **one layer up**, in the
-   scheduling layer, not here. This module supplies the stateless
-   observability primitive that the scheduler calls; it does not select,
-   sequence, or trim blocks.
+Assess-only visibility for solar-system flux calibrators and fixed sources,
+plus the site's sunrise/sunset/twilight almanac. Nothing here builds a
+trajectory or raises for an unobservable target: the reason is reported.
+Jump to `Usage Examples`_ for the common calls.
 
 .. automodule:: fyst_trajectories.observability
    :members:
@@ -68,7 +35,7 @@ Usage Examples
         print(r.summary)            # one-line human-readable verdict
     observable_now = [r.name for r in reports if r.observable]
 
-**With a query horizon** (find the first observable window within *N* hours)::
+**With a query horizon** (find every observable window within *N* hours)::
 
     reports = check_observability(
         ["uranus", "neptune"],
@@ -76,9 +43,15 @@ Usage Examples
         horizon_hours=24.0,
     )
     for r in reports:
-        if r.window is not None:
-            print(r.name, r.window.start.iso, "→", r.window.end.iso,
-                  f"({r.window.duration_hours:.1f} h)")
+        for w in r.windows or ():
+            print(r.name, w.start.iso, "→", w.end.iso,
+                  f"({w.duration_hours:.1f} h)")
+        print(r.name, "total:", f"{r.total_observable_hours:.1f} h")
+
+A target can have several disjoint windows in one horizon (an evening pass
+and a pre-dawn pass are common); ``windows`` reports all of them in time
+order. It is ``None`` when no horizon was requested (``horizon_hours=0``)
+and an empty tuple when a horizon was evaluated and no window exists.
 
 **With caller-specified bright-source avoidance** (the AVOID list)::
 
@@ -92,11 +65,10 @@ Usage Examples
     # A scheduler wrapper parsing ('jupiter', '3deg') pairs can use
     # AvoidZone.from_pair(("jupiter", "3deg")) instead.
 
-**Satellite targets** (Titan). Titan is carried in the built-in
-:data:`~fyst_trajectories.observability.FLUX_CALIBRATORS` catalog as a
-``SATELLITE`` proxied by its parent body (Saturn). Its observability position is
-the parent-body position (≲ ~3 arcmin), which is more than adequate for an
-up/down/sun-safe verdict and is flagged on the report::
+**Satellite targets** (Titan). A ``SATELLITE`` in the built-in
+:data:`~fyst_trajectories.observability.FLUX_CALIBRATORS` catalog is evaluated
+at its parent body's position (Titan at Saturn, within ~3 arcmin), which is
+ample for an up/down/sun-safe verdict and is flagged on the report::
 
     reports = check_observability(
         ["titan"],
@@ -125,3 +97,12 @@ up/down/sun-safe verdict and is flagged on the report::
         Time("2026-06-15T05:00:00", scale="utc"),
         extra_targets=extra,
     )
+
+**Sunrise, sunset, and twilight**
+(:func:`~fyst_trajectories.observability.sun_events`)::
+
+    from fyst_trajectories.observability import SunEventKind, sun_events
+
+    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"))
+    sunset = next(e for e in events if e.kind == SunEventKind.SUNSET)
+    dusk_side = [e.kind.value for e in events if not e.rising]

@@ -11,11 +11,8 @@ stitching).
 
 .. note::
 
-   Most callers should use
-   :func:`~fyst_trajectories.overhead.generate_timeline`. The classes
-   below are exposed for extension, not routine use. The
-   ``generate_timeline`` signature and return type are stable; the
-   internal phase API may evolve.
+   The ``generate_timeline`` signature and return type are stable; the
+   phase API below may evolve.
 
 Scheduler
 ---------

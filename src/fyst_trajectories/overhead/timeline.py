@@ -1,9 +1,14 @@
 """Public :func:`generate_timeline` entry point."""
 
+from typing import TYPE_CHECKING
+
 from astropy.time import Time
 
 from ..site import Site
 from .constraints import Constraint
+
+if TYPE_CHECKING:
+    from ..dispatch import SunSafePredicate
 from .models import (
     CalibrationPolicy,
     ObservingPatch,
@@ -26,6 +31,7 @@ def generate_timeline(
     calibration_policy: CalibrationPolicy | None = None,
     constraints: list[Constraint] | None = None,
     time_step: float = 300.0,
+    sun_safe: "SunSafePredicate | None" = None,
 ) -> ObservingTimeline:
     """Generate an observing timeline.
 
@@ -51,7 +57,21 @@ def generate_timeline(
         Scheduling constraints. If None, uses default elevation + sun
         avoidance constraints from the site configuration.
     time_step : float
-        Retry interval in seconds when no target is available.
+        Scheduler tick in seconds: how far the clock advances when no
+        target is available, and (plus a slew allowance) the look-ahead
+        used to decide a constant-elevation pass is imminent enough to
+        start.
+    sun_safe : SunSafePredicate, optional
+        Injected sun-safety model
+        (:class:`~fyst_trajectories.dispatch.SunSafePredicate`, e.g. from
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`) driving the
+        default Sun constraint, the mid-scan sun-drift duration clips, and
+        the scan-mode planet-calibration planner
+        (``plan_source_ces_passes``). Default ``None`` keeps the site's
+        scalar exclusion radius.
+        Only consulted while the site has Sun avoidance enabled. When an
+        explicit ``constraints`` list is supplied it is used as-is;
+        ``sun_safe`` then affects the duration clips only.
 
     Returns
     -------
@@ -73,5 +93,6 @@ def generate_timeline(
         calibration_policy=calibration_policy,
         constraints=constraints,
         time_step=time_step,
+        sun_safe=sun_safe,
     )
     return Scheduler(ctx).run()

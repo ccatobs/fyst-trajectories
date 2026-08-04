@@ -41,7 +41,7 @@ __all__ = [
 class CEScanParams(TypedDict, total=False):
     """Optional scan_params for a constant-elevation :class:`ObservingPatch`.
 
-    All keys are optional — any combination may be supplied to override
+    All keys are optional: any combination may be supplied to override
     defaults computed from the patch geometry.
 
     Attributes
@@ -61,7 +61,7 @@ class CEScanParams(TypedDict, total=False):
         constant-elevation planner derives ``start_time`` / ``duration``
         from the LSA window instead of from RA-edge elevation crossings.
         Declared as ``tuple | list`` because ECSV round-trip serialises
-        through JSON, which converts tuples to lists — a value freshly
+        through JSON, which converts tuples to lists. A value freshly
         constructed in Python is typically a tuple, but a value
         deserialised from a stored timeline is a list. The CE planner
         accepts both via ``float(lsa_window[0])`` indexing. See
@@ -72,11 +72,11 @@ class CEScanParams(TypedDict, total=False):
         Which elevation crossing to observe: ``True`` for the rising
         (east-of-meridian) half of the field's transit, ``False`` for
         the setting (west-of-meridian) half. When omitted, the scheduler
-        picks the crossing from the hour angle at selection time. When
-        supplied, the patch is only selectable while the sky side matches
-        this request, and the value is forwarded to the planner's
-        ``rising`` argument so the emitted trajectory covers the
-        requested half.
+        takes whichever half opens its next plannable crossing pass
+        first. When supplied, the patch is only selectable while the sky
+        side matches this request, and the value is forwarded to the
+        planner's ``rising`` argument so the emitted trajectory covers
+        the requested half.
     """
 
     az_min: float
@@ -91,7 +91,7 @@ class CEScanParams(TypedDict, total=False):
 class PongScanParams(TypedDict, total=False):
     """Optional scan_params for a Pong :class:`ObservingPatch`.
 
-    All keys are optional — any combination may be supplied to override
+    All keys are optional: any combination may be supplied to override
     defaults used by :func:`~fyst_trajectories.planning.plan_pong_scan`.
 
     Attributes
@@ -118,7 +118,7 @@ class PongScanParams(TypedDict, total=False):
 class DaisyScanParams(TypedDict, total=False):
     """Optional scan_params for a Daisy :class:`ObservingPatch`.
 
-    All keys are optional — any combination may be supplied to override
+    All keys are optional: any combination may be supplied to override
     defaults used by :func:`~fyst_trajectories.planning.plan_daisy_scan`.
 
     Attributes
@@ -152,9 +152,9 @@ class SourceCESScanParams(TypedDict, total=False):
     path populates every key so the pass geometry is fully recorded.
 
     The fields together record one pass of
-    :func:`~fyst_trajectories.plan_source_ces_passes`: a single
-    :func:`~fyst_trajectories.plan_source_ces` call that drags the planet
-    across a focal-plane row at a fixed boresight elevation.
+    :func:`~fyst_trajectories.planning.plan_source_ces_passes`: a single
+    :func:`~fyst_trajectories.planning.plan_source_ces` call that drags
+    the planet across a focal-plane row at a fixed boresight elevation.
 
     Attributes
     ----------
@@ -284,7 +284,8 @@ class ScienceBlockMetadata(TypedDict, total=False):
     """Metadata attached to a science :class:`TimelineBlock`.
 
     All keys are optional at the type level, but science blocks emitted
-    by :func:`generate_timeline` populate all six keys so
+    by :func:`generate_timeline` populate the six geometry/scan keys
+    (``t0_scan`` is added only on constant-elevation subscans) so
     :func:`schedule_to_trajectories` can reconstruct the trajectory
     after an ECSV round-trip.
 
@@ -301,7 +302,7 @@ class ScienceBlockMetadata(TypedDict, total=False):
     velocity : float
         Scan velocity in deg/s.
     scan_params : ScanParamsDict
-        Scan-type-specific parameters (see :class:`ScanParamsDict`).
+        Scan-type-specific parameters (see :data:`ScanParamsDict`).
     t0_scan : str, optional
         ISO timestamp of the visit's planner anchor (constant-elevation
         subscans only): the time the scheduler gated the crossing solve
@@ -427,12 +428,6 @@ class CalibrationType(str, enum.Enum):
 
         For example ``CalibrationType.RETUNE.state_field == "last_retune"``.
         Every :class:`CalibrationType` member has its own state field.
-
-        .. versionchanged:: Unreleased
-            Return type tightened from ``str | None`` to ``str`` once
-            ``BEAM_MAP`` was promoted to a first-class calibration with its
-            own ``last_beam_map`` state field. The ``None`` branch was
-            previously unreachable for every member except ``BEAM_MAP``.
         """
         return _CAL_TYPE_STATE_FIELD[self]
 
@@ -650,7 +645,7 @@ class TimelineBlock:
         Scan pattern or calibration type identifier.
     boresight_angle : float
         Nasmyth/boresight rotation angle in degrees (``nasmyth_sign *
-        elevation + parallactic_angle``). ``0.0`` means unset — I/O
+        elevation + parallactic_angle``). ``0.0`` means unset; I/O
         routines will recompute it from az/el as needed.
     metadata : ScienceBlockMetadata or CalibrationBlockMetadata or EmptyBlockMetadata
         Additional per-block metadata. Science blocks populate a
@@ -732,9 +727,9 @@ class TimelineBlock:
         Factory for the common case where the telescope is parked
         (``az_start == az_end == az``) while a calibration operation runs.
         The boresight angle is computed from the site and the az/el pose
-        via :func:`~fyst_trajectories.overhead.utils.compute_nasmyth_rotation`.
+        via :func:`~fyst_trajectories.overhead.compute_nasmyth_rotation`.
         For retune calibrations emitted *between* subscans, use
-        :meth:`retune` instead — that variant carries the parent scan's
+        :meth:`retune` instead; that variant carries the parent scan's
         azimuth range so ECSV round-trips preserve the subscan geometry.
 
         The optional ``az_end`` / ``scan_params`` / ``t0_scan`` / ``rising``
@@ -876,7 +871,7 @@ class TimelineBlock:
     ) -> "TimelineBlock":
         """Construct an IDLE block advancing wall-clock time at a parked pose.
 
-        Emitted by the scheduler when no patch scores above zero — the
+        Emitted by the scheduler when no patch scores above zero: the
         telescope stays at ``(az, el)`` and the timeline advances by
         ``duration`` seconds.
 
@@ -944,7 +939,7 @@ class TimelineBlock:
             Total slew time in seconds (move + settle).
         az_start, az_end : float
             Initial ("from") and target ("to") azimuths in degrees. Not
-            ordering-checked — westward slews may have
+            ordering-checked; westward slews may have
             ``az_start > az_end``.
         el : float
             Target elevation in degrees.
@@ -1151,17 +1146,19 @@ class OverheadModel:
 class CalibrationPolicy:
     """Cadences for calibration operations.
 
-    A cadence of 0 means "perform after every science scan". Cadences
-    are in seconds. Default values are commissioning-era placeholders
-    that should be confirmed by the instrument team.
+    A cadence of 0 keeps that calibration permanently due: retune then
+    fires immediately before every science subscan (plus once at
+    startup) and never on an idle tick, while every other calibration
+    type fires on each scheduler iteration, idle ticks included.
+    Cadences are in seconds. Default values are commissioning-era
+    placeholders that should be confirmed by the instrument team.
 
     Parameters
     ----------
     retune_cadence : float
         Seconds between KID retunes. 0 = scan-coupled: a retune fires
         immediately before every science subscan (and once at startup),
-        never on idle ticks. Placeholder pending Prime-Cam confirmation
-        (Q-7/Q-3 in ``docs/reviews/fyst_team_questions.md``).
+        never on idle ticks. Placeholder pending Prime-Cam confirmation.
     pointing_cadence : float
         Seconds between pointing corrections. Default ``3600.0`` (1 h).
         A value of ``1800.0`` may be appropriate for commissioning.
@@ -1173,7 +1170,7 @@ class CalibrationPolicy:
         Seconds between planet calibrations.
     beam_map_cadence : float or None
         Seconds between beam-map scans. ``None`` (the default) disables
-        automatic beam-map scheduling — beam maps are then injected by
+        automatic beam-map scheduling; beam maps are then injected by
         hand only. Set a non-None value to have the scheduler treat
         beam mapping like the other cadenced calibrations. Beam maps
         target the same planets as ``planet_cal``.
@@ -1185,9 +1182,10 @@ class CalibrationPolicy:
     planet_cal_scan : bool
         When ``True``, plan each planet calibration as a real multi-pass
         source-CES sequence (via
-        :func:`~fyst_trajectories.plan_source_ces_passes`) anchored at the
-        scheduler clock, instead of a single fixed-duration parked block.
-        Default ``False`` (parked). Instrument/operations-team placeholder.
+        :func:`~fyst_trajectories.planning.plan_source_ces_passes`)
+        anchored at the scheduler clock, instead of a single
+        fixed-duration parked block. Default ``False`` (parked).
+        Instrument/operations-team placeholder.
     planet_cal_passes : int
         Number of source-CES passes per planet calibration when
         ``planet_cal_scan`` is set. Must be at least 1. Default 3.
@@ -1198,12 +1196,12 @@ class CalibrationPolicy:
         extent). Must be positive when given. Values smaller than the
         footprint's elevation extent make adjacent pass windows overlap
         in time, and the planner emits a
-        :class:`~fyst_trajectories.PointingWarning` when they do.
+        :class:`~fyst_trajectories.exceptions.PointingWarning` when they do.
         Instrument/operations-team placeholder.
     planet_cal_footprint : str
         Prime-Cam module tag defining the base footprint the passes tile
         (e.g. ``"c"``). Must be a known module tag (see
-        :func:`~fyst_trajectories.get_primecam_offset`); an unknown tag
+        ``get_primecam_offset`` in :doc:`/api/offsets`); an unknown tag
         raises :class:`ValueError` at construction. Default ``"c"``.
         Instrument/operations-team placeholder.
     """

@@ -69,7 +69,7 @@ class PhaseResult:
     selection : ObservingPatch | None
         Selected patch for subsequent phases (set by
         :class:`PatchSelectionPhase`). ``None`` means "no patch
-        observable — skip downstream science phases".
+        observable, skip downstream science phases".
     best_az : float | None
         Instantaneous azimuth of ``selection`` at ``state.current_time``,
         in degrees. Consumed by :class:`SlewPhase` and
@@ -251,6 +251,9 @@ def _emit_planet_cal_passes(
         start_time=state.current_time,
         site=ctx.site,
         timestep=_SOURCE_CES_TIMESTEP_SEC,
+        # The injected sun model reaches the planet-cal planner too (None
+        # keeps the planner's scalar default).
+        sun_safe=ctx.sun_safe,
     )
     if policy.planet_cal_el_step is not None:
         kwargs["el_step"] = policy.planet_cal_el_step
@@ -346,16 +349,15 @@ class CalibrationPhase(Phase):
     """Emit any calibration blocks whose cadence has elapsed.
 
     Queries the context's calibration policy and the state's
-    :class:`CalibrationState` to determine which calibrations are due
-    at ``state.current_time``. Emits each due calibration as a
-    CALIBRATION block, updates the cadence tracker, and advances
-    ``current_time`` past each block.
+    :class:`~fyst_trajectories.overhead.CalibrationState` to determine
+    which calibrations are due at ``state.current_time``. Emits each due
+    calibration as a CALIBRATION block, updates the cadence tracker, and
+    advances ``current_time`` past each block.
 
-    Exception: a scan-coupled retune (``retune_cadence == 0.0``, the
-    "every scan boundary" convention) is NOT emitted here after the
-    startup burst. This phase runs on every outer-loop iteration,
-    including idle ticks, and retuning a parked telescope every tick
-    serves nothing; scan-coupled retunes fire in
+    Exception: a scan-coupled retune (``retune_cadence == 0.0``) is NOT
+    emitted here after the startup burst. This phase runs on every
+    outer-loop iteration, including idle ticks, and retuning a parked
+    telescope every tick serves nothing; scan-coupled retunes fire in
     :class:`ScienceScanPhase` immediately before each subscan instead.
 
     Clamps each cal block's duration against the remaining schedule
@@ -433,7 +435,7 @@ class PatchSelectionPhase(Phase):
     patch.priority``. The highest-scoring observable patch wins.
 
     If no patch scores above zero, emits an IDLE block advancing by
-    ``ctx.time_step`` and sets ``skip_to_next_iter=True`` — the outer
+    ``ctx.time_step`` and sets ``skip_to_next_iter=True``: the outer
     scheduler should skip the slew/science phases for this iteration.
 
     Otherwise, returns no blocks but populates ``selection``,
@@ -531,11 +533,11 @@ class PatchSelectionPhase(Phase):
 class SlewPhase(Phase):
     """Emit a slew block if the telescope needs to move.
 
-    Uses :func:`estimate_slew_time` to compute the move time from
-    ``(state.current_az, state.current_el)`` to ``(selection.best_az,
-    selection.best_el)``, adds the overhead model's settle time, and
-    emits a SLEW block if the total exceeds 1 second. Advances
-    ``current_time`` by the slew duration.
+    Uses :func:`~fyst_trajectories.overhead.estimate_slew_time` to
+    compute the move time from ``(state.current_az, state.current_el)``
+    to ``(selection.best_az, selection.best_el)``, adds the overhead
+    model's settle time, and emits a SLEW block if the total exceeds
+    1 second. Advances ``current_time`` by the slew duration.
 
     Requires the previous :class:`PatchSelectionPhase` result in
     ``selection``; if the slew would extend past ``ctx.end_time``,
@@ -596,20 +598,20 @@ class ScienceScanPhase(Phase):
     """Emit science subscans for the selected patch, interleaving retunes.
 
     1. Compute the remaining observable scan duration via
-       :func:`_compute_scan_duration`.
+       ``_compute_scan_duration``.
     2. If the duration falls below the minimum scan duration, skip the
        scan: advance ``current_time`` by ``ctx.time_step`` and set
        ``skip_to_next_iter=True``.
     3. Otherwise split the scan into ``n_subscans`` (capped by
        ``ctx.overhead_model.max_scan_duration``). For constant-elevation
        patches the rising flag and the visit anchor come from the
-       crossing pass chosen by :func:`_ce_visit_plan` (the anchor is
+       crossing pass chosen by ``_ce_visit_plan`` (the anchor is
        stamped on every subscan as ``metadata["t0_scan"]`` so each one
        reconstructs); for other scan types the rising flag falls back
        to the hour-angle sign. Compute the ordered-bounds azimuth range
        ``(az_start, az_end)``.
     4. Emit subscans back-to-back via
-       :meth:`_emit_subscans_with_retunes`, which injects a retune
+       ``_emit_subscans_with_retunes``, which injects a retune
        calibration block between subscans whenever the cadence tracker
        says a retune is due.
     5. Advance ``current_az`` / ``current_el`` to the scan's final
@@ -636,6 +638,7 @@ class ScienceScanPhase(Phase):
             best_el,
             ce_cache=ctx.ce_corridors,
             ce_ready_lead=ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC,
+            sun_safe=ctx.sun_safe,
         )
 
         ce_plan = None

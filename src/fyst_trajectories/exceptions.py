@@ -41,19 +41,18 @@ class PointingWarning(UserWarning):
 class VelocityLimitWarning(PointingWarning):
     """A trajectory's velocity exceeds a configured axis limit.
 
-    Subclass of :class:`PointingWarning` (existing ``except PointingWarning``
-    / ``issubclass(.., PointingWarning)`` handlers still catch it). Lets
-    safety-critical consumers (e.g. the PCS dispatch-time escalation) filter
-    on *category* via ``issubclass`` instead of matching free-text message
-    wording.
+    Subclass of :class:`PointingWarning`, so ``except PointingWarning``
+    handlers still catch it. Filter on this category (``issubclass`` or
+    ``warnings.filterwarnings(category=...)``) instead of matching the
+    message text.
     """
 
 
 class AccelerationLimitWarning(PointingWarning):
     """A trajectory's acceleration exceeds a configured axis limit.
 
-    Subclass of :class:`PointingWarning`. Added for symmetry/future-proofing;
-    the PCS gate keeps acceleration ADVISORY and does not escalate it.
+    Subclass of :class:`PointingWarning`, the acceleration counterpart of
+    :class:`VelocityLimitWarning`.
     """
 
 
@@ -65,10 +64,10 @@ class PointingError(ValueError):
 
     Examples
     --------
-    ``except ValueError`` catches everything this library raises, since the
-    ``PointingError`` family subclasses ``ValueError`` (bare input-validation
-    errors plus the physical-infeasibility and bounds errors). Narrow to
-    ``except PointingError`` to catch only the physical and bounds family:
+    The ``PointingError`` family subclasses ``ValueError``, so ``except
+    ValueError`` catches it alongside this library's plain input-validation
+    errors. Narrow to ``except PointingError`` to catch only the
+    physical-infeasibility and bounds family:
 
     >>> from fyst_trajectories import validate_trajectory
     >>> from fyst_trajectories.exceptions import PointingError
@@ -220,7 +219,7 @@ class TargetNotObservableError(PointingError):
     message : str, optional
         Override for the human-readable message. When ``None`` (default) the
         message is composed from ``target``, ``time_info``, and
-        ``bounds_error`` as before. Supply an explicit string when the
+        ``bounds_error``. Supply an explicit string when the
         infeasibility is not a plain limit overshoot (e.g. a rate below a
         minimum) and the composed "exceeds limits" wording would misdescribe
         it; ``bounds_error`` is still stored for structured access.
