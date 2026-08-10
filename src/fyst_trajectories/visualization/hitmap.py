@@ -14,7 +14,7 @@ Two modes of operation:
 
 - **Module coverage** (``module_fov`` set): Convolves the track with a
   circular disk kernel representing the module's field of view. Useful
-  for observation planning â€” shows approximate sky coverage. Reports
+  for observation planning, shows approximate sky coverage. Reports
   absolute area statistics in square degrees.
 
 These functions require ``matplotlib`` (install via

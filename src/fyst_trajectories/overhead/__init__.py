@@ -13,7 +13,7 @@ observing patches and produces a complete timeline with calibration injection.
    subscans / iterations) are independent of the in-scan retune samples
    that :func:`fyst_trajectories.inject_retune` injects on a single
    :class:`~fyst_trajectories.trajectory.Trajectory`. The two layers own
-   different retune timing knobs (operations team vs instrument team — see
+   different retune timing knobs (operations team vs instrument team, see
    :doc:`overhead_integration`); a workflow that applies
    :func:`~fyst_trajectories.inject_retune` and then schedules the result
    through this subpackage will see retune flags from both systems.

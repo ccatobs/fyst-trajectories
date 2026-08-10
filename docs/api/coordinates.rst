@@ -27,7 +27,7 @@ aliased, is documented in :doc:`../coordinate_systems`.
 Usage Examples
 --------------
 
-**Basic transformation** (vacuum -- ACU applies refraction)::
+**Basic transformation** (vacuum, ACU applies refraction)::
 
     from astropy.time import Time
 

@@ -300,7 +300,7 @@ def test_sun_avoidance_warns_not_raises(site):
 
 
 # ---------------------------------------------------------------------------
-# Injectable sun_safe predicate (A3 seam) on the source-CES arc check.
+# Injectable sun_safe predicate (injectable seam) on the source-CES arc check.
 # ---------------------------------------------------------------------------
 
 
@@ -739,7 +739,7 @@ def test_compute_params_az_envelope_validation(site, monkeypatch):
 
 
 def test_compute_params_az_envelope_directional_parity(site):
-    """Emit-time envelope and full plan agree on az-bounds (M2 parity).
+    """Emit-time envelope and full plan agree on az-bounds.
 
     The emit-time envelope check widens the static sweep only in the
     drift direction (sign of ``v_az``), matching the one-signed drift the
@@ -879,8 +879,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
 
         pytest tests/test_planning_source_ces.py --run-slow -k cross_validate_so
 
-    Convention findings (verified 2026-05-29 against so3g 0.2.7 /
-    schedlib 0.4.0):
+    Convention findings (verified against so3g 0.2.7 / schedlib 0.4.0):
 
     * **xi/eta pairing: CORRECT.** ``ArrayFootprint`` pairs
       ``xi -> cross-elevation`` and ``eta -> elevation`` the same way SO's
@@ -903,11 +902,10 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     rotation term is reconciled by the documented bridge
     ``boresight_rot_fyst = boresight_rot_SO - nasmyth_sign*el``.
     This is a platform-physics difference (corotator vs Nasmyth), **not**
-    a bug. (Until the 2026-06-10 pa-in-horizon-frame fix the library
-    also added the parallactic angle inside this az/el projection; that
-    term was unphysical, pa describes the horizon-to-celestial
-    rotation, and the old bridge cancelled it algebraically rather
-    than validating it.)
+    a bug. (Until the pa-in-horizon-frame fix the library also added the
+    parallactic angle inside this az/el projection; that term was
+    unphysical, pa describes the horizon-to-celestial rotation, and the
+    old bridge cancelled it algebraically rather than validating it.)
     """
     so3g = pytest.importorskip("so3g")  # noqa: F841  Linux-only; gates the test
     schedlib_source = pytest.importorskip("schedlib.source")

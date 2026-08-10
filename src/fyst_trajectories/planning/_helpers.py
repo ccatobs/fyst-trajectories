@@ -1,6 +1,6 @@
 """Shared helpers for the ``plan_*_scan`` entry points.
 
-These are internal utilities — the public entry points live in
+These are internal utilities; the public entry points live in
 :mod:`fyst_trajectories.planning` (via ``pong.py``, ``daisy.py``, and
 ``constant_el.py``).
 """

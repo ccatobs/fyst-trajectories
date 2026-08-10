@@ -103,7 +103,7 @@ class TestAdjacentModuleSeparation:
         return np.sqrt(ddx**2 + ddy**2)
 
     def test_i1_i2_separation(self):
-        """I1-I2 separation should be ~1.78 deg (not ~0.92 deg from the old bug)."""
+        """I1-I2 separation should be ~1.78 deg (not the ~0.92 deg a sin/cos mix-up gives)."""
         sep = self._angular_separation(PRIMECAM_I1, PRIMECAM_I2)
         assert sep == pytest.approx(EXPECTED_DISTANCE_DEG, rel=0.01)
         # The buggy code gave ~0.92 deg; verify we are NOT close to that

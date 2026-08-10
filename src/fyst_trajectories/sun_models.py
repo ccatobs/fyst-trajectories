@@ -138,9 +138,11 @@ def _import_sun_avoidance():
     except ImportError:
         raise RuntimeError(
             "the shared sun-avoidance library is required for the 'cone' and 'cad' "
-            "sun models. Install the pinned revision:\n"
+            "sun models. Install the pinned revision (the repository is "
+            "CCAT-internal and needs collaboration access):\n"
             "  pip install git+https://github.com/ccatobs/sun-avoidance@"
-            f"{SUN_AVOIDANCE_PINNED_SHA}"
+            f"{SUN_AVOIDANCE_PINNED_SHA}\n"
+            "The default 'scalar' model needs no extra dependency."
         ) from None
     return sun_avoidance
 
@@ -407,8 +409,8 @@ class _LibrarySunModel(_BaseSunModel):
             maxoffset=self._maxoffset,
             tracking_module=self._tracking_module,
         )
-        # Starred unpack: upstream a69b8a3 grew the return from 2 to 4 values
-        # (component masks appended); this accepts both revisions.
+        # Starred unpack: some sun-avoidance revisions return 2 values and
+        # others 4 (component masks appended); this accepts both.
         mask, delta_closest, *_ = self._get_mask_fixed_pos(
             delta,
             gamma,
@@ -546,7 +548,7 @@ def make_sun_safe(
     )
 
 
-# ── Path-level slew safety (Phase 6) ─────────────────────────────────────────
+# ── Path-level slew safety ───────────────────────────────────────────────────
 def _axis_slew_duration(distance: float, vmax: float, amax: float) -> float:
     """Trapezoidal-profile travel time (s) for one axis over ``distance`` deg.
 

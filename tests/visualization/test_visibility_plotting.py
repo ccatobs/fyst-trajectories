@@ -295,12 +295,12 @@ def test_visibility_sun_model_scalar_string():
     """sun_model="scalar" works without the shared library."""
     fig = plot_visibility(T0, ["mars"], sun_model="scalar", panels=("sun_separation",), show=False)
     sep_ax = fig.axes[0]
-    dashed_50 = [
+    dashed_45 = [
         line
         for line in sep_ax.get_lines()
-        if line.get_linestyle() == "--" and np.all(np.asarray(line.get_ydata()) == 50.0)
+        if line.get_linestyle() == "--" and np.all(np.asarray(line.get_ydata()) == 45.0)
     ]
-    assert len(dashed_50) == 1  # the scalar model's flat threshold curve (site default)
+    assert len(dashed_45) == 1  # the scalar model's flat threshold curve (site default)
 
 
 def test_visibility_sun_model_cad_renders():

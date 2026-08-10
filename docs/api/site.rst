@@ -17,7 +17,7 @@ mechanical limits are fixed constants::
     # Default FYST site
     site = get_fyst_site()
 
-    # Override sun avoidance radius (default is 50 degrees)
+    # Override sun avoidance radius (default is 45 degrees)
     site_custom = get_fyst_site(sun_exclusion_radius=30.0)
 
     # Disable sun avoidance entirely (for testing)

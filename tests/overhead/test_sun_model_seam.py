@@ -1,10 +1,10 @@
 """Tests for the overhead sun-model seam and the boundary unification.
 
-Covers the Phase-5 slice of the sun-avoidance integration plan: every
-overhead sun verdict site accepts an injected
-:class:`~fyst_trajectories.dispatch.SunSafePredicate`, and the scalar-mode
-boundary is unified on "exactly at the radius is UNSAFE" (matching
-``Coordinates.is_sun_safe``), closing the old ``<`` / ``>`` divergence.
+Covers the sun-model seam end to end: every overhead sun verdict site
+accepts an injected :class:`~fyst_trajectories.dispatch.SunSafePredicate`,
+and the scalar-mode boundary is unified on "exactly at the radius is
+UNSAFE" (matching ``Coordinates.is_sun_safe``), closing the old ``<`` /
+``>`` divergence.
 """
 
 import numpy as np

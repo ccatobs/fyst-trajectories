@@ -7,9 +7,7 @@ complete timeline with :func:`~fyst_trajectories.overhead.generate_timeline`,
 round-trips it through TOAST-compatible ECSV, and prints a short summary.
 
 The timeline produced here is a planning artifact for survey-design and
-efficiency studies, not a schedule that drives a live observing night. In
-production, ``primecam_overhead_sim`` in the
-``primecam_camera_mapping_simulations`` repo is the wrapper of this flow.
+efficiency studies, not a schedule that drives a live observing night.
 
 The CSV schema is ``name,RA,DEC,width,height,priority,velocity,scan_type``,
 with ``RA`` in sexagesimal hour-angle and ``DEC`` in sexagesimal degrees

@@ -200,9 +200,9 @@ def _generate_trajectory_for_block(
         # the scheduler's corridor gate guaranteed the crossing solve
         # succeeds from. A subscan's own t_start may lie past the opening
         # crossing (where the forward search can no longer find it), so
-        # blocks without the key (pre-2026-07-16 timelines) fall back to
-        # t_start and reconstruct only when that anchor happens to precede
-        # the pass opening.
+        # blocks without the key (timelines written before ``t0_scan`` was
+        # recorded) fall back to t_start and reconstruct only when that
+        # anchor happens to precede the pass opening.
         anchor = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
         return plan_constant_el_scan(
             field=field,
@@ -325,8 +325,10 @@ def accumulate_hitmaps(
     trajectories. Flagged trajectories contribute science samples only.
 
     This is a simplified boresight-level hitmap (boresight samples only,
-    not per detector). For full detector-level hitmaps, use
-    primecam_camera_mapping_simulations with the schedule output.
+    not per detector). For detector-level hitmaps, project each detector
+    offset through
+    :func:`~fyst_trajectories.offsets.boresight_to_detector` before
+    binning, or feed the schedule to a dedicated mapping simulator.
 
     Parameters
     ----------

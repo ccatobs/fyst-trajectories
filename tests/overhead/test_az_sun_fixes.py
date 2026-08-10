@@ -3,16 +3,16 @@
 The overhead subpackage is an OFFLINE observing-night simulator. These
 tests pin three fixes:
 
-b1, cable-wrap azimuth normalization. A north-straddling azimuth pair
-      (e.g. 350 deg and 10 deg) must give the short-path slew (~20 deg, not
-      ~340 deg) and a non-flipped boresight (circular mean, not the ~180
-      deg-off arithmetic mean).
-b2, sun-aware pong/daisy duration clip. A pong/daisy scan that is
-      sun-unsafe (or drifts into the exclusion radius) must have its
-      duration trimmed, mirroring the constant_el branch.
-b3, MinDurationConstraint sun forward-check. A target that stays above
-      the elevation floor but is inside the Sun exclusion zone within
-      ``min_duration`` must be rejected, matching the class docstring.
+1. Cable-wrap azimuth normalization. A north-straddling azimuth pair
+   (e.g. 350 deg and 10 deg) must give the short-path slew (~20 deg, not
+   ~340 deg) and a non-flipped boresight (circular mean, not the ~180
+   deg-off arithmetic mean).
+2. Sun-aware pong/daisy duration clip. A pong/daisy scan that is
+   sun-unsafe (or drifts into the exclusion radius) must have its
+   duration trimmed, mirroring the constant_el branch.
+3. MinDurationConstraint sun forward-check. A target that stays above
+   the elevation floor but is inside the Sun exclusion zone within
+   ``min_duration`` must be rejected, matching the class docstring.
 """
 
 import pytest
@@ -51,7 +51,7 @@ def sun_radec(coords):
 
 
 class TestNorthStraddleSlew:
-    """b1: a north-straddling azimuth pair takes the short slew path."""
+    """Fix 1: a north-straddling azimuth pair takes the short slew path."""
 
     def test_short_path_slew_time(self, site):
         """Raw [0,360) azimuths 350 and 10 must slew ~20 deg, not ~340 deg."""
@@ -91,7 +91,7 @@ class TestNorthStraddleSlew:
         arithmetic = compute_nasmyth_rotation(0.5 * (355.0 + 5.0), 50.0, site)
 
         assert block.boresight_angle == pytest.approx(expected, abs=1e-9)
-        # And it is genuinely different from the old arithmetic-midpoint value.
+        # And it is genuinely different from the arithmetic-midpoint value.
         assert abs(block.boresight_angle - arithmetic) == pytest.approx(180.0, abs=1e-6)
 
     def test_circular_mean_handles_straddle(self):
@@ -103,7 +103,7 @@ class TestNorthStraddleSlew:
 
 
 class TestSunAwarePongDuration:
-    """b2: pong/daisy duration is clipped to the sun-safe sub-window."""
+    """Fix 2: pong/daisy duration is clipped to the sun-safe sub-window."""
 
     def test_time_until_sun_unsafe_immediate(self, coords, sun_radec, site):
         """A target already inside the exclusion radius is unsafe from t=0."""
@@ -128,8 +128,8 @@ class TestSunAwarePongDuration:
         """A sunward pong scan is clipped though it stays above the el floor.
 
         The target is inside the Sun exclusion radius but well above the
-        elevation limit, so the old elevation-only branch returned the full
-        max_scan_duration. The sun-aware clip now trims it to ~0.
+        elevation limit, so an elevation-only check returns the full
+        max_scan_duration, while the sun-aware clip trims it to ~0.
         """
         sun_ra, sun_dec = sun_radec
         ra = (sun_ra + 20.0) % 360
@@ -157,7 +157,7 @@ class TestSunAwarePongDuration:
 
 
 class TestMinDurationConstraintSun:
-    """b3: MinDurationConstraint forward-checks Sun exclusion."""
+    """Fix 3: MinDurationConstraint forward-checks Sun exclusion."""
 
     def test_rejects_target_entering_exclusion(self, coords, sun_radec):
         """Above the el floor but inside the exclusion zone -> score 0.0."""
@@ -174,8 +174,8 @@ class TestMinDurationConstraintSun:
         )
         constraint = MinDurationConstraint(min_duration=600.0)
         # At time + 600s the target is still high (el ~44) but ~18 deg from
-        # the Sun, inside the 45 deg exclusion. The old elevation-only
-        # check returned 1.0; the sun forward-check now rejects it.
+        # the Sun, inside the 45 deg exclusion. An elevation-only check would
+        # score 1.0; the sun forward-check rejects it.
         assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coords) == 0.0
 
     def test_accepts_sun_safe_high_target(self, coords):

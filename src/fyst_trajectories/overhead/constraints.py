@@ -121,7 +121,7 @@ class SunAvoidanceConstraint(Constraint):
     so the directional CAD model drives patch selection end to end.
 
     ``min_angle`` has no default: a radius hardcoded here would drift from
-    ``site.sun_avoidance`` (a 50 deg exclusion radius at FYST). The
+    ``site.sun_avoidance`` (a 45 deg exclusion radius at FYST). The
     scheduler's default constraint set reads the site value.
 
     Parameters

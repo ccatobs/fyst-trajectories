@@ -100,7 +100,7 @@ def test_default_returns_polar_figure_with_scalar_shading():
     labels = _legend_texts(ax)
     assert any("exclusion" in text for text in labels)
     assert any("warning" in text for text in labels)
-    # The ratified site radii appear in the legend, not hardcoded numbers.
+    # The site radii appear in the legend, not hardcoded numbers.
     cfg = get_fyst_site().sun_avoidance
     assert any(f"< {cfg.exclusion_radius:.0f}" in text for text in labels)
     # The Sun and every drawn body are identified in the legend.

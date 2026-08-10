@@ -86,11 +86,11 @@ duration_strategy = st.floats(
 timestep_strategy = st.floats(min_value=0.1, max_value=1.0, allow_nan=False, allow_infinity=False)
 
 # Solar-system bodies and a random epoch offset (for ephemeris round-trip checks).
-# Titan (the satellite path) is intentionally NOT fuzzed here (deferred from feasibility
-# study Sec 5.3 B): the satellite path differs from the builtin path only in the
-# epoch-independent _resolve_body lookup, and the downstream get_body + vacuum-AltAz
-# inversion it shares is already fuzzed across these 7 bodies. Titan's round-trip
-# invariant is pinned at fixed epochs in test_coordinates.py::TestTitanSatelliteResolver.
+# Titan (the satellite path) is intentionally NOT fuzzed here: the satellite path differs
+# from the builtin path only in the epoch-independent _resolve_body lookup, and the
+# downstream get_body + vacuum-AltAz inversion it shares is already fuzzed across these 7
+# bodies. Titan's round-trip invariant is pinned at fixed epochs in
+# test_coordinates.py::TestTitanSatelliteResolver.
 body_strategy = st.sampled_from(["sun", "moon", "mars", "jupiter", "saturn", "uranus", "neptune"])
 epoch_offset_days_strategy = st.floats(
     min_value=0.0, max_value=300.0, allow_nan=False, allow_infinity=False

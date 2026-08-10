@@ -328,7 +328,7 @@ def test_avoid_zone_rejects_sun():
         AvoidZone("SUN", 30.0)
 
 
-# 22 - disabled Sun avoidance: sun_clear True, no SUN_TOO_CLOSE, separation still set (T5)
+# 22 - disabled Sun avoidance: sun_clear True, no SUN_TOO_CLOSE, separation still set
 def test_sun_avoidance_disabled():
     site = get_fyst_site(sun_avoidance_enabled=False)
     coords = Coordinates(site)
@@ -377,7 +377,7 @@ def test_summary_text(coordinates):
     assert "NOT observable" in bad.summary
 
 
-# 27 - T6: windows is EMPTY (not None) when a horizon was evaluated and none exists
+# 27 - windows is EMPTY (not None) when a horizon was evaluated and none exists
 def test_windows_empty_when_never_observable(coordinates):
     # dec=+80 deg never rises from FYST; with a horizon, _all_windows finds no run.
     tgt = Target("far_north", TargetKind.FIXED, ra_deg=0.0, dec_deg=80.0)
@@ -388,7 +388,7 @@ def test_windows_empty_when_never_observable(coordinates):
     assert ReasonCode.BELOW_EL_MIN in r.reasons
 
 
-# 28 - T9: Titan proxy is exact, and observable when Saturn is up
+# 28 - Titan proxy is exact, and observable when Saturn is up
 def test_titan_proxy_when_saturn_up(coordinates):
     # Find an hour within 24h where Saturn clears el_min, deterministically.
     grid = T_NIGHT + TimeDelta(np.arange(0, 24 * 3600, 3600), format="sec")
@@ -405,7 +405,7 @@ def test_titan_proxy_when_saturn_up(coordinates):
     assert r.position_approximate is True
 
 
-# 29 - T10: from_pair degree-symbol and whitespace/case normalization
+# 29 - from_pair degree-symbol and whitespace/case normalization
 def test_from_pair_unit_and_whitespace():
     assert AvoidZone.from_pair(("moon", "5°")).zone_deg == 5.0
     assert AvoidZone.from_pair(("JUPITER", " 3 DEG ")).zone_deg == 3.0
@@ -446,7 +446,7 @@ def test_avoid_unresolvable_body_raises(coordinates):
         )
 
 
-# 33 - F10: from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
+# 33 - from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
 def test_from_pair_rejects_malformed():
     with pytest.raises(ValueError):
         AvoidZone.from_pair(("jupiter", "xy"))  # non-numeric
@@ -458,7 +458,7 @@ def test_from_pair_rejects_malformed():
         AvoidZone.from_pair("xy")  # not a tuple/list pair
 
 
-# 34 - F10: non-finite zone_deg is rejected at construction
+# 34 - non-finite zone_deg is rejected at construction
 def test_avoid_zone_rejects_non_finite():
     with pytest.raises(ValueError):
         AvoidZone("jupiter", float("nan"))
@@ -489,7 +489,7 @@ def test_grid_substep_horizon_not_degenerate():
 
 
 # ---------------------------------------------------------------------------
-# Injectable sun_safe predicate (A3 seam): a directional model drives the
+# Injectable sun_safe predicate (injectable seam): a directional model drives the
 # sun_clear / SUN_TOO_CLOSE verdict end-to-end, default path unchanged.
 # ---------------------------------------------------------------------------
 
@@ -504,7 +504,7 @@ def _allow_everything(az, el, t):
     return True
 
 
-# 37 - A3: an injected False predicate flips an otherwise-clear target to
+# 37 - an injected False predicate flips an otherwise-clear target to
 # SUN_TOO_CLOSE while leaving the geometric sun_separation_deg untouched.
 def test_injected_predicate_flips_sun_clear(coordinates):
     t = T_NIGHT
@@ -526,7 +526,7 @@ def test_injected_predicate_flips_sun_clear(coordinates):
     assert r_blocked.sun_separation_deg == pytest.approx(r_default.sun_separation_deg, abs=1e-6)
 
 
-# 38 - A3: the predicate is consulted with the target's own (az, el, time).
+# 38 - the predicate is consulted with the target's own (az, el, time).
 def test_injected_predicate_receives_target_altaz(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -545,7 +545,7 @@ def test_injected_predicate_receives_target_altaz(coordinates):
     assert el_seen == pytest.approx(r.el_deg, abs=1e-6)
 
 
-# 39 - A3: the predicate drives the horizon-window computation too.
+# 39 - the predicate drives the horizon-window computation too.
 def test_injected_predicate_drives_window(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -562,7 +562,7 @@ def test_injected_predicate_drives_window(coordinates):
     assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
 
 
-# 40 - A3: a permissive predicate clears a daytime target the scalar rejects.
+# 40 - a permissive predicate clears a daytime target the scalar rejects.
 def test_injected_allow_predicate_overrides_daytime(coordinates):
     t = T_DAY
     _, sun_el = coordinates.get_sun_altaz(t)
@@ -583,7 +583,7 @@ def test_injected_allow_predicate_overrides_daytime(coordinates):
     assert ReasonCode.SUN_TOO_CLOSE not in r_allowed.reasons
 
 
-# 41 - A3: sun_safe=None reproduces the built-in scalar verdict exactly.
+# 41 - sun_safe=None reproduces the built-in scalar verdict exactly.
 def test_injected_predicate_default_none_unchanged(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -595,8 +595,8 @@ def test_injected_predicate_default_none_unchanged(coordinates):
     assert r_explicit_none.sun_separation_deg == pytest.approx(r_implicit.sun_separation_deg)
 
 
-# 42 - a 24 h horizon catches BOTH daily passes of a transiting source (the
-# pre-fix single-window report hid the second one).
+# 42 - a 24 h horizon catches BOTH daily passes of a transiting source (a
+# single-window report would hide the second one).
 def test_two_daily_passes_both_reported(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)  # transits at t; ~10 h above el_min=20

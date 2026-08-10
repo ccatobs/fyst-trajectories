@@ -146,7 +146,7 @@ def _ce_crossing_corridor(
     leading edge is above the target elevation, the forward search cannot
     find its crossing again within the planner's 12-hour horizon, so a block
     anchored there is unreconstructable - the condition this gate exists to
-    prevent (2026-07-15 repro).
+    prevent.
 
     Solves are memoized in ``cache`` per ``(patch.name, elevation,
     rising)``: a hit is trusted while the anchor precedes the pass opening
@@ -228,10 +228,10 @@ def _ce_visit_plan(
     - readiness: the pass must open within ``ready_lead`` seconds of
       ``start_time``. A CE drift scan only observes the field while its
       edges cross the scan elevation, so starting the visit hours early
-      would book science blocks that point at empty sky (and, before
-      2026-07-16, inflated the science accounting by the full wait).
-      The patch simply stays unselected (idle, cals, or other patches)
-      until the pass is imminent.
+      would book science blocks that point at empty sky and inflate the
+      science accounting by the full wait. The patch simply stays
+      unselected (idle, cals, or other patches) until the pass is
+      imminent.
     - the opening crossing must precede ``end_time``: a pass that opens
       after the schedule window can never start inside it.
 
@@ -432,10 +432,10 @@ def _compute_scan_duration(
 
     For constant-elevation scans, the visit runs until the chosen crossing
     pass closes (:func:`_ce_visit_plan`): a CE drift scan is only plannable
-    while its RA-edge crossings lie ahead of the anchor, so the old
-    field-center-above-elevation window (which stays open long after the
-    pass, all the way to transit and beyond) over-emitted blocks the
-    planner could never reconstruct. For pong/daisy, we start with the
+    while its RA-edge crossings lie ahead of the anchor. A plain
+    field-center-above-elevation window is not a substitute; it stays open
+    long after the pass, all the way to transit and beyond, and emits
+    blocks the planner could never reconstruct. For pong/daisy, we start with the
     max scan duration (or remaining schedule time) and then clip to the
     observability window so the source never drops below the telescope
     elevation limit mid-scan.
@@ -473,9 +473,9 @@ def _compute_scan_duration(
             return 0.0
         _, _, t_close = plan
         corridor_dur = min((t_close - start_time).sec, remaining)
-        # Preserve the sun-safety clip the old window check provided: trim
-        # the visit before the field center drifts inside the exclusion
-        # radius (the planner re-validates the trajectory at rebuild).
+        # Sun-safety clip on top of the corridor: trim the visit before the
+        # field center drifts inside the exclusion radius (the planner
+        # re-validates the trajectory at rebuild).
         if site.sun_avoidance.enabled:
             sun_safe_dur = _time_until_sun_unsafe(
                 patch.ra_center,

@@ -39,8 +39,8 @@ def _model_set():
     """Build the recorded model configurations, in fixture order.
 
     The scalar row pins its radii explicitly (45/50) rather than reading the
-    site defaults, so a future default bump (Q-1's 45 -> 50) does not force a
-    re-cut of a fixture whose purpose is locking the LIBRARY's behaviour.
+    site defaults, so a future default bump does not force a re-cut of a
+    fixture whose purpose is locking the LIBRARY's behaviour.
     """
     pinned_site = get_fyst_site(sun_exclusion_radius=45.0, sun_warning_radius=50.0)
     return {
@@ -133,7 +133,7 @@ def test_cone45_matches_is_sun_safe_live():
     """The adapter's cone-45 reproduces Coordinates.is_sun_safe point-for-point.
 
     The site is pinned at 45/50 (the fixture's convention) so this parity
-    check is independent of the ratified 50/55 defaults.
+    check is independent of the current site defaults.
     """
     site = get_fyst_site(sun_exclusion_radius=45.0, sun_warning_radius=50.0)
     coords = Coordinates(site)

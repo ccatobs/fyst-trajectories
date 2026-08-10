@@ -1,7 +1,7 @@
 """Daisy (Constant Velocity petal) scan pattern.
 
-See "CV Daisy - JCMT small area scanning pattern" (JCMT TCS/UN/005)
-for algorithm details.
+See "CV Daisy - JCMT small area scanning pattern" (P. Friberg, Joint
+Astronomy Centre, JCMT TCS/UN/005, 2012) for algorithm details.
 
 Performance
 -----------

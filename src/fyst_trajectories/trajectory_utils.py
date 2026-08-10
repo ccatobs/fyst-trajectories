@@ -35,11 +35,11 @@ from .trajectory import (
     Trajectory,
 )
 
-# ``RetuneEvent`` is re-exported here for backward compatibility with
-# callers that import it from ``fyst_trajectories.trajectory_utils``. The
-# canonical definition now lives in :mod:`fyst_trajectories.trajectory`
-# alongside the :data:`SCAN_FLAG_*` constants because the class is a
-# structural piece of :class:`Trajectory`.
+# ``RetuneEvent`` is imported here so it can also be referenced as
+# ``fyst_trajectories.trajectory_utils.RetuneEvent``. The canonical
+# definition lives in :mod:`fyst_trajectories.trajectory` alongside the
+# :data:`SCAN_FLAG_*` constants because the class is a structural piece of
+# :class:`Trajectory`.
 
 if TYPE_CHECKING:
     # Annotation-only import to avoid an import cycle: ``dispatch`` imports
@@ -883,12 +883,10 @@ def _inject_retune_uniform(
     module_index: int,
     n_modules: int,
 ) -> Trajectory:
-    """Uniform-cadence retune injection (extracted helper).
+    """Uniform-cadence retune injection.
 
-    Flag-array generation is byte-identical to the pre-refactor
-    ``inject_retune`` body: same variable names, same comments, same
-    warning semantics. Callers are responsible for having already
-    validated scalar inputs and run the zero-velocity guard.
+    Callers are responsible for having already validated scalar inputs and
+    run the zero-velocity guard.
 
     As a side-effect the helper also records every retune it scheduled as
     a :class:`~fyst_trajectories.trajectory.RetuneEvent` on the returned
@@ -939,7 +937,7 @@ def _inject_retune_uniform(
 
         # Record the event using trajectory-relative t_start (subtracting
         # ``times[0]``) so the provenance matches the event-list path's
-        # convention. ``retune_duration`` is used verbatim — any clipping
+        # convention. ``retune_duration`` is used verbatim; any clipping
         # at ``times[-1]`` is an application detail that the scan_flag
         # array already captures.
         generated_events.append(RetuneEvent(t_start=retune_start - t0, duration=retune_duration))
@@ -995,8 +993,8 @@ def _inject_retune_events(
         scan_flag = trajectory.scan_flag.copy()
 
     # Partition into in-bounds / out-of-bounds and warn once. Indices are
-    # measured in the *sorted* list, not the caller's input order — we
-    # surface that in the warning message so callers who pass an unsorted
+    # measured in the *sorted* list, not the caller's input order, and that
+    # is surfaced in the warning message so callers who pass an unsorted
     # list can still locate the offending events.
     in_bounds: list[RetuneEvent] = []
     skipped: list[tuple[int, float]] = []
@@ -1218,11 +1216,10 @@ def inject_retune(
     if module_index < 0 or module_index >= n_modules:
         raise ValueError(f"module_index must be in [0, {n_modules}), got {module_index}")
 
-    # N-6 defensive guard: turnaround detection relies on real velocities
-    # (see inject_retune body below, which classifies turnarounds via
-    # ``SCAN_FLAG_TURNAROUND`` samples derived from the trajectory's
-    # velocity profile). A trajectory with identically zero az/el
-    # velocities, which the primecam wrapper currently supplies, has no
+    # Defensive guard: turnaround detection relies on real velocities (the
+    # uniform-cadence helper classifies turnarounds from
+    # ``SCAN_FLAG_TURNAROUND`` samples derived from the trajectory's velocity
+    # profile). A trajectory with identically zero az/el velocities has no
     # detectable turnarounds, so snapping would silently collapse to
     # time-based placement anyway. Warn and fall back explicitly so the
     # caller is not misled.
@@ -1293,7 +1290,7 @@ def sample_retune_events(
     Notes
     -----
     The walk consumes one extra ``interval_sampler`` draw past the last
-    emitted event to evaluate the termination condition — callers who
+    emitted event to evaluate the termination condition, so callers who
     seed for an exact draw count should account for this.
 
     Examples

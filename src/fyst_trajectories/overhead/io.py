@@ -9,7 +9,7 @@ import warnings
 from pathlib import Path
 
 from astropy import units as u
-from astropy.table import Table
+from astropy.table import QTable, Table
 from astropy.time import Time
 
 from ..exceptions import PointingWarning
@@ -185,8 +185,12 @@ def write_timeline(
     # Attach angular units to the TOAST canonical columns so a fyst-written
     # ECSV is readable by TOAST's GroundSchedule v5 reader, whose
     # ``GroundScan.__init__`` calls ``az_min.to_value(u.degree)`` on them.
-    # ``read_timeline`` reads with a plain ``Table`` and ``float(row[...])``,
-    # so the units do not affect the internal round-trip.
+    # Setting ``.unit`` on a plain ``Table`` column is NOT sufficient: that
+    # records ``unit: deg`` in the header but deserializes back to a bare
+    # float, and ``.to_value`` then raises ``AttributeError``. The table is
+    # promoted to ``QTable`` at write time (below) so these columns serialize
+    # as Quantity mixins, which is what round-trips. ``read_timeline`` reads
+    # with a plain ``Table`` and ``float(row[...])``, so it is unaffected.
     for _deg_col in ("azmin", "azmax", "el", "boresight_angle"):
         table[_deg_col].unit = u.deg
 
@@ -204,9 +208,9 @@ def write_timeline(
     table.meta["site_lon"] = timeline.site.longitude * u.deg
     table.meta["site_alt"] = timeline.site.elevation * u.m
     # Persist the non-coordinate Site fields that ``_site_from_meta`` would
-    # otherwise reset to FYST defaults. nasmyth_port matters most: a custom
-    # ``"left"`` previously read back as ``"right"``, flipping the field-rotation
-    # sign.
+    # otherwise reset to FYST defaults. nasmyth_port matters most: without it a
+    # custom ``"left"`` port reads back as ``"right"``, flipping the
+    # field-rotation sign.
     table.meta["site_nasmyth_port"] = timeline.site.nasmyth_port
     table.meta["site_plate_scale"] = timeline.site.plate_scale
     table.meta["site_sun_enabled"] = timeline.site.sun_avoidance.enabled
@@ -247,7 +251,7 @@ def write_timeline(
     )
     table.meta.update(timeline.metadata)
 
-    table.write(str(path), format="ascii.ecsv", overwrite=True)
+    QTable(table).write(str(path), format="ascii.ecsv", overwrite=True)
 
 
 def read_timeline(path: str | Path) -> ObservingTimeline:
@@ -280,8 +284,8 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     site = _site_from_meta(meta)
 
     # Use the dataclass defaults as fall-backs so the I/O defaults can never
-    # drift from the class defaults; this is the same pattern that surfaced
-    # the BEAM_MAP regression and the pointing_cadence default mismatch.
+    # drift from the class defaults. Repeating a literal default here would
+    # silently diverge the moment the dataclass default changes.
     overhead_defaults = OverheadModel()
     overhead = OverheadModel(
         retune_duration=meta.get("overhead_retune_duration", overhead_defaults.retune_duration),

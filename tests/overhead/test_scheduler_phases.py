@@ -71,11 +71,11 @@ def _deep56_ce_patch(name="deep56"):
 def _ce_ready_ctx(patch, **ctx_kwargs):
     """Build a context anchored one tick before the patch's rising pass opens.
 
-    The corridor gate (2026-07-16) only selects a CE patch while its
-    crossing pass is imminent, so phase-mechanics tests anchor the schedule
-    window just before the pass opening (located via the scheduler's own
-    corridor solver) instead of running from the fixture night's start,
-    where the patch is hours from plannable.
+    The corridor gate only selects a CE patch while its crossing pass is
+    imminent, so phase-mechanics tests anchor the schedule window just
+    before the pass opening (located via the scheduler's own corridor
+    solver) instead of running from the fixture night's start, where the
+    patch is hours from plannable.
     """
     from fyst_trajectories.coordinates import Coordinates
     from fyst_trajectories.overhead.scheduler.helpers import _ce_crossing_corridor
@@ -110,9 +110,9 @@ class TestCalibrationPhase:
     def test_idle_ticks_do_not_retune(self):
         """A cadence-0 retune is scan-coupled: an all-idle night retunes once.
 
-        Before 2026-07-16 the per-tick CalibrationPhase consumed the
-        always-due cadence-0 retune on every idle tick, booking a 5 s
-        retune every 300 s while the telescope sat parked. Only the
+        Without the scan-coupled rule the per-tick CalibrationPhase would
+        consume the always-due cadence-0 retune on every idle tick, booking
+        a 5 s retune every 300 s while the telescope sits parked. Only the
         startup burst may fire one outside a scan boundary.
         """
         from fyst_trajectories.overhead import BlockType, generate_timeline
@@ -429,11 +429,11 @@ class TestRisingSetting:
     The test field (RA=40, Dec=-32) transits near zenith at FYST. At
     el=50 this window contains only the SETTING pass (open ~15:46 UTC):
     the rising pass's opening crossing precedes the window start, so the
-    planner cannot solve it from any in-window anchor. Under the
-    2026-07-16 corridor gate the no-request default therefore lands on
-    the setting pass, and an explicit rising request is refused outright
-    (before the gate, the hour-angle default emitted "rising" blocks
-    here that ``schedule_to_trajectories`` could never reconstruct).
+    planner cannot solve it from any in-window anchor. Under the corridor
+    gate the no-request default therefore lands on the setting pass, and
+    an explicit rising request is refused outright (without the gate, an
+    hour-angle default emits "rising" blocks here that
+    ``schedule_to_trajectories`` could never reconstruct).
     """
 
     # Window brackets both crossings of the el=50 transit of this field.

@@ -1,6 +1,6 @@
 """Regression: every scheduled CE science block must reconstruct.
 
-The 2026-07-15 repro: a constant-elevation patch scheduled across its
+The failure this pins: a constant-elevation patch scheduled across its
 transit kept emitting rising-half blocks until transit, hours after the
 crossing pass's opening, and ``schedule_to_trajectories`` could rebuild
 only the blocks anchored before the opening (5 of 8 lost). The scheduler
@@ -29,7 +29,7 @@ from fyst_trajectories.overhead import (
 
 @pytest.fixture(scope="module")
 def august_ce_timeline():
-    """Build the exact repro night: one CE patch observed across its transit."""
+    """Build the failing night: one CE patch observed across its transit."""
     patch = ObservingPatch(
         name="AugustCES",
         ra_center=330.0,
@@ -56,7 +56,7 @@ def _science(timeline):
 
 def test_every_scheduled_ce_block_reconstructs(august_ce_timeline):
     science = _science(august_ce_timeline)
-    assert science, "expected science blocks on the repro night"
+    assert science, "expected science blocks on the failing night"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         pairs = schedule_to_trajectories(august_ce_timeline)

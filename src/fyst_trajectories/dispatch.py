@@ -255,11 +255,13 @@ def choose_encoder_solution(
     **Selection is minimum-slew.** Among the sun-safe, in-range candidates this
     returns the one closest to ``current_az`` (smallest azimuth travel),
     tie-broken toward the larger margin to the azimuth travel limits, measured
-    against the shifted span endpoints. This matches the Simons Observatory
-    scheduler's minimise-angular-deviation objective. It does not yet prefer a
-    wrap the telescope can always escape from to the next target ("non-trapping"
+    against the shifted span endpoints. The selection does not yet prefer a wrap
+    the telescope can always escape from to the next target ("non-trapping"
     selection over the directional avoidance map); that refinement plugs in
-    through ``sun_safe`` and a richer selection step.
+    through ``sun_safe`` and a richer selection step. The Simons Observatory
+    scheduler handles the azimuth branch differently: ``make_source_ces`` takes
+    it as a caller-declared preference (``az_branch``) and wraps into it, rather
+    than searching over candidates.
 
     **Over-the-top (el > 90) is not enumerated.** The library caps elevation at
     ``FYST_EL_MAX`` (90 deg; Prime-Cam does not point over the top), so the third

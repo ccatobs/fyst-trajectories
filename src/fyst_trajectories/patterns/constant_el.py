@@ -222,9 +222,10 @@ class ConstantElScanPattern(AltAzPattern):
         # closed loop: forward cruise az_min->az_max (increasing), top turnaround
         # returning to az_max, reverse cruise az_max->az_min, bottom turnaround
         # returning to az_min. Position is C0/C1 continuous across every seam and
-        # consistent with ``velocities`` everywhere (the previous code started the
-        # reverse cruise at the far overscan edge, leaving a ~2*d_half_turn position
-        # jump at each half-cycle boundary while velocity stayed smooth).
+        # consistent with ``velocities`` everywhere. Starting the reverse cruise at
+        # the far overscan edge instead leaves a ~2*d_half_turn position jump at each
+        # half-cycle boundary while velocity stays smooth, so the seam must be the
+        # science edge the turnaround returns to.
         pos_fwd = az_min if start_increasing else az_max
         pos_rev = az_max if start_increasing else az_min
 

@@ -207,7 +207,7 @@ class TestAxisLimits:
 
 
 class TestSunAvoidanceConfig:
-    """L-1: SunAvoidanceConfig enforces 0 <= exclusion_radius <= warning_radius when enabled."""
+    """SunAvoidanceConfig enforces 0 <= exclusion_radius <= warning_radius when enabled."""
 
     def test_valid_config_constructs(self):
         cfg = SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=50.0)
@@ -226,8 +226,8 @@ class TestSunAvoidanceConfig:
 
     def test_equal_radii_rejected(self):
         # warning == exclusion leaves an empty warning band (every
-        # warning-worthy pointing is already excluded), so it now raises
-        # (boundary-unification slice of the sun-avoidance integration plan).
+        # warning-worthy pointing is already excluded), so warning_radius
+        # must be strictly greater than exclusion_radius.
         with pytest.raises(ValueError, match="strictly greater"):
             SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=45.0)
 
@@ -449,13 +449,14 @@ class TestFYSTConstants:
         assert FYST_EL_MAX_ACCELERATION == 0.75
 
     def test_tier3_sun_avoidance_defaults(self):
-        """Test Tier 3 operational defaults (Q-1 ratified 2026-08-03).
+        """Test Tier 3 operational defaults.
 
-        50 is the floor (inscribed cone) of the directional CAD table; 55
-        keeps 5 deg of warning margin above it.
+        45 is the Prime-Cam observing-policy baseline, the circle the survey
+        planner schedules against; 50 keeps 5 deg of warning margin above it.
+        The stricter directional CAD zone is opt-in via make_sun_safe("cad").
         """
-        assert FYST_SUN_EXCLUSION_RADIUS == 50.0
-        assert FYST_SUN_WARNING_RADIUS == 55.0
+        assert FYST_SUN_EXCLUSION_RADIUS == 45.0
+        assert FYST_SUN_WARNING_RADIUS == 50.0
         assert FYST_SUN_AVOIDANCE_ENABLED is True
 
 

@@ -245,7 +245,7 @@ class TestTimelineWindowRoundTrip:
 
 
 class TestCanonicalColumnNames:
-    """F-2: verify write_timeline produces TOAST canonical column names."""
+    """Verify write_timeline produces TOAST canonical column names."""
 
     def test_uses_toast_column_names(self, tmp_path):
         """Written ECSV must use start_time/stop_time ISO + scan_index names."""
@@ -277,7 +277,7 @@ class TestCanonicalColumnNames:
 
 
 class TestMetadataPersistence:
-    """F-1: per-block science metadata must survive an ECSV round-trip."""
+    """Per-block science metadata must survive an ECSV round-trip."""
 
     def test_science_metadata_round_trip(self, tmp_path):
         timeline = _make_test_timeline()
@@ -306,7 +306,7 @@ class TestMetadataPersistence:
             assert b.metadata == {}
 
     def test_metadata_roundtrip_through_simulation_bridge(self, tmp_path):
-        """F-1: ensure schedule_to_trajectories works after ECSV roundtrip."""
+        """Ensure schedule_to_trajectories works after ECSV roundtrip."""
         site = get_fyst_site()
         patches = [
             ObservingPatch(
@@ -357,7 +357,7 @@ class TestMetadataPersistence:
 
 
 class TestSiteReconstruction:
-    """F-3 (Arch-9): read_timeline reconstructs Site from table metadata."""
+    """``read_timeline`` reconstructs Site from table metadata."""
 
     def test_fyst_default_site(self, tmp_path):
         """A timeline written with the FYST default site must round-trip."""
@@ -373,11 +373,11 @@ class TestSiteReconstruction:
         assert loaded.site.plate_scale == timeline.site.plate_scale
 
     def test_custom_site_coordinates_preserved(self, tmp_path):
-        """A non-FYST site round-trips from metadata, not replaced (M-3).
+        """A non-FYST site round-trips from metadata, not replaced.
 
-        A custom ``nasmyth_port="left"`` previously read back as the FYST
+        Without this, a custom ``nasmyth_port="left"`` reads back as the FYST
         default ``"right"``, silently flipping the field-rotation sign;
-        ``nasmyth_port``/``plate_scale``/sun radii now persist. ``telescope_limits``
+        ``nasmyth_port``/``plate_scale``/sun radii must persist. ``telescope_limits``
         are not persisted, so a ``PointingWarning`` is emitted on read.
         """
         from fyst_trajectories.exceptions import PointingWarning
@@ -432,14 +432,14 @@ class TestSiteReconstruction:
         assert loaded.site.latitude == pytest.approx(-30.0)
         assert loaded.site.longitude == pytest.approx(-70.0)
         assert loaded.site.elevation == pytest.approx(2500.0)
-        # M-3: previously reset to FYST defaults (silent lossy round-trip).
+        # Without this, these fields reset to FYST defaults (silent lossy round-trip).
         assert loaded.site.nasmyth_port == "left"
         assert loaded.site.plate_scale == pytest.approx(10.0)
         assert loaded.site.sun_avoidance.exclusion_radius == pytest.approx(40.0)
         assert loaded.site.sun_avoidance.warning_radius == pytest.approx(48.0)
 
     def test_site_description_round_trips_without_accumulation(self, tmp_path):
-        """C5: description round-trips, telescope_name reflects the site, no metadata leak."""
+        """Description round-trips, telescope_name reflects the site, no metadata leak."""
         from fyst_trajectories.site import (
             AxisLimits,
             Site,
@@ -488,7 +488,7 @@ class TestSiteReconstruction:
         write_timeline(timeline, path)
         loaded = read_timeline(path)
 
-        # Description now round-trips (was silently dropped before C5).
+        # Description round-trips; without this it is silently dropped.
         assert loaded.site.description == "My Test Observatory"
         # telescope_name reflects the site, not a hardcoded "FYST".
         assert Table.read(str(path), format="ascii.ecsv").meta["telescope_name"] == "myobs"
@@ -504,7 +504,7 @@ class TestSiteReconstruction:
 
 
 class TestBoresightAngle:
-    """F-4: boresight_angle round-trips through ECSV."""
+    """``boresight_angle`` round-trips through ECSV."""
 
     def test_boresight_roundtrip(self, tmp_path):
         site = get_fyst_site()
@@ -550,7 +550,7 @@ class TestBoresightAngle:
 
 
 class TestNasmythConsistency:
-    """Arch-16: compute_nasmyth_rotation matches Coordinates.get_parallactic_angle.
+    """``compute_nasmyth_rotation`` matches ``Coordinates.get_parallactic_angle``.
 
     The two implementations use different input variables (AltAz vs HA)
     but share the same underlying spherical trigonometry for the
@@ -614,13 +614,13 @@ class TestNasmythConsistency:
             )
 
     def test_nasmyth_rotation_matches_coordinates_via_instance(self):
-        """L-6: the two PA paths agree to machine precision at a non-J2000 epoch.
+        """The two PA paths agree to machine precision at a non-J2000 epoch.
 
         ``compute_nasmyth_rotation`` (AltAz form, overhead path) and
         ``Coordinates.get_parallactic_angle`` (RA/Dec offset + source-CES path)
         both derive the PA from the *transformed* vacuum Az/El, so they are the
-        same computation. The pre-H-1 ``HA = apparent LST - ICRS RA`` form left a
-        precession bias (~0.3-0.5 deg in 2026); this pins that they now agree.
+        same computation. An ``HA = apparent LST - ICRS RA`` form instead leaves a
+        precession bias (~0.3-0.5 deg in 2026); this pins that the two agree.
         """
         from fyst_trajectories.site import AtmosphericConditions
 
@@ -924,7 +924,7 @@ class TestCalibrationBlockMetadataRoundTrip:
 
 
 class TestRetuneEventsRoundTrip:
-    """Round-2: ``retune_events`` carried on science block metadata round-trips.
+    """``retune_events`` carried on science block metadata round-trips.
 
     ``Trajectory.retune_events`` is the canonical home for event-level
     retune provenance, but :class:`TimelineBlock` does not contain a
@@ -1060,7 +1060,7 @@ class TestRetuneEventsRoundTrip:
 
 
 class TestToastDegUnits:
-    """M-4: a fyst-written ECSV carries deg units, so TOAST GroundSchedule reads it.
+    """A fyst-written ECSV carries deg units, so TOAST GroundSchedule reads it.
 
     TOAST v5's ``_read_v5`` builds a ``GroundScan`` per row and its
     ``__init__`` immediately calls ``az_min.to_value(u.degree)`` on the

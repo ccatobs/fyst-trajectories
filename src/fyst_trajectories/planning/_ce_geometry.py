@@ -330,12 +330,10 @@ def _compute_ce_duration_from_lsa(
     the duration is computed modulo 360°, so ``(310, 10)`` is a
     60°/15 = 4 hour scan crossing the LST = 0/360 boundary.
 
-    Mirrors the legacy ``get_dur`` LSA branch in
-    ``primecam_scan_patterns.py`` but parametrises the search anchor
-    (the legacy hardcoded ``2022-09-21``) and raises structured errors
-    rather than calling ``exit(1)``. The wrap-aware straddle detection
-    here improves on the legacy implementation, which silently failed
-    when ``min_lsa`` sat on or near the LST = 0/360 boundary.
+    The search anchor is a parameter rather than a fixed epoch, failures
+    raise structured errors instead of terminating the process, and the
+    straddle detection is wrap-aware, so a ``min_lsa`` sitting on or near
+    the LST = 0/360 boundary is found rather than silently missed.
 
     Parameters
     ----------
@@ -381,10 +379,9 @@ def _compute_ce_duration_from_lsa(
     -----
     Uses ``sidereal_time('apparent')`` (via
     :meth:`Coordinates.get_lst`), consistent with the rest of the
-    fyst-trajectories pipeline. The legacy ``get_dur`` in
-    ``primecam_scan_patterns.py`` uses ``sidereal_time('mean')``; the
-    two differ by at most the equation of the equinoxes (~20 arcsec
-    ≈ 1.3 s of time), well below operationally relevant precision for
+    fyst-trajectories pipeline. Tools that use ``sidereal_time('mean')``
+    instead differ by at most the equation of the equinoxes (~20 arcsec
+    ~ 1.3 s of time), well below operationally relevant precision for
     LSA-window scheduling.
     """
     min_lsa, max_lsa = float(lsa_window[0]), float(lsa_window[1])

@@ -35,7 +35,8 @@ numpy, pyyaml, scipy). The following extras are available for opt-in features:
 - ``sun-avoidance`` - not a pip extra. The shared
   `ccatobs/sun-avoidance <https://github.com/ccatobs/sun-avoidance>`_
   library backs the ``"cone"`` and ``"cad"`` avoidance models and
-  installs from git at a pinned revision; see :doc:`sun_avoidance`. The
+  installs from git at a pinned revision; see :doc:`sun_avoidance`. That
+  repository is CCAT-internal and needs collaboration access. The
   default ``"scalar"`` model needs nothing beyond fyst-trajectories.
 - ``docs`` - adds Sphinx and the rendering extensions used to build
   this site.

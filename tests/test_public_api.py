@@ -1,10 +1,9 @@
 """Public API surface guard.
 
 These tests constrain the ``__all__`` surface that downstream consumers
-(``scan_patterns``, ``primecam_camera_mapping_simulations``, the OCS client,
-the KOSMA translator) import from. They guarantee that every advertised
-symbol is actually importable and that no private name leaks into the public
-surface.
+(``scan_patterns``, the offline simulation tooling, the OCS client, the KOSMA
+translator) import from. They guarantee that every advertised symbol is
+actually importable and that no private name leaks into the public surface.
 
 Scope and limits:
 
@@ -21,8 +20,8 @@ Scope and limits:
 What these tests deliberately do **not** do is assert the exact *membership*
 of ``__all__`` (an intentional add/remove is a normal change, not a
 regression). Detecting accidental removals, a symbol silently dropped from
-``__all__`` entirely, is the job of the ``check-api`` skill, which diffs the
-full surface against the source. The hardcoded planning checks below cover the
+``__all__`` entirely, is left to an explicit review that diffs the full
+surface against the source. The hardcoded planning checks below cover the
 five symbols downstream code is known to import.
 """
 

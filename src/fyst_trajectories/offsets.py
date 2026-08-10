@@ -343,7 +343,7 @@ def _offset_inverse(
     # this fixed-point iteration, a converged endpoint is the user-visible
     # answer regardless of early-iteration transients. (Non-monotone
     # convergence does occur for unrealistic-large offsets near the zenith
-    # singularity, e.g. dx=117 deg at el=86 deg in the hypothesis suite,
+    # singularity, e.g. dx=117 deg at el=86 deg under property-based fuzzing,
     # but the iteration still lands sub-microarcsecond at the end.)
     worst_err = 0.0
 

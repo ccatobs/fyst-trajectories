@@ -26,8 +26,10 @@ Only spherical RA/Dec frames (``J2000``/``FK5``/``B1950``) are usable with
 ``l``/``b`` and ``lon``/``lat`` and would raise in the transform methods.
 
 .. [#j2k] ``J2000`` is a label of convenience: this library maps it to
-   ``icrs``, but ICRS and FK5(J2000) differ by ~22 mas (the IAU 1997
-   alignment). Sub-arcsecond catalogue work should use ``FK5`` if the
+   ``icrs``, but ICRS and FK5(J2000) differ at the tens-of-mas level: the
+   FK5 equinox sits -22.9 +/- 2.3 mas from the ICRS right-ascension origin
+   (IERS Conventions 2010, TN36 section 2.1.2). Sub-arcsecond catalogue
+   work should use ``FK5`` if the
    inputs are FK5 J2000.0; for telescope pointing the offset is well
    below the beam and is harmless.
 

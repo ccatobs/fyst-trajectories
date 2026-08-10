@@ -49,7 +49,7 @@ from astropy import units as u
 from astropy.coordinates import EarthLocation
 
 # Tier 1: Truly fixed (geography / optical prescription)
-# Source: FYST TCS (telescope-control-system/astro.go)
+# Source: the FYST telescope control system (astro.go)
 #   lat = -22d59m08.30s, lon = -67d44m25.00s, elev = 5611.8 m
 
 FYST_LATITUDE: float = -22.985639
@@ -75,13 +75,14 @@ FYST_NASMYTH_PORT: str = "right"
 # at every off-axis Prime-Cam module. Confirmation essential before
 # first-light science.
 
-# Tier 2: Mechanical limits (from FYST TCS commands.go:18-28). Two envelopes:
-# the ENCODER/SLEW envelope (az [-180, 360], el [-90, 180]) is enforced by Go
-# TCS and matches P-INCM-ICD-0003-A sections 2/5; the narrower OBSERVING
-# envelope (el [20, 90]) is enforced by the planners and validate_trajectory.
+# Tier 2: Mechanical limits (from the FYST telescope control system,
+# commands.go). Two envelopes: the ENCODER/SLEW envelope (az [-180, 360],
+# el [-90, 180]) is enforced by Go TCS and matches P-INCM-ICD-0003-A
+# sections 2/5; the narrower OBSERVING envelope (el [20, 90]) is enforced by
+# the planners and validate_trajectory.
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-# The velocity and acceleration limits below — the conservative operational
-# values may need to be relaxed once commissioning ratifies the TCS
+# The velocity and acceleration limits below are conservative operational
+# values; they may need to be relaxed once commissioning ratifies the TCS
 # hardware limits cited in commands.go.
 
 FYST_AZ_MIN: float = -180.0
@@ -134,27 +135,39 @@ genuinely over-limit plans still warn.
 
 # Tier 3: Operational defaults (may change between observing seasons)
 
-# FYST sun avoidance radii. The 50 deg exclusion is the FLOOR (global
-# minimum) of FYST's own hardware model, the directional CAD-derived
-# table sa_safe_CAD_20231030.csv (minimum separation 50-90 deg depending
-# on the Sun's clock angle): the scalar is the inscribed cone of that
-# zone, so it never permits a pointing the CAD model forbids at its most
-# permissive direction, while the full directional model
-# (fyst_trajectories.sun_models.make_sun_safe("cad")) enforces the rest.
-# Ratified 2026-08-03 (Q-1 in docs/reviews/fyst_team_questions.md; the
-# earlier 45 deg heritage estimate sat BELOW the CAD floor). For scale:
-# SO SAT uses 41 deg at similar altitude/wavelengths (arXiv:2406.10905).
-FYST_SUN_EXCLUSION_RADIUS: float = 50.0
+# FYST sun avoidance radii.
+# UNVERIFIED: see "Pending instrument verification" in docs/index.rst
+# The 45 deg exclusion is the Prime-Cam observing-policy baseline, the same
+# circle the survey planner schedules against, so planning and dispatch agree
+# on which sky is available. That baseline is not yet formalised in an
+# interface control document, so treat it as commissioning-era. It is an
+# observing policy, not a hardware safety limit: the ACU enforces its own
+# (smaller) keep-out circle as the last line of defence, and the telescope
+# control system rejects requests against that same circle before they
+# reach the ACU.
+#
+# This scalar is deliberately NOT the directional model. FYST's CAD-derived
+# zone (sa_safe_CAD_20231030.csv) requires 50-90 deg depending on the Sun's
+# clock angle, which is stricter than 45 in every direction; select it
+# explicitly with fyst_trajectories.sun_models.make_sun_safe("cad") when a
+# scan needs mirror-illumination protection rather than the baseline.
+#
+# For scale, the SO small-aperture telescopes use a 41 deg exclusion
+# radius at similar altitude and wavelengths (Guan et al. 2024, "Simons
+# Observatory: Observatory Scheduler and Automated Data Processing",
+# Proc. SPIE, arXiv:2406.10905, sec. 2.2).
+FYST_SUN_EXCLUSION_RADIUS: float = 45.0
 """Sun exclusion radius in degrees.
 
-The inscribed cone (floor) of FYST's directional CAD-derived avoidance
-zone, whose minimum Sun separation runs 50-90 deg with the Sun's
-direction in the mount frame. The full directional model is available via
-``fyst_trajectories.sun_models.make_sun_safe("cad")``.
+The Prime-Cam observing-policy baseline, matching the circle the survey
+planner schedules against. This is an observing policy rather than a
+hardware safety limit. For the stricter directional model, whose minimum
+Sun separation runs 50-90 deg with the Sun's direction in the mount frame,
+use ``fyst_trajectories.sun_models.make_sun_safe("cad")``.
 """
 
-FYST_SUN_WARNING_RADIUS: float = 55.0
-"""Sun warning radius in degrees (5 deg of margin above the exclusion floor)."""
+FYST_SUN_WARNING_RADIUS: float = 50.0
+"""Sun warning radius in degrees (5 deg of margin above the exclusion radius)."""
 
 FYST_SUN_AVOIDANCE_ENABLED: bool = True
 """Whether sun avoidance is enabled by default."""
@@ -306,9 +319,13 @@ class AtmosphericConditions:
         Without this factory, callers who pass realistic
         pressure/temperature/humidity but forget ``obswl`` silently get
         astropy's optical (1 µm) refraction model.
-        Pressure/temperature defaults follow Bustos et al. 2014 / Cortes
-        et al. 2016 for the Chajnantor plateau and are appropriate
-        starting values; pass current weather data when available.
+        The pressure/temperature defaults are a representative cold, dry
+        winter-night profile rather than a measured value. For context,
+        Cortes, Reeves & Bustos (2016), Radio Science 51,
+        doi:10.1002/2015RS005929, sec. 2.1, give time-average surface
+        conditions of 518 mbar and 268.6 K for Cerro Chajnantor; the
+        defaults here are colder and drier than that annual mean. Pass
+        current weather data when available.
 
         Parameters
         ----------

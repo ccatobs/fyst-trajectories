@@ -368,12 +368,11 @@ def test_coordsys_proper_motion():
 # planning.rst examples
 # ============================================================================
 #
-# These tests exercise every code example in ``docs/planning.rst``.  They exist
-# to close a coverage gap: until v0.3.0, ``planning.rst`` had zero tests, which
-# allowed two broken ``plan_pong_scan`` examples (using an unobservable
-# ``start_time`` for the Chandra Deep Field South) to reach release.  The
+# These tests exercise every code example in ``docs/planning.rst``, so a broken
+# example cannot ship unnoticed.  The ``plan_pong_scan`` examples use a
+# ``start_time`` at which the Chandra Deep Field South is actually observable; the
 # regression test ``test_planning_plan_pong_scan_chandra_deep_field_observable``
-# locks in the corrected time.
+# locks that time in.
 
 
 def test_planning_field_region_cmb():
@@ -462,10 +461,10 @@ def test_planning_plan_pong_scan_chandra_deep_field_observable(start_iso):
     """Regression test for docs/planning.rst start_time bug.
 
     The Chandra Deep Field South is below the horizon at FYST at
-    2026-03-15T04:00:00 (the previously-broken example time).  It is
-    observable at 2026-03-15T22:12:00 (the corrected time).  This
-    parametrized test locks the corrected time in place. If someone
-    reverts it to an unobservable value, this test will fail loudly.
+    2026-03-15T04:00:00.  It is observable at 2026-03-15T22:12:00 (the
+    corrected time).  This parametrized test locks the corrected time in
+    place. If someone reverts it to an unobservable value, this test will
+    fail loudly.
     """
     from astropy.time import Time
 
@@ -491,10 +490,9 @@ def test_planning_plan_pong_scan_chandra_deep_field_observable(start_iso):
 # Source docstring regression tests
 # ============================================================================
 #
-# These tests guard the three docstring examples that the v0.3.0 verification
-# pass found broken and then fixed.  They intentionally mirror the shape of the
-# fixed docstring snippets so a regression in the source docstring would
-# immediately break a test.
+# These tests guard three docstring examples that were found broken and fixed.
+# They intentionally mirror the shape of the fixed docstring snippets so a
+# regression in the source docstring would immediately break a test.
 
 
 def test_get_rise_set_times_handles_no_set_within_window():

@@ -49,9 +49,9 @@ from .site import AtmosphericConditions, Site
 
 # ``erfa`` (PyPI: ``pyerfa``) ships ``ErfaWarning`` in every release reachable
 # from any astropy>=5.0 install (the dependency floor in pyproject.toml), so
-# the import and attribute lookup are unconditional. The previous defensive
-# try/except fell back to ``UserWarning``, which would have silently demoted
-# real ERFA messages if it ever fired, a worse signal than failing loudly.
+# the import and attribute lookup are unconditional. A defensive try/except
+# falling back to ``UserWarning`` would silently demote real ERFA messages if
+# it ever fired, a worse signal than failing loudly.
 _erfa_warning_cls = erfa.ErfaWarning
 
 # Supported solar system bodies for ephemeris
@@ -152,10 +152,13 @@ def _resolve_satellite_kernel(explicit: str | None) -> str:
 
 # Frame name aliases for KOSMA/OCS compatibility
 # Maps common telescope control system names to astropy frame names.
-# Note: ``"J2000"`` maps to ICRS, not FK5 J2000.0. The two frames differ
-# by ~22 mas at the catalogue level (the IAU 1997 alignment of ICRS to
-# FK5). For sub-arcsecond catalogue work this matters; for telescope
-# pointing it is well below the beam and is harmless.
+# Note: ``"J2000"`` maps to ICRS, not FK5 J2000.0. The two frames differ at the
+# tens-of-milliarcsecond level: the FK5 equinox sits -22.9 +/- 2.3 mas from the
+# ICRS right-ascension origin, and the FK5 pole agrees with the ICRS pole only
+# to within FK5's own +/-50 mas uncertainty (IERS Conventions 2010, TN36
+# sections 2.1.1-2.1.2). The ICRS was adopted by IAU 1997 Resolution B2,
+# effective 1998 January 1. For sub-arcsecond catalogue work this matters; for
+# telescope pointing it is well below the beam and is harmless.
 #
 # Only spherical RA/Dec frames are aliased. GALACTIC (``l``/``b``) and ECLIPTIC
 # (``lon``/``lat``) are intentionally omitted: the transform methods read
@@ -494,8 +497,8 @@ class Coordinates:
         # meaningful for finite-distance bodies (the Moon, ~1°) and negligible
         # for the Sun (~0.01″ on-sky). The visible get_sun()-vs-get_body()
         # difference (~arcsec) is an ephemeris/algorithm difference, not
-        # parallax (the old "~8.8 arcsec" note was the horizontal-parallax
-        # constant, not the on-sky shift).
+        # parallax (8.8 arcsec is the solar horizontal-parallax constant,
+        # not the on-sky shift).
         body_coord = get_body(body_spec, obstime, location=self.location, ephemeris=ephemeris)
 
         altaz_frame = self._get_altaz_frame(obstime)
@@ -1160,7 +1163,7 @@ class Coordinates:
             # Without a real distance, use a large dummy distance (1 Mpc)
             # to leverage astropy's spherical proper motion propagation.
             # This is the documented workaround for the no-distance case
-            # — see astropy issues #10092 and #10296 — and avoids the
+            # (see astropy issue #10092 and PR #10296) and avoids the
             # cos(dec) singularity of a naive linear approach at the
             # celestial poles. The Barnard's Star regression test in
             # tests/test_coordinates.py guards against future astropy

@@ -5,7 +5,7 @@ FYST's Sun check is one seam. Every entry point that can care about the
 Sun takes the same injectable predicate, so a policy chosen once travels
 from visibility reporting through night simulation to the dispatch-time
 slew gate. The default everywhere is the site's isotropic exclusion
-radius (50°, warning at 55°) and needs no extra install. A position
+radius (45°, warning at 50°) and needs no extra install. A position
 exactly at the exclusion radius counts as unsafe.
 
 Is my target sun-safe?
@@ -40,7 +40,7 @@ is built in; the other two bind the observatory's shared
 `ccatobs/sun-avoidance <https://github.com/ccatobs/sun-avoidance>`_
 library, the common home of FYST's Sun-zone geometry:
 
-- ``"scalar"``: the site's isotropic exclusion radius (50°, warning 55°,
+- ``"scalar"``: the site's isotropic exclusion radius (45°, warning 50°,
   from ``site.sun_avoidance``). The default anywhere ``sun_safe``,
   ``sun_model``, or ``slew_safe`` is omitted. Needs nothing beyond
   fyst-trajectories.
@@ -59,14 +59,20 @@ from git at the pinned revision::
 
     pip install "git+https://github.com/ccatobs/sun-avoidance@e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
 
-The scalar radius is the inscribed cone of the directional zone, so it
-never permits a pointing the directional model forbids at its most
-permissive direction. (Note :func:`~fyst_trajectories.sun_models.make_sun_safe`
+That repository is CCAT-internal, so the command above requires
+collaboration access. The default ``"scalar"`` model requires none of
+it and is what you get if you omit ``sun_model`` entirely.
+
+The scalar radius is an observing policy, not the directional zone's
+inscribed cone: at 45° it is more permissive than the CAD model in every
+direction, since that model requires 50-90°. Choose ``"cad"`` explicitly
+when a scan needs mirror-illumination protection rather than the
+observing baseline. (Note :func:`~fyst_trajectories.sun_models.make_sun_safe`
 itself defaults to ``model="cad"``; the library-wide default when you
 inject nothing is the scalar.)
 
-The models disagree exactly where the directional zone exceeds the
-scalar floor::
+The models disagree wherever the directional zone exceeds the scalar
+radius::
 
     from astropy.time import Time
 
@@ -80,7 +86,7 @@ scalar floor::
     )
     for model in models:
         print(model.describe, model(150.0, 45.0, t))
-    # scalar 50°        True
+    # scalar 45°        True
     # cone 50°          True
     # CAD zone 50-90°   False
 

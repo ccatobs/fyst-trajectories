@@ -55,7 +55,7 @@ def test_cad_table_properties(fx):
     assert np.all(np.diff(gamma) > 0)  # sorted, as the library's searchsorted assumes
     assert gamma[0] == 0.0
     assert gamma[-1] == 360.0
-    assert delta.min() == 50.0  # the CAD floor Q-1 pivots on
+    assert delta.min() == 50.0  # the CAD table floor
     assert delta.max() == 90.0
 
 

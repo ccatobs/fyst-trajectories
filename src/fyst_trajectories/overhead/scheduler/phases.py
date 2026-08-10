@@ -476,8 +476,8 @@ class PatchSelectionPhase(Phase):
             # plan_constant_el_scan runs at reconstruction). Without this
             # gate the hour-angle default keeps the patch scoring until
             # transit, hours after the pass's opening crossing, and every
-            # block emitted there is unreconstructable (2026-07-15 repro:
-            # 5 of 8 CE blocks lost).
+            # block emitted there is unreconstructable (on a single-patch
+            # night that can lose most of the CE blocks).
             if score > 0.0 and patch.scan_type == "constant_el":
                 gate_el = patch.elevation if patch.elevation is not None else el
                 plan = _ce_visit_plan(

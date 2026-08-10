@@ -143,7 +143,7 @@ class Trajectory:
         Default is None.
     scan_flag : np.ndarray or None, optional
         Per-sample scan phase flag: 0 = unclassified, 1 = constant-velocity
-        science sweep, 2 = turnaround (the SO ACU convention), 3 = retune
+        science sweep, 2 = turnaround, 3 = retune
         pause (``SCAN_FLAG_RETUNE``, written by ``inject_retune``). None
         means no flagging info is available.
     retune_events : tuple of RetuneEvent, optional

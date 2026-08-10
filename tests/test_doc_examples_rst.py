@@ -243,7 +243,6 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
     monkeypatch.chdir(tmp_path)
     text = rst.read_text(encoding="utf-8")
     key = rst.relative_to(DOCS).as_posix()
-    # The optional shared sun-avoidance library gates its examples the way
     # Without the shared sun-avoidance library, only the blocks that name
     # the library-backed "cad" model are skipped; every doc page keeps its
     # library-dependent blocks self-contained so no whole-page skip exists.

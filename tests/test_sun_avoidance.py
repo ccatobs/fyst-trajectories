@@ -355,7 +355,7 @@ class TestPlanningIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Injectable sun_safe predicate (A3 seam): directional model picked up
+# Injectable sun_safe predicate (injectable seam): directional model picked up
 # end-to-end at planning time, default path unchanged.
 # ---------------------------------------------------------------------------
 

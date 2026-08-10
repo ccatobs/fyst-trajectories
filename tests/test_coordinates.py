@@ -398,12 +398,12 @@ class TestNormalizeFrame:
         assert normalize_frame("b1950") == "fk4"
         assert normalize_frame("horizon") == "altaz"
 
-        # L-5: only spherical RA/Dec frames are aliased.
+        # Only spherical RA/Dec frames are aliased.
         expected_keys = {"J2000", "FK5", "B1950", "HORIZON"}
         assert set(FRAME_ALIASES.keys()) == expected_keys
 
     def test_galactic_ecliptic_not_aliased(self):
-        """L-5: GALACTIC/ECLIPTIC are not aliased (they raise in the transforms).
+        """GALACTIC/ECLIPTIC are not aliased (they raise in the transforms).
 
         They were dropped from ``FRAME_ALIASES`` because
         ``radec_to_altaz``/``altaz_to_radec`` read ``ra``/``dec`` and would
@@ -564,7 +564,7 @@ class TestGetParallacticAngle:
         ``get_parallactic_angle`` derives the parallactic angle from the
         vacuum-transformed horizontal coordinates, not from ``HA = LST - RA``
         (which would mix the apparent-equinox LST with the catalogue RA, the
-        H-1 frame bias). This checks it equals the documented AltAz-form built
+        frame bias). This checks it equals the documented AltAz-form built
         from the same transform.
         """
         obstime = Time("2026-06-15T08:00:00", scale="utc")
@@ -679,7 +679,7 @@ class TestGetFieldRotation:
         assert len(fr) == 3
 
     def test_field_rotation_atmosphere_invariant(self, coordinates):
-        """Field rotation is vacuum/geometric regardless of instance atmosphere (S-1).
+        """Field rotation is vacuum/geometric regardless of instance atmosphere.
 
         The Nasmyth elevation term and the parallactic angle are both vacuum
         quantities; a refracted elevation would leak refraction into the
@@ -836,7 +836,7 @@ class TestObservingWavelength:
 
 
 class TestSunBoundaryParity:
-    """Section-6.8: sun predicates share the exclusion-radius boundary convention.
+    """Sun predicates share the exclusion-radius boundary convention.
 
     ``Coordinates.is_sun_safe`` and ``trajectory_utils.validate_sun_avoidance``
     must agree on which side of ``exclusion_radius`` is unsafe. The validator
@@ -981,7 +981,7 @@ class TestTitanSatelliteResolver:
 
         An independent RA/Dec oracle (sibling to the Az/El Horizons check), via the
         library's own ``altaz_to_radec`` convention, not a raw skyfield ``.radec()``
-        (which differs by ~7 arcsec on axis convention, feasibility study Sec 3.5).
+        (which differs by ~7 arcsec on axis convention).
         """
         for iso, h_az, h_el in _TITAN_HORIZONS_AZEL:
             t = Time(iso, scale="utc")

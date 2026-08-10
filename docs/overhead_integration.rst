@@ -32,16 +32,16 @@ FYST's observing workflow separates into three conceptual layers.
      - **Tactical scheduler / command emission.** Given a prioritized
        block list for one night, interleave science with calibrations
        and slews and emit executable commands.
-     - **Live:** the observatory scheduling layer expands the selected
-       observing units and dispatches the typed PCS scan tasks
+     - **Live operations:** the observatory scheduling layer expands the
+       selected observing units and dispatches the typed PCS scan tasks
        (``pong_scan``, ``daisy_scan``, ``constant_el_scan``,
        ``source_scan``), each of which calls a fyst-trajectories planner
        at dispatch time.
        **Offline simulation:** this subpackage,
        :func:`~fyst_trajectories.overhead.generate_timeline` produces a
        realistic minute-by-minute ECSV for survey-design studies and
-       hitmap accumulation in ``primecam_camera_mapping_simulations``.
-       It does *not* drive live observing.
+       downstream hitmap accumulation. It does *not* drive live
+       observing.
    * - C
      - **Execution.** Run the night against the ACU.
      - The ``ccatobs/pcs`` ACU agent posts each trajectory to the
@@ -63,7 +63,7 @@ run through a separate path::
    (in-process)  ──▶  ObservingTimeline      ──▶    schedule.ecsv
                                                           │
                                                           ▼
-                                          primecam_camera_mapping_simulations
+                                          coverage-simulation tooling
                                           (hitmap accumulation, coverage studies,
                                            cadence/efficiency comparisons)
 

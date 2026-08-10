@@ -2,13 +2,13 @@
 
 Contains:
 
-* :class:`FieldRegion`, :class:`ArrayFootprint`, and :class:`ScanBlock` —
+* :class:`FieldRegion`, :class:`ArrayFootprint`, and :class:`ScanBlock`:
   the public data containers consumed and returned by the planner
   functions (``plan_pong_scan``, ``plan_constant_el_scan``,
   ``plan_daisy_scan``, ``plan_source_ces``).
 * :class:`PongComputedParams`, :class:`PongAltAzComputedParams`,
   :class:`ConstantElComputedParams`, :class:`DaisyComputedParams`,
-  :class:`DaisyAltAzComputedParams`, :class:`SourceCESComputedParams` —
+  :class:`DaisyAltAzComputedParams`, :class:`SourceCESComputedParams`:
   schemas that describe the shape of :attr:`ScanBlock.computed_params`
   returned by each planner.
 

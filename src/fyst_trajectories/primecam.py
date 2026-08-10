@@ -52,11 +52,15 @@ cover polygon when the caller passes a single ``InstrumentOffset``
 :class:`~fyst_trajectories.planning.ArrayFootprint`.
 
 The 0.65° value is the published Prime-Cam per-module field of view: each
-module subtends a ~1.3° **diameter** on sky (arXiv:2208.10634), i.e. a 0.65°
-**radius**. The bare detector-wafer extent (~0.39° *diameter* at the FYST plate
-scale) is only a lower bound; the optical FOV is larger than the illuminated
-wafer, so 0.65° is the FOV figure to cover with, not a padded-up wafer
-estimate, pending an as-built per-module FOV measurement.
+module has up to a 1.3° **diameter** on sky (Vavagiakis et al. 2022,
+"CCAT-prime: Design of the Mod-Cam receiver and 280 GHz MKID instrument
+module", Proc. SPIE, arXiv:2208.05468), i.e. a 0.65° **radius**. This is an
+upper bound across modules; the 850 GHz module's baseline optical design is
+1.1° (arXiv:2208.10634), so 0.65° over-covers that module by design, pending an
+as-built per-module measurement. The bare detector-wafer extent (~0.39°
+*diameter* at the FYST plate scale) is only a lower bound; the optical FOV is
+larger than the illuminated wafer, so 0.65° is the FOV figure to cover with,
+not a padded-up wafer estimate.
 
 Pass an explicit :class:`~fyst_trajectories.planning.ArrayFootprint`
 to override.

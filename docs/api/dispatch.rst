@@ -2,7 +2,7 @@ Dispatch-Time Helpers
 =====================
 
 Turn a goal sky position into a concrete, sun-safe encoder command at *dispatch*
-time -- just before a scan task slews to its start point.
+time, just before a scan task slews to its start point.
 
 .. automodule:: fyst_trajectories.dispatch
    :members:

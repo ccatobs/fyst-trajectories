@@ -2,7 +2,7 @@
 
 The parallactic-angle *formula* is the IAU SOFA / ERFA ``hd2pa(ha, dec, phi)``
 primitive (bundled with astropy as the ``erfa`` package). The subtlety this
-file guards against (finding H-1) is the input *frame*: the hour angle must be
+file guards against is the input *frame*: the hour angle must be
 referenced to the **apparent** equinox of date, the same equinox as the
 local apparent sidereal time, not the catalogue ICRS/J2000 RA. Feeding
 ``erfa.hd2pa`` the library's own ``get_hour_angle`` (which forms
@@ -108,9 +108,9 @@ class TestParallacticAngleApparentPlace:
         assert diff.max() < 0.01, f"max diff = {diff.max():.4f} deg"
 
     def test_agreement_across_epochs(self, coordinates):
-        """H-1 regression: agreement holds across 2026-2035 as precession accumulates.
+        """Regression: agreement holds across 2026-2035 as precession accumulates.
 
-        The pre-fix ``get_hour_angle`` formed ``apparent LST - ICRS RA``, leaving an
+        Forming the hour angle as ``apparent LST - ICRS RA`` mixes frames, leaving an
         uncorrected precession term that is ~0 at J2000 and grows ~0.018 deg/yr.
         Referencing the PA to the apparent pole keeps the disagreement < 0.01 deg
         at every epoch; the buggy form misses by several tenths of a degree and

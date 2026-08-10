@@ -270,10 +270,10 @@ class TestDaisyAvoidanceRadius:
 
 
 class TestDaisyTimeGrid:
-    """M-1: the reported time grid matches the integrator grid (no linspace stretch).
+    """The reported time grid matches the integrator grid (no linspace stretch).
 
-    Samples are exactly ``config.timestep`` apart; the old ``linspace`` re-labelling
-    stretched the axis (~1% at a 10 s scan), biasing every derived velocity. Mirrors
+    Samples are exactly ``config.timestep`` apart; a ``linspace`` re-labelling would
+    stretch the axis (~1% at a 10 s scan), biasing every derived velocity. Mirrors
     ``test_constant_el.py``'s position/velocity-consistency guard.
     """
 

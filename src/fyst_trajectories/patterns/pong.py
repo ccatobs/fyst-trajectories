@@ -1,7 +1,7 @@
 """Pong (curvy box) scan pattern.
 
 See "Scan Mode Strategies for SCUBA-2" (SCUBA-2 Project SC2/ANA/S210/005,
-Scott & Van Engelen 2005) for algorithm details.
+Scott & van Engelen 2005) for algorithm details.
 """
 
 import functools
@@ -39,11 +39,14 @@ midpoint and a ~80% velocity at the vertex). Increasing ``num_terms``
 sharpens the corners and may require this threshold to be lowered;
 decreasing it does the opposite.
 
-No published cross-facility standard exists for this exact value.
-SO classifies turnarounds geometrically (samples outside the science
-azimuth range — see Hoang et al. 2024); JCMT uses a similar geometric
-criterion. The speed-based criterion here is closer to ACT's
-time-window approach but tuned for FYST/Prime-Cam scan dynamics.
+No published cross-facility standard exists for this exact fraction, but
+speed-based turnaround detection is the common practice. SO's sotodlib
+offers both an azimuth-percentile and a scan-speed criterion in
+``tod_ops.flags.get_turnaround_flags`` and defaults to the scan-speed one;
+JCMT's SMURF flags turnaround data by slew speed (the FLAGSLOW/FLAGFAST
+cleaning parameters, in arcsec/s). The criterion here is the same idea
+expressed as a fraction of the nominal scan velocity, tuned for
+FYST/Prime-Cam scan dynamics.
 """
 
 

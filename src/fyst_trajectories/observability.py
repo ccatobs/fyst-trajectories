@@ -19,10 +19,10 @@ numpy underneath) and does **not** import the offline ``overhead`` simulator.
 Two physically distinct kinds of avoidance are kept structurally separate:
 
 * **Sun**: always-on thermal/hardware safety, read from
-  ``site.sun_avoidance`` (a 50 deg exclusion radius by default: the inscribed
-  cone (floor) of FYST's directional CAD-derived avoidance zone, whose minimum
-  Sun separation runs 50-90 deg with the Sun's direction in the mount frame;
-  pass ``sun_safe=`` to swap in that directional model, see
+  ``site.sun_avoidance`` (a 45 deg exclusion radius by default: the Prime-Cam
+  observing-policy baseline. FYST's directional CAD-derived zone is stricter,
+  requiring 50-90 deg with the Sun's direction in the mount frame; pass
+  ``sun_safe=`` to swap in that directional model, see
   :mod:`fyst_trajectories.sun_models`). Reported in the dedicated
   ``sun_separation_deg`` / ``sun_clear`` fields with a
   :attr:`ReasonCode.SUN_TOO_CLOSE` reason. It is never an :class:`AvoidZone` and

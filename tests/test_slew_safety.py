@@ -1,4 +1,4 @@
-"""Tests for the path-level slew-safety seam (Phase 6).
+"""Tests for the path-level slew-safety seam.
 
 The kinematic path sampler and the direct-slew evaluator run entirely
 offline via the ``"scalar"`` point model; the one CAD-backed check skips

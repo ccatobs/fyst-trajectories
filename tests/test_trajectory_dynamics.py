@@ -584,7 +584,7 @@ class TestBuilderDynamics:
 
 
 class TestValidatorInputGuards:
-    """M-2: validators reject non-finite / non-monotonic input, not silently pass.
+    """Validators reject non-finite / non-monotonic input, not silently pass.
 
     Without an explicit guard a NaN slips through every comparison (``NaN >
     limit`` is ``False``), even the raising bounds gate, and duplicate timestamps
@@ -635,10 +635,10 @@ class TestValidatorInputGuards:
 
 
 class TestIntegralVelocityEqualsPosition:
-    """Section-6 hardening: the cumulative integral of velocity recovers position.
+    """The cumulative integral of velocity recovers position.
 
     The constant-elevation bug was a velocity computed on a different grid from
-    its position; the Daisy M-1 bug was the same class (a stretched time grid
+    its position; the Daisy bug was the same class (a stretched time grid
     scaling every velocity). This asserts the inverse invariant,
     ``cumtrapz(az_vel, times) ~ az - az[0]`` (and the same for el), across
     Daisy, Pong, and a source-CES block, generalizing the CE fix to all

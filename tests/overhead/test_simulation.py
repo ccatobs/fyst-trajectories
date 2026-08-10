@@ -106,7 +106,7 @@ class TestComputeBudget:
 
 
 class TestGenerateTrajectoryForBlock:
-    """F-1 defensive tests for the simulation bridge."""
+    """Defensive tests for the simulation bridge."""
 
     def test_raises_on_missing_metadata(self):
         """Missing geometry keys should raise ValueError loudly."""

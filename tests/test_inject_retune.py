@@ -3,7 +3,7 @@
 Covers basic placement, turnaround snapping, edge cases, the per-module
 staggered mode, the per-pattern efficiency cross-validation against
 real planner outputs (CE / Pong / Daisy), turnaround-overlap dead-time
-reduction, theoretical efficiency parametric checks, and the N-6
+reduction, theoretical efficiency parametric checks, and the
 zero-velocity defensive guard.
 """
 
@@ -706,7 +706,7 @@ class TestTheoreticalEfficiency:
 
 
 class TestZeroVelocityGuard:
-    """N-6: defensive guard for zero-velocity + prefer_turnarounds=True.
+    """Defensive guard for zero-velocity + prefer_turnarounds=True.
 
     The turnaround-snapping path in ``inject_retune`` scans for
     ``SCAN_FLAG_TURNAROUND`` samples in the input trajectory, but it
@@ -817,7 +817,7 @@ class TestZeroVelocityGuard:
 
 
 def test_event_clipped_to_end_flags_final_sample():
-    """A retune event clipped to the trajectory end flags the final science sample (C4)."""
+    """A retune event clipped to the trajectory end flags the final science sample."""
     times = np.arange(0.0, 11.0, 1.0)  # 0..10 s, 11 samples
     n = len(times)
     traj = Trajectory(
@@ -1170,9 +1170,9 @@ class TestSampleRetuneEvents:
 
 
 class TestInjectRetuneMetadataPreservation:
-    """Round-2 B1 regression: ``inject_retune`` must not mutate ``metadata``.
+    """Regression: ``inject_retune`` must not mutate ``metadata``.
 
-    The Phase-1 implementation stashed ``retune_events`` inside
+    An earlier implementation stashed ``retune_events`` inside
     ``trajectory.metadata`` as a dict key, which silently broke
     ``Trajectory.pattern_type`` / ``.center_ra`` / ``.pattern_params``
     accessors. The new design promotes ``retune_events`` to a first-class
@@ -1207,7 +1207,7 @@ class TestInjectRetuneMetadataPreservation:
         ]
         result = inject_retune(traj, retune_events=events)
 
-        # Pattern accessors must still work, the B1 blocker.
+        # Pattern accessors must still work.
         assert result.pattern_type == "pong"
         assert result.center_ra == 180.0
         assert result.center_dec == -30.0
@@ -1221,7 +1221,7 @@ class TestInjectRetuneMetadataPreservation:
 
 
 class TestInjectRetuneOutOfBoundsReporting:
-    """Round-2 review nit: OOB warning must name *sorted* indices, not input order."""
+    """Regression: OOB warning must name *sorted* indices, not input order."""
 
     def test_multiple_oob_events_single_warning_with_sorted_indices(self):
         """Three out-of-bounds events produce exactly one warning naming all three."""
@@ -1251,7 +1251,7 @@ class TestInjectRetuneOutOfBoundsReporting:
 
 
 class TestInjectRetuneTimesOffset:
-    """Round-2 review nit: ``times[0] != 0`` must map correctly in event-list mode."""
+    """Regression: ``times[0] != 0`` must map correctly in event-list mode."""
 
     def test_times_offset_event_placement(self):
         """Events are trajectory-relative; times[0] offset is respected."""
@@ -1278,7 +1278,7 @@ class TestInjectRetuneTimesOffset:
 
 
 class TestInjectRetuneUniformEquivalence:
-    """Round-2 review nit: event-list mode with uniform-matching events is identical."""
+    """Regression: event-list mode with uniform-matching events is identical."""
 
     def test_uniform_and_equivalent_event_list_produce_same_scan_flag(self):
         """Hand-built events matching the uniform cadence produce identical scan_flag."""
@@ -1303,7 +1303,7 @@ class TestInjectRetuneUniformEquivalence:
 
 
 class TestInjectRetuneAdjacentAndOverlap:
-    """Round-2 review nit: boundary-touching events OK; same-start-different-duration is overlap."""
+    """Regression: boundary-touching events OK; same-start-different-duration is overlap."""
 
     def test_adjacent_events_accepted(self):
         """Two events where ``a.t_start + a.duration == b.t_start`` must not raise."""
@@ -1334,7 +1334,7 @@ class TestInjectRetuneAdjacentAndOverlap:
 
 
 class TestUniformPathPopulatesRetuneEvents:
-    """Round-2 design: uniform-cadence path must populate ``Trajectory.retune_events``."""
+    """The uniform-cadence path must populate ``Trajectory.retune_events``."""
 
     def test_uniform_path_retune_events_populated(self):
         """Calling uniform-cadence inject_retune sets retune_events symmetrically."""

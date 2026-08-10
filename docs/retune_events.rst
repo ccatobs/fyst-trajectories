@@ -78,17 +78,15 @@ CSV schema
 
 Retune schedules are commonly stored as a two-or-three-column CSV.
 fyst-trajectories ships no CSV reader - the format is a convention that
-consumers implement, and the snippet below is all it takes. The
-``primecam_camera_mapping_simulations`` ``--retune_events`` CLI flag
-reads exactly this shape.
+consumers implement, and the snippet below is all it takes.
 
 - Header row required. Column names are compared case-insensitively.
 - Required columns: ``t_start_s`` (float, seconds from trajectory
   start) and ``duration_s`` (float, positive seconds).
 - Optional column: ``module_index`` (integer, 0-based, non-negative).
   When absent, all rows are treated as ``module_index == 0``.
-- Any other column is ignored; the reference consumer warns once,
-  naming the unused columns.
+- Any other column is ignored; a reader following this convention
+  should warn once, naming the unused columns.
 
 Example::
 

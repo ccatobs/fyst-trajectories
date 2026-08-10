@@ -1518,7 +1518,7 @@ class TestOffsetPathLandsOnTarget:
 
 
 class TestInverseThresholdMagnitudes:
-    """L7: pin the falsifiable magnitudes in the threshold comments.
+    """Pin the falsifiable magnitudes in the threshold comments.
 
     The inline labels on the two private thresholds previously read
     "~3.6 microarcsec" / "~3.6 arcsec"; both were off by 1000x. The values
@@ -1538,7 +1538,7 @@ class TestInverseThresholdMagnitudes:
 
 
 class TestInverseZenithDegeneracy:
-    """L2: the inverse must not silently return a wrong azimuth at the pole.
+    """The inverse must not silently return a wrong azimuth at the pole.
 
     At the zenith pole, azimuth is degenerate: every boresight azimuth maps a
     pole-elevation detector to the same position, so the forward-residual
@@ -1567,7 +1567,7 @@ class TestInverseZenithDegeneracy:
 
 
 class TestApplyDetectorOffsetSingleSample:
-    """N1: a length-1 trajectory must not raise an opaque IndexError."""
+    """A length-1 trajectory must not raise an opaque IndexError."""
 
     def test_single_sample_trajectory_zero_velocities(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -1590,7 +1590,7 @@ class TestApplyDetectorOffsetSingleSample:
 
 
 class TestApplyDetectorOffsetRetuneEvents:
-    """L1: the offset must preserve retune_events alongside scan_flag==3."""
+    """The offset must preserve retune_events alongside scan_flag==3."""
 
     def test_retune_events_preserved_after_offset(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")

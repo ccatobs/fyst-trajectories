@@ -14,7 +14,7 @@ jobs:
 
       # Pinned, in lockstep with .pre-commit-config.yaml: an unpinned latest
       # ruff changes formatter style between minors and (as of 0.16) formats
-      # Python fences inside the 59 tracked Markdown files, so CI would drift
+      # Python fences inside tracked Markdown files, so CI would drift
       # red with zero repo changes. Upgrade both pins together, reformatting
       # in the same commit.
       - name: Install ruff
@@ -86,7 +86,7 @@ jobs:
       # ``scanning`` package is not installed here; they run in the dedicated
       # ``oracle-tests`` job below, which does install it. And
       # test_cross_validate_so_make_source_ces skips because it needs so3g plus
-      # schedlib and the not-yet-written schedlib.policies.fyst module
+      # schedlib and a ``schedlib.policies.fyst`` module
       # (importorskip; so3g has no Windows wheels) - a documented skip that
       # stays skipped everywhere.
       - name: Run slow tests
@@ -113,10 +113,9 @@ jobs:
       # Install the scan_patterns cross-validation oracle (imported as
       # ``scanning``). ``--no-deps`` is mandatory: scan_patterns pins
       # ``fyst-trajectories @ ...@v0.5.1`` in its install_requires, and without
-      # ``--no-deps`` pip would resolve that URL and clobber the editable 0.6.0
+      # ``--no-deps`` pip would resolve that URL and clobber the editable
       # checkout under test. pandas and fast-histogram are the runtime imports
-      # ``--no-deps`` skips, so they are installed explicitly. The pin is the
-      # refactor/fyst-trajectories HEAD, the branch that consumes this library.
+      # ``--no-deps`` skips, so they are installed explicitly.
       - name: Install scan_patterns oracle
         run: |
           pip install pandas fast-histogram

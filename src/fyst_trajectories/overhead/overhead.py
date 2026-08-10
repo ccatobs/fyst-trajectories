@@ -104,9 +104,8 @@ class CalibrationState:
         ]
 
         for cal_type, last_time, cadence in checks:
-            # ``None`` cadence means "never automatically schedule", used
-            # to preserve the legacy behaviour for BEAM_MAP unless the
-            # operator opts in.
+            # ``None`` cadence means "never automatically schedule"; it keeps
+            # BEAM_MAP off the automatic schedule unless the operator opts in.
             if cadence is None:
                 continue
             if self._is_due(current_time, last_time, cadence):

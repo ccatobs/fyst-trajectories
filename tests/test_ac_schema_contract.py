@@ -1,12 +1,12 @@
-"""Layer-A (fystplan / OpsDB) -> Layer-C (typed PCS scan task) schema contract.
+"""Survey-planner (fystplan / OpsDB) to scan-task (typed PCS) schema contract.
 
-Under FYST Architecture 3 the survey planner (KOSMA ``fystplan``) writes
-per-source scan parameters into OpsDB; at dispatch time the PCS typed scan
-task reads them back and calls the matching ``plan_*_scan`` planner in this
-library. There is no shared schema module between the two sides. The field
-names are coupled only by an *implicit* adapter. This test pins that adapter
-explicitly so a future rename on **either** side fails loudly here instead of
-silently mis-dispatching a scan at the telescope.
+The survey planner (KOSMA ``fystplan``) writes per-source scan parameters into
+OpsDB; at dispatch time the PCS typed scan task reads them back and calls the
+matching ``plan_*_scan`` planner in this library. There is no shared schema
+module between the two sides. The field names are coupled only by an *implicit*
+adapter, called the ``A->C`` adapter in the assertions below. This test pins
+that adapter explicitly so a future rename on **either** side fails loudly here
+instead of silently mis-dispatching a scan at the telescope.
 
 The OpsDB scan parameters are carried in the ``mapping_parameters`` /
 ``additional_params`` fields.
@@ -15,13 +15,13 @@ The fystplan emit functions whose dict literals are the source of truth for
 the fixtures below (read-only; never edited by this repo):
 
 * Pong  - ``fystplan/PrimeCam_planning/create_PrimeCam_sourcecatalog.py``
-  ``get_pong_params`` (dict at lines ~1196-1213).
-* Daisy - same file, ``get_daisy_params`` (dict at lines ~1266-1271).
+  ``get_pong_params``.
+* Daisy - same file, ``get_daisy_params``.
 * CE    - same file, ``create_entry_constant_elevation`` (the ``list_az_table``
   ``s`` dict + the ObsUnit ``nominal_alt`` carrier + the ``onsky_velocity``
   ``mapping_params`` carrier).
 
-The renames pinned here (verified against the fystplan source 2026-06-16):
+The renames pinned here (verified against the fystplan source):
 
 ====================  ========================  =====================
 fystplan / OpsDB key  fyst-trajectories kwarg   scan type(s)
@@ -149,10 +149,9 @@ def fystplan_pong_dict_angle_var() -> dict:
     """``get_pong_params`` emit dict (``angle_var`` variant), keys verbatim.
 
     fystplan emits ``angle_var`` (an int selector for a per-pass variable
-    rotation) in place of ``angle``. This library has no ``angle_var`` analogue
-    (recommendations 2026-05-28 section 5 flags it "semantic" / no fyst-traj
-    analogue), so the adapter cannot map it to a planner kwarg. The test below
-    asserts the gap explicitly.
+    rotation) in place of ``angle``. This library has no ``angle_var`` analogue:
+    the key is semantic, not a scalar the planner accepts, so the adapter cannot
+    map it to a planner kwarg. The test below asserts the gap explicitly.
     """
     return {
         "name": "ECDFS_pong",
@@ -330,11 +329,11 @@ def test_daisy_mapped_keys_are_planner_params(fystplan_daisy_dict):
 def test_daisy_required_params_coverage_and_gaps(fystplan_daisy_dict):
     """Required daisy params split into fystplan-covered, infra, and the gap.
 
-    Asserts the *structural truth* recommendations 2026-05-28 section 5 records:
-    fystplan supplies the geometry (radius/turn_radius/avoidance_radius/velocity)
-    and the source position is dispatch-supplied (ra/dec), but
-    ``start_acceleration`` is required with no default and is NOT in the fystplan
-    dict, so the adapter must source it elsewhere (instrument-owned ramp accel).
+    Asserts the *structural truth*: fystplan supplies the geometry
+    (radius/turn_radius/avoidance_radius/velocity) and the source position is
+    dispatch-supplied (ra/dec), but ``start_acceleration`` is required with no
+    default and is NOT in the fystplan dict, so the adapter must source it
+    elsewhere (instrument-owned ramp accel).
     """
     mapped = _apply_rename(fystplan_daisy_dict)
     required = _required_planner_params(plan_daisy_scan)

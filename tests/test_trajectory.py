@@ -205,19 +205,19 @@ class TestTrajectory:
         return Trajectory(**kwargs)
 
     def test_to_path_format_rejects_sub_50ms_interval(self):
-        """L-2: a sample interval below the Go TCS /path 50 ms minimum raises."""
+        """A sample interval below the Go TCS /path 50 ms minimum raises."""
         traj = self._fine_traj(dt=0.02)  # 20 ms < 50 ms
         with pytest.raises(ValueError, match="Go TCS .*minimum"):
             to_path_format(traj)
 
     def test_to_path_payload_rejects_sub_50ms_interval(self):
-        """L-2: to_path_payload inherits the 50 ms interval check."""
+        """``to_path_payload`` inherits the 50 ms interval check."""
         traj = self._fine_traj(dt=0.02, with_start_time=True)
         with pytest.raises(ValueError, match="Go TCS .*minimum"):
             to_path_payload(traj)
 
     def test_to_path_format_accepts_50ms_interval(self):
-        """L-2: exactly 50 ms is allowed (boundary)."""
+        """Exactly 50 ms is allowed (boundary)."""
         traj = self._fine_traj(dt=0.05)
         assert len(to_path_format(traj)) == 3
 

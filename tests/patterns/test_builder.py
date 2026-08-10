@@ -238,7 +238,7 @@ class TestTrajectoryBuilder:
 
 
 class TestBuilderBoundsValidation:
-    """Arch-12: builder must re-validate trajectory bounds after generation.
+    """Builder must re-validate trajectory bounds after generation.
 
     Individual patterns already validate their own bounds, so the
     builder's call is defence in depth. These tests neutralise the

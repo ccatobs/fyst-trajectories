@@ -1,15 +1,15 @@
 """Cross-validation tests between fyst-trajectories and KOSMA focal plane model.
 
 This module compares the fyst-trajectories spherical offset model against the
-KOSMA flat-projection focal plane model extracted from
-``tests_with_focalplane.py``. The KOSMA model uses flat-plane trigonometry
-(2D rotation + linear mm-to-arcsec conversion), while fyst-trajectories uses
-exact spherical trigonometry (great-circle offsets).
+KOSMA flat-projection focal-plane diagnostic model, reproduced inline below.
+The KOSMA model uses flat-plane trigonometry (2D rotation + linear
+mm-to-arcsec conversion), while fyst-trajectories uses exact spherical
+trigonometry (great-circle offsets).
 
 The two models should agree closely for small offsets (< 1 degree) and
 diverge for larger offsets where the flat-earth approximation breaks down.
 
-Key KOSMA constants extracted from tests_with_focalplane.py:
+Key KOSMA constants:
 - plate_scale: 13.89 arcsec/mm
 - focal_length: (180 * 3600) / (plate_scale * pi) + correction
 - Port rotation: +el (Right Nasmyth), -el (Left), flange_rot (Cassegrain)
@@ -36,7 +36,7 @@ from fyst_trajectories.site import (
 )
 
 # ---------------------------------------------------------------------------
-# KOSMA model constants (from tests_with_focalplane.py)
+# KOSMA model constants
 # ---------------------------------------------------------------------------
 
 KOSMA_PLATE_SCALE = 13.89  # arcsec/mm, intentionally independent of site.plate_scale
@@ -58,7 +58,7 @@ KOSMA_FOCAL_LENGTH = (180.0 * 3600.0) / (
 def kosma_mm_to_arcsec(mm: float) -> float:
     """Convert mm in focal plane to arcsec on sky (KOSMA formula).
 
-    This is the exact formula from tests_with_focalplane.py:
+    This is the KOSMA formula:
         arcsec = mm / (focal_length * pi) * 180 * 3600
 
     Parameters
@@ -83,8 +83,8 @@ def kosma_focal_plane_offset(
 ) -> tuple[float, float]:
     """Compute focal plane offset using the KOSMA flat-projection model.
 
-    This implements the core rotation logic from compute_focal_plane() in
-    tests_with_focalplane.py, simplified to the reference position rotation
+    This implements the core rotation logic of the KOSMA focal-plane
+    diagnostic model, simplified to the reference position rotation
     case (zero boresight/elevation axis offsets).
 
     Parameters
@@ -180,7 +180,7 @@ class TestKOSMACrossValidationRotation:
     ``compute_focal_plane_rotation`` returns ``nasmyth_sign * el +
     instrument_rotation`` (plus parallactic angle when supplied), pure
     addition, no projection. Re-deriving that sum across many elevations is
-    tautological (the old 12-case el sweep asserted ``a + b == a + b``); the
+    tautological (it re-asserts ``a + b == a + b`` at every elevation); the
     cross-validation that actually constrains the implementation is the
     **nasmyth-sign table** (Right=+1, Left=-1, Cassegrain=0), so a single
     elevation per port suffices. The elevation-dependent *projection* geometry

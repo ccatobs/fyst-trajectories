@@ -77,11 +77,11 @@ mechanical / horizon-frame value)::
     site = get_fyst_site()
     offset = InstrumentOffset(dx=5.0, dy=3.0, instrument_rotation=10.0)
 
-    # Horizon-frame (mechanical) rotation -- for az/el projections:
+    # Horizon-frame (mechanical) rotation - for az/el projections:
     rotation_mech = compute_focal_plane_rotation(el=45.0, site=site, offset=offset)
     # rotation_mech = +1 * 45.0 + 10.0 = 55.0
 
-    # Celestial-frame rotation -- for sky-map orientation only:
+    # Celestial-frame rotation - for sky-map orientation only:
     rotation_sky = compute_focal_plane_rotation(
         el=45.0, site=site, offset=offset, parallactic_angle=20.0
     )

@@ -4,9 +4,10 @@ Verifies that science_mask correctly reduces the number of science
 samples when retune events are injected, and that the reduction
 ratio matches the expected efficiency.
 
-The primecam_camera_mapping_simulations package is available for
-full detector-level hitmap validation, but this test validates the
-boresight-level behavior that feeds into any hitmap pipeline.
+The optional primecam_camera_mapping_simulations package, when it is
+installed, extends this to full detector-level hitmap validation; this
+test covers the boresight-level behavior that feeds into any hitmap
+pipeline.
 """
 
 import numpy as np
@@ -140,7 +141,7 @@ class TestScienceMaskReduction:
 
 @pytest.mark.skipif(not HAS_PRIMECAM, reason="primecam not installed")
 class TestPrimecamIntegration:
-    """Extended validation using primecam_camera_mapping_simulations.
+    """Extended validation using an external hitmap simulator when available.
 
     These tests verify that the trajectory output from inject_retune
     is compatible with the primecam hitmap pipeline.

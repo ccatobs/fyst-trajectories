@@ -91,6 +91,12 @@ use.
    * - Nasmyth port
      - ``"right"`` (+1 sign)
      - module constant ``site.FYST_NASMYTH_PORT`` (not a call-time option)
+   * - Sun exclusion / warning radii
+     - 45° / 50° (the Prime-Cam observing baseline, not yet formalised in
+       an interface control document)
+     - ``get_fyst_site(sun_exclusion_radius=, sun_warning_radius=)``, or
+       select the directional model with
+       :func:`~fyst_trajectories.sun_models.make_sun_safe`
    * - Az/El velocity limits
      - 3.0 / 1.0 deg/s
      - module constants ``site.FYST_AZ_MAX_VELOCITY`` /

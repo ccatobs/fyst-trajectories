@@ -1,25 +1,24 @@
 """Regression tests for timeline generation.
 
-These tests verify that the extraction from fyst_trajectories.scheduling
-into the fyst_overhead package did not alter behavior. Expected values
-were computed once from a known-good run and hardcoded as anchors.
+Expected values were computed once from a known-good run and are
+hardcoded here as regression anchors.
 
 Any change to these values means the timeline generation algorithm
 changed, which requires explicit acknowledgment and updating the
 anchors.
 
-Re-anchored 2026-07-16 for the CE crossing-corridor gate: the scheduler
-now emits constant-elevation science only while the pass is plannable
-and imminent (see tests/overhead/test_ce_corridor.py). On this fixture
-night Deep56's el=50 rising pass opens ~07:50 UTC, so the honest
-schedule idles until then and books ~2 h of science instead of the old
-~6.6 h (most of which pointed at empty sky before the pass and could
-not be reconstructed as scheduled).
+Re-anchored for the CE crossing-corridor gate: the scheduler now emits
+constant-elevation science only while the pass is plannable and imminent
+(see tests/overhead/test_ce_corridor.py). On this fixture night Deep56's
+el=50 rising pass opens ~07:50 UTC, so the honest schedule idles until
+then and books ~2 h of science instead of the old ~6.6 h (most of which
+pointed at empty sky before the pass and could not be reconstructed as
+scheduled).
 
-Re-anchored again same day for scan-coupled retunes: a cadence-0 retune
-now fires only at scan boundaries (once at startup, then immediately
-before every science subscan), never on idle ticks, so the idle wait no
-longer books a retune every 300 s.
+Also re-anchored for scan-coupled retunes: a cadence-0 retune now fires
+only at scan boundaries (once at startup, then immediately before every
+science subscan), never on idle ticks, so the idle wait no longer books
+a retune every 300 s.
 """
 
 import pytest

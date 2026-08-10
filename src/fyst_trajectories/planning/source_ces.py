@@ -110,7 +110,7 @@ class _SourceCESCore:
 
     Holds the completed :class:`SourceCESComputedParams` plus the intermediate
     state the trajectory builder in ``plan_source_ces`` needs.
-    Strictly private — no public API guarantees on this class.
+    Strictly private; no public API guarantees on this class.
     """
 
     computed: SourceCESComputedParams
@@ -136,12 +136,12 @@ def _resolve_footprint(
 
     Accepts:
 
-    * ``ArrayFootprint`` — returned unchanged.
-    * ``InstrumentOffset`` — built as a ``_CIRCULAR_COVER_N_VERTICES``-vertex
+    * ``ArrayFootprint``: returned unchanged.
+    * ``InstrumentOffset``: built as a ``_CIRCULAR_COVER_N_VERTICES``-vertex
       circle of radius :data:`MODULE_FOV_RADIUS_DEG` around the offset.
-    * ``str`` — resolved via :func:`get_primecam_offset` then treated as
+    * ``str``: resolved via :func:`get_primecam_offset` then treated as
       the single-``InstrumentOffset`` case.
-    * Sequence of ``InstrumentOffset`` — each treated as a circle, the
+    * Sequence of ``InstrumentOffset``: each treated as a circle, the
       cover is the concatenation of per-module vertex lists, and the
       aggregate center is the arithmetic mean of per-module ``(dx, dy)``.
     """
@@ -201,7 +201,7 @@ def _enumerate_monotonic_arcs(el_src: np.ndarray) -> list[tuple[int, int]]:
 
     Plateaus (consecutive samples with identical elevation) are absorbed
     into the adjacent monotonic run rather than treated as separate
-    extrema; this is a numerical robustness measure — astronomical
+    extrema; this is a numerical robustness measure. Astronomical
     altitude traces are smooth, so true plateaus only occur as
     sampling-coincidence artefacts.
 
