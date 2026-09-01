@@ -74,9 +74,7 @@ class TestPongGenerateOffsets:
         times, x_off, y_off = pong_pattern.generate_offsets(duration=duration)
         trajectory = pong_pattern.generate(site, duration=duration, start_time=start_time)
 
-        # Times arrays should match
         np.testing.assert_array_equal(trajectory.times, times)
-        # Same number of points
         assert trajectory.n_points == len(times)
 
     def test_generate_still_works(self, pong_pattern, site):
@@ -196,9 +194,7 @@ class TestDaisyGenerateOffsets:
         times, x_off, y_off = daisy_pattern.generate_offsets(duration=duration)
         trajectory = daisy_pattern.generate(site, duration=duration, start_time=start_time)
 
-        # Times arrays should match
         np.testing.assert_array_equal(trajectory.times, times)
-        # Same number of points
         assert trajectory.n_points == len(times)
 
     def test_generate_still_works(self, daisy_pattern, site):

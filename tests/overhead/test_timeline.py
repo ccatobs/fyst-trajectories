@@ -16,6 +16,15 @@ from fyst_trajectories.overhead.scheduler.helpers import _time_until_set
 
 
 def assert_timeline_valid(timeline, site):
+    """Assert a generated timeline is sound.
+
+    Delegates the block-level invariants (overlap, window containment,
+    azimuth ordering, pose continuity) to ``ObservingTimeline.validate``
+    so every generated-timeline test inherits them, then adds the
+    elevation-limit and efficiency checks validate() does not cover.
+    """
+    assert timeline.validate() == []
+
     blocks = sorted(timeline.blocks, key=lambda b: b.t_start.unix)
 
     # 0.1 s slack on the time comparisons here: block edges are unix seconds

@@ -49,6 +49,12 @@ Reading a Timeline
     print(f"Loaded {len(timeline)} blocks")
     print(f"Efficiency: {timeline.efficiency:.1%}")
 
+The efficiency reads ``0.0%`` here, and that is the correct answer rather
+than a broken one: the four-hour window above closes before this patch's
+constant-elevation pass opens, so the honest schedule is all idle. A
+window that contains a pass reports a non-zero efficiency (see
+:doc:`overhead_quickstart`).
+
 ECSV Format
 -----------
 
@@ -66,9 +72,9 @@ scan pattern:
 +----------------------+--------+----------------------------------------------+
 | ``name``             | str    | Patch name or calibration type               |
 +----------------------+--------+----------------------------------------------+
-| ``azmin``            | float  | Minimum azimuth (deg)                        |
+| ``azmin``            | float  | Minimum azimuth (deg); slew: from-azimuth    |
 +----------------------+--------+----------------------------------------------+
-| ``azmax``            | float  | Maximum azimuth (deg)                        |
+| ``azmax``            | float  | Maximum azimuth (deg); slew: to-azimuth      |
 +----------------------+--------+----------------------------------------------+
 | ``el``               | float  | Elevation (deg)                              |
 +----------------------+--------+----------------------------------------------+
@@ -98,8 +104,16 @@ scan pattern:
 +----------------------+--------+----------------------------------------------+
 | ``block_meta_json``  | str    | FYST extension: JSON-encoded bag of any      |
 |                      |        | ``TimelineBlock.metadata`` keys (see below)  |
-|                      |        | not promoted to a dedicated column above     |
+|                      |        | not promoted to a dedicated column above;    |
+|                      |        | carries retune events (:doc:`retune_events`) |
 +----------------------+--------+----------------------------------------------+
+
+For ``slew`` rows, ``azmin`` / ``azmax`` hold the from / to azimuths of
+the move and may be unordered (``azmin`` greater than ``azmax`` for a
+negative-direction slew); they are true minimum / maximum bounds only
+for science and calibration rows. A consumer that needs ordered bounds
+(for example ``azmax - azmin`` as a scan width) must filter on
+``block_type`` first.
 
 The set of FYST extension columns may grow over time; any
 :attr:`~fyst_trajectories.overhead.TimelineBlock.metadata` field not surfaced

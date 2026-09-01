@@ -65,7 +65,9 @@ identically, and no celestial metadata is consumed.
     ``rotation = nasmyth_sign * elevation + instrument_rotation + parallactic_angle``
 
     This is the quantity needed for sky-map orientation, image rotation,
-    and polarization angles. See ``Coordinates.get_field_rotation``.
+    and polarization angles. Use ``compute_focal_plane_rotation`` (below)
+    to evaluate it; ``Coordinates.get_field_rotation`` returns the
+    offset-independent form, without ``instrument_rotation``.
 
 The helper ``compute_focal_plane_rotation`` computes either frame's
 rotation (the ``parallactic_angle`` argument defaults to 0.0, the
@@ -145,7 +147,10 @@ Apply offset to entire trajectory with time-varying field rotation::
 PrimeCam Offsets
 ----------------
 
-Predefined offsets for PrimeCam focal plane:
+Predefined offsets for PrimeCam focal plane
+(:func:`~fyst_trajectories.visualization.plot_array_footprint` draws
+this layout, and ``primecam_geometry_dict()`` exports it as a
+scheduler geometry schema):
 
 **Center**: ``get_primecam_offset("c")`` or ``PRIMECAM_CENTER`` - at boresight (0, 0)
 
@@ -154,17 +159,17 @@ Predefined offsets for PrimeCam focal plane:
 +------------+----------------+----------------+
 | Name       | dx (arcmin)    | dy (arcmin)    |
 +============+================+================+
-| I1         | 0.0            | -106.8         |
+| i1         | 0.0            | -106.8         |
 +------------+----------------+----------------+
-| I2         | 92.5           | -53.4          |
+| i2         | 92.5           | -53.4          |
 +------------+----------------+----------------+
-| I3         | 92.5           | 53.4           |
+| i3         | 92.5           | 53.4           |
 +------------+----------------+----------------+
-| I4         | 0.0            | 106.8          |
+| i4         | 0.0            | 106.8          |
 +------------+----------------+----------------+
-| I5         | -92.5          | 53.4           |
+| i5         | -92.5          | 53.4           |
 +------------+----------------+----------------+
-| I6         | -92.5          | -53.4          |
+| i6         | -92.5          | -53.4          |
 +------------+----------------+----------------+
 
 .. note::
@@ -174,6 +179,25 @@ Predefined offsets for PrimeCam focal plane:
    FYST instrument-team confirmation. Every off-axis offset scales linearly
    with both, so a revision to either shifts the whole inner ring. See
    :doc:`index` for the full list of parameters pending verification.
+
+**Module naming**
+
+The names ``c`` and ``i1`` .. ``i6`` label *positions* on the focal plane:
+one on-axis position and six inner-ring positions. They are not identities
+of the instrument modules that occupy them. Which observing band is
+installed at which position is deployment configuration, tracked by the
+observatory, and deliberately not modelled by this library.
+
+The Prime-Cam instrument team designates the same positions ``IM0``
+(on-axis) through ``IM6`` (inner ring); see Keller et al. 2026
+(arXiv:2608.05121, Fig. 1) for the planned first-light configuration. The
+two schemes do **not** correspond index-for-index: on sky, they number the
+ring in opposite senses, so ``i1`` must not be translated to ``IM1``. The
+correspondence is pending confirmation against the as-built focal plane
+(see :doc:`index`), after which the library plans to adopt the ``IM``
+designations in a future minor release. Today, ``IM0`` is accepted anywhere a
+module name is (an alias for the on-axis ``c``, the one mirror-invariant
+position); ``IM1`` .. ``IM6`` are rejected until the confirmation lands.
 
 **Access**::
 
@@ -280,8 +304,11 @@ the sky.
 Offset Calculation
 ------------------
 
-All offset math uses exact spherical trigonometry (``offsets._offset_forward``
-rewrites the great-circle formulas through ``sinc(rho)`` for stability at
-``rho = 0``), so the calls shown above are equally accurate at any offset
-size: a 3-degree outer-ring offset costs no precision relative to a 5-arcmin
-one.
+All offset math uses exact spherical trigonometry, so the calls shown
+above lose no numerical precision as the
+offset grows: an offset at the PrimeCam ring radius costs no more than a
+5-arcmin one. Numerical accuracy is not pointing performance, though:
+FYST's offset-pointing error is specified only up to a 25 degree radial
+offset and within one minute of a pointing calibration, so treat large
+offsets as a library capability rather than a telescope pointing
+guarantee.

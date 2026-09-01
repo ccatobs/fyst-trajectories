@@ -38,7 +38,7 @@ class SatelliteTrackPattern(PlanetTrackPattern):
     >>> config = SatelliteTrackConfig(timestep=0.1, body="titan", satellite_kernel="titan.bsp")
     >>> pattern = SatelliteTrackPattern(config=config)
     >>> start_time = Time("2026-06-15T04:00:00", scale="utc")
-    >>> trajectory = pattern.generate(site, duration=300.0, start_time=start_time)
+    >>> trajectory = pattern.generate(site, duration=300.0, start_time=start_time)  # doctest: +SKIP
     """
 
     @property

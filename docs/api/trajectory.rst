@@ -2,7 +2,8 @@ Trajectory Container
 ====================
 
 Container for telescope trajectory data with time-stamped position and
-velocity setpoints for Az/El axes.
+velocity setpoints for Az/El axes. Worked examples are in
+:doc:`../trajectory_examples`.
 
 .. automodule:: fyst_trajectories.trajectory
    :members:
@@ -56,7 +57,7 @@ for science samples, making it easy to filter trajectory data::
             ConstantElScanConfig(
                 timestep=0.1,
                 az_start=120.0,
-                az_stop=180.0,
+                az_stop=145.0,
                 elevation=45.0,
                 az_speed=1.0,
                 az_accel=0.5,
@@ -98,14 +99,14 @@ Usage Examples
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(get_fyst_site())
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
             timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            velocity=0.4, num_terms=4, angle=0.0,
         ))
         .duration(300.0)
         .starting_at(start_time)

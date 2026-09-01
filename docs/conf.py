@@ -3,7 +3,6 @@
 import os
 import sys
 import warnings
-from importlib.metadata import version as _pkg_version
 
 sys.path.insert(0, os.path.abspath("../src"))
 
@@ -16,11 +15,14 @@ warnings.filterwarnings(
 )
 
 project = "fyst-trajectories"
-copyright = "[TBD]"
+copyright = "2026, Graham Gibson"
 author = "Graham Gibson"
 
-release = _pkg_version("fyst-trajectories")
+from fyst_trajectories import __version__ as release  # noqa: E402
+
 version = ".".join(release.split(".")[:2])
+
+exclude_patterns = ["changelog.rst"]
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -47,7 +49,8 @@ autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 # Optional dependencies absent from the docs build environment. matplotlib
 # backs the visualization subpackage; sun_avoidance is the shared
-# ccatobs/sun-avoidance library behind make_sun_safe("cone"/"cad") and the
-# TYPE_CHECKING-guarded AvoidanceData annotations in sun_models (installed
-# from a git clone, never from PyPI, so CI docs builds do not have it).
+# ccatobs/sun-avoidance library (CCAT-internal) behind
+# make_sun_safe("cone"/"cad") and the TYPE_CHECKING-guarded AvoidanceData
+# annotations in sun_models (installed from a git clone, never from PyPI,
+# so CI docs builds do not have it).
 autodoc_mock_imports = ["matplotlib", "sun_avoidance"]

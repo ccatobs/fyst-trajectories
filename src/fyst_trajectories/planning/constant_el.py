@@ -78,7 +78,8 @@ def plan_constant_el_scan(
     angle : float, optional
         Rotation angle of the field region in degrees. Default is 0.0.
     az_accel : float, optional
-        Azimuth acceleration in degrees/second^2. Default is 1.0.
+        Azimuth acceleration in azimuth coordinate degrees/second^2
+        (mount frame, not on-sky). Default is 1.0.
     timestep : float, optional
         Time between trajectory points in seconds. Default is 0.1.
     detector_offset : InstrumentOffset or None, optional
@@ -129,8 +130,8 @@ def plan_constant_el_scan(
     -------
     ScanBlock
         Planned observation containing trajectory, config, and computed
-        parameters (az_start, az_stop, az_throw, start_time, end_time,
-        duration).
+        parameters (``az_start``, ``az_stop``, ``az_throw``, ``n_scans``,
+        ``start_time_iso``, ``end_time_iso``, ``duration``).
 
     Raises
     ------
@@ -180,7 +181,7 @@ def plan_constant_el_scan(
     LSA-window mode (Deep56-style, 4-hour wrap-around window):
 
     >>> deep56 = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
-    >>> block = plan_constant_el_scan(  # doctest: +SKIP
+    >>> block = plan_constant_el_scan(
     ...     field=deep56,
     ...     elevation=50.0,
     ...     velocity=0.5,
@@ -195,15 +196,9 @@ def plan_constant_el_scan(
 
     start_time = _coerce_start_time(start_time)
 
-    # Pre-flight sun-safety check at the *search anchor*. For the
-    # elevation-crossing path this is the only check; the resolved
-    # ``obs_start`` can be tens of minutes (occasionally hours) after
-    # ``start_time``, so the pre-flight is anchor-time only. For the
-    # LSA-window path we re-check below once
-    # ``obs_start`` is known; the LSA branch can delay observation by
-    # hours, during which the Sun moves ~15 deg/h, so a field that is
-    # 50 deg from the Sun at ``start_time`` can be 5 deg from it at
-    # ``obs_start``.
+    # Pre-flight sun-safety at the *search anchor*; the LSA path
+    # re-checks at the resolved ``obs_start`` below. Rationale in the
+    # Notes section.
     _check_field_sun_safety(field.ra_center, field.dec_center, start_time, site, sun_safe=sun_safe)
 
     coords_obj = Coordinates(site, atmosphere=atmosphere)

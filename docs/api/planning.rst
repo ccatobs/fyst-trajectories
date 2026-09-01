@@ -3,7 +3,7 @@ Planning Package
 
 High-level planning functions that translate astronomer-friendly inputs
 into pattern configurations and trajectories. Worked examples for every
-scan type are in :doc:`/planning`.
+scan type are in :doc:`../planning`.
 
 .. automodule:: fyst_trajectories.planning
    :members:

@@ -1,6 +1,9 @@
 Instrument Offsets
 ==================
 
+Focal-plane offset projection (boresight to detector and back) and the
+PrimeCam module constants.
+
 .. automodule:: fyst_trajectories.offsets
    :members: InstrumentOffset, boresight_to_detector, detector_to_boresight, apply_detector_offset, compute_focal_plane_rotation
    :undoc-members:
@@ -34,6 +37,11 @@ Quick Example
 PrimeCam Modules
 ----------------
 
+Module names label focal-plane positions (one on-axis, six on the inner
+ring), not the instrument modules that occupy them; see
+:doc:`../instrument_offsets` for the naming convention and its pending
+verification.
+
 .. py:data:: PRIMECAM_CENTER
 
    Center module (0, 0).
@@ -63,5 +71,10 @@ PrimeCam Modules
    Inner ring module 6.
 
 .. autodata:: fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG
+
+The six ring positions differ only in clocking: ``i1`` sits at
+focal-plane angle -90° and ``i1`` .. ``i6`` step counterclockwise on
+sky (a convention pending as-built confirmation; see the layout table
+in :doc:`../instrument_offsets`).
 
 See :doc:`../instrument_offsets` for the offset workflow and worked examples.

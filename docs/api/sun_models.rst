@@ -42,9 +42,6 @@ automatically)::
 Path-level slew safety
 ----------------------
 
-A correct point predicate is invariant under ``az -> az + 360`` (the same
-sky direction), so it can never *choose* an azimuth wrap; the slew paths
-to two wraps differ, and that is a path question.
 :func:`~fyst_trajectories.sun_models.make_slew_safe` sweeps any point
 model along the direct trapezoidal slew path (the FYST axis
 velocity/acceleration limits, the Sun advanced along the motion) to build
@@ -62,7 +59,6 @@ auto-reroute); the caller may then plan a two-leg detour explicitly::
     # (az_mid, el_mid) with el_mid inside the telescope limits, or None.
 
 ``find_sun_safe_detour`` bounds every candidate elevation to the
-commandable range. Be aware the honest answer is often ``None`` under
-FYST's own policies: the 50-90 deg zones span most of the elevation
-range, and the azimuth axis outruns the elevation axis 3:1, so choosing
-the other azimuth wrap (or waiting) is usually the real recourse.
+commandable range, and the honest answer is often ``None`` under FYST's
+own policies; see :doc:`../sun_avoidance` for why, and for the wrap
+choice that is usually the real recourse.

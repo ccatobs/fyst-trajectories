@@ -9,7 +9,7 @@ provides a pre-configured, FYST-aware toolkit.
 
 Examples
 --------
-Coordinate transformation (vacuum; the ACU applies refraction):
+Coordinate transformation (vacuum; refraction is applied downstream):
 
 >>> from astropy.time import Time
 >>> from fyst_trajectories import Coordinates, get_fyst_site
@@ -23,7 +23,7 @@ Generate a Pong scan using the builder:
 >>> from fyst_trajectories import get_fyst_site
 >>> from fyst_trajectories.patterns import TrajectoryBuilder, PongScanConfig
 >>> site = get_fyst_site()
->>> start_time = Time("2026-03-15T04:00:00", scale="utc")
+>>> start_time = Time("2026-03-15T01:00:00", scale="utc")
 >>> trajectory = (
 ...     TrajectoryBuilder(site)
 ...     .at(ra=180.0, dec=-30.0)
@@ -33,7 +33,7 @@ Generate a Pong scan using the builder:
 ...             width=2.0,
 ...             height=2.0,
 ...             spacing=0.1,
-...             velocity=0.5,
+...             velocity=0.4,
 ...             num_terms=4,
 ...             angle=0.0,
 ...         )
@@ -51,7 +51,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from .coordinates import (
     FRAME_ALIASES,

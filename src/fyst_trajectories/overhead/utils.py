@@ -30,21 +30,28 @@ __all__ = [
 
 
 def circular_mean_deg(a: float, b: float) -> float:
-    """Circular mean of two azimuths in degrees.
+    """Circular mean of two angles in degrees.
 
-    Averages two angles on the circle via ``atan2`` of the mean sine and
-    cosine, so a north-straddling pair (e.g. 355 and 5) returns the true
-    midpoint (0) rather than the arithmetic mean (180, ~180 deg wrong).
+    Averages on the circle via ``atan2`` of the mean sine and cosine,
+    so the result is the midpoint of the **shorter** arc between the
+    two angles: 355 and 5 average to 0, not to 180.
+
+    This is the right average for a direction statistic (a mean wind
+    bearing, a mean position angle). It is the wrong average for
+    telescope motion, where the mount travels the commanded path
+    rather than the shorter modular arc: azimuths placed in one
+    coherent cable-wrap frame want the arithmetic mean instead, which
+    is why nothing on the scheduler's slew path calls this.
 
     Parameters
     ----------
     a, b : float
-        Azimuths in degrees.
+        Angles in degrees.
 
     Returns
     -------
     float
-        Circular-mean azimuth in degrees, in ``[-180, 180]``.
+        Circular-mean angle in degrees, in ``[-180, 180]``.
     """
     a_rad = math.radians(a)
     b_rad = math.radians(b)
@@ -54,7 +61,10 @@ def circular_mean_deg(a: float, b: float) -> float:
 
 
 def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
-    """Compute Nasmyth boresight rotation from AltAz coordinates.
+    """Compute the celestial-frame field rotation from AltAz coordinates.
+
+    This is the sky orientation of the Nasmyth-mounted focal plane, a
+    derived quantity (FYST has no instrument rotator to command).
 
     Returns ``site.nasmyth_sign * el + parallactic_angle`` where the
     parallactic angle is derived from azimuth, elevation, and site
@@ -121,13 +131,16 @@ def estimate_slew_time(
 
     .. note::
 
-       Both ``az1`` and ``az2`` must be **pre-normalised** into the same
-       cable-wrap window (typically the telescope's
-       ``[az_min, az_max] = [-180, 360]`` range). Mixing raw astropy
-       ``[0, 360]`` azimuth with telescope-normalised ``[-180, 360]``
-       azimuth produces a 360°-off slew estimate; the function does not
-       enforce or check this. The overhead scheduler normalises azimuth
-       before every call; standalone callers must do the same.
+       ``az1`` and ``az2`` must be expressed in one **coherent**
+       cable-wrap frame, not merely both inside the telescope's
+       ``[az_min, az_max] = [-180, 360]`` window: that window is 540
+       degrees wide, so two in-window values can denote the same sky
+       azimuth a full turn apart, and this function then reports a
+       phantom unwind. Place the second azimuth on the in-limits
+       360-degree representative nearest the first (what the overhead
+       scheduler does before every call); mixing raw astropy
+       ``[0, 360]`` azimuth with telescope-normalised azimuth has the
+       same effect. The function does not enforce or check this.
 
     Parameters
     ----------
@@ -219,7 +232,16 @@ def get_observable_windows(
     site : Site
         Observatory site configuration.
     min_elevation : float
-        Minimum elevation in degrees (default: 30).
+        Minimum elevation in degrees (default: 30). The default is an
+        observing floor, deliberately above the telescope's commandable
+        elevation limit: FYST's pointing and surface accuracy are
+        specified over roughly 30 to 85 degrees elevation, so windows
+        computed at the mechanical limit overstate schedulable time
+        for science that needs in-spec performance. This function
+        alone applies the observing floor; the observability and
+        planet-calibration defaults elsewhere in the package use the
+        commandable limit. Pass ``site.telescope_limits.elevation.min``
+        to plan down to the commandable bound.
     check_sun : bool
         Whether to check sun avoidance (default: True).
     sun_safe : SunSafePredicate, optional
@@ -265,8 +287,7 @@ def get_observable_windows(
         )
 
         if rise is None and set_time is None:
-            # Check if source is currently above min_elevation
-            az, el = coords.radec_to_altaz(ra, dec, search_start)
+            _az, el = coords.radec_to_altaz(ra, dec, search_start)
             if el > min_elevation:
                 # Source is up. Search for when it sets below min_elevation.
                 set_time = _find_set_time(ra, dec, search_start, end_time, coords, min_elevation)
@@ -283,7 +304,6 @@ def get_observable_windows(
             # Source is setting, use search_start as rise
             rise = search_start
 
-        # Clip to search range
         if rise.unix < start_time.unix:
             rise = start_time
         if set_time.unix > end_time.unix:
@@ -294,7 +314,6 @@ def get_observable_windows(
             continue
 
         if check_sun and site.sun_avoidance.enabled:
-            # Sub-divide the window, removing sun-unsafe intervals
             safe_windows = _filter_sun_unsafe(
                 ra,
                 dec,
@@ -308,7 +327,6 @@ def get_observable_windows(
         else:
             windows.append((rise, set_time))
 
-        # Search for next window after this set
         search_start = set_time + TimeDelta(60, format="sec")
 
     return windows
@@ -453,7 +471,9 @@ def _find_set_time(
     return times[i_set] + frac * (times[i_set + 1] - times[i_set])
 
 
-def get_transit_time(
+# dec is unused on purpose (a transit is a pure hour-angle crossing); the
+# argument stays for signature symmetry with the sibling source helpers.
+def get_transit_time(  # pylint: disable=unused-argument
     ra: float,
     dec: float,
     start_time: Time,
@@ -499,7 +519,7 @@ def get_transit_time(
     return None
 
 
-def get_max_elevation(
+def get_max_elevation(  # pylint: disable=unused-argument
     ra: float,
     dec: float,
     site: Site,

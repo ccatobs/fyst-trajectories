@@ -588,3 +588,142 @@ class TestObservingTimeline:
         warnings = tl.validate()
         assert len(warnings) == 1
         assert "Overlap" in warnings[0]
+
+    def test_validate_unordered_azimuth_bounds(self, site):
+        """A science block with az_start > az_end is flagged.
+
+        The fixture pair is a real torn range from the cable-wrap seam
+        bug; the westward slew alongside it is unordered by design and
+        must not be flagged.
+        """
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        t1 = t0 + TimeDelta(1000, format="sec")
+        science = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(500, format="sec"),
+            block_type="science",
+            patch_name="torn",
+            az_start=252.4,
+            az_end=-74.8,
+            elevation=24.0,
+            scan_index=0,
+        )
+        westward_slew = TimelineBlock(
+            t_start=t0 + TimeDelta(500, format="sec"),
+            t_stop=t0 + TimeDelta(600, format="sec"),
+            block_type="slew",
+            patch_name="slew_west",
+            az_start=-74.8,
+            az_end=-120.0,
+            elevation=24.0,
+            scan_index=1,
+        )
+        tl = ObservingTimeline(
+            blocks=[science, westward_slew],
+            site=site,
+            start_time=t0,
+            end_time=t1,
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        warnings = tl.validate()
+        assert len(warnings) == 1
+        assert "Unordered azimuth bounds" in warnings[0]
+        assert "torn" in warnings[0]
+
+    def test_validate_pose_discontinuity(self, site):
+        """A stale-pose timeline (slew then mis-parked idle) is flagged.
+
+        Both the idle park and the following slew's start must match
+        the pose the first slew established, so this timeline yields
+        exactly two warnings.
+        """
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        t1 = t0 + TimeDelta(2000, format="sec")
+        slew = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(93, format="sec"),
+            block_type="slew",
+            patch_name="slew_to_field",
+            az_start=180.0,
+            az_end=-78.0,
+            elevation=21.0,
+            scan_index=0,
+        )
+        stale_idle = TimelineBlock(
+            t_start=t0 + TimeDelta(93, format="sec"),
+            t_stop=t0 + TimeDelta(393, format="sec"),
+            block_type="idle",
+            patch_name="no_target",
+            az_start=180.0,
+            az_end=180.0,
+            elevation=50.0,
+            scan_index=0,
+        )
+        stale_slew = TimelineBlock(
+            t_start=t0 + TimeDelta(393, format="sec"),
+            t_stop=t0 + TimeDelta(486, format="sec"),
+            block_type="slew",
+            patch_name="slew_to_field",
+            az_start=180.0,
+            az_end=-78.0,
+            elevation=21.0,
+            scan_index=1,
+        )
+        tl = ObservingTimeline(
+            blocks=[slew, stale_idle, stale_slew],
+            site=site,
+            start_time=t0,
+            end_time=t1,
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        warnings = tl.validate()
+        assert len(warnings) == 2
+        assert "parked at az 180.000" in warnings[0]
+        assert "previous block ended at az -78.000" in warnings[0]
+        assert "starts at az 180.000" in warnings[1]
+
+    def test_validate_pose_continuity_clean(self, site):
+        """A coherent slew -> idle -> slew chain validates clean."""
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        t1 = t0 + TimeDelta(2000, format="sec")
+        slew = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(93, format="sec"),
+            block_type="slew",
+            patch_name="slew_to_field",
+            az_start=180.0,
+            az_end=-78.0,
+            elevation=21.0,
+            scan_index=0,
+        )
+        idle = TimelineBlock(
+            t_start=t0 + TimeDelta(93, format="sec"),
+            t_stop=t0 + TimeDelta(393, format="sec"),
+            block_type="idle",
+            patch_name="no_target",
+            az_start=-78.0,
+            az_end=-78.0,
+            elevation=21.0,
+            scan_index=0,
+        )
+        slew_back = TimelineBlock(
+            t_start=t0 + TimeDelta(393, format="sec"),
+            t_stop=t0 + TimeDelta(486, format="sec"),
+            block_type="slew",
+            patch_name="slew_home",
+            az_start=-78.0,
+            az_end=180.0,
+            elevation=50.0,
+            scan_index=1,
+        )
+        tl = ObservingTimeline(
+            blocks=[slew, idle, slew_back],
+            site=site,
+            start_time=t0,
+            end_time=t1,
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        assert tl.validate() == []

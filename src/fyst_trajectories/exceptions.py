@@ -21,8 +21,9 @@ Exception Hierarchy
             ElevationBoundsError
         TargetNotObservableError
 
-All exceptions inherit from both ``PointingError`` and ``ValueError``
-for backward compatibility with code that catches ``ValueError``.
+``PointingError`` inherits from ``ValueError``, and every exception
+below it inherits from ``PointingError``, so all of them can be caught
+as ``ValueError`` for backward compatibility.
 """
 
 
@@ -146,7 +147,11 @@ class AzimuthBoundsError(TrajectoryBoundsError):
 
     Examples
     --------
+    >>> import numpy as np
     >>> from fyst_trajectories.exceptions import AzimuthBoundsError
+    >>> from fyst_trajectories.trajectory_utils import validate_trajectory_bounds
+    >>> az = np.array([100.0, 400.0])  # 400 exceeds the +360 encoder limit
+    >>> el = np.array([45.0, 45.0])
     >>> try:
     ...     validate_trajectory_bounds(site, az, el)
     ... except AzimuthBoundsError as exc:
@@ -154,6 +159,7 @@ class AzimuthBoundsError(TrajectoryBoundsError):
     ...         f"Az [{exc.actual_min:.1f}, {exc.actual_max:.1f}] "
     ...         f"exceeds [{exc.limit_min}, {exc.limit_max}]"
     ...     )
+    Az [100.0, 400.0] exceeds [-180.0, 360.0]
     """
 
     def __init__(
@@ -182,7 +188,11 @@ class ElevationBoundsError(TrajectoryBoundsError):
 
     Examples
     --------
+    >>> import numpy as np
     >>> from fyst_trajectories.exceptions import ElevationBoundsError
+    >>> from fyst_trajectories.trajectory_utils import validate_trajectory_bounds
+    >>> az = np.array([100.0, 100.0])
+    >>> el = np.array([10.0, 45.0])  # 10 is below the 20 deg elevation floor
     >>> try:
     ...     validate_trajectory_bounds(site, az, el)
     ... except ElevationBoundsError as exc:
@@ -190,6 +200,7 @@ class ElevationBoundsError(TrajectoryBoundsError):
     ...         f"El [{exc.actual_min:.1f}, {exc.actual_max:.1f}] "
     ...         f"exceeds [{exc.limit_min}, {exc.limit_max}]"
     ...     )
+    El [10.0, 45.0] exceeds [20.0, 90.0]
     """
 
     def __init__(
@@ -228,14 +239,24 @@ class TargetNotObservableError(PointingError):
     --------
     Catch and inspect an unobservable target error:
 
+    >>> from astropy.time import Time
     >>> from fyst_trajectories.exceptions import TargetNotObservableError
+    >>> from fyst_trajectories.patterns import SiderealTrackConfig, TrajectoryBuilder
+    >>> t = Time("2026-03-15T23:00:00", scale="utc")  # target below the elevation floor
     >>> try:
-    ...     trajectory = pattern.generate(site, duration=300.0, start_time=t)
+    ...     trajectory = (
+    ...         TrajectoryBuilder(site)
+    ...         .at(ra=180.0, dec=-30.0)
+    ...         .with_config(SiderealTrackConfig(timestep=0.1))
+    ...         .duration(300.0)
+    ...         .starting_at(t)
+    ...         .build()
+    ...     )
     ... except TargetNotObservableError as exc:
     ...     print(f"Target: {exc.target}")
-    ...     print(f"Time: {exc.time_info}")
     ...     print(f"Axis: {exc.bounds_error.axis}")
-    ...     print(f"Range: [{exc.bounds_error.actual_min:.1f}, {exc.bounds_error.actual_max:.1f}]")
+    Target: RA=180.000 Dec=-30.000
+    Axis: elevation
     """
 
     def __init__(

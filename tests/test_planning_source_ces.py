@@ -282,7 +282,7 @@ def test_partial_coverage_allow_true_warns(site):
 
 def test_sun_avoidance_warns_not_raises(site):
     """A planet near the Sun emits a PointingWarning but still returns."""
-    # Mercury on 2026-05-15 lies inside FYST's 50 deg sun exclusion at
+    # Mercury on 2026-05-15 lies inside FYST's 45 deg sun exclusion at
     # mid-Chilean-day (verified by hand).
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

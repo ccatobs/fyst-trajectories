@@ -41,17 +41,17 @@ def plan_daisy_scan(
     dec : float
         Declination of the source in degrees.
     radius : float
-        Characteristic radius R0 in degrees. Must be positive.
+        Characteristic radius R0 in on-sky degrees. Must be positive.
     velocity : float
         Scan velocity in sky-offset degrees/second. This is the
         speed in the tangent plane, not azimuth coordinate
         velocity. Must be positive.
     turn_radius : float
-        Radius of curvature for turns in degrees. Must be positive.
+        Radius of curvature for turns in on-sky degrees. Must be positive.
     avoidance_radius : float
-        Radius to avoid near center in degrees. Must be non-negative.
+        Radius to avoid near center in on-sky degrees. Must be non-negative.
     start_acceleration : float
-        Ramp-up acceleration in degrees/second^2. Must be positive.
+        Ramp-up acceleration in on-sky degrees/second^2. Must be positive.
     site : Site
         Telescope site configuration.
     start_time : str or Time
@@ -62,7 +62,7 @@ def plan_daisy_scan(
     duration : float
         Observation duration in seconds. Must be positive.
     y_offset : float, optional
-        Initial y offset in degrees. Default is 0.0 (start at center).
+        Initial y offset in on-sky degrees. Default is 0.0 (start at center).
     detector_offset : InstrumentOffset or None, optional
         If provided, adjust the trajectory for this detector offset.
     atmosphere : AtmosphericConditions or None, optional
@@ -85,6 +85,10 @@ def plan_daisy_scan(
 
     Raises
     ------
+    ValueError
+        If any config field is invalid (non-positive ``radius``,
+        ``velocity``, ``turn_radius``, or ``start_acceleration``, or a
+        negative ``avoidance_radius``).
     TargetNotObservableError
         If the target is not observable at the requested time.
     TrajectoryBoundsError

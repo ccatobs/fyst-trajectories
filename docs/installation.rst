@@ -3,9 +3,10 @@ Installation
 
 **Requires Python 3.10 or higher.**
 
-From GitHub::
+From GitHub, pinned to a release tag (``v0.8.0`` is the latest - pre-1.0,
+breaking changes arrive only in minor releases, never in patches)::
 
-    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git"
+    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.8.0"
 
 Development install
 -------------------
@@ -41,7 +42,7 @@ numpy, pyyaml, scipy). The following extras are available for opt-in features:
 - ``docs`` - adds Sphinx and the rendering extensions used to build
   this site.
 - ``dev`` - superset of testing and development tools (pytest,
-  pytest-cov, hypothesis, ruff, pre-commit, skyfield, numba,
+  pytest-cov, hypothesis, ruff, pylint, pre-commit, skyfield, numba,
   matplotlib, jplephem).
 - ``all`` - installs every extra above.
 
@@ -69,4 +70,8 @@ implementations. They are gated behind the ``--run-slow`` flag::
     pytest tests/ --run-slow
 
 - **Skyfield** - verifies coordinate transforms against an independent astronomy library
-- **KOSMA** - verifies focal plane offset model against the KOSMA telescope control system
+- **KOSMA** - verifies the focal plane offset model against the KOSMA telescope control
+  system's formulas, reproduced inline in the test (no KOSMA software is installed or run)
+- **scan_patterns** - the AltAz-planner parity tests compare against the ``scanning``
+  package when it is installed (``pip install -e ../scan_patterns``) and skip silently
+  otherwise, so install it for the full oracle set

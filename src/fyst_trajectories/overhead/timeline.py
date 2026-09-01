@@ -6,9 +6,6 @@ from astropy.time import Time
 
 from ..site import Site
 from .constraints import Constraint
-
-if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
 from .models import (
     CalibrationPolicy,
     ObservingPatch,
@@ -16,6 +13,9 @@ from .models import (
     OverheadModel,
 )
 from .scheduler import Scheduler, SchedulerContext
+
+if TYPE_CHECKING:
+    from ..dispatch import SunSafePredicate
 
 __all__ = [
     "generate_timeline",

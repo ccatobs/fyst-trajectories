@@ -78,13 +78,9 @@ class TestComputeVelocities:
         the true velocity is about +2 deg/s, not -358 deg/s.
         """
         times = np.array([0.0, 1.0, 2.0, 3.0])
-        # Azimuth increasing through the 360/0 boundary
-        # Moving at about 2 deg/s: 358 -> 359 -> 0/360 -> 1 -> 2
-        # Simulating: 358, 0 (=360), 2
+        # Azimuth increasing at 2 deg/s through the 360/0 boundary.
         az = np.array([358.0, 0.0, 2.0, 4.0])
 
-        # Without is_angular=True, this would compute ~-358 deg/s
-        # With is_angular=True, it should compute ~+2 deg/s
         velocities = compute_velocities(az, times, is_angular=True)
 
         # All velocities should be close to +2 deg/s
@@ -107,7 +103,6 @@ class TestComputeVelocities:
 
     def test_azimuth_multiple_wraps(self):
         """Test multiple wrap-arounds in sequence."""
-        # Spinning around multiple times
         times = np.linspace(0, 4, 9)  # 0, 0.5, 1, ..., 4
         # Azimuth increasing at 100 deg/s, wrapping multiple times
         # Start at 350, after 4 seconds should be at 350 + 400 = 750 = 30 (mod 360)
@@ -129,7 +124,6 @@ class TestComputeVelocities:
         times = np.array([0.0, 1.0, 2.0])
         az = np.array([358.0, 0.0, 2.0])
 
-        # Without is_angular, the function computes the "wrong" velocity
         velocities = compute_velocities(az, times, is_angular=False)
 
         # Middle point sees 358->0->2, gradient computes (2-358)/2 = -178

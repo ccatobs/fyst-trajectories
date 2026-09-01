@@ -5,17 +5,21 @@ Astronomy Centre, JCMT TCS/UN/005, 2012) for algorithm details.
 
 Performance
 -----------
-The inner loop runs at 150 Hz internal timestep regardless of the output
-timestep. A 300-second scan produces 45,000 iterations.
+The inner loop runs at an internal timestep of at most 1/150 s (it
+follows the output timestep when that is finer), so a 300-second scan
+at an output timestep of 1/150 s or coarser produces 45,000 iterations,
+and proportionally more at finer output timesteps.
 
 With numba (``pip install fyst-trajectories[performance]``):
-    JIT-compiled; generation is fast (sub-second for typical scans).
+    JIT-compiled; the inner loop runs one to two orders of magnitude
+    faster than the pure-Python fallback.
 
 Without numba (pure Python fallback):
-    Each iteration executes Python-level floating-point math. A 300-second
-    scan may take several seconds on a typical machine. This is acceptable
-    for offline planning but is not recommended for production or repeated
-    high-volume use.
+    Each iteration executes Python-level floating-point math. A typical
+    scan still generates in well under a second on a current interpreter,
+    so offline planning is comfortable either way; the fallback only
+    becomes limiting at fine output timesteps, very long scans, or
+    repeated high-volume generation.
 
 Install numba for production use.
 """
@@ -56,8 +60,9 @@ try:
 except ImportError:
     HAS_NUMBA = False
 
-# Internal timestep for Daisy pattern ensuring smooth curve approximation.
-# Fixed at 1/150 s (~6.67 ms) rather than user-configurable because the
+# Internal timestep ceiling for the Daisy pattern, ensuring smooth curve
+# approximation (the loop runs at the output timestep when that is finer).
+# Capped at 1/150 s (~6.67 ms) rather than user-configurable because the
 # Taylor-series position updates during curved segments assume small arc
 # lengths per step.  At typical velocities (~0.3 deg/s) and turn radii
 # (~0.2 deg), this gives adequate sampling.  Extreme parameter combinations
@@ -335,11 +340,10 @@ class DaisyScanPattern(CelestialPattern):
         ------
         ValueError
             If ``start_time`` is None.
-        TrajectoryBoundsError
-            If the trajectory exceeds telescope limits.
         TargetNotObservableError
             If the target is below the horizon or outside telescope
-            limits at the requested time.
+            limits at the requested time (bounds violations are
+            wrapped into this error).
         """
         if start_time is None:
             raise ValueError(

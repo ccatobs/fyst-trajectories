@@ -1,6 +1,9 @@
 Site Configuration
 ==================
 
+FYST physical constants, the frozen :class:`~fyst_trajectories.site.Site`
+dataclass, telescope limits, and atmospheric conditions.
+
 .. automodule:: fyst_trajectories.site
    :members:
    :undoc-members:
@@ -22,6 +25,9 @@ mechanical limits are fixed constants::
 
     # Disable sun avoidance entirely (for testing)
     site_no_sun = get_fyst_site(sun_avoidance_enabled=False)
+
+The scalar radii configure one of three selectable Sun policies; see
+:doc:`../sun_avoidance` for the directional alternatives.
 
 Convenience Constants
 ---------------------

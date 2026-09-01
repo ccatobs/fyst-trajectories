@@ -168,7 +168,6 @@ class TestMakeDiskKernel:
     """Tests for the internal disk-kernel helper."""
 
     def test_returns_2d_array(self):
-        """The kernel should be a 2D ndarray."""
         kernel = _make_disk_kernel(radius_bins=3.0)
         assert isinstance(kernel, np.ndarray)
         assert kernel.ndim == 2
@@ -195,7 +194,6 @@ class TestMakeDiskKernel:
         np.testing.assert_array_equal(kernel, kernel[:, ::-1])
 
     def test_values_are_non_negative(self):
-        """All kernel values must be >= 0."""
         kernel = _make_disk_kernel(radius_bins=4.0)
         assert np.all(kernel >= 0.0)
 
@@ -213,7 +211,6 @@ class TestFormatRaHm:
     """Tests for the RA -> hour-angle label formatter."""
 
     def test_format_returns_string(self):
-        """The formatter must return a string."""
         result = _format_ra_hm(0.0, None)
         assert isinstance(result, str)
 
@@ -237,7 +234,6 @@ class TestFormatRaHm:
 
     def test_wraps_at_360(self):
         """RA values at or beyond 360 degrees wrap back to 0h."""
-        # 360 deg should wrap to 0.
         result_360 = _format_ra_hm(360.0, None)
         result_0 = _format_ra_hm(0.0, None)
         assert result_360 == result_0
@@ -250,7 +246,6 @@ class TestFormatDecDeg:
     """Tests for the Dec -> degree label formatter."""
 
     def test_format_returns_string(self):
-        """The formatter must return a string."""
         result = _format_dec_deg(0.0, None)
         assert isinstance(result, str)
 

@@ -223,3 +223,44 @@ class TestRegressionTimeline:
         assert initial_cals[:4] == expected_base
         if len(initial_cals) > 4:
             assert initial_cals[4] == "planet_cal"
+
+    def test_ce_visit_reconstruction_tiles_blocks(self, regression_timeline):
+        """CE subscans rebuild as slices of one shared crossing solve.
+
+        All three Deep56 subscans share ``metadata["t0_scan"]``, so each
+        rebuilt trajectory must cover only its own block window rather
+        than the full pass (which triple-counted the visit at 4.75x the
+        scheduled science time). The first subscan legitimately starts up
+        to a tick plus the slew allowance before the re-solved crossing,
+        so its slice may be shorter than its block.
+        """
+        from fyst_trajectories.overhead import schedule_to_trajectories
+
+        pairs = schedule_to_trajectories(regression_timeline)
+        assert len(pairs) == 3
+
+        starts = []
+        total_span = 0.0
+        for sblock, scan_block in pairs:
+            traj = scan_block.trajectory
+            span = float(traj.times[-1] - traj.times[0])
+            total_span += span
+            starts.append(traj.start_time.unix)
+            assert traj.times[0] == 0.0
+            assert traj.start_time.unix >= sblock.t_start.unix - 1e-3
+            end_unix = traj.start_time.unix + span
+            assert end_unix <= sblock.t_stop.unix + 1e-3
+            assert span <= sblock.duration + 1e-3
+
+        # Distinct ordered starts; the pre-fix bug returned three
+        # identical full passes.
+        assert starts == sorted(starts)
+        assert len(set(starts)) == 3
+
+        science_time = regression_timeline.total_science_time
+        # The only deficit is the first subscan's acquisition lead, at
+        # most one scheduler tick (300 s) plus the 180 s slew allowance.
+        assert science_time - 500.0 < total_span <= science_time + 1e-3
+        # The slice, not the full pass: duration diverges from the
+        # computed_params of the solved pass on purpose.
+        assert pairs[0][1].duration < pairs[0][1].computed_params["duration"]

@@ -4,6 +4,7 @@ Bridges the timeline (sequence of blocks) with fyst-trajectories' planning
 functions to generate actual trajectories and accumulate coverage maps.
 """
 
+import dataclasses
 import logging
 from typing import cast
 
@@ -83,13 +84,23 @@ def schedule_to_trajectories(
     Returns
     -------
     list of (TimelineBlock, ScanBlock)
-        Pairs of timeline blocks and their generated trajectories.
+        Pairs of timeline blocks and their generated trajectories. A
+        science trajectory covers only its own block's
+        ``[t_start, t_stop)`` window: the subscans of one
+        constant-elevation visit are consecutive slices of a single
+        crossing solve (anchored at the shared ``metadata["t0_scan"]``),
+        not one full pass each, so summing samples over the pairs no
+        longer multiply-counts a visit. ``ScanBlock.duration`` is the
+        slice; ``computed_params`` and ``summary`` still describe the
+        full solved pass. Calibration passes are one block per pass
+        and are returned whole.
 
     Notes
     -----
     Blocks that attempt reconstruction but fail (a ``ValueError``,
     ``KeyError``, or ``TypeError`` from the planner, e.g. a source no longer
-    reachable at the recorded geometry) are logged at ``WARNING`` and
+    reachable at the recorded geometry, or a block whose window no longer
+    overlaps the re-solved scan) are logged at ``WARNING`` and
     skipped so one bad block does not abort the whole timeline.
     """
     site = timeline.site
@@ -141,14 +152,20 @@ def _generate_trajectory_for_block(
     Returns
     -------
     ScanBlock
-        Generated scan block with trajectory.
+        Generated scan block. Science trajectories are sliced to the
+        block's own ``[t_start, t_stop)`` window by
+        :func:`_slice_to_block_window`, so ``duration`` and
+        ``trajectory.start_time`` describe the slice while
+        ``computed_params`` and ``summary`` describe the full solved
+        pass.
 
     Raises
     ------
     ValueError
         If ``sblock.metadata`` is missing any of the required geometry
         keys (``ra_center``, ``dec_center``, ``width``, ``height``,
-        ``velocity``).
+        ``velocity``), or if the re-solved scan no longer overlaps the
+        block's time window.
     KeyError
         If ``scan_params`` contains keys not allowed for
         ``sblock.scan_type`` (see
@@ -204,7 +221,7 @@ def _generate_trajectory_for_block(
         # recorded) fall back to t_start and reconstruct only when that
         # anchor happens to precede the pass opening.
         anchor = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
-        return plan_constant_el_scan(
+        scan_block = plan_constant_el_scan(
             field=field,
             elevation=sblock.elevation,
             velocity=velocity,
@@ -218,7 +235,7 @@ def _generate_trajectory_for_block(
         )
     elif sblock.scan_type == "pong":
         pong_params = cast(PongScanParams, scan_params)
-        return plan_pong_scan(
+        scan_block = plan_pong_scan(
             field=field,
             velocity=velocity,
             spacing=pong_params.get("spacing", 0.1),
@@ -231,7 +248,7 @@ def _generate_trajectory_for_block(
         )
     elif sblock.scan_type == "daisy":
         daisy_params = cast(DaisyScanParams, scan_params)
-        return plan_daisy_scan(
+        scan_block = plan_daisy_scan(
             ra=ra_center,
             dec=dec_center,
             radius=daisy_params.get("radius", 1.0),
@@ -247,6 +264,73 @@ def _generate_trajectory_for_block(
     else:
         raise ValueError(f"Unknown scan type: {sblock.scan_type}")
 
+    return _slice_to_block_window(scan_block, sblock)
+
+
+def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> ScanBlock:
+    """Slice a rebuilt science trajectory to its block's own time window.
+
+    A CE subscan re-solves its visit's whole crossing pass and a pong
+    rebuild covers whole pattern periods, so both come back longer
+    than the block they were rebuilt for; unsliced, a consumer
+    summing samples would multiply-count the visit. Only the samples
+    inside ``[t_start, t_stop)`` are kept; the half-open window keeps
+    back-to-back subscans from double-counting their shared boundary
+    sample. ``times`` are re-zeroed and ``start_time`` advanced so
+    the slice keeps the ``times[0] == 0`` convention, and
+    ``retune_events`` are dropped (planners emit none; events from a
+    pre-slice origin would be misplaced on the slice). The block's
+    ``computed_params`` and ``summary`` still describe the full
+    solved pass. Because each pong subscan restarts its pattern from
+    its own block start, only the first block-duration of the pong
+    pattern is ever simulated; coverage consumers see the pattern
+    head, not its tail.
+
+    A trajectory already inside the window (the daisy branch, which
+    plans with the block duration) is returned unchanged.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two trajectory samples fall inside the block
+        window (the re-solved scan no longer overlaps this block).
+        ``schedule_to_trajectories`` logs and skips such blocks like
+        any other reconstruction failure.
+    """
+    traj = scan_block.trajectory
+    if traj.start_time is None:
+        return scan_block
+    t = traj.times
+    rel_start = (sblock.t_start - traj.start_time).sec
+    rel_stop = (sblock.t_stop - traj.start_time).sec
+    mask = (t >= rel_start) & (t < rel_stop)
+    if bool(mask.all()):
+        return scan_block
+    idx = np.nonzero(mask)[0]
+    if idx.size < 2:
+        raise ValueError(
+            f"block window [{sblock.t_start.isot}, {sblock.t_stop.isot}) contains "
+            f"{idx.size} trajectory sample(s); the re-solved scan "
+            f"[{traj.start_time.isot} + {float(t[0]):.1f}s .. {float(t[-1]):.1f}s] "
+            f"no longer overlaps this block"
+        )
+    new_traj = dataclasses.replace(
+        traj,
+        times=t[idx] - t[idx[0]],
+        az=traj.az[idx],
+        el=traj.el[idx],
+        az_vel=traj.az_vel[idx],
+        el_vel=traj.el_vel[idx],
+        scan_flag=None if traj.scan_flag is None else traj.scan_flag[idx],
+        start_time=traj.start_time + TimeDelta(float(t[idx[0]]), format="sec"),
+        retune_events=(),
+    )
+    return dataclasses.replace(
+        scan_block,
+        trajectory=new_traj,
+        duration=float(new_traj.times[-1]),
+    )
+
 
 def _generate_source_ces_trajectory(
     meta: TimelineBlockMetadata,
@@ -258,7 +342,7 @@ def _generate_source_ces_trajectory(
     stored under ``meta["scan_params"]`` when a planet calibration was planned
     as a source-CES pass sequence
     (``CalibrationPolicy.planet_cal_scan``) and replays it through
-    :func:`~fyst_trajectories.plan_source_ces`, returning the same
+    :func:`~fyst_trajectories.planning.plan_source_ces`, returning the same
     :class:`~fyst_trajectories.planning.ScanBlock` the pass produced at emit
     time (to within the coarse-sampling re-solve tolerance).
 
@@ -281,7 +365,7 @@ def _generate_source_ces_trajectory(
         ``source_ces`` (see
         :func:`~fyst_trajectories.overhead.validate_scan_params`).
     ValueError, TypeError
-        Propagated from :func:`~fyst_trajectories.plan_source_ces` when the
+        Propagated from :func:`~fyst_trajectories.planning.plan_source_ces` when the
         recorded geometry can no longer be solved.
     """
     params = meta["scan_params"]
@@ -298,9 +382,7 @@ def _generate_source_ces_trajectory(
     base_footprint = _resolve_footprint(params["footprint"])
     pass_footprint = _offset_footprint_eta(base_footprint, params["eta_offset_deg"])
 
-    # Widen the stored [t0, t1] symmetrically before re-solving: the exact
-    # window edges trip the planner's cover-vs-arc guard, and the buffer keeps
-    # the search off those edges while landing on the same elevation crossing.
+    # Widen the window before re-solving; see _SOURCE_CES_WINDOW_BUFFER_SEC.
     return plan_source_ces(
         body=params["body"],
         footprint=pass_footprint,
@@ -364,11 +446,11 @@ def accumulate_hitmaps(
     # ``atmosphere=`` and forward it to ``Coordinates``; if the
     # trajectory was built with ``AtmosphericConditions.for_fyst()`` the
     # az/el samples here are refracted and inverting them with vacuum
-    # introduces a small systematic (~arcseconds at zenith, up to ~1' at
-    # the horizon). For a healpix nside=512 hitmap (7' pixels) the error
-    # stays sub-pixel except very near the horizon, so the practical
-    # impact is bounded; the asymmetry remains for low-elevation, high-
-    # nside maps.
+    # introduces a small systematic (~arcseconds near zenith, about 1.4'
+    # at the 20 deg elevation floor, and several arcmin below 10 deg).
+    # For a healpix nside=512 hitmap (7' pixels) the error stays
+    # sub-pixel down to the elevation floor, so the practical impact is
+    # bounded; the asymmetry remains for low-elevation, high-nside maps.
     # TODO: thread the trajectory's atmospheric conditions through
     # ``Trajectory`` metadata so the inverse uses the same refraction
     # model.

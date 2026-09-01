@@ -38,8 +38,9 @@ class TrajectoryMetadata:
     target_name : str, optional
         Name of the target (e.g., "M42", "mars").
     input_frame : str, optional
-        The input coordinate frame used for the pattern center
-        (e.g., "icrs", "galactic"). Default is None.
+        The input coordinate frame used for the pattern center:
+        ``"icrs"`` for celestial patterns, ``None`` for AltAz patterns
+        (no other value is currently produced). Default is None.
     epoch : str, optional
         The epoch/equinox if relevant (e.g., "J2000"). Primarily
         used when the input coordinates have an associated epoch.
@@ -202,7 +203,10 @@ class AltAzPattern(ABC):
     These patterns work directly in the telescope's native coordinate
     system without requiring coordinate transformations.
 
-    Examples: ConstantElScan, LinearMotion
+    Subclasses: ``ConstantElScanPattern``, ``LinearMotionPattern``,
+    ``PongAltAzScanPattern``, ``DaisyAltAzScanPattern``, and the
+    trackers ``PlanetTrackPattern`` / ``SatelliteTrackPattern`` (which
+    override ``requires_start_time`` for their ephemerides).
 
     Attributes
     ----------

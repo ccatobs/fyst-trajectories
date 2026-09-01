@@ -1,21 +1,15 @@
-"""Plotting utilities for trajectory and coverage analysis.
+"""Hit-density coverage maps in equatorial coordinates.
 
-This module provides visualization functions for analyzing telescope
-scan coverage, including hit-density maps in equatorial coordinates
-for multiple detector modules. Primarily meant for developer testing,
-should not be considered a polished user-facing API.
+Bins each detector module's sky track into a 2D RA/Dec histogram,
+optionally convolved with the module FOV disk. Primarily a developer
+diagnostic, not a polished user-facing API.
 
-Two modes of operation:
-
-- **Detector-center track** (default, ``module_fov=None``): Plots the
-  raw point-sample track of each detector center. Useful for verifying
-  scan geometry and trajectory correctness. Reports fractional coverage
-  statistics (N_footprint / N_total).
-
-- **Module coverage** (``module_fov`` set): Convolves the track with a
-  circular disk kernel representing the module's field of view. Useful
-  for observation planning, shows approximate sky coverage. Reports
-  absolute area statistics in square degrees.
+Everything is computed on a plain RA x Dec grid with no ``cos(dec)``
+weighting: reported areas are **coordinate areas** (RA extent times Dec
+extent), not solid angle, and the disk kernel is circular in coordinate
+space, so on sky it is stretched in RA by ``1/cos(dec)`` (about 15% at
+dec -30, about 100% at dec -60). Treat the numbers as relative
+diagnostics rather than sky areas.
 
 These functions require ``matplotlib`` (install via
 ``pip install fyst-trajectories[plotting]``). Gaussian smoothing and
@@ -113,10 +107,12 @@ def plot_hit_map(
     applying the offset to the boresight trajectory, converts Az/El to
     RA/Dec, and bins into a 2D histogram.
 
-    When ``module_fov`` is set, the histogram is convolved with a
-    circular disk kernel representing the module's field of view,
+    When ``module_fov`` is set, the histogram is convolved with a disk
+    kernel of the module's field-of-view diameter (circular in RA/Dec
+    coordinate space, so stretched in RA on sky away from the equator),
     producing filled coverage maps suitable for observation planning.
-    Statistics are reported as absolute areas in square degrees.
+    Statistics are reported as areas in square coordinate degrees, with
+    no ``cos(dec)`` weighting; see the module docstring.
 
     When ``module_fov`` is None (default), the raw detector-center
     track is plotted. Statistics are reported as fractional coverage
@@ -136,9 +132,9 @@ def plot_hit_map(
         Histogram bin size in degrees for both RA and Dec. Default 0.02.
     module_fov : float or None, optional
         Module field-of-view diameter in degrees. If set, the histogram
-        is convolved with a circular disk kernel of this diameter,
-        approximating coverage from the full module. A PrimeCam module
-        subtends about 1.3 degrees on sky (twice the 0.65 deg
+        is convolved with a disk kernel of this diameter in coordinate
+        degrees, approximating coverage from the full module. A PrimeCam
+        module subtends about 1.3 degrees on sky (twice the 0.65 deg
         ``MODULE_FOV_RADIUS_DEG``). Default is None.
     smooth_sigma : float or None, optional
         If not None, apply Gaussian smoothing with this sigma (in bins)
@@ -161,7 +157,8 @@ def plot_hit_map(
     Raises
     ------
     ImportError
-        If matplotlib is not installed.
+        If matplotlib is not installed, or scipy is missing when
+        ``module_fov`` or ``smooth_sigma`` is set.
     ValueError
         If trajectory has no ``start_time`` set.
     """
@@ -292,8 +289,8 @@ def plot_hit_map(
             else:
                 well_covered_area = 0.0
             stats_text = (
-                f"$A_{{footprint}}$ = {footprint_area:.1f} deg$^2$\n"
-                f"$A_{{>{thresh_pct}\\%max}}$ = {well_covered_area:.1f} deg$^2$"
+                f"$A_{{footprint}}$ = {footprint_area:.1f} coord deg$^2$\n"
+                f"$A_{{>{thresh_pct}\\%max}}$ = {well_covered_area:.1f} coord deg$^2$"
             )
         else:
             nonzero_bins = int(np.count_nonzero(hist))

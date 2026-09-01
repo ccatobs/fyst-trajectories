@@ -184,11 +184,14 @@ class PongScanConfig(ScanConfig):
         Mean diagonal scan speed in sky-offset degrees/second (the
         tangent-plane speed, not azimuth coordinate velocity). Note this is
         the *mean* cruise speed: each axis follows a truncated Fourier triangle
-        wave whose slope peaks mid-ramp, so the *peak* on-sky diagonal speed
-        exceeds ``velocity``, by ~17.5% at the default ``num_terms=4``
-        (converging toward a ~14% floor as ``num_terms`` grows, not to zero).
-        A planner sizing ``velocity`` against axis rate limits should budget for
-        that overshoot; the realized mount-frame velocity is checked by
+        wave whose slope ripples about the nominal rate, so the *peak* on-sky
+        diagonal speed exceeds ``velocity``. Measured on the shipped pattern
+        the overshoot oscillates roughly between 9 and 18 percent, varying
+        with ``num_terms`` and the scan geometry rather than converging
+        (about 27 percent at ``num_terms=1``); 18 percent is the practical
+        ceiling, reached when the two axes' ripple peaks align. A planner
+        sizing ``velocity`` against axis rate limits should budget for the
+        top of that band; the realized mount-frame velocity is checked by
         ``validate_trajectory_dynamics``. Must be positive.
     num_terms : int
         Fourier terms for triangle wave approximation.
@@ -359,19 +362,22 @@ class DaisyScanConfig(ScanConfig):
     Parameters
     ----------
     radius : float
-        Characteristic radius R0 in degrees. Must be positive.
+        Characteristic radius R0 in on-sky degrees. Must be positive.
     velocity : float
         Scan velocity in sky-offset degrees/second. This is the
         speed in the tangent plane, not azimuth coordinate
         velocity. Must be positive.
     turn_radius : float
-        Radius of curvature for turns in degrees. Must be positive.
+        Radius of curvature for turns in on-sky degrees. Must be positive.
     avoidance_radius : float
-        Radius to avoid near center in degrees. Must be non-negative.
+        Radius to avoid near center in on-sky degrees. Must be
+        non-negative.
     start_acceleration : float
-        Ramp-up acceleration in degrees/second^2. Must be positive.
+        Ramp-up acceleration in on-sky degrees/second^2 (the mount-frame
+        azimuth acceleration exceeds it by ``1 / cos(el)``). Must be
+        positive.
     y_offset : float
-        Initial y offset in degrees.
+        Initial y offset in on-sky degrees.
     timestep : float
         Time between trajectory points in seconds.
 
@@ -384,11 +390,12 @@ class DaisyScanConfig(ScanConfig):
 
     Notes
     -----
-    The internal simulation uses a fixed timestep of ~1/150 s for accurate
-    curve approximation during turns. Extreme parameter combinations (very
-    high velocity with very tight turn_radius) may produce inaccurate curves
-    because the Taylor series approximation assumes small arc lengths per step.
-    If the arc length per internal step (velocity / 150) approaches the
+    The internal simulation uses a timestep of at most ~1/150 s (the output
+    timestep when that is finer) for accurate curve approximation during
+    turns. Extreme parameter combinations (very high velocity with very
+    tight turn_radius) may produce inaccurate curves because the Taylor
+    series approximation assumes small arc lengths per step. If the arc
+    length per internal step (at most velocity / 150) approaches the
     turn_radius, consider reducing velocity or increasing turn_radius.
 
     A Daisy built with ``.duration(D)`` samples the integrator's own grid and
@@ -489,8 +496,11 @@ class DaisyAltAzScanConfig(ScanConfig):
 
     Notes
     -----
-    The internal simulation uses a fixed timestep of ~1/150 s for accurate
-    curve approximation during turns, exactly as for the celestial Daisy.
+    The internal simulation uses a timestep of at most ~1/150 s (the output
+    timestep when that is finer) for accurate curve approximation during
+    turns, exactly as for the celestial Daisy. The duration reporting
+    caveat is also shared: a Daisy built with ``.duration(D)`` spans
+    ``[0, D - timestep]``, see :class:`DaisyScanConfig`.
     """
 
     az_center: float

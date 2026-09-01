@@ -421,7 +421,6 @@ class TestBuilderForDetector:
             angle=0.0,
         )
 
-        # Build without offset
         trajectory_without = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
@@ -431,7 +430,6 @@ class TestBuilderForDetector:
             .build()
         )
 
-        # Build with offset
         trajectory_with = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
@@ -832,7 +830,6 @@ class TestApplyDetectorOffsetFieldRotation:
 
         # With mechanical rotation = +1 * 45 = 45 degrees, the dx=1 degree
         # offset is rotated into both az and el components.
-        # Verify positions changed (offset is applied with non-zero rotation)
         assert not np.allclose(adjusted.az, trajectory.az)
         assert not np.allclose(adjusted.el, trajectory.el)
 
@@ -1714,3 +1711,53 @@ class TestApplyDetectorOffsetFrameConsistency:
         actual = SkyCoord(actual_az * u.deg, actual_el * u.deg, frame="altaz")
         miss_arcsec = target.separation(actual).to_value(u.arcsec)
         assert miss_arcsec.max() < 0.01
+
+
+try:
+    import scanning as _scanning  # noqa: F401
+
+    HAS_SCANNING = True
+except ImportError:
+    HAS_SCANNING = False
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not HAS_SCANNING, reason="requires the scanning (scan_patterns) package")
+class TestScanningModuleProjectionParity:
+    """scanning's module projection matches ours, absolute sign included.
+
+    The boresight-level parity tests never apply a module offset, so the
+    field-rotation sign does not enter them; a round trip cancels a
+    consistent sign error, and a flip-sensitivity test passes under
+    either sign. This compares the two packages' detector placement
+    directly, at an off-axis module and nonzero elevations, where a
+    flipped mechanical rotation displaces the module by ``2 r sin(el)``
+    (2.5 deg at el 45). Exactly that flip shipped undetected in
+    scanning's delegate-to-fyst-trajectories refactor until 2026-08-29.
+    """
+
+    def test_from_boresight_matches_mechanical_rotation(self, site):
+        import scanning
+
+        # The same construction scanning's own behavioral tests use; its
+        # private projection method is the exact seam under test.
+        pong = scanning.Pong(num_term=4, width=2, height=2, spacing=0.1, velocity=0.5)
+        tp = scanning.TelescopePattern(pong, start_ra=180, start_dec=-30, start_hrang=-1)
+
+        dist, theta = 1.77985, 30.0
+        az = np.array([0.0, 90.0, 180.0, 300.0])
+        el = np.array([25.0, 45.0, 65.0, 80.0])
+
+        their_az, their_el = tp._transform_from_boresight(az, el, dist, theta)
+
+        offset = InstrumentOffset(
+            dx=dist * 60.0 * np.cos(np.radians(theta)),
+            dy=dist * 60.0 * np.sin(np.radians(theta)),
+        )
+        our_az, our_el = boresight_to_detector(
+            az, el, offset, field_rotation=site.nasmyth_sign * el
+        )
+
+        az_delta = (np.asarray(their_az) - np.asarray(our_az) + 180.0) % 360.0 - 180.0
+        np.testing.assert_allclose(az_delta, 0.0, atol=1e-9)
+        np.testing.assert_allclose(their_el, our_el, atol=1e-9)

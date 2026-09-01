@@ -77,7 +77,8 @@ def _check_field_sun_safety(
             warnings.warn(
                 f"EXCLUSION ZONE: Field center passes {sep:.1f}\u00b0 from the Sun "
                 f"(exclusion radius: {site.sun_avoidance.exclusion_radius}\u00b0) "
-                f"at {start_time.iso}. The telescope hardware may refuse this trajectory.",
+                f"at {start_time.iso}. This violates the configured Sun avoidance "
+                f"policy; nothing downstream is guaranteed to reject it.",
                 PointingWarning,
                 stacklevel=2 + stacklevel_offset,
             )
@@ -85,7 +86,8 @@ def _check_field_sun_safety(
         warnings.warn(
             f"EXCLUSION ZONE: Field center at (az={float(az):.1f}\u00b0, "
             f"el={float(el):.1f}\u00b0) is inside the Sun avoidance zone at "
-            f"{start_time.iso}. The telescope hardware may refuse this trajectory.",
+            f"{start_time.iso}. This violates the configured Sun avoidance "
+            f"policy; nothing downstream is guaranteed to reject it.",
             PointingWarning,
             stacklevel=2 + stacklevel_offset,
         )

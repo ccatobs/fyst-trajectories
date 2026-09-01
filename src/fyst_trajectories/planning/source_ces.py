@@ -272,9 +272,10 @@ def _sample_source_altaz(
     if body is not None:
         return coords.get_body_altaz(body, times)
     if pm_ra != 0.0 or pm_dec != 0.0:
-        # radec_to_altaz_with_pm is scalar-time only; loop. For the typical
-        # 30 s x 24 h = 2880 samples this is ~0.5 s in practice, acceptable
-        # for a planning call and avoids forcing a vectorised PM variant.
+        # radec_to_altaz_with_pm is scalar-time only; loop. At the typical
+        # 30 s x 24 h = 2880 samples this loop dominates the cost of a
+        # proper-motion planning call; that is accepted as a one-off
+        # planning cost rather than forcing a vectorised PM variant.
         # If it becomes a bottleneck, vectorise in Coordinates.
         n = len(times)
         az = np.empty(n)
@@ -343,9 +344,12 @@ def _check_arc_sun_safety(
 
     Computes sun separation at every sample and emits a single warning
     naming the closest approach if any point falls inside the exclusion
-    radius. Boresight-level (one point per time), which is appropriate
-    for a CES whose footprint extent is small relative to the
-    exclusion radius.
+    radius. The caller chooses the sampling: the source-CES planner
+    passes each time three times, at the low edge, midpoint, and high
+    edge of the azimuth sweep, so the check covers the swept envelope,
+    not just the boresight track. Boresight-level within each sample
+    (no focal-plane extent), which is appropriate while the footprint
+    is small relative to the exclusion radius.
 
     When ``sun_safe`` is ``None`` (default) the built-in vectorised
     scalar-radius check runs unchanged. When a predicate is injected it
@@ -1046,7 +1050,8 @@ def compute_source_ces_params(
     allow_partial : bool, optional
         If ``True``, downgrade footprint-not-fully-covered to a warning.
     v_az : float, optional
-        Override the solved azimuth drift rate (deg/s).
+        Override the solved azimuth drift rate (deg/s; a mount-frame
+        azimuth coordinate rate, not an on-sky speed).
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
         :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract. ``None``
@@ -1087,9 +1092,10 @@ def compute_source_ces_params(
     Notes
     -----
     See :func:`plan_source_ces` for the same computation plus per-sample
-    trajectory generation. The params-only path avoids ~370 KB of
-    trajectory arrays and ~10-20 ms of vectorised compute on a typical
-    15-minute Jupiter scan at ``timestep=0.1`` - a meaningful saving
+    trajectory generation. The params-only path avoids allocating
+    ~370 KB of trajectory arrays on a typical 15-minute Jupiter scan at
+    ``timestep=0.1``. The array build itself is cheap, so the saving is
+    allocation and memory rather than compute - which is what matters
     when an upstream scheduler emits dozens of source_ces blocks per
     tactical pass and discards the trajectory.
 
@@ -1101,7 +1107,7 @@ def compute_source_ces_params(
     >>> from astropy.time import Time
     >>> from fyst_trajectories import get_fyst_site
     >>> from fyst_trajectories.planning import compute_source_ces_params
-    >>> params = compute_source_ces_params(  # doctest: +SKIP
+    >>> params = compute_source_ces_params(
     ...     body="jupiter",
     ...     footprint="c",
     ...     el_bore=35.0,
@@ -1314,7 +1320,8 @@ def plan_source_ces(
     atmosphere : AtmosphericConditions, optional
         Refraction model passed to the underlying :class:`Coordinates`.
         Default ``None`` (vacuum) - matches the rest of the planning
-        subpackage. The FYST ACU applies refraction at execution.
+        subpackage. Refraction is applied downstream at execution time
+        (by exactly one of the Go TCS or the ACU), so vacuum is correct.
     timestep : float, optional
         Time between trajectory samples in seconds. Default 0.1.
     sampling_step_seconds : float, optional
@@ -1374,6 +1381,10 @@ def plan_source_ces(
     PointingError
         When the Nelder-Mead optimisation fails and no fallback
         ``v_az`` can be derived from the source's median az speed.
+    AzimuthBoundsError, ElevationBoundsError
+        When the built trajectory leaves the telescope envelope (the
+        post-build ``validate_trajectory_bounds``, or ``el_bore``
+        outside the elevation limits).
 
     Warns
     -----
@@ -1405,15 +1416,9 @@ def plan_source_ces(
     (limits −180° to 360°), ``az_branch`` values near −180° can
     produce out-of-range scans even when geometrically valid.
 
-    ``plan_source_ces`` has two consumers. At dispatch time the
-    PCS ``source_scan`` task re-plans the pass with fresh
-    ephemeris. Offline, the ``fyst_trajectories.overhead`` simulator
-    calls the source-CES planners on both sides of its planet-calibration
-    path: ``CalibrationPolicy.planet_cal_scan`` emits each calibration as
-    a pass sequence (via :func:`plan_source_ces_passes`), and
-    ``schedule_to_trajectories(science_only=False)`` rebuilds those
-    passes from their recorded parameters. See :doc:`/planning`
-    ("Source CES") for the wider conventions discussion.
+    The planner's consumers are described in the module docstring; see
+    :doc:`/planning` ("Source CES") for the wider conventions
+    discussion.
 
     Examples
     --------
@@ -1422,7 +1427,7 @@ def plan_source_ces(
     >>> from astropy.time import Time
     >>> from fyst_trajectories import get_fyst_site
     >>> from fyst_trajectories.planning import plan_source_ces
-    >>> block = plan_source_ces(  # doctest: +SKIP
+    >>> block = plan_source_ces(
     ...     body="jupiter",
     ...     footprint="c",
     ...     el_bore=35.0,
@@ -1434,7 +1439,7 @@ def plan_source_ces(
     Or anchor the pass to begin near an approximate ``start_time`` and let
     the planner derive ``el_bore`` and ``mode`` (rising, here) for you:
 
-    >>> block = plan_source_ces(  # doctest: +SKIP
+    >>> block = plan_source_ces(
     ...     body="jupiter",
     ...     footprint="c",
     ...     start_time=Time("2026-03-15T21:41:00", scale="utc"),
@@ -1522,13 +1527,8 @@ def plan_source_ces(
         detector_offset=None,
     )
 
-    # Add the linear az drift on top of the per-leg azimuth track.
     drifted_az = base_traj.az + v_az_solved * base_traj.times
     drifted_az_vel = base_traj.az_vel + v_az_solved
-    # Replace the underlying ConstantEl metadata with source-CES metadata
-    # so downstream consumers can see the source RA/Dec.
-    # ``src_ra_at_el_bore``/``src_dec_at_el_bore`` are the source
-    # coordinates at ``t_at_el_bore``.
     source_metadata = TrajectoryMetadata(
         pattern_type="source_ces",
         pattern_params={
@@ -1871,6 +1871,13 @@ def plan_source_ces_passes(
         If a stepped ``el_bore`` falls outside the telescope elevation
         limits.
 
+    Warns
+    -----
+    PointingWarning
+        If consecutive pass windows overlap (``el_step`` too small for
+        the source's drift), plus any warning propagated from the
+        per-pass :func:`plan_source_ces` calls.
+
     See Also
     --------
     plan_source_ces : Plan a single source-CES pass.
@@ -1882,7 +1889,7 @@ def plan_source_ces_passes(
     >>> from astropy.time import Time
     >>> from fyst_trajectories import get_fyst_site
     >>> from fyst_trajectories.planning import plan_source_ces_passes
-    >>> blocks = plan_source_ces_passes(  # doctest: +SKIP
+    >>> blocks = plan_source_ces_passes(
     ...     body="jupiter",
     ...     footprint="c",
     ...     el_bore=35.0,
@@ -1891,10 +1898,8 @@ def plan_source_ces_passes(
     ...     mode="rising",
     ...     site=get_fyst_site(),
     ... )
-    >>> [
-    ...     b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]  # doctest: +SKIP
-    ...     for b in blocks
-    ... ]
+    >>> [b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks]
+    [-0.432..., 0.0, 0.432...]
     """
     base_fp = _resolve_footprint(footprint)
     eta_extent = float(base_fp.cover_eta_deg.max() - base_fp.cover_eta_deg.min())

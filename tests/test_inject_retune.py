@@ -1281,7 +1281,7 @@ class TestInjectRetuneUniformEquivalence:
     """Regression: event-list mode with uniform-matching events is identical."""
 
     def test_uniform_and_equivalent_event_list_produce_same_scan_flag(self):
-        """Hand-built events matching the uniform cadence produce identical scan_flag."""
+        """The uniform path's own events, replayed through event-list mode, match."""
         traj = _make_trajectory(duration=300.0, timestep=0.1)
 
         # Uniform path.
@@ -1289,12 +1289,8 @@ class TestInjectRetuneUniformEquivalence:
             traj, retune_interval=60.0, retune_duration=5.0, prefer_turnarounds=False
         )
 
-        # Reconstruct the same events the uniform path generates and pass them in.
-        # The uniform path anchors on times[0] and advances by
-        # ``max(retune_end, due_time)``, so the first event starts at
-        # times[0] + retune_interval (relative: retune_interval), the next at
-        # retune_end + retune_interval (relative: retune_interval + retune_duration
-        # + retune_interval), and so on.
+        # Feed the uniform path's own emitted events back through the
+        # event-list path.
         uniform_events_for_event_mode = tuple(uniform_result.retune_events)
         event_result = inject_retune(traj, retune_events=list(uniform_events_for_event_mode))
 

@@ -3,15 +3,6 @@
 These helpers derive ``el_bore``, ``mode``, and a forward search ``window``
 from an approximate anchor time; the classic ``night``/``window`` forms never
 touch them.
-
-The module forms a deliberate two-way reference with :mod:`source_ces`: the
-anchor helpers call back into the core (``_compute_source_ces_core``,
-``_sample_source_altaz``, ``_describe_source``, ``_resolve_footprint``, and the
-``_DEFAULT_SEARCH_HORIZON_HOURS`` default) while ``source_ces`` imports three
-entry points from here. The cycle is broken by importing the ``source_ces``
-module object (``from . import source_ces``) rather than its names: the module
-binds mid-import and each attribute is resolved at call time, by which point
-``source_ces`` is fully initialised.
 """
 
 from __future__ import annotations
@@ -28,6 +19,10 @@ from ..coordinates import Coordinates
 from ..exceptions import ElevationBoundsError, TargetNotObservableError
 from ..offsets import InstrumentOffset
 from ..site import AtmosphericConditions, Site
+
+# Module-object import, NOT ``from .source_ces import ...``: source_ces imports
+# three entry points from here, so the cycle stays broken only because this
+# binds the module mid-import and resolves each attribute at call time.
 from . import source_ces
 from ._helpers import _coerce_start_time
 from ._types import ArrayFootprint

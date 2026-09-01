@@ -1,7 +1,7 @@
 """Pure helpers used by scheduler phases.
 
 Dependency-free (no scheduler state); consumed by
-:mod:`.phases` and the :func:`generate_timeline` wrapper.
+:mod:`.phases` and :mod:`.state`.
 """
 
 import math
@@ -9,9 +9,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy.time import Time, TimeDelta
-
-if TYPE_CHECKING:
-    from ...dispatch import SunSafePredicate
 
 from ...coordinates import Coordinates
 from ...patterns.utils import normalize_azimuth
@@ -25,6 +22,9 @@ from ...planning._ce_geometry import _compute_ce_duration
 from ...site import Site
 from ..constraints import Constraint, ElevationConstraint, SunAvoidanceConstraint
 from ..models import ObservingPatch, OverheadModel
+
+if TYPE_CHECKING:
+    from ...dispatch import SunSafePredicate
 
 __all__ = [
     "_ce_crossing_corridor",
@@ -54,7 +54,7 @@ _CE_MISS_RESOLVE_SEC = 600.0
 _CE_READY_SLEW_ALLOWANCE_SEC = 180.0
 
 
-def _normalize_az(az: float, site: Site) -> float:
+def _normalize_az(az: float, site: Site, ref: float | None = None) -> float:
     """Normalize a scalar azimuth into the site's cable-wrap window.
 
     Wraps :func:`fyst_trajectories.patterns.utils.normalize_azimuth` (which
@@ -64,19 +64,37 @@ def _normalize_az(az: float, site: Site) -> float:
     or a north-straddling pair inflates the slew distance ~17x and flips
     the boresight ~180 deg.
 
+    With ``ref`` given, the in-limits 360-degree representative nearest
+    ``ref`` is returned, so the scheduler models the mount's direct
+    cable-wrap move from its current position. Without ``ref`` each
+    scalar independently takes the representative nearest the window
+    centre, which relocates the wrap seam rather than removing it; pass
+    ``ref`` whenever a coherent frame with another azimuth is required.
+
     Parameters
     ----------
     az : float
         Azimuth in degrees (typically raw astropy ``[0, 360)``).
     site : Site
         Site providing the azimuth limits.
+    ref : float or None, optional
+        Reference azimuth (already in the cable-wrap window) selecting
+        among the in-limits representatives. Default None.
 
     Returns
     -------
     float
         Azimuth shifted into ``[az_min, az_max]``.
     """
-    return float(normalize_azimuth(np.array([az], dtype=float), site)[0])
+    base = float(normalize_azimuth(np.array([az], dtype=float), site)[0])
+    if ref is None:
+        return base
+    limits = site.telescope_limits.azimuth
+    best = base
+    for cand in (base - 360.0, base + 360.0):
+        if limits.min <= cand <= limits.max and abs(cand - ref) < abs(best - ref):
+            best = cand
+    return best
 
 
 def _default_constraints(
@@ -254,7 +272,9 @@ def _ce_visit_plan(
             continue
         if t_open.unix - start_time.unix > ready_lead:
             continue  # plannable, but the pass is not imminent yet
-        if best is None or t_open.unix < best[1].unix:
+        # The "is None or" short circuit guarantees best is a tuple on the
+        # right-hand side; pylint's inference cannot narrow the union here.
+        if best is None or t_open.unix < best[1].unix:  # pylint: disable=unsubscriptable-object
             best = (rising, t_open, t_close)
     return best
 
@@ -442,6 +462,18 @@ def _compute_scan_duration(
 
     Parameters
     ----------
+    patch : ObservingPatch
+        The candidate patch.
+    start_time : Time
+        Scan start under consideration.
+    end_time : Time
+        End of the schedule window; the duration never extends past it.
+    site : Site
+        Telescope site configuration.
+    coords : Coordinates
+        Coordinate transform bound to ``site``.
+    overhead : OverheadModel
+        Supplies ``max_scan_duration`` for the pong/daisy branch.
     center_el : float
         Computed elevation of the patch center at the current time.
         Used as fallback when patch.elevation is None.
@@ -455,6 +487,12 @@ def _compute_scan_duration(
     sun_safe : SunSafePredicate, optional
         Injected sun-safety model for the mid-scan drift clip. Default
         ``None`` keeps the site's scalar exclusion radius.
+
+    Returns
+    -------
+    float
+        Observable duration in seconds; ``0.0`` when no pass is
+        plannable from ``start_time``.
     """
     remaining = (end_time - start_time).sec
 
@@ -523,34 +561,56 @@ def _compute_az_range(
     """Compute azimuth range for a scan.
 
     Uses explicit overrides from scan_params if provided, otherwise
-    estimates from the field width and elevation. Both endpoints are
-    normalized into the site's cable-wrap window so downstream slew-time
-    and boresight math operate in a single consistent azimuth frame.
+    estimates from the field width and elevation. The endpoints are
+    normalized **jointly**: the pair is placed as one contiguous range
+    in the site's cable-wrap window (a per-endpoint normalization would
+    tear a range straddling the window seam into an unordered pair).
+    When the range around ``center_az`` pokes past an azimuth limit,
+    both endpoints shift together by 360 degrees onto the in-limits
+    branch, matching how the planner places a constant-elevation range.
 
     Parameters
     ----------
     patch : ObservingPatch
         The observing patch.
     center_az : float
-        Center azimuth in degrees.
+        Center azimuth in degrees, already normalized into the
+        cable-wrap window.
     center_el : float
         Center elevation in degrees (used when patch.elevation is None).
     site : Site
         Site providing the azimuth limits for normalization.
+
+    Returns
+    -------
+    tuple of float
+        ``(az_start, az_end)`` in degrees with ``az_start <= az_end``.
+        An explicit ``(az_min, az_max)`` pair is read as the ascending
+        modular range from ``az_min``, so a pair inverted by noise
+        reads as a near-full-circle sweep. Placement inside the limits
+        is only possible when the range fits: a range wider than the
+        cable-wrap window, or one overhanging both ends, is returned
+        unshifted and may exceed the limits.
     """
     params = patch.scan_params
+    limits = site.telescope_limits.azimuth
 
     if "az_min" in params and "az_max" in params:
-        return _normalize_az(float(params["az_min"]), site), _normalize_az(
-            float(params["az_max"]), site
-        )
+        lo = _normalize_az(float(params["az_min"]), site)
+        # Ascending representative of az_max from lo, so lo <= hi always.
+        hi = lo + (float(params["az_max"]) - lo) % 360.0
+    else:
+        elevation = patch.elevation if patch.elevation is not None else center_el
+        el_rad = math.radians(elevation)
+        cos_el = max(math.cos(el_rad), 0.1)
+        half_throw = patch.width / (2.0 * cos_el)
+        lo = center_az - half_throw
+        hi = center_az + half_throw
 
-    elevation = patch.elevation if patch.elevation is not None else center_el
-    el_rad = math.radians(elevation)
-    cos_el = max(math.cos(el_rad), 0.1)
-    half_throw = patch.width / (2.0 * cos_el)
-
-    return (
-        _normalize_az(center_az - half_throw, site),
-        _normalize_az(center_az + half_throw, site),
-    )
+    if hi > limits.max and lo - 360.0 >= limits.min:
+        lo -= 360.0
+        hi -= 360.0
+    elif lo < limits.min and hi + 360.0 <= limits.max:
+        lo += 360.0
+        hi += 360.0
+    return lo, hi

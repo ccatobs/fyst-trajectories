@@ -344,6 +344,13 @@ def choose_encoder_solution(
         )
 
     check_times = [obstime] if obstime.isscalar else list(obstime)
+    if not check_times:
+        # Fail closed: an empty time array would make the all(...) sun gate
+        # below vacuously pass every wrap, silently skipping the check.
+        raise ValueError(
+            "obstime is an empty Time array; the sun-safety gate cannot be "
+            "evaluated. Pass at least one time."
+        )
     safe = [
         (az, shift)
         for az, shift in admissible

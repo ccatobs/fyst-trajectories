@@ -81,7 +81,8 @@ __all__ = [
 DEFAULT_VISIBILITY_TARGETS: tuple[str, ...] = tuple(
     name for name, target in FLUX_CALIBRATORS.items() if target.kind is TargetKind.BODY
 )
-"""Default ``plot_visibility`` target list: every BODY entry of
+"""Default target list for :func:`plot_visibility`, :func:`plot_sky_view`
+and :func:`plot_observability_windows`: every BODY entry of
 :data:`~fyst_trajectories.observability.FLUX_CALIBRATORS` (the planets and
 the Moon; satellites are excluded because they duplicate their parent-body
 proxy curve)."""
@@ -289,9 +290,10 @@ def plot_visibility(
         If matplotlib is not installed.
     ValueError
         If ``targets`` or ``panels`` is empty, a panel name is unknown,
-        ``axes`` does not match ``panels`` in length, or
+        ``axes`` does not match ``panels`` in length,
         ``horizon_hours`` / ``step_minutes`` is not a finite positive
-        value.
+        value, or an injected ``sun_model``'s ``batch`` / ``threshold``
+        returns the wrong shape for the time grid.
     """
     try:
         import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
@@ -603,8 +605,10 @@ def plot_observability_windows(
     ImportError
         If matplotlib is not installed.
     ValueError
-        If ``targets`` is empty or ``horizon_hours`` is not a finite
-        positive value.
+        If ``targets`` is empty, ``horizon_hours`` or
+        ``window_step_minutes`` is not a finite positive value, or an
+        injected ``sun_model`` misbehaves (propagated from
+        :func:`~fyst_trajectories.check_observability`).
     """
     try:
         import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel

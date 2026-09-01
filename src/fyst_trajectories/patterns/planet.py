@@ -125,14 +125,14 @@ class PlanetTrackPattern(AltAzPattern):
         with wrap_bounds_error(self.config.body.capitalize(), start_time.iso):
             validate_trajectory_bounds(site, az, el)
 
-        # Compute planet RA/Dec at the trajectory midpoint so that
-        # apply_detector_offset() can compute the parallactic angle.
-        # This is the same single-center approximation used by celestial
-        # patterns (Pong, Daisy, Sidereal).
+        # Stamp the planet's RA/Dec at the trajectory midpoint into the
+        # metadata so consumers can recover the pattern center (the same
+        # single-center approximation used by celestial patterns: Pong,
+        # Daisy, Sidereal). The az/el projection itself consumes no
+        # celestial metadata.
         midpoint_time = start_time + TimeDelta(duration / 2.0 * u.s)
         mid_ra, mid_dec = coords.get_body_radec(self.config.body, midpoint_time)
 
-        # Attach midpoint RA/Dec directly to the (frozen) metadata via replace.
         metadata = dataclasses.replace(self.get_metadata(), center_ra=mid_ra, center_dec=mid_dec)
 
         return Trajectory(

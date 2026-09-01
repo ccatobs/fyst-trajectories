@@ -6,7 +6,9 @@ Basic Usage
 
 Generate an 8-hour observing timeline with 2 patches.
 ``overhead_model`` and ``calibration_policy`` are optional; omitting
-either uses the defaults spelled out below.
+either uses the defaults. The core fields are spelled out below;
+``CalibrationPolicy`` also carries the ``planet_cal_*`` fields, covered
+in :doc:`overhead_model`.
 ::
 
     from fyst_trajectories import get_fyst_site
@@ -46,11 +48,11 @@ either uses the defaults spelled out below.
     # thresholds. Every value below is the default, shown explicitly.
     overhead_model = OverheadModel(
         retune_duration=5.0,           # KID probe-tone reset
-        pointing_cal_duration=180.0,   # 3 min cross-scan on a bright quasar
-        focus_duration=300.0,          # 5 min M2 focus check
-        skydip_duration=300.0,         # 5 min elevation nod for opacity
-        planet_cal_duration=600.0,     # 10 min planet calibration scan
-        beam_map_duration=600.0,       # 10 min beam-map raster (separate from above)
+        pointing_cal_duration=180.0,   # 3 min pointing-calibration block
+        focus_duration=300.0,          # 5 min focus-check block
+        skydip_duration=300.0,         # 5 min sky-dip block
+        planet_cal_duration=600.0,     # 10 min planet-calibration block
+        beam_map_duration=600.0,       # 10 min beam-map block (separate from above)
         settle_time=5.0,               # post-slew mount settling
         min_scan_duration=60.0,        # reject useless short scans
         max_scan_duration=3600.0,      # force split past 1 h
@@ -82,8 +84,17 @@ either uses the defaults spelled out below.
     print(f"{len(timeline)} blocks scheduled")
 
 ``generate_timeline`` also takes ``sun_safe=`` to select the avoidance
-policy the night is simulated under; the default is the site's scalar
-exclusion radius. See :doc:`sun_avoidance`.
+policy the night is simulated under (default: the site's scalar
+exclusion radius, see :doc:`sun_avoidance`); ``constraints=`` to
+replace the default patch-selection constraint set (elevation + Sun)
+with an explicit list built from the exported constraint classes
+(:class:`~fyst_trajectories.overhead.ElevationConstraint`,
+:class:`~fyst_trajectories.overhead.SunAvoidanceConstraint`,
+:class:`~fyst_trajectories.overhead.MoonAvoidanceConstraint`,
+:class:`~fyst_trajectories.overhead.MinDurationConstraint`, or a
+custom :class:`~fyst_trajectories.overhead.Constraint`); and
+``time_step=`` for the idle-tick step in seconds (default 300). See
+:doc:`api/overhead_timeline`.
 
 Efficiency Statistics
 ---------------------

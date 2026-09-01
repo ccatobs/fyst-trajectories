@@ -24,6 +24,23 @@ Uniform cadence:
         retune_duration=5.0,
     )
 
+Two more uniform-cadence knobs, both off by default:
+
+- ``prefer_turnarounds=True`` snaps each due retune to a turnaround
+  region within ``turnaround_window`` seconds of its scheduled time.
+  This saves only a sliver of science time (~0.04% in the
+  configurations measured) and concentrates the coverage gaps at
+  turnaround positions; the default time-based placement keeps coverage
+  uniform.
+- ``module_index`` / ``n_modules`` stagger the cadence per readout
+  module: each module's first retune is offset by
+  ``module_index * retune_interval / n_modules``, so with
+  ``n_modules=7`` only one module is retuning at any given time. The
+  per-module duty cost is unchanged; see
+  :func:`~fyst_trajectories.trajectory_utils.inject_retune` for what
+  staggering does and does not buy, and the instrument-team premise it
+  rests on.
+
 Explicit event list:
 
 .. code-block:: python
@@ -78,7 +95,7 @@ CSV schema
 
 Retune schedules are commonly stored as a two-or-three-column CSV.
 fyst-trajectories ships no CSV reader - the format is a convention that
-consumers implement, and the snippet below is all it takes.
+consumers implement. The full convention:
 
 - Header row required. Column names are compared case-insensitively.
 - Required columns: ``t_start_s`` (float, seconds from trajectory
@@ -87,6 +104,11 @@ consumers implement, and the snippet below is all it takes.
   When absent, all rows are treated as ``module_index == 0``.
 - Any other column is ignored; a reader following this convention
   should warn once, naming the unused columns.
+
+The minimal snippet below is enough for well-formed files: it reads the
+two required columns by exact name and implements none of the
+convention's robustness (no case folding, no ``module_index`` handling,
+no unused-column warning). A production consumer should add those.
 
 Example::
 
@@ -123,7 +145,8 @@ Per-block retune events persist through
 :func:`~fyst_trajectories.overhead.write_timeline` /
 :func:`~fyst_trajectories.overhead.read_timeline` via the existing
 ``block_meta_json`` extra-payload channel on
-:class:`~fyst_trajectories.overhead.TimelineBlock`. The write side
+:class:`~fyst_trajectories.overhead.TimelineBlock` (the column schema
+is in :doc:`overhead_io`). The write side
 encodes each :class:`~fyst_trajectories.trajectory.RetuneEvent` as a
 JSON-native ``[t_start, duration]`` pair; the read side decodes those back
 into a tuple of :class:`~fyst_trajectories.trajectory.RetuneEvent`, matching

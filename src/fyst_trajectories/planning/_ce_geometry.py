@@ -330,11 +330,6 @@ def _compute_ce_duration_from_lsa(
     the duration is computed modulo 360°, so ``(310, 10)`` is a
     60°/15 = 4 hour scan crossing the LST = 0/360 boundary.
 
-    The search anchor is a parameter rather than a fixed epoch, failures
-    raise structured errors instead of terminating the process, and the
-    straddle detection is wrap-aware, so a ``min_lsa`` sitting on or near
-    the LST = 0/360 boundary is found rather than silently missed.
-
     Parameters
     ----------
     lsa_window : tuple or list of (min_lsa, max_lsa)

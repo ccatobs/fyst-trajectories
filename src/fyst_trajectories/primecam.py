@@ -4,6 +4,14 @@ Pre-defined module offsets for the PrimeCam focal-plane instrument on FYST.
 PrimeCam has one center module on the optical axis and six inner-ring modules
 at 461.3 mm radius, spaced 60 degrees apart.
 
+The names ``c`` and ``i1`` .. ``i6`` label focal-plane positions, not the
+instrument modules that occupy them. The Prime-Cam team's ``IM0`` .. ``IM6``
+designations for the same positions do not correspond index-for-index to
+these labels; see :doc:`/instrument_offsets` before translating between
+the two schemes. ``IM0`` is accepted anywhere a module name is (an alias
+for the on-axis position ``c``); the ring designations ``IM1`` .. ``IM6``
+are rejected until the as-built correspondence is confirmed.
+
 The module positions are converted from physical focal-plane coordinates (mm)
 to angular offsets (arcminutes) using ``FYST_PLATE_SCALE`` from ``site.py``.
 
@@ -35,9 +43,12 @@ from .site import FYST_PLATE_SCALE
 # +x axis. At zero field rotation, x is the cross-elevation direction
 # and y is the elevation direction.
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-# (plate scale and inner ring radius). The on-sky angular offsets of every
-# off-axis module scale linearly with both, so wrong values produce
-# correlated astrometric biases across the inner-ring modules.
+# (plate scale, inner ring radius, and inner-ring ordering/parity). The
+# on-sky angular offsets of every off-axis module scale linearly with the
+# first two, so wrong values produce correlated astrometric biases across
+# the inner-ring modules. An ordering/parity error would permute module
+# labels without moving the ring positions; instrument_rotation=0 further
+# assumes the cryostat is not clocked relative to the Nasmyth flange.
 
 INNER_RING_RADIUS_MM = 461.3
 """Inner ring module distance from optical axis in millimeters."""
@@ -126,6 +137,16 @@ PRIMECAM_MODULES: dict[str, InstrumentOffset] = {
 }
 """Dict mapping module names to InstrumentOffset instances."""
 
+# The instrument team designates the same focal-plane positions IM0 .. IM6
+# (Keller et al. 2026, arXiv:2608.05121). Only the on-axis entry is aliased
+# here: the ring correspondence is NOT index-for-index (the two schemes
+# number the ring in opposite senses on sky) and awaits as-built
+# confirmation, so IM1 .. IM6 are deliberately rejected until it lands.
+# When it does, the ring entries are added here and nowhere else.
+_IM_TO_POSITION: dict[str, str] = {
+    "im0": "c",
+}
+
 
 def get_primecam_offset(module_name: str) -> InstrumentOffset:
     """Get the offset for a PrimeCam module by name.
@@ -133,7 +154,10 @@ def get_primecam_offset(module_name: str) -> InstrumentOffset:
     Parameters
     ----------
     module_name : str
-        Module name (e.g., "c", "center", "i1", "i2", ..., "i6").
+        Module name (e.g., "c", "center", "i1", "i2", ..., "i6"). The
+        instrument team's ``"IM0"`` is accepted as an alias for the
+        on-axis position; ``"IM1"`` .. ``"IM6"`` are rejected until the
+        as-built correspondence to the ``i`` labels is confirmed.
 
     Returns
     -------
@@ -150,10 +174,14 @@ def get_primecam_offset(module_name: str) -> InstrumentOffset:
     >>> offset = get_primecam_offset("i1")
     >>> f"{offset.dx:.1f}', {offset.dy:.1f}'"
     "0.0', -106.8'"
+
+    >>> get_primecam_offset("IM0").name
+    'PrimeCam-Center'
     """
     key = module_name.lower()
+    key = _IM_TO_POSITION.get(key, key)
     if key not in PRIMECAM_MODULES:
-        available = ", ".join(sorted(PRIMECAM_MODULES.keys()))
+        available = ", ".join(sorted([*PRIMECAM_MODULES, *_IM_TO_POSITION]))
         raise KeyError(f"Unknown PrimeCam module '{module_name}'. Available: {available}")
     return PRIMECAM_MODULES[key]
 
@@ -253,7 +281,7 @@ def resolve_offset(
     Raises
     ------
     ValueError
-        If both `module` and `dx`/`dy` are specified.
+        If both ``module`` and ``dx``/``dy`` are specified.
 
     Examples
     --------

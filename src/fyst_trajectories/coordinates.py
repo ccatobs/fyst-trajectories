@@ -8,23 +8,26 @@ ephemeris calculations.
 The transformations use astropy's coordinate transformation framework
 with IERS data for Earth orientation parameters.
 
-``Coordinates(site)`` defaults to vacuum (geometric) coordinates because
-the FYST ACU applies atmospheric refraction downstream. For planning and
+``Coordinates(site)`` defaults to vacuum (geometric) coordinates:
+refraction is applied downstream at execution time, by exactly one of
+the Go TCS or the ACU (ICD P-INCM-ICD-0003-A section 6), so vacuum
+output is correct either way. For planning and
 simulation (visibility calculations, observability checks, hitmap
-simulations) where the output is NOT sent to the ACU, pass
+simulations) where the output is NOT sent to the telescope, pass
 ``AtmosphericConditions.for_fyst()`` to apply submillimetre refraction.
 
 Examples
 --------
-Trajectory generation (vacuum; the ACU applies refraction):
+Trajectory generation (vacuum; refraction is applied downstream):
 
 >>> from astropy.time import Time
 >>> from fyst_trajectories.coordinates import Coordinates
 >>> from fyst_trajectories.site import get_fyst_site
 >>> coords = Coordinates(get_fyst_site())
->>> obstime = Time("2026-03-15T04:00:00", scale="utc")
+>>> obstime = Time("2026-01-15T02:00:00", scale="utc")
 >>> az, el = coords.radec_to_altaz(83.633, 22.014, obstime=obstime)  # Crab Nebula
 >>> print(f"Az: {az:.2f}°, El: {el:.2f}°")
+Az: 9.40°, El: 44.44°
 
 Planning with refraction (visibility checks, not sent to ACU):
 
@@ -223,6 +226,10 @@ def normalize_frame(frame: str) -> str:
 class AltAzCoord:
     """Horizontal coordinate (Altitude-Azimuth).
 
+    A caller-side convenience container: no method in this module
+    returns or accepts it (the transform methods work with plain
+    ``(az, alt)`` tuples).
+
     Parameters
     ----------
     az : float
@@ -254,10 +261,12 @@ class Coordinates:
     and solar system ephemeris calculations.
 
     The default (``atmosphere=None``) produces vacuum (geometric)
-    coordinates. This is the correct default for trajectory generation
-    because the FYST ACU applies atmospheric refraction downstream.
+    coordinates. This is the correct default for trajectory generation:
+    refraction is applied downstream at execution time, by exactly one
+    of the Go TCS or the ACU (ICD P-INCM-ICD-0003-A section 6), so
+    vacuum output is correct either way.
     Pass ``AtmosphericConditions.for_fyst()`` for planning and
-    simulation where the output is not sent to the ACU.
+    simulation where the output is not sent to the telescope.
 
     Parameters
     ----------
@@ -278,7 +287,7 @@ class Coordinates:
 
     Examples
     --------
-    Trajectory generation (vacuum; ACU applies refraction):
+    Trajectory generation (vacuum; refraction is applied downstream):
 
     >>> from fyst_trajectories.coordinates import Coordinates
     >>> from fyst_trajectories.site import get_fyst_site
@@ -348,7 +357,8 @@ class Coordinates:
         """Convert RA/Dec to Az/El.
 
         Transforms celestial coordinates to horizontal coordinates,
-        accounting for atmospheric refraction.
+        applying atmospheric refraction only when this instance was
+        constructed with an atmosphere (the default is vacuum).
 
         Parameters
         ----------
@@ -481,6 +491,12 @@ class Coordinates:
         ValueError
             If the body name is not recognized, or a satellite is requested
             without a configured kernel.
+        FileNotFoundError
+            If a satellite is requested and the configured kernel path
+            does not exist.
+        ModuleNotFoundError
+            If a satellite is requested and ``jplephem`` is not
+            installed (the ``ephemeris`` extra).
 
         Examples
         --------
@@ -496,9 +512,9 @@ class Coordinates:
         # apparent place site-topocentric; that parallax is physically
         # meaningful for finite-distance bodies (the Moon, ~1°) and negligible
         # for the Sun (~0.01″ on-sky). The visible get_sun()-vs-get_body()
-        # difference (~arcsec) is an ephemeris/algorithm difference, not
-        # parallax (8.8 arcsec is the solar horizontal-parallax constant,
-        # not the on-sky shift).
+        # difference (sub-arcsecond) is an ephemeris/algorithm difference,
+        # not parallax (8.8 arcsec is the solar horizontal-parallax
+        # constant, not the on-sky shift).
         body_coord = get_body(body_spec, obstime, location=self.location, ephemeris=ephemeris)
 
         altaz_frame = self._get_altaz_frame(obstime)
@@ -540,6 +556,12 @@ class Coordinates:
         ValueError
             If the body name is not recognized, or a satellite is requested
             without a configured kernel.
+        FileNotFoundError
+            If a satellite is requested and the configured kernel path
+            does not exist.
+        ModuleNotFoundError
+            If a satellite is requested and ``jplephem`` is not
+            installed (the ``ephemeris`` extra).
 
         Notes
         -----
@@ -579,7 +601,7 @@ class Coordinates:
             return float(ra), float(dec)
         return ra, dec
 
-    def get_sun_altaz(self, obstime: Time) -> tuple[float, float]:
+    def get_sun_altaz(self, obstime: Time) -> tuple[float | np.ndarray, float | np.ndarray]:
         """Get the Az/El position of the Sun.
 
         Convenience method for sun avoidance calculations.
@@ -587,13 +609,14 @@ class Coordinates:
         Parameters
         ----------
         obstime : Time
-            Observation time.
+            Observation time. Can be a scalar Time or an array of Times
+            (forwarded to :meth:`get_body_altaz`).
 
         Returns
         -------
-        az : float
+        az : float or array
             Sun azimuth in degrees.
-        alt : float
+        alt : float or array
             Sun altitude (elevation) in degrees.
         """
         return self.get_body_altaz("sun", obstime)
@@ -763,24 +786,22 @@ class Coordinates:
         the grid misses, especially for sources with grazing passes near
         the horizon. Use a smaller step_hours for such cases.
 
-        The crossing time is estimated via linear interpolation between
-        adjacent grid points. Newton refinement is not used because each
-        iteration would require a full astropy coordinate transform. The
-        precision gain (~seconds) is not worth the cost for planning
-        purposes. For higher precision, use a finer step_hours.
+        The crossing time is estimated by linear interpolation between
+        adjacent grid points, so it resolves to a fraction of
+        ``step_hours``.
 
         Examples
         --------
         >>> from astropy.time import Time
-        >>> coords = Coordinates(site, atmosphere=AtmosphericConditions.for_fyst())
+        >>> coords = Coordinates(site)  # refraction is disabled internally anyway
         >>> start = Time("2026-03-15T00:00:00", scale="utc")
-        >>> # Find when Orion rises and sets
+        >>> # Find when the Crab Nebula rises and sets
         >>> rise, set_ = coords.get_rise_set_times(
         ...     83.633,
         ...     22.014,
         ...     start_time=start,
         ...     horizon=0.0,
-        ...     max_search_hours=24.0,
+        ...     max_search_hours=48.0,
         ...     step_hours=0.1,
         ... )
         >>> if rise is not None and set_ is not None:
@@ -788,6 +809,8 @@ class Coordinates:
         ...     print(f"Sets at: {set_.iso}")
         ... else:
         ...     print("Source is circumpolar, never visible, or does not set within window")
+        Rises at: 2026-03-15 17:13:...
+        Sets at: 2026-03-16 03:52:...
 
         Using telescope elevation limit as horizon:
 
@@ -953,9 +976,11 @@ class Coordinates:
         parallactic angle is the geometric sky-vs-mount rotation.
 
         Near the zenith the parallactic angle is ill-conditioned: it is
-        undefined exactly at the zenith and swings through 180° within a few
-        seconds at transit for sources whose declination is close to the site
-        latitude (``|dec − lat|`` small). ``arctan2`` keeps the computation
+        undefined exactly at the zenith, and at transit it swings through
+        180° at a rate set by the transit zenith distance (roughly 820 s
+        per degree, so seconds only within a few hundredths of a degree
+        of the zenith-crossing declination, over an hour 5° away).
+        ``arctan2`` keeps the computation
         finite, but the result is **not** ≈ 0 there; downstream consumers that
         depend on PA continuity (e.g. focal-plane rotation rate) should be
         aware. FYST's lat = −22.99° puts sources with dec ≈ −18° to −28° in
@@ -966,9 +991,10 @@ class Coordinates:
         --------
         >>> from astropy.time import Time
         >>> coords = Coordinates(site)
-        >>> obstime = Time("2026-03-15T04:00:00", scale="utc")
+        >>> obstime = Time("2026-01-15T02:00:00", scale="utc")
         >>> pa = coords.get_parallactic_angle(83.633, 22.014, obstime=obstime)
         >>> print(f"Parallactic angle: {pa:.2f}°")
+        Parallactic angle: -170.66°
         """
         # Transform RA/Dec -> vacuum Az/El, then take the AltAz-form PA (see
         # Notes): this references the result to the apparent pole and keeps it
@@ -1010,7 +1036,8 @@ class Coordinates:
         only, using the Nasmyth port sign from the site configuration.
 
         For the full focal-plane rotation that also includes instrument
-        rotation, use ``fyst_trajectories.offsets.compute_focal_plane_rotation``
+        rotation, use
+        :func:`~fyst_trajectories.offsets.compute_focal_plane_rotation`
         instead.
 
         Parameters
@@ -1118,24 +1145,18 @@ class Coordinates:
         -------
         az : float
             Azimuth in degrees at observation time.
-        el : float
-            Elevation in degrees at observation time.
-
-        Notes
-        -----
-        When distance is provided, the full space motion is computed using
-        astropy's apply_space_motion() method. Without distance, an approximate
-        2D propagation on the celestial sphere is used.
+        alt : float
+            Altitude (elevation) in degrees at observation time.
 
         Examples
         --------
         Track Barnard's Star (high proper motion):
 
         >>> from astropy.time import Time
-        >>> # Barnard's Star coordinates at Gaia DR2 epoch
+        >>> # Barnard's Star, J2000 catalogue position and proper motion
         >>> ra, dec = 269.452, 4.693  # degrees
         >>> pmra, pmdec = -798.58, 10328.12  # mas/yr
-        >>> ref_epoch = Time("J2015.5")
+        >>> ref_epoch = Time("J2000.0")
         >>> obs_time = Time("2026-06-15T04:00:00")
         >>> az, el = coords.radec_to_altaz_with_pm(
         ...     ra, dec, pmra, pmdec, ref_epoch, obstime=obs_time, distance=1.8

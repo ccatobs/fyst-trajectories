@@ -49,15 +49,15 @@ if TYPE_CHECKING:
     from .dispatch import SunSafePredicate
 
 
-# Default wall-clock duration of a single retune event (seconds).
-# Used as the default for both the inter-scan retunes scheduled by
-# :class:`~fyst_trajectories.overhead.CalibrationPolicy` (via
-# :attr:`~fyst_trajectories.overhead.OverheadModel.retune_duration`)
-# and the in-scan retunes injected by :func:`inject_retune` for
-# per-module staggering. The two code paths are independent (different
-# layers, different retune semantics) but share the same nominal
-# wall-time; exposing the constant here keeps them in sync if the
-# instrument team re-baselines the value.
+#: Default wall-clock duration of a single retune event (seconds).
+#: Used as the default for both the inter-scan retunes scheduled by
+#: :class:`~fyst_trajectories.overhead.CalibrationPolicy` (via
+#: :attr:`~fyst_trajectories.overhead.OverheadModel.retune_duration`)
+#: and the in-scan retunes injected by :func:`inject_retune` for
+#: per-module staggering. The two code paths are independent (different
+#: layers, different retune semantics) but share the same nominal
+#: wall-time; exposing the constant here keeps them in sync if the
+#: instrument team re-baselines the value.
 DEFAULT_RETUNE_DURATION_SEC: float = 5.0
 
 
@@ -164,9 +164,12 @@ def validate_trajectory_dynamics(
 
     Warns
     -----
+    VelocityLimitWarning
+        If any axis velocity exceeds its configured limit.
+    AccelerationLimitWarning
+        If any axis acceleration exceeds its configured limit.
     PointingWarning
-        If velocity or acceleration exceeds configured limits, or if
-        the trajectory has too few points for meaningful validation.
+        If the trajectory has too few points for meaningful validation.
     """
     if not (np.all(np.isfinite(az)) and np.all(np.isfinite(el)) and np.all(np.isfinite(times))):
         raise ValueError("Non-finite values (NaN or Inf) detected in trajectory az/el/times arrays")
@@ -312,12 +315,19 @@ def validate_trajectory(
         If azimuth positions are outside telescope movement range.
     ElevationBoundsError
         If elevation positions are outside telescope movement range.
+    ValueError
+        If any ``az``/``el``/``times`` value is non-finite, or the
+        timestamps are not strictly increasing.
 
     Warns
     -----
+    VelocityLimitWarning, AccelerationLimitWarning
+        If any velocity or acceleration exceeds its configured limit.
     PointingWarning
-        If any velocities or accelerations exceed limits, or if any
-        trajectory point is within the sun exclusion or warning radius.
+        If any subsampled trajectory point is within the sun exclusion
+        or warning radius (the sun check samples roughly every 60
+        seconds; see :func:`validate_sun_avoidance` for the gap this
+        leaves).
     """
     validate_trajectory_bounds(site, trajectory.az, trajectory.el)
     validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
@@ -368,18 +378,17 @@ def validate_sun_avoidance(
     .. warning::
 
        This check is **advisory only**.  It emits Python warnings but
-       never blocks trajectory generation or raises exceptions.  Telescope
-       control systems **must** enforce their own hard sun-avoidance limits
-       independently of this function.
+       never blocks trajectory generation or raises exceptions.  Nothing
+       downstream of this library is guaranteed to enforce sun avoidance;
+       do not rely on a later stage to reject an unsafe trajectory.
 
-    The sun moves slowly (~0.25 deg/min), so this function subsamples
-    the trajectory to check approximately every 60 seconds rather than
-    every point.  For each subsampled time the sun position is computed
-    once and compared against all trajectory points in that time window.
-
-    This function never blocks trajectory generation. Violations are
-    reported as warnings so that downstream consumers can decide how
-    to handle them.
+    The check is also **subsampled, not exhaustive**: the trajectory is
+    sampled approximately every 60 seconds and each sampled position is
+    compared against the Sun at that same sample time.  Points strictly
+    between samples are never checked, and at the 3 deg/s azimuth maximum
+    a trajectory can sweep up to 180 degrees of azimuth between samples,
+    far more than the 5 degree exclusion-to-warning band.  A fast scan can
+    therefore cross the exclusion zone between samples without a warning.
 
     Parameters
     ----------
@@ -413,11 +422,12 @@ def validate_sun_avoidance(
     Warns
     -----
     PointingWarning
-        If any trajectory point is within the exclusion radius
+        If any subsampled trajectory point is within the exclusion radius
         ("EXCLUSION ZONE") or the warning radius ("WARNING ZONE")
         of the Sun. With an injected ``sun_safe`` predicate, an
         "EXCLUSION ZONE" warning is emitted for any subsample the
-        predicate reports unsafe.
+        predicate reports unsafe. Points between subsamples are not
+        checked.
     """
     if not site.sun_avoidance.enabled:
         return
@@ -469,8 +479,8 @@ def validate_sun_avoidance(
         warnings.warn(
             f"EXCLUSION ZONE: Trajectory at (az={float(sample_az[first]):.1f}°, "
             f"el={float(sample_el[first]):.1f}°) is inside the Sun avoidance "
-            f"zone at {first_time_str}. The telescope hardware may refuse this "
-            f"trajectory.",
+            f"zone at {first_time_str}. This violates the configured Sun "
+            f"avoidance policy; nothing downstream is guaranteed to reject it.",
             PointingWarning,
             stacklevel=2,
         )
@@ -515,7 +525,8 @@ def validate_sun_avoidance(
         warnings.warn(
             f"EXCLUSION ZONE: Trajectory passes {min_sep:.1f}\u00b0 from the Sun "
             f"(exclusion radius: {exclusion}\u00b0) at {closest_time_str}. "
-            f"The telescope hardware may refuse this trajectory.",
+            f"This violates the configured Sun avoidance policy; nothing "
+            f"downstream is guaranteed to reject it.",
             PointingWarning,
             stacklevel=2,
         )
@@ -618,9 +629,12 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
                 "§8.9.3); the upload would be rejected with HTTP 400. Increase the "
                 "pattern timestep."
             )
+    # Emit times relative to ``times[0]`` so the first sample lands exactly on
+    # ``start_time``, matching ``get_absolute_times``; a trajectory whose clock
+    # does not begin at 0 would otherwise be commanded ``times[0]`` late.
     return np.column_stack(
         [
-            trajectory.times,
+            times - times[0],
             trajectory.az,
             trajectory.el,
             trajectory.az_vel,
@@ -672,6 +686,16 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
     PointingWarning
         If ``coordsys="ICRS"``: Go TCS does not implement ICRS ``/path``
         velocities, so such a body is unsafe for scanning.
+
+    Notes
+    -----
+    Go TCS also gates ``/path`` (and ``/azimuth-scan`` and ``/track``) on
+    a **minimum dispatch lead**: a body whose ``start_time`` is less than
+    about 10 seconds in the future is rejected with HTTP 400. This
+    function does not pre-check that, because the remaining lead keeps
+    shrinking between serialization and POST; the dispatching layer owns
+    the floor (the PCS scan tasks push a late scheduled start out to now
+    plus a 10 s dispatch buffer before planning).
     """
     if coordsys not in ("Horizon", "ICRS"):
         raise ValueError(f"coordsys must be 'Horizon' or 'ICRS', got {coordsys!r}")
@@ -704,17 +728,17 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     Lowers a :class:`~fyst_trajectories.trajectory.Trajectory` to the
     per-point representation the Vertex ACU's ProgramTrack stack consumes,
     the same rows the Go TCS ``/path`` endpoint builds internally, but ready
-    for a consumer that drives the ACU **directly** (e.g. a PCS agent's
-    ``UploadPtStack`` path) rather than through Go TCS. Use
+    for a consumer that drives the ACU **directly** (e.g. the socs ACU
+    agent's ``UploadPtStack`` path) rather than through Go TCS. Use
     :func:`to_path_payload` for the Go TCS ``/path`` route; use this for
     direct-ACU upload.
 
-    Each row is a dict keyed exactly as a PCS ``TrackPoint``, so a consumer
+    Each row is a dict keyed exactly as the socs ACU agent's ``TrackPoint``, so a consumer
     can wrap it directly (``TrackPoint(**row)``): ``timestamp`` (absolute Unix
     seconds), ``az``, ``el`` (deg), ``az_vel``, ``el_vel`` (deg/s), ``az_flag``,
     ``el_flag`` (int), and ``group_flag`` (int).
 
-    The :data:`~fyst_trajectories.trajectory.SCAN_FLAG_SCIENCE` /
+    The ``SCAN_FLAG_SCIENCE`` /
     ``SCAN_FLAG_*`` values are mapped to the ACU ``az_flag`` convention:
 
     - interior point of a science sweep leg -> ``az_flag = 1``
@@ -756,7 +780,9 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
         raise ValueError("start_time not set; cannot build absolute TrackPoint timestamps")
 
     t0 = float(trajectory.start_time.unix)
-    times = trajectory.times
+    # Relative to ``times[0]`` so the first sample lands exactly on
+    # ``start_time``, matching ``get_absolute_times`` and ``to_path_format``.
+    times = trajectory.times - trajectory.times[0]
     az = trajectory.az
     el = trajectory.el
     az_vel = trajectory.az_vel
@@ -970,7 +996,6 @@ def _inject_retune_events(
     """
     sorted_events = tuple(sorted(events, key=lambda e: e.t_start))
 
-    # Overlap check.
     for i in range(1, len(sorted_events)):
         a = sorted_events[i - 1]
         b = sorted_events[i]
@@ -1071,8 +1096,9 @@ def inject_retune(
 
     The default is ``prefer_turnarounds=False`` (time-based placement),
     which produces uniform coverage. Set to True to snap retunes to nearby
-    turnarounds, which saves ~0.04% science time but concentrates gaps at
-    turnaround positions, creating persistent coverage non-uniformity.
+    turnarounds, which saves only a sliver of science time (~0.04% in the
+    configurations measured) but concentrates gaps at turnaround
+    positions, creating persistent coverage non-uniformity.
 
     Only samples with ``SCAN_FLAG_SCIENCE`` are overwritten with
     ``SCAN_FLAG_RETUNE``; turnaround flags are never modified.
@@ -1081,11 +1107,18 @@ def inject_retune(
     verification): Prime-Cam has 7 independent readout modules. If modules
     can retune independently, setting ``n_modules > 1`` offsets the first
     retune by ``module_index * retune_interval / n_modules``, so only one
-    module is retuning at any given time. This reduces effective overhead
-    from ~16% to ~2.4% for 7 modules. Set ``n_modules=1`` (the default)
-    to disable staggering and retune all modules simultaneously. Per-
-    module staggering in **event-list mode** is handled by composition:
-    call ``inject_retune`` once per module with its own event list.
+    module is retuning at any given time. Each module still pays
+    ``retune_duration / retune_interval`` of its own time (about 1.7% at
+    the defaults, 5 s every 300 s) whether or not retunes are staggered;
+    what staggering changes is where the loss lands. Simultaneous
+    retunes leave whole-array gaps in coverage, while a 7-way stagger
+    keeps at least six modules on sky throughout, provided the
+    non-retuning modules keep observing through each module's retune (an
+    instrument-team premise this library does not model). Set
+    ``n_modules=1`` (the default) to disable staggering and retune all
+    modules simultaneously. Per-module staggering in **event-list mode**
+    is handled by composition: call ``inject_retune`` once per module
+    with its own event list.
 
     .. note::
 
@@ -1098,26 +1131,27 @@ def inject_retune(
     ----------
     trajectory : Trajectory
         Input trajectory with scan_flag array.
-    retune_interval : float
+    retune_interval : float, optional
         Seconds between retune events (from last retune or start).
         Default 300 s (5 min). Ignored when ``retune_events`` is
         supplied.
-    retune_duration : float
-        Duration in seconds of each retune event. Ignored when
+    retune_duration : float, optional
+        Duration in seconds of each retune event. Default
+        :data:`DEFAULT_RETUNE_DURATION_SEC` (5 s). Ignored when
         ``retune_events`` is supplied.
-    prefer_turnarounds : bool
+    prefer_turnarounds : bool, optional
         If True, snap retunes to nearby turnarounds when possible.
         Default is False (time-based placement for uniform coverage).
         Applies to both modes.
-    turnaround_window : float
+    turnaround_window : float, optional
         Maximum seconds from due time to search for a turnaround start.
-        Applies to both modes.
-    module_index : int
+        Default 5 s. Applies to both modes.
+    module_index : int, optional
         Index of this module (0-based) for staggered retune scheduling.
         Default is 0. Only meaningful when ``n_modules > 1``. Must be
         0 in event-list mode (the caller handles per-module staggering
         by composition).
-    n_modules : int
+    n_modules : int, optional
         Total number of independent modules. Default is 1 (no staggering,
         all modules retune simultaneously, current behavior). Set to 7
         for Prime-Cam staggered retune. Must be 1 in event-list mode.
@@ -1397,9 +1431,11 @@ def print_trajectory(
     --------
     >>> from fyst_trajectories import print_trajectory
     >>> print_trajectory(trajectory)
+    Trajectory(n_points=...
 
     Print only the first 10 points:
 
     >>> print_trajectory(trajectory, head=10, tail=None)
+    Trajectory(n_points=...
     """
     print(_format_trajectory(trajectory, head=head, tail=tail), file=file or sys.stdout)

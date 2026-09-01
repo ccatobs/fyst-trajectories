@@ -9,6 +9,7 @@ Offsets are projected using spherical trigonometry (great-circle offset
 formulas), which is accurate for any offset size.
 
 The use cases are:
+
 1. Given boresight pointing, compute where a detector observes (boresight_to_detector)
 2. Given where you want a detector to point, compute boresight pointing (detector_to_boresight)
 3. Apply detector offsets to entire trajectories (apply_detector_offset)
@@ -45,10 +46,11 @@ class InstrumentOffset:
     Represents the position of an instrument or detector relative to the
     telescope boresight in the focal plane coordinate system. The offsets
     (dx, dy) are defined in the focal plane frame. When projecting onto
-    the sky, the offsets are rotated by the field_rotation angle (which
-    combines elevation and parallactic angle for alt-az telescopes). At
-    zero field rotation, dx corresponds to the cross-elevation direction
-    and dy to the elevation direction.
+    the sky, the offsets are rotated by the caller-supplied field_rotation
+    angle; for the az/el projections this is the mechanical Nasmyth
+    rotation (see :func:`compute_focal_plane_rotation`). At zero field
+    rotation, dx corresponds to the cross-elevation direction and dy to
+    the elevation direction.
 
     Parameters
     ----------
@@ -76,6 +78,7 @@ class InstrumentOffset:
     Access offset in degrees:
 
     >>> print(f"Offset in deg: {offset.dx_deg:.4f} x {offset.dy_deg:.4f}")
+    Offset in deg: 0.0833 x 0.0500
 
     With instrument rotation:
 
@@ -268,8 +271,9 @@ def _offset_inverse(
 
     Given a detector position and the (already field-rotation-rotated)
     offset, compute the boresight position. Uses the forward formula with
-    negated offsets plus iterative refinement for sub-microarcsecond
-    round-trip precision.
+    negated offsets plus iterative refinement; the round-trip precision is
+    typically sub-microarcsecond in practice and enforced below the
+    ~3.6 mas failure threshold.
 
     Parameters
     ----------
@@ -301,15 +305,11 @@ def _offset_inverse(
     Notes
     -----
     The closed-form inverse (negated offsets applied via the forward
-    formula) has round-trip error of order ``rho^3``. The refinement
-    is fixed-point iteration (the residual is added back to the previous
-    estimate; no Jacobian is computed), so each iteration drops the
-    relative error by roughly one order of magnitude. Up to
-    :data:`_INVERSE_MAX_ITERATIONS` iterations are performed, with early
-    exit when the correction drops below
-    :data:`_INVERSE_EARLY_EXIT_THRESHOLD`. A ``RuntimeError`` is raised
-    if the residual exceeds :data:`_INVERSE_FAILURE_THRESHOLD` after
-    all iterations.
+    formula) has round-trip error of order ``rho^2``. The refinement is
+    fixed-point iteration (the residual is added back to the previous
+    estimate; no Jacobian is computed); measured at PrimeCam-scale
+    offsets it drops the residual by several orders of magnitude per
+    iteration.
 
     The forward residual ``(d_az, d_el)`` is degenerate at the pole: every
     boresight azimuth maps a pole-elevation detector to the same position,
@@ -443,6 +443,7 @@ def boresight_to_detector(
     >>> offset = InstrumentOffset(dx=5.0, dy=0.0)
     >>> det_az, det_el = boresight_to_detector(180.0, 45.0, offset, field_rotation=0.0)
     >>> print(f"Detector at Az={det_az:.3f}, El={det_el:.3f}")
+    Detector at Az=180.118, El=45.000
     """
     dx_rot, dy_rot = _rotate_offset(offset, field_rotation)
     det_az, det_el = _offset_forward(az, el, dx_rot, dy_rot)
@@ -463,7 +464,9 @@ def detector_to_boresight(
     Given where you want a detector to point on the sky, compute where
     the telescope boresight should be pointed. This is the inverse of
     boresight_to_detector. Uses spherical trigonometry with iterative
-    refinement for sub-milliarcsecond round-trip precision.
+    refinement; the round trip is enforced to better than the ~3.6
+    milliarcsecond failure threshold and typically converges far below
+    that.
 
     Parameters
     ----------
@@ -484,11 +487,19 @@ def detector_to_boresight(
     bore_el : float or array
         Required boresight elevation in degrees.
 
+    Raises
+    ------
+    RuntimeError
+        If the requested detector position cannot be produced by any
+        boresight (offset larger than the pole distance) or the
+        iterative refinement fails to converge.
+
     Examples
     --------
     >>> offset = InstrumentOffset(dx=5.0, dy=0.0)
     >>> bore_az, bore_el = detector_to_boresight(180.0, 45.0, offset, field_rotation=0.0)
     >>> print(f"Boresight at Az={bore_az:.3f}, El={bore_el:.3f}")
+    Boresight at Az=179.882, El=45.000
 
     Verify inverse relationship:
 
@@ -544,7 +555,7 @@ def compute_focal_plane_rotation(
 
     See Also
     --------
-    fyst_trajectories.coordinates.Coordinates.get_field_rotation :
+    ~fyst_trajectories.coordinates.Coordinates.get_field_rotation :
         Computes the celestial-frame quantity
         ``nasmyth_sign * el + parallactic_angle`` from RA/Dec
         (no instrument_rotation).
@@ -599,24 +610,24 @@ def apply_detector_offset(
         If ``validate=True`` and the adjusted trajectory exceeds azimuth limits.
     ElevationBoundsError
         If ``validate=True`` and the adjusted trajectory exceeds elevation limits.
+    RuntimeError
+        If the offset inversion cannot reach the requested detector
+        position or fails to converge (see :func:`detector_to_boresight`).
 
     Notes
     -----
     **Precondition: the input trajectory must be in geometric (vacuum)
     coordinates.** This holds on every live path: ``Coordinates(site)``
-    defaults to vacuum and the FYST ACU applies atmospheric refraction
-    downstream. The mechanical Nasmyth term consumes
+    defaults to vacuum, and refraction is applied downstream at
+    execution time (by exactly one of the Go TCS or the ACU). The mechanical Nasmyth term consumes
     ``trajectory.el`` directly; if the trajectory was instead built with
     ``AtmosphericConditions.for_fyst()`` (refracted, a planning/sim-only
     path), its ``el`` is in the apparent frame and the mechanical rotation
     differs from the vacuum one by ``nasmyth_sign * (refraction bump)``,
-    a sub-arcsec boresight effect at PrimeCam offset radii. ``Trajectory``
+    a small boresight effect (a few arcseconds at worst, at the lowest
+    elevations) at PrimeCam offset radii. ``Trajectory``
     carries no refraction flag, so a refracted input cannot be detected
     here; pair detector offsets with vacuum trajectories.
-
-    The returned trajectory has the same metadata as the input, but with
-    the az/el positions adjusted so that when the telescope follows this
-    trajectory, the detector observes the original target.
 
     The mechanical term ``nasmyth_sign * el`` is evaluated at the input
     trajectory's elevation (the detector/target elevation), not the returned
@@ -633,7 +644,7 @@ def apply_detector_offset(
     >>> from fyst_trajectories.offsets import InstrumentOffset, apply_detector_offset
     >>>
     >>> site = get_fyst_site()
-    >>> start_time = Time("2026-03-15T04:00:00", scale="utc")
+    >>> start_time = Time("2026-03-15T01:00:00", scale="utc")
     >>> offset = InstrumentOffset(dx=5.0, dy=3.0, name="Mod2")
     >>>
     >>> # Generate trajectory for target (start_time required for celestial patterns)
@@ -646,7 +657,7 @@ def apply_detector_offset(
     ...             width=1.0,
     ...             height=1.0,
     ...             spacing=0.1,
-    ...             velocity=0.5,
+    ...             velocity=0.3,
     ...             num_terms=4,
     ...             angle=0.0,
     ...         )

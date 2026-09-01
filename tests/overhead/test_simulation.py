@@ -11,7 +11,10 @@ from fyst_trajectories.overhead import (
     generate_timeline,
     validate_scan_params,
 )
-from fyst_trajectories.overhead.simulation import _generate_trajectory_for_block
+from fyst_trajectories.overhead.simulation import (
+    _generate_trajectory_for_block,
+    _slice_to_block_window,
+)
 
 
 @pytest.fixture(scope="module")
@@ -233,3 +236,88 @@ class TestValidateScanParams:
             validate_scan_params({"rising": True}, "pong")
         with pytest.raises(KeyError, match="unknown keys"):
             validate_scan_params({"rising": True}, "daisy")
+
+
+class TestSliceToBlockWindow:
+    """Rebuilt science trajectories cover only their own block window."""
+
+    @staticmethod
+    def _pong_block(t0, window_sec):
+        return TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(window_sec, format="sec"),
+            block_type="science",
+            patch_name="slice_me",
+            az_start=170.0,
+            az_end=190.0,
+            elevation=60.0,
+            scan_index=0,
+            scan_type="pong",
+            metadata={
+                "ra_center": 200.0,
+                "dec_center": -25.0,
+                "width": 3.0,
+                "height": 2.0,
+                "velocity": 0.5,
+                "scan_params": {"spacing": 0.1, "num_terms": 4},
+            },
+        )
+
+    def test_pong_rebuild_sliced_to_block_window(self):
+        """A pong rebuild longer than its block is cut to [t_start, t_stop)."""
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T05:00:00", scale="utc")
+        block = self._pong_block(t0, 120.0)
+
+        sb = _generate_trajectory_for_block(block, site)
+        traj = sb.trajectory
+
+        # A 3x2 deg pong at 0.5 deg/s runs far longer than 120 s per
+        # period, so the slice must engage.
+        assert traj.times[0] == 0.0
+        assert traj.times[-1] < 120.0
+        assert traj.start_time.unix >= t0.unix - 1e-6
+        end = traj.start_time + TimeDelta(float(traj.times[-1]), format="sec")
+        assert end.unix < block.t_stop.unix
+        assert sb.duration == pytest.approx(float(traj.times[-1]))
+
+    def test_disjoint_window_raises(self):
+        """A block window past the re-solved scan raises (caller logs + skips)."""
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T05:00:00", scale="utc")
+        sb = _generate_trajectory_for_block(self._pong_block(t0, 120.0), site)
+
+        late = self._pong_block(t0 + TimeDelta(1e6, format="sec"), 120.0)
+        with pytest.raises(ValueError, match="no longer overlaps"):
+            _slice_to_block_window(sb, late)
+
+    def test_daisy_rebuild_already_inside_window_unchanged(self):
+        """The daisy branch plans with the block duration; no slicing occurs."""
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T05:00:00", scale="utc")
+        block = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(120.0, format="sec"),
+            block_type="science",
+            patch_name="daisy_field",
+            az_start=170.0,
+            az_end=190.0,
+            elevation=60.0,
+            scan_index=0,
+            scan_type="daisy",
+            metadata={
+                "ra_center": 200.0,
+                "dec_center": -25.0,
+                "width": 3.0,
+                "height": 2.0,
+                "velocity": 0.5,
+                "scan_params": {"radius": 1.0, "turn_radius": 0.5},
+            },
+        )
+
+        sb = _generate_trajectory_for_block(block, site)
+
+        # The daisy plan spans duration - timestep, so it fits unsliced.
+        assert sb.trajectory.times[0] == 0.0
+        assert sb.trajectory.times[-1] == pytest.approx(120.0 - 0.1)
+        assert sb.trajectory.start_time.unix == pytest.approx(t0.unix)

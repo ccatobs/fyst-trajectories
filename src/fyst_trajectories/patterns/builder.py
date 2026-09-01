@@ -51,7 +51,7 @@ class TrajectoryBuilder:
     >>> from fyst_trajectories.patterns import TrajectoryBuilder, PongScanConfig
     >>>
     >>> site = get_fyst_site()
-    >>> start_time = Time("2026-03-15T04:00:00", scale="utc")
+    >>> start_time = Time("2026-03-15T01:00:00", scale="utc")
     >>> trajectory = (
     ...     TrajectoryBuilder(site)
     ...     .at(ra=180.0, dec=-30.0)
@@ -61,7 +61,7 @@ class TrajectoryBuilder:
     ...             width=2.0,
     ...             height=2.0,
     ...             spacing=0.1,
-    ...             velocity=0.5,
+    ...             velocity=0.4,
     ...             num_terms=4,
     ...             angle=0.0,
     ...         )
@@ -199,8 +199,12 @@ class TrajectoryBuilder:
         """Set atmospheric conditions for refraction correction.
 
         Without this call, coordinate transforms use no refraction
-        (pressure=0). Call this to enable atmospheric refraction in
-        celestial-to-horizontal transforms.
+        (pressure=0), the correct default for trajectories sent to the
+        telescope: refraction is applied downstream at execution time,
+        so a refracted trajectory would be refracted twice. Pass
+        refracted conditions (e.g. ``AtmosphericConditions.for_fyst()``)
+        only when the built trajectory is planning or simulation output
+        that never reaches the telescope.
 
         Parameters
         ----------
@@ -250,7 +254,7 @@ class TrajectoryBuilder:
         >>> from fyst_trajectories.patterns import TrajectoryBuilder, PongScanConfig
         >>>
         >>> offset = InstrumentOffset(dx=5.0, dy=3.0, name="Mod2")
-        >>> start_time = Time("2026-03-15T04:00:00", scale="utc")
+        >>> start_time = Time("2026-03-15T01:00:00", scale="utc")
         >>> trajectory = (
         ...     TrajectoryBuilder(site)
         ...     .at(ra=180.0, dec=-30.0)
@@ -260,7 +264,7 @@ class TrajectoryBuilder:
         ...             width=1.0,
         ...             height=1.0,
         ...             spacing=0.1,
-        ...             velocity=0.5,
+        ...             velocity=0.3,
         ...             num_terms=4,
         ...             angle=0.0,
         ...         )
@@ -309,10 +313,7 @@ class TrajectoryBuilder:
         automatically to warn if velocity or acceleration limits
         are exceeded, and ``validate_trajectory_bounds()`` is called
         as a defence-in-depth check that the final trajectory is
-        within telescope position limits.  Pattern modules already
-        validate their own bounds; this extra call catches any
-        out-of-bounds positions introduced by detector offsets or
-        future changes to pattern generators.
+        within telescope position limits.
 
         Returns
         -------
@@ -336,12 +337,9 @@ class TrajectoryBuilder:
         if self._duration is None:
             raise ValueError("Duration not set. Call .duration() first.")
 
-        # A scan that yields fewer than 2 samples is degenerate: pattern
-        # generators produce 0- or 1-point arrays that then fail opaquely in
-        # np.gradient or array reductions, or silently return a 1-point
-        # trajectory. Reject it here at the shared entry point with the same
-        # >= 2-sample contract the per-pattern generators enforce, so every
-        # pattern fails with one clear message rather than a deep numpy one.
+        # Reject sub-two-sample durations at the shared entry point, on the
+        # same >= 2-sample contract the per-pattern generators enforce (see
+        # validate_sample_count).
         config_timestep = getattr(self._config, "timestep", None)
         if config_timestep is not None:
             validate_sample_count(self._duration, config_timestep)
@@ -367,7 +365,6 @@ class TrajectoryBuilder:
                     stacklevel=2,
                 )
 
-        # Validate start_time for patterns that need it
         if self._needs_start_time(pattern_cls) and self._start_time is None:
             raise ValueError(
                 f"{pattern_cls.__name__} requires a start time for coordinate "

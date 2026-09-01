@@ -80,7 +80,8 @@ def plan_pong_scan(
     -------
     ScanBlock
         Planned observation containing trajectory, config, and computed
-        parameters (period, x_numvert, y_numvert).
+        parameters (``period``, ``x_numvert``, ``y_numvert``,
+        ``n_cycles``).
 
     Raises
     ------
@@ -100,11 +101,11 @@ def plan_pong_scan(
     >>> field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
     >>> block = plan_pong_scan(
     ...     field=field,
-    ...     velocity=0.5,
+    ...     velocity=0.4,
     ...     spacing=0.1,
     ...     num_terms=4,
     ...     site=site,
-    ...     start_time=Time("2026-03-15T04:00:00", scale="utc"),
+    ...     start_time=Time("2026-03-15T01:00:00", scale="utc"),
     ...     timestep=0.1,
     ... )
     """
@@ -207,7 +208,7 @@ def plan_pong_rotation_sequence(
     ...     width=2.0,
     ...     height=2.0,
     ...     spacing=0.1,
-    ...     velocity=0.5,
+    ...     velocity=0.35,
     ...     num_terms=4,
     ...     angle=0.0,
     ... )

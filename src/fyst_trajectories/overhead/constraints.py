@@ -182,6 +182,10 @@ class MoonAvoidanceConstraint(Constraint):
     ``coords.get_body_altaz("moon", obstime)`` and apply their own
     threshold before constructing a trajectory.
 
+    A separation exactly at ``min_angle`` scores 1.0 (clear): the test
+    is strictly ``sep < min_angle``, deliberately the inverse of the
+    Sun constraint's at-radius-is-unsafe ``<=`` convention.
+
     Parameters
     ----------
     min_angle : float

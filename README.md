@@ -11,8 +11,10 @@ offline observing-night overhead simulator.
 
 ## Installation
 
+Pin a release tag (`v0.8.0` is the latest).
+
 ```bash
-pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git"
+pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.8.0"
 ```
 
 ## Development

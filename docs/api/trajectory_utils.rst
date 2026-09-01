@@ -1,6 +1,9 @@
 Trajectory Utilities
 ====================
 
+Validation, export, retune injection, and formatted display for
+:class:`~fyst_trajectories.trajectory.Trajectory` objects.
+
 .. automodule:: fyst_trajectories.trajectory_utils
    :members:
    :undoc-members:
@@ -23,6 +26,7 @@ Common Operations
         to_arrays,
         to_path_format,
         to_path_payload,
+        to_trackpoint_format,
     )
 
     # Ready-to-POST Go TCS /path body: {"start_time", "coordsys", "points"}
@@ -34,6 +38,9 @@ Common Operations
     # Simple numpy arrays
     times, az, el = to_arrays(trajectory)
 
+    # Direct-ACU ProgramTrack rows (dicts keyed as the socs TrackPoint)
+    rows = to_trackpoint_format(trajectory)
+
 **Absolute times**::
 
     import dataclasses
@@ -42,7 +49,7 @@ Common Operations
 
     from fyst_trajectories.trajectory_utils import get_absolute_times
 
-    trajectory = dataclasses.replace(trajectory, start_time=Time("2026-03-15T04:00:00", scale="utc"))
+    trajectory = dataclasses.replace(trajectory, start_time=Time("2026-03-15T01:00:00", scale="utc"))
     abs_times = get_absolute_times(trajectory)  # Returns Time array
 
 **Formatted display**::
@@ -54,15 +61,16 @@ Common Operations
     print_trajectory(trajectory, head=10)     # Customize display
 
 Plotting lives in the :doc:`visualization subpackage <visualization>`
-(``fyst_trajectories.visualization.plot_trajectory``).
+(``fyst_trajectories.visualization.plot_trajectory``); retune injection
+has its own topic page, :doc:`../retune_events`.
 
 Validation Functions
 --------------------
 
 ``validate_trajectory`` is the recommended entry point: it runs the bounds
 check, the dynamics check, and (when ``check_sun=True``) the advisory sun
-check. The three low-level functions documented above can also be called
-directly::
+check. The low-level checks can also be called directly; bounds and
+dynamics::
 
     from fyst_trajectories.trajectory_utils import (
         validate_trajectory_bounds,

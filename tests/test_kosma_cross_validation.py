@@ -458,12 +458,10 @@ class TestKOSMACrossValidationLargeOffsets:
         ccat_xel_arcsec = (det_az - 180.0) * cos_el * 3600.0
         ccat_del_arcsec = (det_el - elevation) * 3600.0
 
-        # Compute difference between the two models
         diff_x = abs(ccat_xel_arcsec - kosma_x)
         diff_y = abs(ccat_del_arcsec - kosma_y)
         diff_total = math.sqrt(diff_x**2 + diff_y**2)
 
-        # The difference should be within the expected bound
         assert diff_total < max_diff_arcsec, (
             f"Flat-vs-spherical difference for {description}: "
             f"{diff_total:.2f} arcsec exceeds bound {max_diff_arcsec} arcsec"

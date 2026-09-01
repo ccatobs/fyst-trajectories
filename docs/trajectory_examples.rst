@@ -70,7 +70,7 @@ Track solar system bodies using astropy ephemeris::
     from fyst_trajectories.patterns import PlanetTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T16:00:00", scale="utc")
+    start_time = Time("2026-03-15T18:30:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(site)
@@ -81,6 +81,25 @@ Track solar system bodies using astropy ephemeris::
     )
 
 Supported bodies: mercury, venus, mars, jupiter, saturn, uranus, neptune, moon, sun.
+
+Satellite Track
+---------------
+
+Planetary-moon tracking (e.g. Titan) works like planet tracking but
+needs a JPL satellite SPK kernel, supplied either on the config or via
+the ``FYST_SATELLITE_KERNEL`` environment variable, plus the
+``ephemeris`` extra (``jplephem``)::
+
+    from fyst_trajectories.patterns import SatelliteTrackConfig
+
+    config = SatelliteTrackConfig(
+        timestep=0.1, body="titan", satellite_kernel="sat441.bsp"
+    )
+
+Building the trajectory then follows the planet-track pattern exactly.
+Generation raises ``FileNotFoundError`` when the kernel path does not
+exist and ``ModuleNotFoundError`` without ``jplephem``; supported names
+are listed in :data:`~fyst_trajectories.coordinates.SATELLITE_BODIES`.
 
 Constant Elevation Scan
 -----------------------
@@ -94,10 +113,10 @@ duration, and number of scans from the field geometry::
 
     site = get_fyst_site()
 
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=6.0)
     block = plan_constant_el_scan(
         field=field,
-        elevation=50.0,         # Fixed elevation (deg)
+        elevation=45.0,         # Fixed elevation (deg)
         velocity=0.5,           # Az scan speed (deg/s)
         site=site,
         start_time="2026-09-15T00:00:00",
@@ -116,7 +135,7 @@ For manual control (engineering tests, known azimuth ranges),
     config = ConstantElScanConfig(
         timestep=0.1,       # Time between points (s)
         az_start=120.0,     # Starting azimuth (deg)
-        az_stop=180.0,      # Ending azimuth (deg)
+        az_stop=145.0,      # Ending azimuth (deg)
         elevation=45.0,     # Fixed elevation (deg)
         az_speed=1.0,       # Scan speed (deg/s)
         az_accel=0.5,       # Acceleration (deg/s^2)
@@ -140,14 +159,14 @@ Pong Scan
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     config = PongScanConfig(
         timestep=0.1,       # Time between points (s)
         width=2.0,          # Width (deg)
         height=2.0,         # Height (deg)
         spacing=0.1,        # Space between scan lines (deg)
-        velocity=0.5,       # Total scan velocity (deg/s)
+        velocity=0.4,       # Total scan velocity (deg/s)
         num_terms=4,        # Fourier terms for smoothing
         angle=0.0,          # Rotation angle (deg)
     )
@@ -172,7 +191,7 @@ Daisy Scan
     from fyst_trajectories.patterns import DaisyScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-01-15T02:00:00", scale="utc")
+    start_time = Time("2026-01-15T05:00:00", scale="utc")
 
     config = DaisyScanConfig(
         timestep=0.1,           # Time between points (s)
@@ -218,85 +237,20 @@ Constant velocity motion in Az/El::
         .build()
     )
 
-ACU Upload
-----------
-
-In production the PCS ACU agent receives scan parameters from the OCS
-scheduler, calls fyst-trajectories to build a trajectory, and uploads it
-via ``aculib``::
-
-    OCS Scheduler --[scan config]--> agent.pong_scan()
-                                        |
-                                        v
-                                    fyst-trajectories  (trajectory planning)
-                                        |
-                                        v
-                                    aculib.scan_pattern()  (HTTP client)
-                                        |
-                                        v
-                                    TCS (Go server) --> ACU Hardware
-
-fyst-trajectories is a library dependency of the PCS agent, not an OCS
-agent itself. Inside an agent task, a typical scan looks like::
-
-    # Inside ACUAgent.pong_scan() - an OCS task
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site, resolve_offset
-    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
-    from fyst_trajectories.trajectory_utils import to_path_format
-
-    site = get_fyst_site()
-
-    field = FieldRegion(
-        ra_center=params["ra_center"],
-        dec_center=params["dec_center"],
-        width=params["width"],
-        height=params["height"],
-    )
-    offset = resolve_offset(module=params.get("detector"))
-
-    block = plan_pong_scan(
-        field=field,
-        velocity=params.get("velocity", 0.5),
-        spacing=params.get("spacing", 0.1),
-        num_terms=4,
-        site=site,
-        start_time=Time.now(),
-        detector_offset=offset,
-    )
-
-    data = {
-        "start_time": float(block.trajectory.start_time.unix),
-        "coordsys": "Horizon",
-        "points": to_path_format(block.trajectory),
-    }
-    tcs = self._get_tcs_client()
-    tcs.scan_pattern(data)
-
-:func:`~fyst_trajectories.trajectory_utils.to_path_payload` builds that
-same three-key ``data`` dict in one call:
-``to_path_payload(block.trajectory)``.
-
-For local testing without the PCS agent, POST the same payload directly::
-
-    import requests
-
-    from fyst_trajectories.trajectory_utils import to_path_payload
-
-    response = requests.post(
-        "http://localhost:5600/path", json=to_path_payload(trajectory)
-    )
-
-The planning and simulation pipelines import the same library, so
-trajectories used for coverage analysis match what the telescope executes
-at runtime.
-
 Drift Scan (Planet Calibration)
 -------------------------------
 
 A constant elevation scan where a planet drifts through the field of view
 due to Earth's rotation.
+
+.. note::
+
+   A first-class planner exists for exactly this:
+   :func:`~fyst_trajectories.planning.plan_source_ces` solves the
+   crossing geometry, drift rate, and timing for you (and
+   ``plan_source_ces_passes`` steps it across the focal plane); see
+   :doc:`planning`. The examples below build the same thing by hand to
+   show the underlying mechanics.
 
 **Simple constant-el scan centered on planet position**::
 
@@ -397,10 +351,70 @@ determined at runtime, you can use the registry functions::
     from fyst_trajectories.patterns import PongScanConfig
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
     config = PongScanConfig(
         timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-        velocity=0.5, num_terms=4, angle=0.0,
+        velocity=0.4, num_terms=4, angle=0.0,
     )
     pattern = PatternClass(ra=180.0, dec=-30.0, config=config)
     trajectory = pattern.generate(site, duration=300.0, start_time=start_time)
+
+Dispatching to the Telescope
+----------------------------
+
+In production the PCS ACU agent exposes one typed scan Process per scan
+type (``pong_scan``, ``daisy_scan``, ``constant_el_scan``,
+``source_scan``). Each receives its scan parameters from the scheduling
+layer (an OCS client orchestrator), calls fyst-trajectories at dispatch
+time to build the trajectory, and POSTs it to the Go TCS::
+
+    scheduling layer --[scan_params]--> PCS scan Process (e.g. pong_scan)
+                                            |
+                                            v
+                                    fyst-trajectories
+                                    (plan_pong_scan + to_path_payload)
+                                            |
+                                            v
+                                    HTTP POST /path
+                                            |
+                                            v
+                                    Go TCS --> ACU hardware
+
+fyst-trajectories is a library dependency of the PCS agent, not an OCS
+agent itself. The scans run as OCS **Processes** rather than tasks so a
+running scan can be aborted mid-flight. The agent-side builder does
+more than plan-and-post: it floors a late scheduled start to the Go TCS
+minimum lead (see the Notes on
+:func:`~fyst_trajectories.trajectory_utils.to_path_payload`), plans the
+trajectory at dispatch time so the ephemeris is fresh, chooses a
+sun-safe azimuth wrap for the slew with
+:func:`~fyst_trajectories.dispatch.choose_encoder_solution`, validates
+mount bounds and dynamics with
+:func:`~fyst_trajectories.trajectory_utils.validate_trajectory`, and
+uploads the body built by
+:func:`~fyst_trajectories.trajectory_utils.to_path_payload`. The exact
+builder lives in the PCS repository, not here: the dispatch-time API it
+consumes is documented in :doc:`api/dispatch` and
+:doc:`api/trajectory_utils`.
+
+For local testing without the PCS agent, POST the payload directly.
+Re-anchor the trajectory first: the pages above build trajectories with
+fixed past start times, and the Go TCS rejects any start time that does not
+lead by about 10 seconds::
+
+    import dataclasses
+
+    import astropy.units as u
+    import requests
+    from astropy.time import Time
+
+    from fyst_trajectories.trajectory_utils import to_path_payload
+
+    live = dataclasses.replace(trajectory, start_time=Time.now() + 15 * u.s)
+    response = requests.post(
+        "http://localhost:5600/path", json=to_path_payload(live)
+    )
+
+The planning and simulation pipelines import the same library, so
+trajectories used for coverage analysis match what the telescope executes
+at runtime.

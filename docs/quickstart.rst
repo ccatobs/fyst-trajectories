@@ -15,8 +15,9 @@ Coordinate Transformations
 --------------------------
 
 Convert RA/Dec to Az/El. For trajectory generation, use bare
-``Coordinates(site)``. The FYST ACU applies atmospheric refraction
-downstream, so vacuum (geometric) coordinates are correct::
+``Coordinates(site)``. Refraction is applied downstream at execution
+time, by exactly one of the Go TCS or the ACU (ICD P-INCM-ICD-0003-A
+section 6), so vacuum (geometric) coordinates are correct either way::
 
     from astropy.time import Time
 
@@ -33,9 +34,7 @@ downstream, so vacuum (geometric) coordinates are correct::
 .. note::
 
    Applying refraction here would double-refract the trajectory. For
-   planning and simulation (visibility checks, observability, hitmap
-   simulations), where the result is NOT sent to the ACU, use
-   ``AtmosphericConditions.for_fyst()``; see
+   planning and simulation output that never reaches the telescope, see
    :ref:`quickstart-planning-refraction` below.
 
 **Frame name translation** (string alias resolution)::
@@ -54,11 +53,11 @@ downstream, so vacuum (geometric) coordinates are correct::
 
     coords = Coordinates(get_fyst_site())
 
-    # Barnard's Star with proper motion
+    # Barnard's Star, J2000 catalogue position and proper motion
     az, el = coords.radec_to_altaz_with_pm(
         ra=269.452, dec=4.693,
         pm_ra=-798.58, pm_dec=10328.12,  # mas/yr
-        ref_epoch=Time("J2015.5"),
+        ref_epoch=Time("J2000.0"),
         obstime=Time("2026-06-15T04:00:00"),
         distance=1.8,  # parsecs
     )
@@ -100,8 +99,9 @@ for generating telescope trajectories compatible with the ACU ProgramTrack mode.
 The pattern type is inferred from the config class you provide. Available
 patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``,
 ``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``. The
-examples below are minimal; :doc:`trajectory_examples` documents every
-config field.
+examples below are minimal; :doc:`api/patterns` documents every config
+field, and :doc:`trajectory_examples` has worked examples for the
+common patterns.
 
 **Track a celestial source** (sidereal tracking)::
 
@@ -132,7 +132,7 @@ config field.
     from fyst_trajectories.patterns import PlanetTrackConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T16:00:00", scale="utc")
+    start_time = Time("2026-03-15T18:30:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(site)
@@ -191,11 +191,11 @@ config field.
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T02:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     config = PongScanConfig(
         timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-        velocity=0.3, num_terms=4, angle=0.0,
+        velocity=0.4, num_terms=4, angle=0.0,
     )
 
     trajectory = (
@@ -270,13 +270,16 @@ when a scan comes within the site exclusion radius, and
 performs no Sun check. See :doc:`sun_avoidance` for the check, the
 selectable policies, and the dispatch-time gate.
 
-**Convert trajectory for the Go TCS /path endpoint**::
+**Build the Go TCS /path request body**::
 
-    from fyst_trajectories.trajectory_utils import to_path_format
+    from fyst_trajectories.trajectory_utils import to_path_payload
 
-    # Rows of [t_rel_s, az, el, az_vel, el_vel]; t_rel_s is seconds from
-    # trajectory.start_time, which the request body carries separately.
-    points = to_path_format(trajectory)
+    # The exact three-key body {"start_time", "coordsys", "points"}. The
+    # points rows are [t_rel_s, az, el, az_vel, el_vel] with t_rel_s in
+    # seconds from trajectory.start_time. Prefer this over assembling the
+    # dict by hand: the Go TCS receiver rejects a body with missing or
+    # extra keys. to_path_format() returns just the points rows.
+    payload = to_path_payload(trajectory)
 
 **Print formatted summary**::
 

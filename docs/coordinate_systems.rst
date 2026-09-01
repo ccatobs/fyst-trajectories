@@ -4,6 +4,12 @@ Coordinate Systems
 fyst-trajectories supports celestial and horizontal coordinate systems via astropy,
 with ``FRAME_ALIASES`` for compatibility with telescope control systems.
 
+All transforms are vacuum (unrefracted) by default: refraction is
+applied downstream at execution time, so ``Coordinates(site)`` emits
+geometric coordinates unless an atmosphere is passed explicitly. See
+:ref:`quickstart-planning-refraction` for when (and when not) to
+enable refraction.
+
 Frame Aliases
 -------------
 
@@ -50,7 +56,8 @@ Trajectory Coordinate Fields
 Pattern-generated trajectories track coordinate provenance:
 
 - ``trajectory.coordsys``: Always ``"altaz"`` (output is Az/El)
-- ``trajectory.metadata.input_frame``: Input frame (e.g., ``"icrs"``)
+- ``trajectory.metadata.input_frame``: ``"icrs"`` for celestial patterns,
+  ``None`` for AltAz patterns (no other value is produced)
 
 ::
 
@@ -60,14 +67,14 @@ Pattern-generated trajectories track coordinate provenance:
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     # Use a specific time when target is observable
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(get_fyst_site())
         .at(ra=180.0, dec=-30.0)  # Input in ICRS
         .with_config(PongScanConfig(
             timestep=0.1, width=2.0, height=2.0,
-            spacing=0.1, velocity=0.5, num_terms=4, angle=0.0,
+            spacing=0.1, velocity=0.4, num_terms=4, angle=0.0,
         ))
         .duration(300.0)
         .starting_at(start_time)
@@ -91,11 +98,11 @@ catalogue epoch::
 
     coords = Coordinates(get_fyst_site())
 
-    # Barnard's Star (moves ~10 arcsec/year)
+    # Barnard's Star (moves ~10 arcsec/year); J2000 catalogue position
     az, el = coords.radec_to_altaz_with_pm(
         ra=269.452, dec=4.693,
         pm_ra=-798.58, pm_dec=10328.12,  # mas/yr (pm_ra includes cos(dec))
-        ref_epoch=Time("J2015.5"),
+        ref_epoch=Time("J2000.0"),
         obstime=Time("2026-06-15T04:00:00", scale="utc"),
         distance=1.8,  # parsecs, optional
     )
@@ -123,7 +130,13 @@ See :doc:`instrument_offsets` for details on the frame distinction and usage.
    Sources whose declination is close to the site latitude
    (``|dec − lat| < 5°``) transit very near the zenith, where the
    parallactic-angle *rate* diverges. FYST's lat = −22.99° puts sources
-   with dec ≈ −18° to −28° in this regime; field rotation can swing
-   through 180° in a few seconds at transit. See
+   with dec ≈ −18° to −28° in this regime. How fast the swing runs
+   depends on how close the transit passes to the zenith: the time for a
+   180° swing scales with the transit zenith distance at roughly 820 s
+   per degree, so it is a few seconds only within a few hundredths of a
+   degree of the zenith-crossing declination, about a quarter of an hour
+   one degree away, and over an hour at the edges of the 5° band. Treat
+   the whole band as carrying the discontinuity, but expect the fast
+   swing only very close to the zenith-crossing declination. See
    :meth:`~fyst_trajectories.coordinates.Coordinates.get_parallactic_angle` Notes
    for the full discussion.

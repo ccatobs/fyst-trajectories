@@ -5,19 +5,34 @@ build-backend = "hatchling.build"
 [project]
 name = "fyst-trajectories"
 dynamic = ["version"]
-description = "Coordinate transformation and trajectory generation for FYST telescope"
+description = "Telescope trajectory generation, scan planning, and pointing utilities for the Fred Young Submillimeter Telescope (FYST)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     { name = "Graham Gibson" },
 ]
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+keywords = [
+    "astronomy",
+    "telescope",
+    "FYST",
+    "CCAT",
+    "submillimeter",
+    "trajectory",
+    "scan-pattern",
+    "observation-planning",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
 ]
 dependencies = [
     "astropy>=5.0",
@@ -51,6 +66,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.9",
+    "pylint>=4.0",
     "skyfield>=1.45",
     "jplephem>=2.18",
     "hypothesis>=6.0",
@@ -112,5 +128,30 @@ docstring-code-format = true
 convention = "numpy"
 
 [tool.pylint.messages_control]
-# Disable no-member for astropy.units which uses dynamic attributes
-disable = ["no-member"]
+# Pylint supplements ruff (the enforced gate) with inference-based checks
+# ruff does not have; run `python -m pylint src/fyst_trajectories` and treat
+# errors as review findings. Categories that structurally conflict with this
+# codebase's style are disabled so the remaining output is signal:
+# - no-member: astropy.units uses dynamic attributes
+# - design metrics: NumPy-style planners take many keyword arguments by
+#   design, and frozen dataclass value types have few methods
+# - duplicate-code: sibling planners/patterns share deliberate structure
+# - import-outside-toplevel: deliberate lazy imports (the matplotlib
+#   boundary in visualization/, cycle-avoiding leaf imports)
+# - line-too-long: ruff owns line length (they disagree only on lines
+#   whose overage is a trailing pragma comment, which ruff exempts)
+# - fixme: TODOs are tracked in the repo docs, not by lint
+disable = [
+    "no-member",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-instance-attributes",
+    "too-few-public-methods",
+    "duplicate-code",
+    "import-outside-toplevel",
+    "line-too-long",
+    "fixme",
+]

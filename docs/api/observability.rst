@@ -53,6 +53,11 @@ and a pre-dawn pass are common); ``windows`` reports all of them in time
 order. It is ``None`` when no horizon was requested (``horizon_hours=0``)
 and an empty tuple when a horizon was evaluated and no window exists.
 
+The Sun verdict's policy is injectable: pass ``sun_safe=`` (e.g.
+``make_sun_safe("cad")``) to evaluate under the directional model
+instead of the scalar radius. See :doc:`../sun_avoidance` and
+:doc:`sun_models`.
+
 **With caller-specified bright-source avoidance** (the AVOID list)::
 
     from fyst_trajectories.observability import AvoidZone, check_observability

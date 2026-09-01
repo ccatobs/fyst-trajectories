@@ -5,7 +5,8 @@ Data model for observation scheduling: the
 :class:`~fyst_trajectories.overhead.ObservingPatch` inputs to
 :func:`~fyst_trajectories.overhead.generate_timeline`, the
 :class:`~fyst_trajectories.overhead.TimelineBlock` entries it returns,
-and the overhead/calibration parameters that shape them.
+and the overhead/calibration parameters that shape them. See
+:doc:`../overhead_model` for the duration/cadence tuning walkthrough.
 
 ObservingPatch
 --------------
@@ -22,7 +23,7 @@ BlockType
    :undoc-members:
 
 CalibrationType
-----------------
+---------------
 
 .. autoclass:: fyst_trajectories.overhead.CalibrationType
    :members:
@@ -54,7 +55,7 @@ CalibrationPolicy
    :members:
 
 CalibrationState
------------------
+----------------
 
 .. autoclass:: fyst_trajectories.overhead.CalibrationState
    :members:
@@ -135,8 +136,9 @@ TimelineBlockMetadata
 .. autodata:: fyst_trajectories.overhead.TimelineBlockMetadata
    :annotation: = ScienceBlockMetadata | CalibrationBlockMetadata | EmptyBlockMetadata
 
-   Exhaustive union of metadata shapes a :class:`TimelineBlock` may carry, one
-   variant per :class:`BlockType` member.
+   Exhaustive union of metadata shapes a :class:`TimelineBlock` may carry.
+   ``SCIENCE`` and ``CALIBRATION`` blocks have their own variants; ``SLEW``
+   and ``IDLE`` blocks share :class:`EmptyBlockMetadata`.
 
 Validators
 ----------

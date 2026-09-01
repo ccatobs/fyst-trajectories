@@ -300,7 +300,9 @@ class ScienceBlockMetadata(TypedDict, total=False):
     height : float
         Angular height of the field in degrees.
     velocity : float
-        Scan velocity in deg/s.
+        Scan velocity in deg/s, forwarded verbatim to the pattern: an
+        on-sky (tangent-plane) speed for ``pong`` and ``daisy``, a
+        mount-frame azimuth coordinate rate for ``constant_el``.
     scan_params : ScanParamsDict
         Scan-type-specific parameters (see :data:`ScanParamsDict`).
     t0_scan : str, optional
@@ -476,7 +478,9 @@ class ObservingPatch:
     scan_type : str
         Scan pattern type: ``"constant_el"``, ``"pong"``, or ``"daisy"``.
     velocity : float
-        Scan velocity in deg/s.
+        Scan velocity in deg/s, forwarded verbatim to the pattern: an
+        on-sky (tangent-plane) speed for ``pong`` and ``daisy``, a
+        mount-frame azimuth coordinate rate for ``constant_el``.
     priority : float
         Scheduling priority. Lower values = higher priority.
     weight : float
@@ -488,6 +492,13 @@ class ObservingPatch:
         depends on ``scan_type``: :class:`CEScanParams` for
         ``"constant_el"``, :class:`PongScanParams` for ``"pong"``, or
         :class:`DaisyScanParams` for ``"daisy"``.
+
+    Raises
+    ------
+    ValueError
+        If ``width``, ``height``, ``velocity``, or ``priority`` is not
+        positive, ``weight`` is negative, or ``scan_type`` is not one of
+        ``"constant_el"`` / ``"pong"`` / ``"daisy"``.
     """
 
     name: str
@@ -546,7 +557,9 @@ class ObservingPatch:
         scan_type : str
             Scan pattern type.
         velocity : float
-            Scan velocity in deg/s.
+            Scan velocity in deg/s, forwarded verbatim to the pattern:
+            an on-sky (tangent-plane) speed for ``pong`` and ``daisy``,
+            a mount-frame azimuth coordinate rate for ``constant_el``.
         **kwargs
             Additional keyword arguments passed to ``ObservingPatch``.
 
@@ -644,9 +657,12 @@ class TimelineBlock:
     scan_type : str
         Scan pattern or calibration type identifier.
     boresight_angle : float
-        Nasmyth/boresight rotation angle in degrees (``nasmyth_sign *
-        elevation + parallactic_angle``). ``0.0`` means unset; I/O
-        routines will recompute it from az/el as needed.
+        Celestial-frame field rotation of the focal plane in degrees
+        (``nasmyth_sign * elevation + parallactic_angle``), exported as
+        the TOAST ``boresight_angle`` column. A derived orientation
+        quantity, not a commandable rotator angle (FYST has no
+        instrument rotator). ``0.0`` means unset; I/O routines will
+        recompute it from az/el as needed.
     metadata : ScienceBlockMetadata or CalibrationBlockMetadata or EmptyBlockMetadata
         Additional per-block metadata. Science blocks populate a
         :class:`ScienceBlockMetadata` shape (ra/dec center, width,
@@ -699,6 +715,8 @@ class TimelineBlock:
         # position can exceed the to position when the telescope slews
         # westward. The block_type discriminator captures the semantic
         # difference; enforcing ordering here would break the scheduler.
+        # ObservingTimeline.validate applies the ordering check per block
+        # type after the fact, where the discriminator is available.
 
     @property
     def duration(self) -> float:
@@ -926,10 +944,10 @@ class TimelineBlock:
     ) -> "TimelineBlock":
         """Construct a SLEW block moving from ``az_start`` to ``az_end``.
 
-        The boresight angle is evaluated at the midpoint of the slew's
-        azimuth range. Callers are expected to compute the slew duration
-        (including any settle time) themselves and pass it in via
-        ``duration``.
+        The boresight angle is evaluated at the arithmetic mid-travel
+        azimuth, ``(az_start + az_end) / 2``. Callers are expected to
+        compute the slew duration (including any settle time)
+        themselves and pass it in via ``duration``.
 
         Parameters
         ----------
@@ -938,9 +956,10 @@ class TimelineBlock:
         duration : float
             Total slew time in seconds (move + settle).
         az_start, az_end : float
-            Initial ("from") and target ("to") azimuths in degrees. Not
-            ordering-checked; westward slews may have
-            ``az_start > az_end``.
+            Initial ("from") and target ("to") azimuths in degrees, in
+            one coherent cable-wrap frame (their difference is the move
+            the mount actually makes). Not ordering-checked; westward
+            slews may have ``az_start > az_end``.
         el : float
             Target elevation in degrees.
         site : Site
@@ -956,7 +975,7 @@ class TimelineBlock:
         TimelineBlock
             A SLEW block with ``scan_type="slew"``.
         """
-        from .utils import circular_mean_deg, compute_nasmyth_rotation
+        from .utils import compute_nasmyth_rotation
 
         empty_meta: EmptyBlockMetadata = {}
         return cls(
@@ -969,12 +988,10 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="slew",
-            # Use a circular mean (atan2 of mean sin/cos) for the mid-azimuth so a
-            # north-straddling slew (e.g. 355 -> 5) yields the true midpoint (0)
-            # rather than the arithmetic mean (180, ~180 deg wrong). az_start and
-            # az_end may be on opposite sides of the north wrap when one position
-            # is normalized to a negative azimuth and the other is not.
-            boresight_angle=compute_nasmyth_rotation(circular_mean_deg(az_start, az_end), el, site),
+            # The arithmetic mean is the true mid-travel azimuth of a
+            # coherent pair; a circular mean would pick the short modular
+            # arc the mount does not travel.
+            boresight_angle=compute_nasmyth_rotation(0.5 * (az_start + az_end), el, site),
             metadata=empty_meta,
         )
 
@@ -1070,8 +1087,10 @@ class TimelineBlock:
 class OverheadModel:
     """Timing parameters for non-science activities.
 
-    Default values are commissioning-era placeholders that should be
-    confirmed by the instrument team.
+    Default values are commissioning-era placeholders. Ownership is
+    per-field: ``retune_duration`` is an instrument-team input (KID
+    readout wall-time); the remaining durations belong to the
+    operations / commissioning team.
 
     Parameters
     ----------
@@ -1151,7 +1170,9 @@ class CalibrationPolicy:
     startup) and never on an idle tick, while every other calibration
     type fires on each scheduler iteration, idle ticks included.
     Cadences are in seconds. Default values are commissioning-era
-    placeholders that should be confirmed by the instrument team.
+    placeholders. Ownership is per-field: ``retune_cadence`` is an
+    instrument-team input; the remaining cadences belong to the
+    operations / commissioning team.
 
     Parameters
     ----------
@@ -1377,6 +1398,22 @@ class ObservingTimeline:
     def validate(self) -> list[str]:
         """Check timeline for common issues.
 
+        Checks, in order: block overlap in time, blocks outside the
+        timeline window, azimuth ordering on science and calibration
+        blocks (slew blocks are from/to pairs and exempt), and pose
+        continuity: each slew must start from the azimuth, and each
+        idle must park at the azimuth and elevation, that the
+        previous pose-setting block established. Science,
+        calibration, and slew blocks hand their ``az_end`` and
+        ``elevation`` forward; an idle leaves the pose unchanged.
+        Only the slew's azimuth is checked, because a slew block
+        records its target elevation and carries no starting
+        elevation to compare. The tracker starts at the first
+        pose-setting block (nothing is checked against the
+        scheduler's bootstrap pose), and it follows the recorded
+        blocks themselves, so an error consistent across a whole
+        timeline is not detectable from the inside.
+
         Returns
         -------
         list of str
@@ -1384,8 +1421,8 @@ class ObservingTimeline:
         """
         warnings_list = []
         sorted_blocks = sorted(self.blocks, key=lambda b: b.t_start.unix)
+        pose_tol = 0.1  # deg; poses are copied through state, so drift is float noise
 
-        # Check for overlaps
         for i in range(len(sorted_blocks) - 1):
             if sorted_blocks[i].t_stop.unix > sorted_blocks[i + 1].t_start.unix + 0.01:
                 warnings_list.append(
@@ -1395,7 +1432,6 @@ class ObservingTimeline:
                     f"{sorted_blocks[i + 1].t_start.iso}"
                 )
 
-        # Check time range
         for b in sorted_blocks:
             if b.t_start.unix < self.start_time.unix - 0.01:
                 warnings_list.append(
@@ -1403,5 +1439,41 @@ class ObservingTimeline:
                 )
             if b.t_stop.unix > self.end_time.unix + 0.01:
                 warnings_list.append(f"Block '{b.patch_name}' ends after timeline: {b.t_stop.iso}")
+
+        for b in sorted_blocks:
+            if b.block_type in (BlockType.SCIENCE, BlockType.CALIBRATION):
+                if b.az_start > b.az_end + 0.01:
+                    warnings_list.append(
+                        f"Unordered azimuth bounds on {b.block_type} block "
+                        f"'{b.patch_name}' at {b.t_start.iso}: az_start "
+                        f"{b.az_start:.3f} > az_end {b.az_end:.3f}"
+                    )
+
+        pose_az: float | None = None
+        pose_el: float | None = None
+        for b in sorted_blocks:
+            if b.block_type == BlockType.SLEW:
+                if pose_az is not None and abs(b.az_start - pose_az) > pose_tol:
+                    warnings_list.append(
+                        f"Slew '{b.patch_name}' at {b.t_start.iso} starts at az "
+                        f"{b.az_start:.3f} but the previous block ended at az "
+                        f"{pose_az:.3f}"
+                    )
+                pose_az, pose_el = b.az_end, b.elevation
+            elif b.block_type == BlockType.IDLE:
+                if pose_az is not None and (
+                    abs(b.az_start - pose_az) > pose_tol or abs(b.elevation - pose_el) > pose_tol
+                ):
+                    warnings_list.append(
+                        f"Idle at {b.t_start.iso} parked at az {b.az_start:.3f} / el "
+                        f"{b.elevation:.2f} but the previous block ended at az "
+                        f"{pose_az:.3f} / el {pose_el:.2f}"
+                    )
+                # Parked: the pose carries through unchanged.
+            else:
+                # Science and calibration blocks end at az_end (a parked
+                # calibration has az_start == az_end, a swept planet cal
+                # genuinely ends at the pass envelope's upper azimuth).
+                pose_az, pose_el = b.az_end, b.elevation
 
         return warnings_list

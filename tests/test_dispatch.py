@@ -248,6 +248,29 @@ _OBSTIME_ARRAY = Time([_T0.iso, _T1.iso, _T2.iso], scale="utc")
 class TestChooseEncoderSolutionObstimeArray:
     """Array-valued ``obstime``: a wrap is sun-safe only if safe at EVERY instant."""
 
+    def test_empty_obstime_array_fails_closed(self):
+        """An empty obstime array raises instead of vacuously passing the sun gate.
+
+        ``list()`` of an empty Time array is ``[]`` and ``all(...)`` over an
+        empty iterable is True, so without the guard every wrap would skip
+        the sun check silently (and the ``slew_safe`` path would IndexError).
+        """
+        site = get_fyst_site()
+
+        def must_not_be_consulted(az, el, t):
+            pytest.fail("sun_safe must not be consulted for an empty obstime")
+
+        with pytest.raises(ValueError, match="empty Time array"):
+            choose_encoder_solution(
+                120.0,
+                45.0,
+                120.0,
+                45.0,
+                _OBSTIME_ARRAY[:0],
+                site,
+                sun_safe=must_not_be_consulted,
+            )
+
     def test_array_obstime_queries_every_instant(self):
         """A predicate safe at all three instants keeps the single in-range wrap.
 

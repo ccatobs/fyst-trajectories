@@ -9,8 +9,8 @@ time, just before a scan task slews to its start point.
    :undoc-members:
    :show-inheritance:
 
-Usage
------
+Usage Examples
+--------------
 
 Read the telescope's current encoder position from the live broadcast, then
 choose the sun-safe azimuth-wrap / encoder ``(az, el)`` to slew to for a scan's

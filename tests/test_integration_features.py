@@ -58,9 +58,6 @@ class TestRiseSetTimes:
             step_hours=0.5,
         )
 
-        # Circumpolar source never rises (already up) so both should be None
-        # if it starts above horizon and stays there
-        # Note: the source might be above horizon at start, so no "rise" is found
         assert rise is None, "Circumpolar source should not have a rise time"
 
     def test_never_visible_source_returns_none(self, coordinates, site):

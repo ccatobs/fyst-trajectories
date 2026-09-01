@@ -3,10 +3,12 @@
 The overhead subpackage is an OFFLINE observing-night simulator. These
 tests pin three fixes:
 
-1. Cable-wrap azimuth normalization. A north-straddling azimuth pair
-   (e.g. 350 deg and 10 deg) must give the short-path slew (~20 deg, not
-   ~340 deg) and a non-flipped boresight (circular mean, not the ~180
-   deg-off arithmetic mean).
+1. Cable-wrap azimuth normalization. Raw astropy azimuths must be
+   placed in the telescope's cable-wrap window before any slew or
+   boresight math: a north-straddling pair (350 deg and 10 deg) must
+   give the short-path slew (~20 deg, not ~340 deg), and a slew
+   block's boresight must sit at the arithmetic mid-travel azimuth of
+   the coherent from/to pair.
 2. Sun-aware pong/daisy duration clip. A pong/daisy scan that is
    sun-unsafe (or drifts into the exclusion radius) must have its
    duration trimmed, mirroring the constant_el branch.
@@ -34,7 +36,7 @@ from fyst_trajectories.overhead.utils import (
 )
 
 # A time/place where a target offset ~20 deg in RA from the Sun is well
-# above the FYST horizon but inside the 50 deg Sun exclusion radius.
+# above the FYST horizon but inside the 45 deg Sun exclusion radius.
 _SUN_TIME = Time("2026-06-15T17:30:00", scale="utc")
 
 
@@ -51,7 +53,7 @@ def sun_radec(coords):
 
 
 class TestNorthStraddleSlew:
-    """Fix 1: a north-straddling azimuth pair takes the short slew path."""
+    """Fix 1: cable-wrap normalization drives slew distance and boresight."""
 
     def test_short_path_slew_time(self, site):
         """Raw [0,360) azimuths 350 and 10 must slew ~20 deg, not ~340 deg."""
@@ -72,14 +74,37 @@ class TestNorthStraddleSlew:
         assert t_raw > 100.0
         assert t_norm < t_raw / 5.0
 
-    def test_boresight_not_flipped(self, site):
-        """A north-straddling slew block uses the circular-mean mid-azimuth."""
-        # az_start/az_end on opposite sides of the north wrap (355, 5): the
-        # arithmetic mean is 180 (~180 deg-wrong boresight); the circular
-        # mean is 0 (correct).
-        block = TimelineBlock.slew(
+    def test_boresight_uses_mid_travel_azimuth(self, site):
+        """A slew block's boresight sits at the arithmetic mid-travel azimuth.
+
+        az_start/az_end arrive in one coherent cable-wrap frame (the
+        scheduler normalizes the slew target relative to the current
+        pose), so the arithmetic mean is the true mid-travel azimuth. A
+        short move across north is recorded as a contiguous pair like
+        (-5, 5); a pair written as (355, 5) is a genuine 350 deg
+        cable-wrap unwind whose mid-travel azimuth is 180, not the 0 a
+        circular mean would report.
+        """
+        # Coherence example, not a discriminator: for a pair this close
+        # the circular and arithmetic means agree.
+        short = TimelineBlock.slew(
             t_start=_SUN_TIME,
             duration=10.0,
+            az_start=-5.0,
+            az_end=5.0,
+            el=50.0,
+            site=site,
+            scan_index=0,
+            patch_name="slew_to_test",
+        )
+        assert short.boresight_angle == pytest.approx(
+            compute_nasmyth_rotation(0.0, 50.0, site), abs=1e-9
+        )
+
+        # The regression pin: the pre-fix circular mean reported 230 here.
+        unwind = TimelineBlock.slew(
+            t_start=_SUN_TIME,
+            duration=120.0,
             az_start=355.0,
             az_end=5.0,
             el=50.0,
@@ -87,15 +112,12 @@ class TestNorthStraddleSlew:
             scan_index=0,
             patch_name="slew_to_test",
         )
-        expected = compute_nasmyth_rotation(circular_mean_deg(355.0, 5.0), 50.0, site)
-        arithmetic = compute_nasmyth_rotation(0.5 * (355.0 + 5.0), 50.0, site)
-
-        assert block.boresight_angle == pytest.approx(expected, abs=1e-9)
-        # And it is genuinely different from the arithmetic-midpoint value.
-        assert abs(block.boresight_angle - arithmetic) == pytest.approx(180.0, abs=1e-6)
+        assert unwind.boresight_angle == pytest.approx(
+            compute_nasmyth_rotation(180.0, 50.0, site), abs=1e-9
+        )
 
     def test_circular_mean_handles_straddle(self):
-        """circular_mean_deg of a north-straddling pair is the true midpoint."""
+        """circular_mean_deg returns the midpoint of the shorter arc."""
         assert circular_mean_deg(355.0, 5.0) == pytest.approx(0.0, abs=1e-9)
         assert circular_mean_deg(350.0, 10.0) == pytest.approx(0.0, abs=1e-9)
         # Non-straddling pair behaves like the ordinary mean.
@@ -108,7 +130,7 @@ class TestSunAwarePongDuration:
     def test_time_until_sun_unsafe_immediate(self, coords, sun_radec, site):
         """A target already inside the exclusion radius is unsafe from t=0."""
         sun_ra, sun_dec = sun_radec
-        # ~20 deg in RA from the Sun -> ~18 deg separation, inside 50 deg.
+        # ~20 deg in RA from the Sun -> ~18 deg separation, inside 45 deg.
         ra = (sun_ra + 20.0) % 360
         dur = _time_until_sun_unsafe(
             ra, sun_dec, _SUN_TIME, 3600.0, coords, site.sun_avoidance.exclusion_radius

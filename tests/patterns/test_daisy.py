@@ -217,7 +217,7 @@ class TestDaisyScanFlags:
         assert np.any(trajectory.scan_flag == SCAN_FLAG_TURNAROUND)
 
     def test_initial_ramp_up_flagged_as_turnaround(self, site):
-        """The first samples (during start_acceleration ramp-up) are non-science."""
+        """The first sample (during start_acceleration ramp-up) is non-science."""
         from fyst_trajectories.trajectory import SCAN_FLAG_TURNAROUND
 
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -235,7 +235,6 @@ class TestDaisyScanFlags:
         pattern = DaisyScanPattern(ra=180.0, dec=-30.0, config=config)
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        # First few samples must be flagged as non-science.
         assert trajectory.scan_flag[0] == SCAN_FLAG_TURNAROUND
 
 

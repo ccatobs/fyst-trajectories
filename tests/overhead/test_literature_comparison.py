@@ -112,8 +112,7 @@ class TestOverallOverheadVsLiterature:
         # complex due to interleaving)
         one_hour = 3600.0
 
-        # In one hour: retune cadence=0 means every scan boundary,
-        # but let's estimate with the default cadence (0 = every scan).
+        # Estimate at one retune per scan boundary (cadence 0).
         # Assume scan duration of ~600s (10 min):
         n_scans = one_hour / 600.0  # ~6 scans
         retune_overhead = n_scans * model.retune_duration  # ~30s

@@ -27,7 +27,7 @@ aliased, is documented in :doc:`../coordinate_systems`.
 Usage Examples
 --------------
 
-**Basic transformation** (vacuum, ACU applies refraction)::
+**Basic transformation** (vacuum; refraction is applied downstream)::
 
     from astropy.time import Time
 
@@ -48,10 +48,10 @@ Usage Examples
 
 .. note::
 
-   ``get_field_rotation()`` returns ``nasmyth_sign * elevation + parallactic_angle``
-   using the Nasmyth port from the site configuration. For the full focal-plane
-   rotation (including instrument rotation), use
-   ``compute_focal_plane_rotation()`` from :doc:`offsets`.
+   ``get_field_rotation()`` uses the Nasmyth port from the site
+   configuration. For the full focal-plane rotation (including
+   instrument rotation), use ``compute_focal_plane_rotation()`` from
+   :doc:`offsets`.
 
 **Solar system bodies**::
 
@@ -86,9 +86,9 @@ Usage Examples
 **Proper motion** (for high PM stars)::
 
     az, el = coords.radec_to_altaz_with_pm(
-        ra=269.452, dec=4.693,
+        ra=269.452, dec=4.693,  # J2000 catalogue position
         pm_ra=-798.58, pm_dec=10328.12,  # mas/yr
-        ref_epoch=Time("J2015.5"),
+        ref_epoch=Time("J2000.0"),
         obstime=Time("2025-06-15T04:00:00", scale="utc"),
         distance=1.8,  # parsecs
     )

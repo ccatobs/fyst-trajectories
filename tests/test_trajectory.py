@@ -151,6 +151,24 @@ class TestTrajectory:
         assert path[0] == [0.0, 100.0, 45.0, 10.0, 1.0]
         assert path[1] == [1.0, 110.0, 46.0, 10.0, 1.0]
 
+    def test_to_path_format_nonzero_time_origin(self):
+        """Row times are re-zeroed to ``times[0]`` so the first row lands on start_time.
+
+        A trajectory whose clock does not begin at 0 (a sliced or re-based
+        one) must not be commanded ``times[0]`` late: the /path body's
+        ``start_time`` is absolute and the rows are relative to it.
+        """
+        traj = Trajectory(
+            times=np.array([100.0, 101.0]),
+            az=np.array([100.0, 110.0]),
+            el=np.array([45.0, 46.0]),
+            az_vel=np.array([10.0, 10.0]),
+            el_vel=np.array([1.0, 1.0]),
+        )
+        path = to_path_format(traj)
+        assert path[0][0] == 0.0
+        assert path[1][0] == 1.0
+
     def _payload_traj(self, with_start_time=True):
         """Build a small 2-point trajectory for /path payload tests."""
         kwargs = dict(
@@ -272,6 +290,20 @@ class TestTrajectory:
         t0 = traj.start_time.unix
         assert rows[0]["timestamp"] == pytest.approx(t0 + 0.0)
         assert rows[5]["timestamp"] == pytest.approx(t0 + 5.0)
+
+    def test_to_trackpoint_format_nonzero_time_origin(self):
+        """A nonzero ``times[0]`` maps the first row exactly onto start_time.unix."""
+        traj = Trajectory(
+            times=np.array([100.0, 101.0]),
+            az=np.array([100.0, 110.0]),
+            el=np.array([45.0, 46.0]),
+            az_vel=np.array([10.0, 10.0]),
+            el_vel=np.array([1.0, 1.0]),
+            start_time=Time("2026-05-28T00:00:00", scale="utc"),
+        )
+        rows = to_trackpoint_format(traj)
+        assert rows[0]["timestamp"] == pytest.approx(traj.start_time.unix)
+        assert rows[1]["timestamp"] == pytest.approx(traj.start_time.unix + 1.0)
 
     def test_to_trackpoint_format_requires_start_time(self):
         """A missing start_time raises ValueError (timestamps are absolute)."""

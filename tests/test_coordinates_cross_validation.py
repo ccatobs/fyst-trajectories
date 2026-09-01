@@ -403,7 +403,7 @@ class TestProperMotionCrossValidation:
         pmra is mu_ra * cos(dec) (Gaia/Hipparcos convention).
         """
         return [
-            ("Barnard's Star", 269.452, 4.694, -798.58, 10328.12),
+            ("Barnard's Star", 269.452, 4.693, -798.58, 10328.12),
             ("Proxima Centauri", 217.429, -62.680, -3781.74, 769.47),
         ]
 

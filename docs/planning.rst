@@ -36,11 +36,11 @@ Plan a Pong survey scan over a 2x2 degree field::
     field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
     block = plan_pong_scan(
         field=field,
-        velocity=0.5,        # deg/s
+        velocity=0.4,        # deg/s
         spacing=0.1,         # deg between scan lines
         num_terms=4,         # Fourier terms for smooth turnarounds
         site=site,
-        start_time=Time("2026-03-15T04:00:00", scale="utc"),
+        start_time=Time("2026-03-15T01:00:00", scale="utc"),
         timestep=0.1,
     )
 
@@ -59,20 +59,19 @@ by its center coordinates and angular extent::
     field = FieldRegion(
         ra_center=0.0,     # deg
         dec_center=-2.0,   # deg
-        width=60.0,        # RA extent in degrees
-        height=14.0,       # Dec extent in degrees
+        width=10.0,        # RA extent in degrees
+        height=6.0,        # Dec extent in degrees
     )
 
     # Dec boundaries are computed automatically
     print(f"Dec range: [{field.dec_min}, {field.dec_max}]")
-    # Dec range: [-9.0, 5.0]
+    # Dec range: [-5.0, 1.0]
 
 Planning a Pong Scan
 --------------------
 
 :func:`~fyst_trajectories.planning.plan_pong_scan` converts a field region into a
-Pong scan trajectory. It automatically computes the Pong period from the field
-dimensions, spacing, and velocity, then generates one full period by default.
+Pong scan trajectory, generating one full Pong period by default.
 
 Basic usage::
 
@@ -90,7 +89,7 @@ Basic usage::
         spacing=0.08,
         num_terms=4,
         site=site,
-        start_time=Time("2026-03-15T22:12:00", scale="utc"),
+        start_time=Time("2026-03-15T01:00:00", scale="utc"),
         timestep=0.1,
         angle=170.0,     # rotation angle (degrees)
     )
@@ -103,7 +102,7 @@ Multiple cycles::
         spacing=0.1,
         num_terms=4,
         site=site,
-        start_time=Time("2026-03-15T22:12:00", scale="utc"),
+        start_time=Time("2026-03-15T23:30:00", scale="utc"),
         timestep=0.1,
         n_cycles=3,      # observe 3 full Pong periods
     )
@@ -119,7 +118,7 @@ With a detector offset (for off-axis PrimeCam modules)::
         spacing=0.1,
         num_terms=4,
         site=site,
-        start_time=Time("2026-03-15T22:12:00", scale="utc"),
+        start_time=Time("2026-03-15T01:00:00", scale="utc"),
         timestep=0.1,
         detector_offset=offset,
     )
@@ -146,17 +145,17 @@ returned config is passed individually through
     site = get_fyst_site()
     base = PongScanConfig(
         timestep=0.1, width=2.0, height=2.0,
-        spacing=0.1, velocity=0.5, num_terms=4, angle=0.0,
+        spacing=0.1, velocity=0.35, num_terms=4, angle=0.0,
     )
 
     # 8 rotations at 22.5 deg spacing.
     configs = plan_pong_rotation_sequence(base, n_rotations=8)
-    [c.angle for c in configs]
+    print([c.angle for c in configs])
     # [0.0, 22.5, 45.0, 67.5, 90.0, 112.5, 135.0, 157.5]
 
     # Schedule each rotation back-to-back.
     field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
-    t0 = Time("2026-03-15T04:00:00", scale="utc")
+    t0 = Time("2026-03-15T00:00:00", scale="utc")
     blocks = []
     for i, cfg in enumerate(configs):
         block = plan_pong_scan(
@@ -205,7 +204,7 @@ Basic usage::
         width=2.0,           # deg on-sky
         height=2.0,          # deg on-sky
         spacing=0.1,         # deg between scan lines
-        velocity=0.5,        # deg/s on-sky
+        velocity=0.4,        # deg/s on-sky
         site=site,
         start_time=Time("2026-03-15T04:00:00", scale="utc"),
     )
@@ -224,14 +223,18 @@ Planning a Constant-Elevation Scan
 
 :func:`~fyst_trajectories.planning.plan_constant_el_scan` auto-computes
 the azimuth range, observation duration, and number of scans from a
-``FieldRegion``, target elevation, and approximate start time:
+``FieldRegion``, target elevation, and approximate start time, and
+returns a :class:`~fyst_trajectories.planning.ScanBlock`. Timing comes
+from the next crossing of the target elevation by the field's RA edges
+at or after ``start_time``, so the scan begins at that crossing rather
+than literally at ``start_time``.
 
-1. Finds when the RA edges of the field cross the target elevation (determines
-   start/end time and total duration).
-2. Computes the azimuth range that covers the entire field at that elevation
-   at the midpoint of the observation.
-3. Derives ``n_scans`` from the duration and single-leg sweep time.
-4. Builds and returns a :class:`~fyst_trajectories.planning.ScanBlock`.
+Other knobs: ``az_padding`` (extra azimuth margin on each side, default
+2.0 deg here; the source-CES planner's same-named knob defaults to
+0.5), ``az_accel`` (the turnaround acceleration, a mount-frame azimuth
+coordinate rate), and ``max_search_hours`` (how far past ``start_time``
+the crossing search looks, 12 h by default; a field whose crossing lies
+beyond it raises ``TargetNotObservableError``).
 
 Basic usage::
 
@@ -240,10 +243,10 @@ Basic usage::
 
     site = get_fyst_site()
 
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=6.0)
     block = plan_constant_el_scan(
         field=field,
-        elevation=50.0,          # fixed elevation in degrees
+        elevation=45.0,          # fixed elevation in degrees
         velocity=0.5,            # az scan speed in deg/s
         site=site,
         start_time="2026-09-15T00:00:00",
@@ -262,7 +265,7 @@ With a detector offset::
     offset = get_primecam_offset("i1")
     block = plan_constant_el_scan(
         field=field,
-        elevation=50.0,
+        elevation=45.0,
         velocity=0.5,
         site=site,
         start_time="2026-09-15T00:00:00",
@@ -285,15 +288,15 @@ supported, and ``rising`` still selects the azimuth half::
 
     site = get_fyst_site()
 
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    field = FieldRegion(ra_center=30.0, dec_center=-47.0, width=10.0, height=6.0)
     block = plan_constant_el_scan(
         field=field,
-        elevation=50.0,
+        elevation=45.0,
         velocity=0.5,
         site=site,
         start_time=Time("2026-09-15T00:00:00", scale="utc"),
         rising=True,
-        lsa_window=(310.0, 10.0),   # 60 deg / 15 = 4 h scan across LSA = 0
+        lsa_window=(310.0, 330.0),   # 20 deg / 15 = 1.33 h scan
     )
 
     print(f"Duration: {block.duration / 3600:.1f}h")
@@ -422,6 +425,8 @@ Other knobs: ``boresight_rot`` (mechanical boresight rotation, deg),
 margin, default 0.5 deg), ``az_branch`` (centre of the azimuth wrap branch),
 and ``allow_partial`` (clip to the observable arc and warn instead of
 raising when the source does not fully cover the footprint at ``el_bore``).
+A sidereal source takes ``ra=`` / ``dec=`` (optionally ``pm_ra`` /
+``pm_dec`` / ``ref_epoch``) in place of ``body=``.
 
 Anchoring to an approximate start time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -558,11 +563,61 @@ only::
 The returned dict is identical to ``plan_source_ces(...).computed_params``
 for the same inputs.
 
+Shared Parameters: Sun Safety and Refraction
+--------------------------------------------
+
+Every planner on this page accepts two cross-cutting keyword
+parameters (all except ``plan_pong_rotation_sequence``, which only
+produces configs and builds nothing).
+
+``sun_safe=`` injects a Sun-safety predicate
+(:class:`~fyst_trajectories.dispatch.SunSafePredicate`) into the
+planner's pre-flight check in place of the built-in scalar radius. This
+is the injection point for the directional CAD-derived model::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_pong_scan
+    from fyst_trajectories.sun_models import make_sun_safe
+
+    site = get_fyst_site()
+    field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
+    block = plan_pong_scan(
+        field=field,
+        velocity=0.4,
+        spacing=0.1,
+        num_terms=4,
+        site=site,
+        start_time=Time("2026-03-15T01:00:00", scale="utc"),
+        timestep=0.1,
+        sun_safe=make_sun_safe("cad"),  # directional pre-flight, not the scalar
+    )
+
+The pre-flight warns (``PointingWarning``), it never refuses; the
+refusing gate lives at dispatch. See :doc:`sun_avoidance` for the
+policies and every place the predicate travels.
+
+``atmosphere=`` sets the refraction model of the planner's underlying
+:class:`~fyst_trajectories.coordinates.Coordinates`. The default
+``None`` means vacuum, and that default is load-bearing: refraction is
+applied downstream at execution time, by exactly one of the Go TCS or
+the ACU, so vacuum output is correct either way. Pass
+``AtmosphericConditions.for_fyst()`` only when the planned trajectory is
+planning or simulation output that never reaches the telescope; a
+refracted trajectory sent to the telescope would be refracted twice.
+
 Scan Block Output
 -----------------
 
-All planning functions return a :class:`~fyst_trajectories.planning.ScanBlock`
-containing:
+The six single-scan planners (``plan_pong_scan``, ``plan_constant_el_scan``,
+``plan_daisy_scan``, ``plan_pong_altaz_scan``, ``plan_daisy_altaz_scan`` and
+``plan_source_ces``) return a
+:class:`~fyst_trajectories.planning.ScanBlock`. The other three entry
+points do not: ``plan_source_ces_passes`` returns a list of these blocks
+(one per pass), ``plan_pong_rotation_sequence`` returns a list of configs,
+and ``compute_source_ces_params`` returns a bare dict, as shown in their
+sections above. A ``ScanBlock`` contains:
 
 ``trajectory``
     The generated :class:`~fyst_trajectories.trajectory.Trajectory`, ready for

@@ -30,7 +30,7 @@ Use with pattern generators:
 
 >>> from astropy.time import Time
 >>> from fyst_trajectories.patterns import TrajectoryBuilder, PongScanConfig
->>> start_time = Time("2026-03-15T04:00:00", scale="utc")
+>>> start_time = Time("2026-03-15T01:00:00", scale="utc")
 >>> trajectory = (
 ...     TrajectoryBuilder(site)
 ...     .at(ra=180.0, dec=-30.0)
@@ -40,7 +40,7 @@ Use with pattern generators:
 ...             width=2.0,
 ...             height=2.0,
 ...             spacing=0.1,
-...             velocity=0.5,
+...             velocity=0.4,
 ...             num_terms=4,
 ...             angle=0.0,
 ...         )
@@ -53,7 +53,16 @@ Use with pattern generators:
 Print trajectory summary:
 
 >>> from fyst_trajectories import print_trajectory
->>> print_trajectory(trajectory, head=3, tail=2)
+>>> print_trajectory(traj, head=3, tail=2)
+Trajectory(n_points=5, duration=4.0s, az=[100.0, 102.0]deg, el=[45.0, 45.0]deg)
+<BLANKLINE>
+   t (s)          az          el      az_vel      el_vel
+--------------------------------------------------------
+    0.00    100.0000     45.0000      1.0000      0.0000
+    1.00    101.0000     45.0000      1.0000      0.0000
+    2.00    102.0000     45.0000      0.0000      0.0000
+    3.00    101.0000     45.0000     -1.0000      0.0000
+    4.00    100.0000     45.0000     -1.0000      0.0000
 """
 
 import math
@@ -86,6 +95,12 @@ class RetuneEvent:
         Wall-clock duration of the event in seconds. Must be positive.
         Events that would extend past the trajectory end are clipped to
         the trajectory end (matching the uniform-cadence path's behaviour).
+
+    Raises
+    ------
+    ValueError
+        If ``t_start`` is non-finite or negative, or ``duration`` is
+        non-finite or not positive.
 
     Notes
     -----
@@ -144,7 +159,8 @@ class Trajectory:
     scan_flag : np.ndarray or None, optional
         Per-sample scan phase flag: 0 = unclassified, 1 = constant-velocity
         science sweep, 2 = turnaround, 3 = retune
-        pause (``SCAN_FLAG_RETUNE``, written by ``inject_retune``). None
+        pause (``SCAN_FLAG_RETUNE``, written by
+        :func:`~fyst_trajectories.trajectory_utils.inject_retune`). None
         means no flagging info is available.
     retune_events : tuple of RetuneEvent, optional
         Event-level provenance for the ``SCAN_FLAG_RETUNE`` entries in
@@ -153,6 +169,13 @@ class Trajectory:
         the uniform-cadence and explicit event-list code paths. Empty tuple
         (the default) means no retune events have been injected. See
         :class:`RetuneEvent`.
+
+    Raises
+    ------
+    ValueError
+        If ``times`` is empty, any array's length differs from
+        ``times``, or any of ``times``/``az``/``el``/``az_vel``/
+        ``el_vel`` contains a non-finite value.
 
     Notes
     -----

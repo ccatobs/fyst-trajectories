@@ -35,10 +35,8 @@ from fyst_trajectories.patterns import (
 # Strategy definitions for generating valid astronomical inputs
 # -----------------------------------------------------------------------------
 
-# Right Ascension: 0 to 360 degrees
 ra_strategy = st.floats(min_value=0.0, max_value=360.0, allow_nan=False, allow_infinity=False)
 
-# Declination: -90 to 90 degrees
 dec_strategy = st.floats(min_value=-90.0, max_value=90.0, allow_nan=False, allow_infinity=False)
 
 # Azimuth: 0 to 360 degrees (telescope limits may be tighter)

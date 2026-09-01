@@ -32,12 +32,15 @@ _TURNAROUND_SPEED_THRESHOLD: float = 0.8
 Samples with offset-frame speed below ``threshold * config.velocity`` are
 classified as SCAN_FLAG_TURNAROUND.
 
-The 0.8 threshold is empirical and matches the natural speed reduction
-at the vertices of a Fourier-truncated triangle wave with the default
-``num_terms = 4`` (harmonics 1, 3, 5, 7 give a peak velocity at the
-midpoint and a ~80% velocity at the vertex). Increasing ``num_terms``
-sharpens the corners and may require this threshold to be lowered;
-decreasing it does the opposite.
+The 0.8 threshold is empirical and matches the natural dip in the
+*diagonal* speed near the vertices of a Fourier-truncated triangle
+wave at ``num_terms = 4``: at a vertex one axis sits at its own
+turning point with zero single-axis velocity, so the diagonal speed
+falls to roughly 80% of the nominal ``velocity`` there (each axis's
+speed peaks partway up its ramp, not at the midpoint). Increasing
+``num_terms`` sharpens the corners, which shortens the flagged
+turnaround regions and monotonically raises the science fraction;
+the threshold itself does not need retuning with ``num_terms``.
 
 No published cross-facility standard exists for this exact fraction, but
 speed-based turnaround detection is the common practice. SO's sotodlib
@@ -148,7 +151,7 @@ def compute_pong_period(config: PongScanConfig) -> tuple[float, int, int]:
     ...     width=2.0,
     ...     height=2.0,
     ...     spacing=0.1,
-    ...     velocity=0.5,
+    ...     velocity=0.4,
     ...     num_terms=4,
     ...     angle=0.0,
     ... )
@@ -187,13 +190,13 @@ class PongScanPattern(CelestialPattern):
     --------
     >>> from astropy.time import Time
     >>> from fyst_trajectories.patterns import PongScanPattern, PongScanConfig
-    >>> start_time = Time("2026-03-15T04:00:00", scale="utc")
+    >>> start_time = Time("2026-03-15T01:00:00", scale="utc")
     >>> config = PongScanConfig(
     ...     timestep=0.1,
     ...     width=2.0,
     ...     height=2.0,
     ...     spacing=0.1,
-    ...     velocity=0.5,
+    ...     velocity=0.4,
     ...     num_terms=4,
     ...     angle=0.0,
     ... )
@@ -291,11 +294,10 @@ class PongScanPattern(CelestialPattern):
         ------
         ValueError
             If ``start_time`` is None.
-        TrajectoryBoundsError
-            If the trajectory exceeds telescope limits.
         TargetNotObservableError
             If the target is below the horizon or outside telescope
-            limits at the requested time.
+            limits at the requested time (bounds violations are
+            wrapped into this error).
         """
         if start_time is None:
             raise ValueError(
@@ -384,14 +386,9 @@ class PongScanPattern(CelestialPattern):
 
         Returns
         -------
-        x_numvert : int
-            Number of vertices along x axis.
-        y_numvert : int
-            Number of vertices along y axis.
-        amp_x : float
-            X amplitude (half-width) in degrees.
-        amp_y : float
-            Y amplitude (half-height) in degrees.
+        tuple
+            ``(x_numvert, y_numvert, amp_x, amp_y)``; see
+            ``_compute_pong_vertices()``.
         """
         return _compute_pong_vertices(self.config.width, self.config.height, self.config.spacing)
 

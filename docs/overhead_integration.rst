@@ -82,7 +82,10 @@ run through a separate path::
 
 fyst-trajectories sits *underneath* both lanes. The core library (Site,
 Coordinates, Patterns, Planning, Offsets, PrimeCam geometry) is imported
-in both. The ``overhead`` subpackage itself is only used in the sim lane.
+in both. The ``overhead`` subpackage itself is only used in the sim
+lane, where the hitmap accumulation the diagram names is
+:func:`~fyst_trajectories.overhead.accumulate_hitmaps` (the
+``overhead`` extra supplies its ``healpy`` dependency).
 
 Planning = Execution invariant
 ------------------------------
@@ -103,8 +106,9 @@ sample-level retune flags for accurate sim hitmaps (which exclude
 retune-flagged samples from coverage). It is not called at execution time;
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` does not call
 it. Nothing on the live path reads those flags: the ``/path`` payload posted
-to the telescope control system is a list of ``[t, az, el, az_vel,
-el_vel]`` rows and carries no retune information. Detector retunes at
+to the telescope control system (the three-key body built by
+``to_path_payload``) carries only ``start_time``, ``coordsys``, and the
+``[t, az, el, az_vel, el_vel]`` point rows, no retune information. Detector retunes at
 execution are dispatched separately by the observatory scheduling layer;
 the trajectory az/el is unaffected either way.
 
@@ -118,12 +122,11 @@ fixed-duration parked blocks by default
 reconstruct.
 
 Setting ``CalibrationPolicy.planet_cal_scan`` instead plans each planet
-calibration as a real multi-pass source-CES sequence via
-:func:`~fyst_trajectories.planning.plan_source_ces_passes`, anchored at the
-scheduler clock: one calibration block per pass, each recording the full
-source-CES parameters in ``metadata["scan_params"]`` and the true scan
-start in ``metadata["t0_scan"]`` (see :ref:`planet-cal-source-ces` in
-:doc:`overhead_model`).
+calibration as a multi-pass source-CES sequence
+(:func:`~fyst_trajectories.planning.plan_source_ces_passes`), recording
+the full source-CES parameters in ``metadata["scan_params"]`` and the
+true scan start in ``metadata["t0_scan"]`` (see
+:ref:`planet-cal-source-ces` in :doc:`overhead_model`).
 
 Those recorded parameters make each pass reconstructable from the
 timeline. :func:`~fyst_trajectories.overhead.schedule_to_trajectories`
@@ -199,11 +202,7 @@ should not. Each is individually correct, and the table below is the map.
        ``source_ces`` so planet-calibration passes recorded as
        ``SourceCESScanParams`` validate.
 
-Each **union** (``ComputedParams``, ``ScanParamsDict``) tracks a
-dataclass/TypedDict attribute annotation, the static shape of a
-``computed_params`` or ``scan_params`` mapping. Each **table**
-(``_SCAN_TYPE_TO_KEYS``, ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``) tracks the call
-sites a runtime validator accepts. The two subpackages are mirror-inverted
+The two subpackages are mirror-inverted
 about ``source_ces``: on the planning side the union is the superset of its
 table (6 vs 5, the union adds ``source_ces``), while on the overhead side the
 table is the superset of its union (4 vs 3, the table adds ``source_ces``).
@@ -212,9 +211,9 @@ The inversion is intentional and must not be equalized.
 Parameter Ownership
 -------------------
 
-A timeline is driven by three categories of input. Each has a natural owner;
-end users of the subpackage should not be guessing at values they do not
-control.
+Three categories of input shape the subpackage's outputs. Each has a natural
+owner; end users of the subpackage should not be guessing at values they do
+not control.
 
 .. list-table::
    :header-rows: 1
@@ -227,9 +226,16 @@ control.
      - Prime-Cam / instrument team
      - ``retune_interval``, ``retune_duration``, ``n_modules``. These
        describe KID thermal drift and readout wall-time, not astronomy.
+       They parameterize
+       :func:`~fyst_trajectories.trajectory_utils.inject_retune` on a
+       single trajectory rather than the timeline; ``retune_duration``
+       alone also reaches the timeline, as
+       ``OverheadModel.retune_duration``.
    * - **Layer 2 (block-level)**: calibration cadences and activity durations
      - Operations / commissioning team
-     - ``CalibrationPolicy`` cadences, ``OverheadModel`` durations. Reflect
+     - ``CalibrationPolicy`` cadences and ``OverheadModel`` durations,
+       excepting the retune fields (``retune_cadence``,
+       ``retune_duration``), which stay with Layer 1's owner. Reflect
        site atmosphere, telescope settling, and calibration strategy, not
        per-proposal knobs.
    * - **Per-proposal**: what to observe
@@ -241,13 +247,6 @@ control.
 ``OverheadModel()`` / ``CalibrationPolicy()`` defaults, but relying on those
 hides physical assumptions and should be avoided outside of quick
 exploratory scripts.
-
-.. note::
-
-   Coverage tooling regenerates motion arrays from the stored
-   ``TimelineBlock`` metadata via
-   :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rather than
-   re-running the scheduler.
 
 Related Reading
 ---------------

@@ -128,9 +128,9 @@ def plan_pong_altaz_scan(
     ...     width=2.0,
     ...     height=2.0,
     ...     spacing=0.1,
-    ...     velocity=0.5,
+    ...     velocity=0.4,
     ...     site=site,
-    ...     start_time=Time("2026-03-15T04:00:00", scale="utc"),
+    ...     start_time=Time("2026-03-15T01:00:00", scale="utc"),
     ... )
     """
     if n_cycles < 1:
@@ -162,7 +162,7 @@ def plan_pong_altaz_scan(
 
     # The period depends only on the on-sky geometry, which is shared with the
     # celestial Pong, so reuse ``compute_pong_period`` via the equivalent
-    # PongScanConfig rather than duplicating the Lissajous period math.
+    # PongScanConfig rather than duplicating the Pong period math.
     period, x_numvert, y_numvert = compute_pong_period(
         PongScanConfig(
             timestep=timestep,

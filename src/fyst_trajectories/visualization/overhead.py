@@ -28,11 +28,11 @@ Render a recorded night from its ECSV timeline:
 ...     plot_sky_coverage,
 ...     plot_timeline_gantt,
 ... )
->>> timeline = read_timeline("timeline.ecsv")
->>> fig = plot_timeline_gantt(timeline, show=False)
->>> fig.savefig("night_gantt.png", dpi=140, bbox_inches="tight")
->>> fig = plot_sky_coverage(timeline, show=False)
->>> fig.savefig("sky_coverage.png", dpi=140, bbox_inches="tight")
+>>> timeline = read_timeline("timeline.ecsv")  # doctest: +SKIP
+>>> fig = plot_timeline_gantt(timeline, show=False)  # doctest: +SKIP
+>>> fig.savefig("night_gantt.png", dpi=140, bbox_inches="tight")  # doctest: +SKIP
+>>> fig = plot_sky_coverage(timeline, show=False)  # doctest: +SKIP
+>>> fig.savefig("sky_coverage.png", dpi=140, bbox_inches="tight")  # doctest: +SKIP
 """
 
 import math

@@ -408,3 +408,41 @@ class TestResolveModuleTag:
         from_list = _resolve_footprint([get_primecam_offset(n) for n in names])
         assert from_tag.center_xi_deg == pytest.approx(from_list.center_xi_deg)
         assert from_tag.center_eta_deg == pytest.approx(from_list.center_eta_deg)
+
+
+class TestIMDesignations:
+    """The instrument team's IM position designations.
+
+    IM0 is the on-axis position and mirror-invariant, so it is aliased to
+    ``c`` today. The ring designations IM1..IM6 do NOT correspond
+    index-for-index to i1..i6 (the schemes number the ring in opposite
+    senses on sky), so they are rejected until the as-built correspondence
+    is confirmed; these tests are the guard against anyone assuming
+    ``i(n) == IM(n)``.
+    """
+
+    @pytest.mark.parametrize("name", ["IM0", "im0", "Im0"])
+    def test_im0_is_the_center_module(self, name):
+        """IM0 resolves to the identical center offset object, any case."""
+        assert get_primecam_offset(name) is PRIMECAM_CENTER
+
+    def test_im0_through_resolve_offset(self):
+        """resolve_offset accepts the IM0 alias."""
+        assert resolve_offset(module="IM0") is PRIMECAM_CENTER
+
+    def test_im0_through_resolve_module_tag_dedups_with_c(self):
+        """IM0 and c are the same module: the tag dedups them to one entry."""
+        offsets = resolve_module_tag("im0,c,center")
+        assert len(offsets) == 1
+        assert offsets[0] is PRIMECAM_CENTER
+
+    @pytest.mark.parametrize("name", ["IM1", "IM2", "IM3", "IM4", "IM5", "IM6"])
+    def test_im_ring_designations_rejected_until_confirmed(self, name):
+        """IM1..IM6 fail loud: the i<->IM ring correspondence is unconfirmed."""
+        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
+            get_primecam_offset(name)
+
+    def test_error_message_advertises_im0(self):
+        """The unknown-module error lists im0 among the available names."""
+        with pytest.raises(KeyError, match="im0"):
+            get_primecam_offset("nope")

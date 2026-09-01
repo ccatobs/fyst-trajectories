@@ -111,6 +111,13 @@ use.
    * - PrimeCam inner ring radius
      - 461.3 mm
      - module constant ``primecam.INNER_RING_RADIUS_MM`` (not a call-time option)
+   * - PrimeCam inner-ring ordering (clocking and parity)
+     - ``i1`` at focal-plane angle -90°; ``i1`` .. ``i6`` counterclockwise
+       on sky. The labels are positional; the instrument team's ``IM0`` ..
+       ``IM6`` designations do not correspond index-for-index, and the
+       mapping is pending confirmation (see :doc:`instrument_offsets`)
+     - module constants ``primecam.PRIMECAM_I1`` .. ``PRIMECAM_I6`` (not a
+       call-time option)
    * - Retune interval
      - 300 s
      - ``inject_retune(retune_interval=...)``

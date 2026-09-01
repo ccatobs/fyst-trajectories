@@ -9,14 +9,25 @@ The registry allows patterns to be:
 Examples
 --------
 Register a pattern with its config class so that the builder can infer
-the pattern type:
+the pattern type (shown with a new name; each name and config class may
+only be registered once):
 
->>> @register_pattern("pong", config=PongScanConfig)
-... class PongPattern(CelestialPattern):
+>>> @register_pattern("my_pattern", config=MyPatternConfig)  # doctest: +SKIP
+... class MyPattern(CelestialPattern):
 ...     pass
 
 Retrieve a pattern:
 
+>>> from fyst_trajectories.patterns import PongScanConfig
+>>> config = PongScanConfig(
+...     timestep=0.1,
+...     width=2.0,
+...     height=2.0,
+...     spacing=0.1,
+...     velocity=0.4,
+...     num_terms=4,
+...     angle=0.0,
+... )
 >>> pattern_cls = get_pattern("pong")
 >>> pattern = pattern_cls(ra=180.0, dec=-30.0, config=config)
 
@@ -71,7 +82,7 @@ def register_pattern(name: str, *, config: type["ScanConfig"] | None = None):
 
     Examples
     --------
-    >>> @register_pattern("my_pattern", config=MyPatternConfig)
+    >>> @register_pattern("my_pattern", config=MyPatternConfig)  # doctest: +SKIP
     ... class MyPattern(CelestialPattern):
     ...     pass
     """
@@ -112,6 +123,16 @@ def get_pattern(name: str) -> type["ScanPattern"]:
 
     Examples
     --------
+    >>> from fyst_trajectories.patterns import PongScanConfig
+    >>> config = PongScanConfig(
+    ...     timestep=0.1,
+    ...     width=2.0,
+    ...     height=2.0,
+    ...     spacing=0.1,
+    ...     velocity=0.4,
+    ...     num_terms=4,
+    ...     angle=0.0,
+    ... )
     >>> PongPattern = get_pattern("pong")
     >>> pattern = PongPattern(ra=180.0, dec=-30.0, config=config)
     """

@@ -71,8 +71,13 @@ class PhaseResult:
         :class:`PatchSelectionPhase`). ``None`` means "no patch
         observable, skip downstream science phases".
     best_az : float | None
-        Instantaneous azimuth of ``selection`` at ``state.current_time``,
-        in degrees. Consumed by :class:`SlewPhase` and
+        Azimuth of ``selection`` at ``state.current_time``, in degrees,
+        placed in the telescope's cable-wrap window on the 360-degree
+        representative nearest ``state.current_az``. A replacement
+        selection phase must preserve that placement:
+        :class:`SlewPhase` measures direct mount travel from the
+        current pose, which is only meaningful when both azimuths
+        share one coherent frame. Consumed by :class:`SlewPhase` and
         :class:`ScienceScanPhase`.
     best_el : float | None
         Instantaneous elevation of ``selection`` at ``state.current_time``,
@@ -229,7 +234,7 @@ def _emit_planet_cal_passes(
 
     Returns ``(emitted, blocks, new_state)``. ``emitted`` is ``False`` when
     the sequence is infeasible (any
-    :class:`~fyst_trajectories.PointingError`) or when no pass finishes
+    :class:`~fyst_trajectories.exceptions.PointingError`) or when no pass finishes
     before ``ctx.end_time``; in that case ``blocks`` is empty and
     ``new_state`` is the unchanged input state. The caller then neither
     emits nor marks the cadence, so the calibration stays due and is
@@ -440,7 +445,9 @@ class PatchSelectionPhase(Phase):
 
     Otherwise, returns no blocks but populates ``selection``,
     ``best_az``, ``best_el`` in the result so downstream phases can
-    consume them.
+    consume them. ``best_az`` is placed in the telescope's cable-wrap
+    window on the representative nearest the current pose, so the
+    slew and boresight math downstream operate in one coherent frame.
     """
 
     def run(self, state: SchedulerState, ctx: SchedulerContext) -> PhaseResult:
@@ -525,7 +532,7 @@ class PatchSelectionPhase(Phase):
             state=state,
             blocks=[],
             selection=best_patch,
-            best_az=_normalize_az(best_az, ctx.site),
+            best_az=_normalize_az(best_az, ctx.site, ref=state.current_az),
             best_el=best_el,
         )
 
@@ -535,9 +542,19 @@ class SlewPhase(Phase):
 
     Uses :func:`~fyst_trajectories.overhead.estimate_slew_time` to
     compute the move time from ``(state.current_az, state.current_el)``
-    to ``(selection.best_az, selection.best_el)``, adds the overhead
-    model's settle time, and emits a SLEW block if the total exceeds
-    1 second. Advances ``current_time`` by the slew duration.
+    to the science pose: ``selection.best_az`` at ``patch.elevation``
+    when the patch pins one, else ``selection.best_el``. When the
+    scan's azimuth range lives on a different cable-wrap branch than
+    the field centre (an explicit ``az_min``/``az_max`` window across
+    the wrap, or a range branch-shifted into the limits), the slew
+    targets the range midpoint instead, so the unwind onto the scan's
+    branch is modelled rather than silently skipped. Adds the overhead
+    model's settle time and emits a SLEW block if the total exceeds
+    1 second; when a block is emitted, ``current_time`` advances by the
+    slew duration and ``current_az`` / ``current_el`` move to the slew
+    target, so blocks emitted before the next science scan (idles,
+    calibrations) carry the post-slew pose. A move under the 1 second
+    threshold emits nothing and leaves the state untouched.
 
     Requires the previous :class:`PatchSelectionPhase` result in
     ``selection``; if the slew would extend past ``ctx.end_time``,
@@ -555,8 +572,21 @@ class SlewPhase(Phase):
         """Emit a slew block, if needed, carrying selection forward."""
         best_patch, best_az, best_el = _unpack_selection(selection, "SlewPhase")
 
+        # Slewing to the field centre's instantaneous elevation would leave
+        # the leg into a pinned-elevation scan unmodelled.
+        slew_el = best_patch.elevation if best_patch.elevation is not None else best_el
+
+        # The same deterministic range ScienceScanPhase computes. When it
+        # sits a full turn from the field centre (explicit wrap-crossing
+        # window, or a branch shift into the limits), slew to the range
+        # midpoint so the unwind onto the scan's branch is a modelled
+        # move; otherwise keep the field centre target unchanged.
+        az_lo_sci, az_hi_sci = _compute_az_range(best_patch, best_az, best_el, ctx.site)
+        mid_sci = 0.5 * (az_lo_sci + az_hi_sci)
+        slew_az = best_az if abs(mid_sci - best_az) <= 180.0 else mid_sci
+
         slew_time = estimate_slew_time(
-            state.current_az, state.current_el, best_az, best_el, ctx.site
+            state.current_az, state.current_el, slew_az, slew_el, ctx.site
         )
         slew_time += ctx.overhead_model.settle_time
 
@@ -576,14 +606,18 @@ class SlewPhase(Phase):
                 t_start=state.current_time,
                 duration=slew_time,
                 az_start=state.current_az,
-                az_end=best_az,
-                el=best_el,
+                az_end=slew_az,
+                el=slew_el,
                 site=ctx.site,
                 scan_index=state.scan_counter,
                 patch_name=f"slew_to_{best_patch.name}",
             )
             blocks.append(slew_block)
-            state = state.advanced(current_time=slew_end)
+            state = state.advanced(
+                current_time=slew_end,
+                current_az=slew_az,
+                current_el=slew_el,
+            )
 
         return PhaseResult(
             state=state,
@@ -597,25 +631,18 @@ class SlewPhase(Phase):
 class ScienceScanPhase(Phase):
     """Emit science subscans for the selected patch, interleaving retunes.
 
-    1. Compute the remaining observable scan duration via
-       ``_compute_scan_duration``.
-    2. If the duration falls below the minimum scan duration, skip the
-       scan: advance ``current_time`` by ``ctx.time_step`` and set
-       ``skip_to_next_iter=True``.
-    3. Otherwise split the scan into ``n_subscans`` (capped by
-       ``ctx.overhead_model.max_scan_duration``). For constant-elevation
-       patches the rising flag and the visit anchor come from the
-       crossing pass chosen by ``_ce_visit_plan`` (the anchor is
-       stamped on every subscan as ``metadata["t0_scan"]`` so each one
-       reconstructs); for other scan types the rising flag falls back
-       to the hour-angle sign. Compute the ordered-bounds azimuth range
-       ``(az_start, az_end)``.
-    4. Emit subscans back-to-back via
-       ``_emit_subscans_with_retunes``, which injects a retune
-       calibration block between subscans whenever the cadence tracker
-       says a retune is due.
-    5. Advance ``current_az`` / ``current_el`` to the scan's final
-       pose and increment ``scan_counter``.
+    Splits the remaining observable duration into subscans capped by
+    ``ctx.overhead_model.max_scan_duration``, injecting a retune
+    calibration block between subscans whenever the cadence tracker
+    says one is due; a window below the minimum scan duration is
+    skipped. For constant-elevation patches the rising flag and the
+    visit anchor come from the crossing pass chosen by
+    ``_ce_visit_plan`` (the anchor is stamped on every subscan as
+    ``metadata["t0_scan"]`` so each one reconstructs); other scan
+    types fall back to the hour-angle sign. Every block of the visit,
+    subscans and boundary retunes alike, is stamped at the science
+    elevation: the patch's pinned ``elevation`` when it has one,
+    otherwise the field centre's elevation at selection time.
     """
 
     def run(
@@ -744,6 +771,10 @@ class ScienceScanPhase(Phase):
             # Splitting produced sub-minimum slices; nothing can be emitted.
             return state, blocks
 
+        # The whole visit sits at the science elevation (the slew already
+        # drove there), so boundary retunes are stamped at it too.
+        sci_el = best_el if best_patch.elevation is None else best_patch.elevation
+
         for sub_idx in range(n_subscans):
             remaining = (ctx.end_time - state.current_time).sec
             retune_spec = _due_retune_spec(state, ctx)
@@ -754,13 +785,12 @@ class ScienceScanPhase(Phase):
                 break
             if retune_spec is not None:
                 state, retune_block = _emit_retune_block(
-                    state, ctx, retune_spec, az_start_sci, az_end_sci, best_el
+                    state, ctx, retune_spec, az_start_sci, az_end_sci, sci_el
                 )
                 blocks.append(retune_block)
 
             actual_duration = min(subscan_duration, (ctx.end_time - state.current_time).sec)
 
-            sci_el = best_el if best_patch.elevation is None else best_patch.elevation
             science_block = TimelineBlock.science(
                 patch=best_patch,
                 t_start=state.current_time,

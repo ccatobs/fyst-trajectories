@@ -104,6 +104,9 @@ def write_timeline(
     ``rising``, the science-block geometry columns ``ra_center``,
     ``dec_center``, ``width``, ``height``, ``velocity``, and the JSON
     payload columns ``scan_params_json`` and ``block_meta_json``).
+    For slew rows ``azmin`` / ``azmax`` carry the from / to azimuths of
+    the move and may be unordered; they are true minimum / maximum
+    bounds only for science and calibration rows.
     The timeline window, site, overhead model, and calibration policy
     are stored in the table header metadata, so ``read_timeline``
     restores them.
@@ -131,13 +134,6 @@ def write_timeline(
             )
 
         meta = block.metadata
-        # TOAST canonical column names azmin/azmax are preserved even though
-        # the Python attributes are az_start/az_end. For slew blocks the
-        # columns therefore carry the "from"/"to" azimuths directly and may
-        # not satisfy azmin <= azmax; consumers that rely on ordered bounds
-        # must filter on block_type first.
-        # Encode any RetuneEvent payload into JSON-native shape before
-        # dumping the extra-metadata column.
         meta_for_json = _encode_retune_events_for_json(dict(meta))
         rows.append(
             {
@@ -209,8 +205,8 @@ def write_timeline(
     table.meta["site_alt"] = timeline.site.elevation * u.m
     # Persist the non-coordinate Site fields that ``_site_from_meta`` would
     # otherwise reset to FYST defaults. nasmyth_port matters most: without it a
-    # custom ``"left"`` port reads back as ``"right"``, flipping the
-    # field-rotation sign.
+    # custom ``"left"`` port reads back as ``"right"``, negating the mechanical
+    # (elevation) term of the field rotation.
     table.meta["site_nasmyth_port"] = timeline.site.nasmyth_port
     table.meta["site_plate_scale"] = timeline.site.plate_scale
     table.meta["site_sun_enabled"] = timeline.site.sun_avoidance.enabled
@@ -465,9 +461,12 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
 def _site_from_meta(meta: dict) -> Site:
     """Reconstruct a ``Site`` from ECSV table metadata.
 
-    If ``site_lat``/``site_lon``/``site_alt`` are present and match the
-    FYST coordinates to 4 decimal places, ``get_fyst_site()`` is used so
-    the returned site has the full FYST default limits and atmosphere.
+    If ``site_lat``/``site_lon`` are present and match the FYST
+    coordinates to 4 decimal places, ``get_fyst_site()`` is used so the
+    returned site has the full FYST default limits and atmosphere; the
+    stored altitude is not compared, so a file carrying FYST lat/lon
+    with a different ``site_alt`` reads back with the FYST 5611.8 m
+    value.
     Otherwise a custom ``Site`` is constructed using the metadata
     coordinates plus the persisted ``nasmyth_port``/``plate_scale``/sun
     radii (older files without those keys fall back to FYST defaults).

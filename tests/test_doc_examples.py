@@ -90,23 +90,23 @@ def test_quickstart_proper_motion():
 
     coords = Coordinates(get_fyst_site())
 
-    # Barnard's Star with proper motion
+    # Barnard's Star, J2000 catalogue position and proper motion
     az, el = coords.radec_to_altaz_with_pm(
         ra=269.452,
         dec=4.693,
         pm_ra=-798.58,
         pm_dec=10328.12,  # mas/yr
-        ref_epoch=Time("J2015.5"),
+        ref_epoch=Time("J2000.0"),
         obstime=Time("2026-06-15T04:00:00"),
         distance=1.8,  # parsecs
     )
     assert isinstance(az, float)
     assert isinstance(el, float)
-    # 10.3"/yr proper motion over ~11 yr shifts the apparent position ~0.0315 deg
+    # 10.4"/yr proper motion over ~26.5 yr shifts the apparent position ~0.076 deg
     # from the zero-PM transform, a real correction, not a no-op.
     az0, el0 = coords.radec_to_altaz(269.452, 4.693, obstime=Time("2026-06-15T04:00:00"))
     sep = np.hypot((az - az0) * np.cos(np.radians(el)), el - el0)
-    assert sep == pytest.approx(0.0315, abs=0.01)
+    assert sep == pytest.approx(0.0761, abs=0.01)
 
 
 # ============================================================================
@@ -138,7 +138,6 @@ def test_pipeline_stage3_trajectory_generation():
         },
     }
 
-    # Initialize site
     site = get_fyst_site()
 
     # Get the I1 module offset (280 GHz, inner ring)
@@ -194,7 +193,6 @@ def test_pipeline_stage4_to_path_format():
     # Each point is [time_offset, az, el, az_vel, el_vel].
     points = to_path_format(trajectory)
 
-    # Verify format
     assert isinstance(points, list)
     assert len(points) > 0
     assert len(points[0]) == 5
@@ -343,25 +341,25 @@ def test_coordsys_proper_motion():
 
     coords = Coordinates(get_fyst_site())
 
-    # Barnard's Star (moves ~10 arcsec/year)
+    # Barnard's Star (moves ~10 arcsec/year); J2000 catalogue position
     az, el = coords.radec_to_altaz_with_pm(
         ra=269.452,
         dec=4.693,
         pm_ra=-798.58,
         pm_dec=10328.12,  # mas/yr (pm_ra includes cos(dec))
-        ref_epoch=Time("J2015.5"),
+        ref_epoch=Time("J2000.0"),
         obstime=Time("2026-06-15T04:00:00", scale="utc"),
         distance=1.8,  # parsecs, optional
     )
     assert isinstance(az, float)
     assert isinstance(el, float)
     # Same Barnard's Star example: the large proper motion shifts the apparent
-    # position ~0.0315 deg from the zero-PM transform.
+    # position ~0.076 deg from the zero-PM transform.
     az0, el0 = coords.radec_to_altaz(
         269.452, 4.693, obstime=Time("2026-06-15T04:00:00", scale="utc")
     )
     sep = np.hypot((az - az0) * np.cos(np.radians(el)), el - el0)
-    assert sep == pytest.approx(0.0315, abs=0.01)
+    assert sep == pytest.approx(0.0761, abs=0.01)
 
 
 # ============================================================================
@@ -379,18 +377,18 @@ def test_planning_field_region_cmb():
     """Test FieldRegion construction example from planning.rst."""
     from fyst_trajectories.planning import FieldRegion
 
-    # Stripe 82 CMB field: 60 deg RA x 14 deg Dec
+    # Equatorial field: 10 deg RA x 6 deg Dec (matches the planning.rst example)
     cmb_field = FieldRegion(
         ra_center=0.0,  # deg (0h RA)
         dec_center=-2.0,  # deg
-        width=60.0,  # RA extent in degrees
-        height=14.0,  # Dec extent in degrees
+        width=10.0,  # RA extent in degrees
+        height=6.0,  # Dec extent in degrees
     )
 
     # Dec boundaries are computed automatically
     print(f"Dec range: [{cmb_field.dec_min}, {cmb_field.dec_max}]")
-    assert cmb_field.dec_min == pytest.approx(-9.0)
-    assert cmb_field.dec_max == pytest.approx(5.0)
+    assert cmb_field.dec_min == pytest.approx(-5.0)
+    assert cmb_field.dec_max == pytest.approx(1.0)
 
 
 def test_planning_plan_pong_scan_multiple_cycles():
@@ -409,7 +407,7 @@ def test_planning_plan_pong_scan_multiple_cycles():
         spacing=0.1,
         num_terms=4,
         site=site,
-        start_time=Time("2026-03-15T22:12:00", scale="utc"),
+        start_time=Time("2026-03-15T23:30:00", scale="utc"),
         timestep=0.1,
         n_cycles=3,  # observe 3 full Pong periods
     )
@@ -454,15 +452,17 @@ def test_planning_plan_source_ces():
 @pytest.mark.parametrize(
     "start_iso",
     [
-        "2026-03-15T22:12:00",  # the corrected, observable time
+        "2026-03-15T01:00:00",  # the corrected, observable, advisory-clean time
     ],
 )
 def test_planning_plan_pong_scan_chandra_deep_field_observable(start_iso):
     """Regression test for docs/planning.rst start_time bug.
 
     The Chandra Deep Field South is below the horizon at FYST at
-    2026-03-15T04:00:00.  It is observable at 2026-03-15T22:12:00 (the
-    corrected time).  This parametrized test locks the corrected time in
+    2026-03-15T04:00:00.  The example first moved to 22:12 (observable but
+    near transit, where the high-elevation advisory fires) and now uses
+    01:00, where the field sits near 30 deg elevation and the example runs
+    advisory-clean.  This parametrized test locks the corrected time in
     place. If someone reverts it to an unobservable value, this test will
     fail loudly.
     """
@@ -594,7 +594,7 @@ def test_plan_pong_rotation_sequence_doc_example():
         width=2.0,
         height=2.0,
         spacing=0.1,
-        velocity=0.5,
+        velocity=0.35,
         num_terms=4,
         angle=0.0,
     )
@@ -623,14 +623,14 @@ def test_plan_pong_rotation_sequence_full_planning_example():
         width=2.0,
         height=2.0,
         spacing=0.1,
-        velocity=0.5,
+        velocity=0.35,
         num_terms=4,
         angle=0.0,
     )
     configs = plan_pong_rotation_sequence(base, n_rotations=8)
 
     field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
-    t0 = Time("2026-03-15T04:00:00", scale="utc")
+    t0 = Time("2026-03-15T00:00:00", scale="utc")
     blocks = []
     for i, cfg in enumerate(configs):
         block = plan_pong_scan(
@@ -651,9 +651,10 @@ def test_no_refraction_atmosphere_pattern():
     """Test that ``Coordinates(site)`` produces vacuum coordinates without warning.
 
     Bare ``Coordinates(site)`` defaults to vacuum (no refraction) because
-    the FYST ACU applies atmospheric refraction downstream. No warning
-    is emitted. ``AtmosphericConditions.no_refraction()`` is available as
-    an explicit opt-in synonym for the same behaviour.
+    refraction is applied downstream at execution time, by exactly one of
+    the Go TCS or the ACU. No warning is emitted.
+    ``AtmosphericConditions.no_refraction()`` is available as an explicit
+    opt-in synonym for the same behaviour.
     """
     from fyst_trajectories import AtmosphericConditions, Coordinates, get_fyst_site
 

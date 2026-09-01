@@ -30,14 +30,8 @@ elevation floor, and sun-proximity highlighting on each target curve.
 
 .. autofunction:: fyst_trajectories.visualization.plot_visibility
 
-.. py:data:: DEFAULT_VISIBILITY_TARGETS
-   :type: tuple[str, ...]
-
-   Default target list for :func:`plot_visibility` and
-   :func:`plot_sky_view`: every BODY entry of
-   :data:`~fyst_trajectories.observability.FLUX_CALIBRATORS` (the planets
-   and the Moon; satellites are excluded because they duplicate their
-   parent-body proxy curve).
+.. autodata:: fyst_trajectories.visualization.DEFAULT_VISIBILITY_TARGETS
+   :no-value:
 
 **Tonight's calibrators from FYST** (planets + Moon, elevation and
 azimuth panels, sun zones from the site configuration)::
@@ -156,10 +150,8 @@ circle)::
 
 Pass a polar axes via ``ax=`` (``fig.add_subplot(..., projection="polar")``)
 to compose side-by-side policy panels into one figure. Two layers other
-all-sky viewers draw are deliberately absent, blocked on data rather than
-code: the surveyed landscape horizon (no Cerro Chajnantor skyline survey
-exists, and the telescope elevation floor dominates the terrain from the
-summit) and site-structure occlusion (no FYST as-built model).
+all-sky viewers draw are absent for want of data: the surveyed landscape
+horizon and site-structure occlusion.
 
 Focal-Plane Footprint on Sky
 ----------------------------
@@ -211,7 +203,7 @@ Generate hit-density maps in RA/Dec for multiple detector modules::
     from fyst_trajectories.visualization import plot_hit_map
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     # Generate a Pong scan trajectory
     trajectory = (
@@ -219,7 +211,7 @@ Generate hit-density maps in RA/Dec for multiple detector modules::
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
             timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            velocity=0.4, num_terms=4, angle=0.0,
         ))
         .duration(300.0)
         .starting_at(start_time)

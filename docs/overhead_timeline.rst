@@ -41,13 +41,18 @@ Each sky region is defined as an :class:`~fyst_trajectories.overhead.ObservingPa
 
 Supported ``scan_type`` values: ``"constant_el"``, ``"pong"``, ``"daisy"``.
 
+``priority`` and ``weight`` tune the selection when several patches are
+observable at once: each candidate's score is multiplied by
+``weight / priority``, so lower ``priority`` values and higher
+``weight`` values win. Both default to 1.0.
+
 **From an existing FieldRegion**::
 
     from fyst_trajectories.planning import FieldRegion
 
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=60.0, height=14.0)
+    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=6.0)
     patch = ObservingPatch.from_field_region(
-        field, name="Stripe82", scan_type="constant_el", velocity=1.0, elevation=50.0,
+        field, name="Stripe82", scan_type="constant_el", velocity=1.0, elevation=45.0,
     )
 
 Custom CalibrationPolicy
@@ -89,11 +94,11 @@ for all available fields.
             name="CMB",
             ra_center=0.0,
             dec_center=-2.0,
-            width=60.0,
-            height=14.0,
+            width=10.0,
+            height=6.0,
             scan_type="constant_el",
             velocity=1.0,
-            elevation=50.0,
+            elevation=45.0,
         ),
     ]
 
@@ -168,11 +173,18 @@ To rebuild az/el/time arrays for every science block (e.g. for coverage
 simulation),
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` walks the
 timeline, calls the appropriate ``plan_*_scan`` function for each science
-block, and returns a list of ``(TimelineBlock, ScanBlock)`` pairs. Pass
+block, and returns a list of ``(TimelineBlock, ScanBlock)`` pairs. Each
+science trajectory covers only its own block's time window: the subscans
+of one constant-elevation visit come back as consecutive slices of a
+single crossing solve rather than one full pass each, so summing samples
+over the pairs no longer multiply-counts a visit. The pair's
+``ScanBlock.duration`` is the slice; its ``computed_params`` and
+``summary`` still describe the full solved pass. Pass
 ``science_only=False`` to also rebuild planet calibrations that were
-planned as source-CES passes. Blocks that are no longer feasible at
-execution time (e.g. because of drifting elevation) are logged and
-skipped rather than raising.
+planned as source-CES passes (one block per pass, returned whole).
+Blocks that no longer reconstruct (a source that has drifted out of the
+recorded geometry, or a window that no longer overlaps the re-solved
+scan) are logged and skipped rather than raising.
 
 ::
 
@@ -181,12 +193,16 @@ skipped rather than raising.
     results = schedule_to_trajectories(timeline)
     for timeline_block, scan_block in results:
         traj = scan_block.trajectory
-        # feed traj.az, traj.el, traj.times into coverage or upload code
+        # feed traj.az, traj.el, traj.times into coverage code
 
 Validation
 ----------
 
-A timeline can be checked for overlapping blocks or out-of-range entries::
+A timeline can be checked for common authoring defects: blocks that
+overlap in time or fall outside the timeline window, science or
+calibration blocks whose azimuth bounds are unordered, and pose
+discontinuities (a slew whose start azimuth, or an idle whose parked
+az/el, does not match where the previous block left the telescope)::
 
     warnings = timeline.validate()
     if warnings:

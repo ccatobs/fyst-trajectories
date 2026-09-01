@@ -1,8 +1,9 @@
 """Shared helpers for the ``plan_*_scan`` entry points.
 
-These are internal utilities; the public entry points live in
-:mod:`fyst_trajectories.planning` (via ``pong.py``, ``daisy.py``, and
-``constant_el.py``).
+These are internal utilities; the public ``plan_*_scan`` entry points
+live in :mod:`fyst_trajectories.planning` (the per-scan-type modules
+``pong.py``, ``daisy.py``, ``constant_el.py``, ``pong_altaz.py``,
+``daisy_altaz.py``, and ``source_ces.py``).
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def _build_trajectory_with_options(
 ) -> Trajectory:
     """Finish configuring a :class:`TrajectoryBuilder` and call ``.build()``.
 
-    The three ``plan_*_scan`` entry points share an identical tail:
+    The ``plan_*_scan`` entry points share an identical tail:
     apply an optional atmosphere, apply an optional detector offset,
     then build. Centralising that here keeps the call sites down to
     one line and ensures the option-application order stays in sync
@@ -133,13 +134,14 @@ def _build_altaz_trajectory(
     atmosphere: AtmosphericConditions | None,
     detector_offset: InstrumentOffset | None,
 ) -> Trajectory:
-    """Build an altaz-pattern trajectory (ConstantEl, Linear).
+    """Build a trajectory from an AltAz-pattern config.
 
-    Wraps the fluent ``TrajectoryBuilder`` chain used by
-    :func:`plan_constant_el_scan`. Unlike celestial patterns, altaz
-    patterns do not need an ``.at(ra, dec)`` call, but they still want
-    a ``start_time`` so the generated trajectory carries a proper UTC
-    timestamp.
+    Wraps the fluent ``TrajectoryBuilder`` chain shared by the AltAz
+    planners (``plan_constant_el_scan``, ``plan_pong_altaz_scan``,
+    ``plan_daisy_altaz_scan``) and the source-CES planner. Unlike
+    celestial patterns, altaz patterns do not need an ``.at(ra, dec)``
+    call, but they still want a ``start_time`` so the generated
+    trajectory carries a proper UTC timestamp.
 
     Parameters
     ----------

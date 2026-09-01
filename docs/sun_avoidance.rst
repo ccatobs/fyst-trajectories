@@ -48,7 +48,10 @@ library, the common home of FYST's Sun-zone geometry:
 - ``"cad"``: the same library's directional CAD-derived zone. The minimum
   Sun separation runs 50-90° with the Sun's direction in the mount frame,
   which is FYST's own hardware model. Opt-in today, and expected to
-  become the FYST default in a future release.
+  become the FYST default in a future release. Both library-backed
+  models also take padding knobs, ``maxoffset=`` (map half-extent) and
+  ``tracking_module=`` (boresight-to-module distance for an off-axis
+  module), which tighten the verdict; see :doc:`api/sun_models`.
 
 The shared library is an optional dependency, deliberately not bundled
 with fyst-trajectories while the scalar model is the default and the
@@ -89,6 +92,34 @@ radius::
     # scalar 45°        True
     # cone 50°          True
     # CAD zone 50-90°   False
+
+When the Sun is high, the zone becomes an elevation cap
+-------------------------------------------------------
+
+An exclusion radius around a nearly-overhead Sun covers *every* azimuth
+above some elevation. The largest possible separation between a point at
+elevation ``el`` and the Sun at elevation ``sun_el`` is the arc over the
+zenith, ``180° - el - sun_el``; once ``el >= 180° - radius - sun_el``,
+no azimuth is safe. FYST's latitude sits within half a degree of the
+solstice solar declination, so around midsummer the Sun transits almost
+exactly overhead (``sun_el`` up to about 90°); with the 45° scalar
+radius the cap on those days falls to about 45° elevation, barely above
+the exclusion radius itself. The example below takes a milder November
+afternoon (``sun_el`` about 82°), where the cap sits near 53°::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import Coordinates, get_fyst_site
+
+    coords = Coordinates(get_fyst_site())
+    t = Time("2026-11-15T16:45:00", scale="utc")  # Sun at el 82
+    print(bool(coords.is_sun_safe(az=90.0, el=60.0, obstime=t)))  # False
+    print(bool(coords.is_sun_safe(az=90.0, el=40.0, obstime=t)))  # True
+
+At elevation 60° here, *every* azimuth returns ``False``, not just the
+Sun-facing ones. The cap is a property of any radius-style policy,
+scalar or cone alike, and the directional CAD zone behaves the same way
+at its larger per-direction minima. It lifts as the Sun descends.
 
 Planning a night
 ----------------
@@ -204,6 +235,10 @@ Where the check runs
    * - ``plan_*_scan(..., sun_safe=)``
      - Pre-flight on the field center at the start time. Warns
        (``PointingWarning``), never refuses.
+   * - ``plan_source_ces(...)`` and its siblings
+     - Pre-flight sweep along the resolved arc (subsampled in time; at
+       the low edge, midpoint, and high edge of the azimuth throw).
+       Warns, never refuses.
    * - ``validate_sun_avoidance(site, az, el, times)``
      - Checks the whole trajectory span (subsampled). Warns once: at or
        inside the exclusion radius, otherwise inside the warning radius.
@@ -219,8 +254,9 @@ Where the check runs
      - Overrides the scalar radii; ``sun_avoidance_enabled=False``
        disables the check entirely (tests and engineering only).
 
-The telescope control system enforces its own hard limits independently.
-Nothing here is an interlock.
+The telescope control system independently enforces its own hard
+position and velocity limits, not Sun geometry. Nothing here is an
+interlock.
 
 See also
 --------

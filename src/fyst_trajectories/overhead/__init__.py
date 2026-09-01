@@ -11,11 +11,11 @@ observing patches and produces a complete timeline with calibration injection.
 
    The retune events emitted by :class:`CalibrationPolicy` (between
    subscans / iterations) are independent of the in-scan retune samples
-   that :func:`fyst_trajectories.inject_retune` injects on a single
+   that :func:`fyst_trajectories.trajectory_utils.inject_retune` injects on a single
    :class:`~fyst_trajectories.trajectory.Trajectory`. The two layers own
    different retune timing knobs (operations team vs instrument team, see
    :doc:`overhead_integration`); a workflow that applies
-   :func:`~fyst_trajectories.inject_retune` and then schedules the result
+   :func:`~fyst_trajectories.trajectory_utils.inject_retune` and then schedules the result
    through this subpackage will see retune flags from both systems.
 
 Examples
@@ -50,6 +50,7 @@ Generate a one-night timeline:
 ... )
 >>> stats = compute_budget(timeline)
 >>> print(f"Efficiency: {stats['efficiency']:.1%}")
+Efficiency: 26.5%
 >>> write_timeline(timeline, "timeline.ecsv")
 """
 

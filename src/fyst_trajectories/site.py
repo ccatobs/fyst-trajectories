@@ -35,7 +35,7 @@ Get the default FYST site:
 Load a custom (non-FYST) configuration from YAML:
 
 >>> from fyst_trajectories.site import Site
->>> site = Site.from_config("/path/to/custom_config.yaml")
+>>> site = Site.from_config("/path/to/custom_config.yaml")  # doctest: +SKIP
 """
 
 import functools
@@ -141,10 +141,10 @@ genuinely over-limit plans still warn.
 # circle the survey planner schedules against, so planning and dispatch agree
 # on which sky is available. That baseline is not yet formalised in an
 # interface control document, so treat it as commissioning-era. It is an
-# observing policy, not a hardware safety limit: the ACU enforces its own
-# (smaller) keep-out circle as the last line of defence, and the telescope
-# control system rejects requests against that same circle before they
-# reach the ACU.
+# observing policy, not a hardware safety limit: these radii configure this
+# library's own sun-safety checks (Coordinates.is_sun_safe and the planning
+# and validation helpers built on it), and nothing downstream is guaranteed
+# to enforce them.
 #
 # This scalar is deliberately NOT the directional model. FYST's CAD-derived
 # zone (sa_safe_CAD_20231030.csv) requires 50-90 deg depending on the Sun's
@@ -225,7 +225,16 @@ class AtmosphericConditions:
     the raw constructor: :meth:`for_fyst` for typical Cerro Chajnantor
     submm conditions (sets ``obswl=200 µm`` so astropy uses the radio
     refraction model), or :meth:`no_refraction` to explicitly disable
-    refraction (vacuum coordinates, useful for cross-validation).
+    refraction (vacuum coordinates, equivalent to the default).
+
+    .. warning::
+
+       :meth:`for_fyst` is for planning and simulation only (visibility,
+       observability checks, coverage studies), where the output is never
+       sent to the telescope. Refraction is applied downstream at
+       execution time, so trajectory-generation code paths must stay on
+       the vacuum default; a trajectory generated with refracted
+       conditions would be refracted twice.
 
     Parameters
     ----------
@@ -253,9 +262,11 @@ class AtmosphericConditions:
     See Also
     --------
     AtmosphericConditions.for_fyst :
-        Factory for FYST-typical submm conditions (recommended default).
+        Factory for FYST-typical submm conditions (planning and
+        simulation only).
     AtmosphericConditions.no_refraction :
-        Factory for vacuum (refraction-disabled) coordinates.
+        Factory for vacuum (refraction-disabled) coordinates, the
+        trajectory-generation default.
     """
 
     pressure: float
@@ -311,11 +322,14 @@ class AtmosphericConditions:
     ) -> "AtmosphericConditions":
         """Create FYST-typical atmospheric conditions with submm refraction.
 
+        For planning and simulation only (visibility, observability
+        checks, coverage studies): refraction is applied downstream at
+        execution time, so trajectories built for the telescope must
+        stay on the vacuum default.
+
         Convenience factory that defaults to a "typical winter night on
         Cerro Chajnantor" weather profile and forces ``obswl=200 µm`` so
-        astropy switches to its radio-IR refraction model. The radio
-        model is wavelength-independent above ~100 µm; any value above
-        that threshold covers all FYST submillimeter bands.
+        astropy switches to its radio-IR refraction model.
         Without this factory, callers who pass realistic
         pressure/temperature/humidity but forget ``obswl`` silently get
         astropy's optical (1 µm) refraction model.
@@ -529,9 +543,17 @@ class Site:
         Which Nasmyth port instruments are mounted on. Determines the sign
         of the elevation component in focal-plane rotation. One of "right"
         (+1), "left" (-1), or "cassegrain" (0). Default is "right".
-    plate_scale : float
+    plate_scale : float, optional
         Telescope plate scale in arcsec/mm. Used to convert focal-plane
-        positions (mm) to angular offsets (arcsec).
+        positions (mm) to angular offsets (arcsec). Default is 0.0,
+        which maps every ``InstrumentOffset.from_focal_plane`` position
+        to a zero offset; ``get_fyst_site()`` sets the FYST value.
+
+    Raises
+    ------
+    ValueError
+        If ``nasmyth_port`` is not one of ``"right"``, ``"left"``, or
+        ``"cassegrain"``.
 
     Examples
     --------
@@ -539,7 +561,8 @@ class Site:
     >>> site = get_fyst_site()
     >>> print(site.name)
     FYST
-    >>> print(site.location)  # Returns astropy EarthLocation
+    >>> print(site.location)  # an astropy EarthLocation
+    (2227337..., -5441704..., -2477446...) m
     """
 
     name: str
@@ -619,7 +642,7 @@ class Site:
 
         Examples
         --------
-        >>> site = Site.from_config("/path/to/custom.yaml")
+        >>> site = Site.from_config("/path/to/custom.yaml")  # doctest: +SKIP
         """
         config_path = Path(config_path)
         if not config_path.exists():

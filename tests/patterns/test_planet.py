@@ -129,7 +129,6 @@ class TestPlanetTrackPattern:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            # Should NOT raise as parallactic angle is now available
             adjusted = apply_detector_offset(trajectory, offset, site)
 
         assert adjusted.n_points == trajectory.n_points

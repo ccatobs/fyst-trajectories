@@ -13,14 +13,15 @@ Usage Examples
 
 **Catch an unobservable target**::
 
-    from fyst_trajectories import plan_pong_scan, FieldRegion, get_fyst_site
-    from fyst_trajectories.exceptions import TargetNotObservableError
     from astropy.time import Time
+
+    from fyst_trajectories import FieldRegion, get_fyst_site, plan_pong_scan
+    from fyst_trajectories.exceptions import TargetNotObservableError
 
     try:
         block = plan_pong_scan(
             field=FieldRegion(ra_center=180.0, dec_center=80.0, width=2.0, height=2.0),
-            velocity=0.5,
+            velocity=0.4,
             spacing=0.1,
             num_terms=4,
             site=get_fyst_site(),

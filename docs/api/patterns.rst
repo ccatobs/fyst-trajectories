@@ -14,14 +14,14 @@ The pattern type is automatically inferred from the config class::
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(get_fyst_site())
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
             timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            velocity=0.4, num_terms=4, angle=0.0,
         ))
         .duration(300.0)
         .starting_at(start_time)
@@ -46,14 +46,14 @@ TrajectoryBuilder
     from fyst_trajectories.primecam import get_primecam_offset
 
     site = get_fyst_site()
-    start_time = Time("2026-03-15T04:00:00", scale="utc")
+    start_time = Time("2026-03-15T01:00:00", scale="utc")
 
     trajectory = (
         TrajectoryBuilder(site)
         .at(ra=180.0, dec=-30.0)
         .with_config(PongScanConfig(
-            timestep=0.1, width=1.0, height=1.0, spacing=0.1,
-            velocity=0.5, num_terms=4, angle=0.0,
+            timestep=0.1, width=2.0, height=2.0, spacing=0.1,
+            velocity=0.4, num_terms=4, angle=0.0,
         ))
         .for_detector(get_primecam_offset("i1"))
         .duration(60.0)
@@ -63,6 +63,13 @@ TrajectoryBuilder
 
 Base Classes
 ------------
+
+The split is what the builder requires of you:
+:class:`~fyst_trajectories.patterns.CelestialPattern` subclasses take a
+sky center via ``.at(ra, dec)`` and need ``.starting_at()``;
+:class:`~fyst_trajectories.patterns.AltAzPattern` subclasses skip
+``.at()``, though the planet and satellite trackers still need
+``.starting_at()`` for their ephemerides.
 
 .. autoclass:: fyst_trajectories.patterns.ScanPattern
    :members:
@@ -169,39 +176,42 @@ Pattern Classes
 Pattern Selection
 -----------------
 
-+-------------------+------------------+-------------------+
-| Pattern           | Base Class       | Key Config Params |
-+===================+==================+===================+
-| ``sidereal``      | CelestialPattern | ``ra``, ``dec``   |
-+-------------------+------------------+-------------------+
-| ``planet``        | AltAzPattern     | ``body``          |
-+-------------------+------------------+-------------------+
-| ``satellite``     | AltAzPattern     | ``body``          |
-+-------------------+------------------+-------------------+
-| ``pong``          | CelestialPattern | ``width``,        |
-|                   |                  | ``height``,       |
-|                   |                  | ``spacing``       |
-+-------------------+------------------+-------------------+
-| ``pong_altaz``    | AltAzPattern     | ``az_center``,    |
-|                   |                  | ``el_center``,    |
-|                   |                  | ``width``,        |
-|                   |                  | ``height``        |
-+-------------------+------------------+-------------------+
-| ``daisy``         | CelestialPattern | ``radius``,       |
-|                   |                  | ``velocity``      |
-+-------------------+------------------+-------------------+
-| ``daisy_altaz``   | AltAzPattern     | ``az_center``,    |
-|                   |                  | ``el_center``,    |
-|                   |                  | ``radius``,       |
-|                   |                  | ``velocity``      |
-+-------------------+------------------+-------------------+
-| ``constant_el``   | AltAzPattern     | ``az_start``,     |
-|                   |                  | ``az_stop``,      |
-|                   |                  | ``elevation``     |
-+-------------------+------------------+-------------------+
-| ``linear``        | AltAzPattern     | ``az_velocity``,  |
-|                   |                  | ``el_velocity``   |
-+-------------------+------------------+-------------------+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 30 54
+
+   * - Pattern
+     - Base Class
+     - Key Config Params
+   * - ``sidereal``
+     - CelestialPattern
+     - ``timestep`` only; the center comes from
+       ``TrajectoryBuilder.at(ra, dec)``
+   * - ``planet``
+     - AltAzPattern
+     - ``body``
+   * - ``satellite``
+     - AltAzPattern (via ``PlanetTrackPattern``)
+     - ``body``, ``satellite_kernel``
+   * - ``pong``
+     - CelestialPattern
+     - ``width``, ``height``, ``spacing``, ``velocity``, ``num_terms``
+   * - ``pong_altaz``
+     - AltAzPattern
+     - ``az_center``, ``el_center``, plus the pong geometry fields
+   * - ``daisy``
+     - CelestialPattern
+     - ``radius``, ``velocity``, ``turn_radius``
+   * - ``daisy_altaz``
+     - AltAzPattern
+     - ``az_center``, ``el_center``, plus the daisy fields
+   * - ``constant_el``
+     - AltAzPattern
+     - ``az_start``, ``az_stop``, ``elevation``, ``az_speed``,
+       ``az_accel``
+   * - ``linear``
+     - AltAzPattern
+     - ``az_start``, ``el_start``, ``az_velocity``, ``el_velocity``
 
 Registry Functions (Advanced)
 -----------------------------
@@ -209,7 +219,7 @@ Registry Functions (Advanced)
 For interactive discovery or dynamic scenarios where pattern names are
 determined at runtime::
 
-    from fyst_trajectories import list_patterns, get_pattern
+    from fyst_trajectories import get_pattern, list_patterns
     from fyst_trajectories.patterns import PongScanConfig, get_pattern_for_config
 
     # List available patterns

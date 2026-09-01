@@ -59,10 +59,13 @@ class SchedulerState:
 
         The ``(current_az=180.0, current_el=50.0)`` initialization is a
         bare bootstrap: the telescope is assumed to start roughly pointed
-        at the southern horizon at a mid-sky elevation. The first slew
-        block computed from this position replaces these values; they
-        only influence the *first* slew-time estimate, not subsequent
-        scheduling decisions.
+        at the southern horizon at a mid-sky elevation. These values are
+        the recorded pose until the first emitted slew or science scan
+        replaces them, so any calibration or idle block emitted before
+        that point is stamped at this position. The bootstrap azimuth
+        also seeds the cable-wrap frame: the first selected target is
+        placed on the representative nearest it, and each later target
+        relative to the pose before it.
         """
         return cls(
             current_time=start_time,
@@ -84,6 +87,25 @@ class SchedulerContext:
     Holds all configuration that remains constant across the entire
     timeline: patches, site, coordinate transform, overhead/calibration
     models, constraint list, time window, and idle time step.
+
+    Attributes
+    ----------
+    patches : list of ObservingPatch
+        The candidate sky regions the scheduler selects among.
+    site : Site
+        Telescope site configuration.
+    coords : Coordinates
+        Coordinate transform bound to ``site``.
+    overhead_model : OverheadModel
+        Per-activity durations and scan split thresholds.
+    calibration_policy : CalibrationPolicy
+        Calibration cadences.
+    constraints : list of Constraint
+        Patch-selection constraints, scored per candidate each tick.
+    start_time, end_time : Time
+        The timeline window.
+    time_step : float
+        Idle-tick step in seconds.
     """
 
     patches: list[ObservingPatch]
@@ -101,9 +123,10 @@ class SchedulerContext:
     #: The Sun *constraint* is bound at construction time (see ``build``).
     sun_safe: SunSafePredicate | None = None
     #: Per-run memo of constant-elevation crossing-pass solves, keyed
-    #: ``(patch_name, rising)`` with values ``("ok", t_open, t_close)`` or
-    #: ``("miss", solved_from)``. Written only by the scheduler helpers
-    #: (:func:`.helpers._ce_crossing_corridor`); a cache, not state.
+    #: ``(patch_name, elevation, rising)`` (name, float, bool) with values
+    #: ``("ok", t_open, t_close)`` or ``("miss", solved_from)``. Written
+    #: only by the scheduler helper ``helpers._ce_crossing_corridor``; a
+    #: cache, not state.
     ce_corridors: dict = field(default_factory=dict)
 
     @classmethod

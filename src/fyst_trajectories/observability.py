@@ -79,7 +79,7 @@ class TargetKind(str, enum.Enum):
     """A major body resolved directly by astropy (planet, Moon, Sun)."""
     SATELLITE = "satellite"
     """A planetary moon. Its position is approximated by its
-    ``parent_body`` (e.g. Titan -> Saturn), which is adequate (<= ~3 arcmin)
+    ``parent_body`` (e.g. Titan -> Saturn), which is adequate (<= ~3.5 arcmin)
     for observability but flagged via ``ObservabilityReport.position_approximate``."""
     FIXED = "fixed"
     """A fixed ICRS RA/Dec source."""
@@ -569,7 +569,9 @@ def check_observability(
 
     Returns one :class:`ObservabilityReport` per input target, in input order.
     It never raises for an unobservable target (the reason is reported); it
-    raises only on a genuinely unknown target name or a malformed AVOID body.
+    raises only on a genuinely unknown target name, a malformed AVOID body,
+    or invalid arguments (inconsistent elevation bounds, a non-positive
+    ``window_step_minutes``, a mis-shaped ``sun_safe.batch`` result).
 
     The Sun check is always-on (thermal/hardware safety, independent of
     ``avoid``); the ``avoid`` list is exclusively for caller-specified
@@ -586,7 +588,8 @@ def check_observability(
         The instant to evaluate (and the start of the horizon window).
     avoid : list of AvoidZone, optional
         Bright-source exclusion zones. Each body must be a major body
-        resolvable by ``get_body_altaz``.
+        resolvable by
+        :meth:`~fyst_trajectories.coordinates.Coordinates.get_body_altaz`.
     site : Site, optional
         Observing site. Defaults to :func:`~fyst_trajectories.site.get_fyst_site`.
     horizon_hours : float, optional
@@ -626,6 +629,14 @@ def check_observability(
     -------
     list of ObservabilityReport
         One report per input target, in order.
+
+    Raises
+    ------
+    ValueError
+        If a target name is unknown, an AVOID body cannot be resolved,
+        ``el_min`` exceeds ``el_max``, ``window_step_minutes`` is not
+        positive with a horizon requested, or an injected
+        ``sun_safe.batch`` returns the wrong shape for the horizon grid.
     """
     site = get_fyst_site() if site is None else site
     coords = Coordinates(site, atmosphere=atmosphere)

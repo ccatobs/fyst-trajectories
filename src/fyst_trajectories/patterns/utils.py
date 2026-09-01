@@ -189,7 +189,6 @@ def normalize_azimuth(
 
     shifted = az_unwrapped + shift
 
-    # Verify shifted range is within telescope limits.
     shifted_min = float(shifted.min())
     shifted_max = float(shifted.max())
     if shifted_min < limits.azimuth.min or shifted_max > limits.azimuth.max:

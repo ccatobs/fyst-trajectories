@@ -9,7 +9,8 @@ the planners, and :func:`~fyst_trajectories.dispatch.choose_encoder_solution`:
   ``site.sun_avoidance`` (today's default behaviour, no extra dependency).
 - ``"cone"``: the shared `ccatobs/sun-avoidance
   <https://github.com/ccatobs/sun-avoidance>`_ library's cone mode at a
-  caller-chosen radius.
+  caller-chosen radius (a CCAT-internal repository; the link is not
+  publicly accessible).
 - ``"cad"``: the same library's full directional CAD-derived zone
   (``sa_safe_CAD_20231030.csv``, minimum-separation 50-90 deg depending on
   the Sun's clock angle). The site's scalar radii are today's default
@@ -505,6 +506,12 @@ def make_sun_safe(
         On an unknown model, an invalid ``radius`` combination, a
         ``min_solar_altitude`` outside [-90, 90], or a negative/non-finite
         ``maxoffset``.
+
+    Warns
+    -----
+    PointingWarning
+        If ``tracking_module`` is not one the pinned shared library
+        recognises (the upstream padding silently resolves to zero).
 
     Examples
     --------

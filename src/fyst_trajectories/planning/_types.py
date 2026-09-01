@@ -37,9 +37,9 @@ class PongComputedParams(TypedDict):
     period : float
         Pattern period in seconds for one full Pong cycle.
     x_numvert : int
-        Number of vertices along the x-axis of the Lissajous lattice.
+        Number of vertices along the x-axis of the Pong vertex lattice.
     y_numvert : int
-        Number of vertices along the y-axis of the Lissajous lattice.
+        Number of vertices along the y-axis of the Pong vertex lattice.
     n_cycles : int
         Number of full pattern cycles in the planned observation.
     """
@@ -61,9 +61,9 @@ class PongAltAzComputedParams(TypedDict):
     period : float
         Pattern period in seconds for one full Pong cycle.
     x_numvert : int
-        Number of vertices along the x-axis of the Lissajous lattice.
+        Number of vertices along the x-axis of the Pong vertex lattice.
     y_numvert : int
-        Number of vertices along the y-axis of the Lissajous lattice.
+        Number of vertices along the y-axis of the Pong vertex lattice.
     n_cycles : int
         Number of full pattern cycles in the planned observation.
     az_center : float
@@ -154,7 +154,8 @@ class SourceCESComputedParams(TypedDict):
     az_throw : float
         Total azimuth throw in degrees.
     v_az : float
-        Solved (or user-supplied) azimuth drift rate in deg/s.
+        Solved (or user-supplied) azimuth drift rate in deg/s. A
+        mount-frame azimuth *coordinate* rate, not an on-sky speed.
     el_bore : float
         Fixed boresight elevation in degrees.
     boresight_rot : float
@@ -419,10 +420,10 @@ class ScanBlock:
 
     Examples
     --------
-    >>> block = plan_pong_scan(...)
-    >>> print(block.summary)
-    >>> print(f"Duration: {block.duration:.1f}s")
-    >>> print(f"Points: {block.trajectory.n_points}")
+    >>> block = plan_pong_scan(...)  # doctest: +SKIP
+    >>> print(block.summary)  # doctest: +SKIP
+    >>> print(f"Duration: {block.duration:.1f}s")  # doctest: +SKIP
+    >>> print(f"Points: {block.trajectory.n_points}")  # doctest: +SKIP
     """
 
     trajectory: Trajectory

@@ -59,7 +59,6 @@ class TestRadecToAltaz:
         obstime = Time("2026-06-15T12:00:00", scale="utc")
 
         _az, el = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
-        # From Chile (latitude ~-23), this should be visible
         assert el > 0, "South polar source should be above horizon from Chile"
 
     def test_array_input(self, coordinates):
@@ -749,12 +748,12 @@ class TestProperMotion:
         numeric result here will change and force a deliberate review
         of the Coordinates.radec_to_altaz_with_pm implementation.
         """
-        # Barnard's Star Gaia DR2 epoch (J2015.5) parameters
+        # Barnard's Star, J2000 catalogue position and proper motion
         ra = 269.452
         dec = 4.693
         pm_ra = -798.58
         pm_dec = 10328.12
-        ref_epoch = Time("J2015.5")
+        ref_epoch = Time("J2000.0")
         obstime = Time("2025-06-15T04:00:00", scale="utc")
 
         az_no_dist, el_no_dist = coordinates.radec_to_altaz_with_pm(

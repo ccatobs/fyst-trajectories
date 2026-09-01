@@ -27,6 +27,10 @@ from fyst_trajectories.overhead.scheduler import (
     ScienceScanPhase,
     SlewPhase,
 )
+from fyst_trajectories.overhead.scheduler.helpers import (
+    _compute_az_range,
+    _normalize_az,
+)
 
 
 def _make_ctx(
@@ -242,10 +246,12 @@ class TestSlewPhase:
         ctx = _ce_ready_ctx(ce_patch, overhead_model=overhead)
         state = _initial_state(ctx)
         selection = PatchSelectionPhase().run(state, ctx)
-        # Simulate a state where the telescope is already at the patch.
+        # Simulate a state where the telescope is already at the science
+        # pose: the slew targets the pinned patch elevation, not the
+        # field centre's instantaneous elevation.
         assert selection.best_az is not None
         assert selection.best_el is not None
-        at_patch = state.advanced(current_az=selection.best_az, current_el=selection.best_el)
+        at_patch = state.advanced(current_az=selection.best_az, current_el=ce_patch.elevation)
 
         result = SlewPhase().run(at_patch, ctx, selection=selection)
 
@@ -262,12 +268,17 @@ class TestSlewPhase:
 
         result = SlewPhase().run(state, ctx, selection=selection)
 
-        # Slew from state's (180, 50) to deep56's ~(115, 29): a large ~65 deg az move.
+        # Slew from state's (180, 50) to deep56's science pose (~115 az at
+        # the pinned el=50): a large ~65 deg az move.
         assert len(result.blocks) == 1
         block = result.blocks[0]
         assert str(block.block_type) == "slew"
         assert block.az_start == state.current_az
         assert block.az_end == selection.best_az
+        assert block.elevation == ce_patch.elevation
+        # The slew establishes the pose downstream blocks are stamped with.
+        assert result.state.current_az == selection.best_az
+        assert result.state.current_el == ce_patch.elevation
         # Pin the dominant az move against the ~65 deg expectation stated above
         # (tolerance covers minor ephemeris drift in the CE corridor anchor).
         assert abs(block.az_end - block.az_start) == pytest.approx(65.1, abs=1.5)
@@ -524,3 +535,136 @@ class TestRisingSetting:
         )
         science = [b for b in timeline.blocks if b.block_type == BlockType.SCIENCE]
         assert science == []
+
+
+class TestCoherentAzimuthFrames:
+    """The scheduler's azimuth frame stays coherent from slew to scan."""
+
+    def test_normalize_az_ref_picks_nearest_representative(self):
+        site = get_fyst_site()
+        # Without ref: the window-centre representative (seam at az 270).
+        assert _normalize_az(280.0, site) == pytest.approx(-80.0)
+        # With ref, the in-limits representative nearest the pose wins.
+        assert _normalize_az(280.0, site, ref=260.0) == pytest.approx(280.0)
+        assert _normalize_az(280.0, site, ref=-150.0) == pytest.approx(-80.0)
+        # A representative outside the limits is never chosen: 365 is out
+        # of [-180, 360], so a pose at 355 still gets 5.
+        assert _normalize_az(5.0, site, ref=355.0) == pytest.approx(5.0)
+
+    def test_compute_az_range_explicit_window_contiguous(self):
+        """A wrap-crossing az_min/az_max window stays one contiguous range."""
+        site = get_fyst_site()
+        patch = ObservingPatch(
+            name="win",
+            ra_center=150.0,
+            dec_center=2.2,
+            width=4.0,
+            height=4.0,
+            scan_type="constant_el",
+            velocity=0.5,
+            elevation=45.0,
+            scan_params={"az_min": 350.0, "az_max": 15.0},
+        )
+        lo, hi = _compute_az_range(patch, 316.8, 45.0, site)
+        assert lo == pytest.approx(-10.0)
+        assert hi == pytest.approx(15.0)
+
+    def test_compute_az_range_width_branch_shift(self):
+        """A range poking past az_max shifts both endpoints together."""
+        site = get_fyst_site()
+        patch = ObservingPatch(
+            name="edge",
+            ra_center=150.0,
+            dec_center=2.2,
+            width=10.0,
+            height=4.0,
+            scan_type="pong",
+            velocity=0.5,
+        )
+        lo, hi = _compute_az_range(patch, 355.0, 45.0, site)
+        assert lo == pytest.approx(-12.071, abs=1e-3)
+        assert hi == pytest.approx(2.071, abs=1e-3)
+        assert lo <= hi
+
+    def test_slew_follows_scan_branch(self):
+        """An explicit wrap-crossing window pulls the slew onto its branch.
+
+        Pre-fix the slew targeted the field centre (316.8) while the scan
+        was placed at (-10, 15): a ~327 deg cable-wrap unwind modelled as
+        zero time, invisible to validate() because the pose tracker
+        follows the recorded blocks.
+        """
+        ce = ObservingPatch(
+            name="win",
+            ra_center=150.0,
+            dec_center=2.2,
+            width=4.0,
+            height=4.0,
+            scan_type="constant_el",
+            velocity=0.5,
+            elevation=45.0,
+            scan_params={"az_min": 350.0, "az_max": 15.0},
+        )
+        ctx = _make_ctx(patches=[ce])
+        state = _initial_state(ctx)
+        sel = PhaseResult(state=state, blocks=[], selection=ce, best_az=316.8, best_el=44.0)
+
+        result = SlewPhase().run(state, ctx, selection=sel)
+
+        block = result.blocks[0]
+        # The slew targets the scan range's midpoint on its branch, and
+        # the pose follows it.
+        assert block.az_end == pytest.approx(2.5)
+        assert result.state.current_az == pytest.approx(2.5)
+        lo, hi = _compute_az_range(ce, sel.best_az, sel.best_el, ctx.site)
+        assert abs(0.5 * (lo + hi) - result.state.current_az) <= 180.0
+
+    def test_slew_keeps_field_centre_on_same_branch(self):
+        """Without a branch split the slew target is the field centre, exactly."""
+        ce = _deep56_ce_patch()
+        ctx = _make_ctx(patches=[ce])
+        state = _initial_state(ctx)
+        sel = PhaseResult(state=state, blocks=[], selection=ce, best_az=114.83, best_el=29.05)
+
+        result = SlewPhase().run(state, ctx, selection=sel)
+
+        assert result.blocks[0].az_end == 114.83
+        assert result.state.current_az == 114.83
+
+
+class TestRetuneElevation:
+    """Boundary retunes are stamped at the science elevation."""
+
+    def test_retune_uses_pinned_elevation(self):
+        """A pinned-el patch's boundary retune carries the pinned elevation."""
+        ce_patch = _deep56_ce_patch()  # pins elevation=50.0
+        overhead = OverheadModel()
+        start = Time("2026-06-15T02:00:00", scale="utc")
+        window = overhead.min_scan_duration + overhead.retune_duration + 1.0
+        ctx = _make_ctx(
+            patches=[ce_patch],
+            start_time=start.isot,
+            end_time=(start + TimeDelta(window, format="sec")).isot,
+            overhead_model=overhead,
+        )
+        state = _initial_state(ctx)
+
+        # best_el deliberately differs from the pinned elevation so the
+        # test discriminates: pre-fix the retune was stamped at best_el.
+        state, blocks = ScienceScanPhase._emit_subscans_with_retunes(
+            state=state,
+            ctx=ctx,
+            best_patch=ce_patch,
+            best_el=29.0,
+            n_subscans=1,
+            subscan_duration=window,
+            rising=True,
+            az_start_sci=100.0,
+            az_end_sci=140.0,
+            t0_scan=None,
+        )
+        retunes = [b for b in blocks if str(b.scan_type) == "retune"]
+        science = [b for b in blocks if str(b.block_type) == "science"]
+        assert retunes and science
+        assert retunes[0].elevation == ce_patch.elevation
+        assert science[0].elevation == ce_patch.elevation

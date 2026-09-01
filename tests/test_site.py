@@ -384,7 +384,6 @@ class TestCassegrainFocalPlaneRotation:
         )
         offset = InstrumentOffset(dx=5.0, dy=3.0, instrument_rotation=10.0)
 
-        # rotation = 0 * el + 10 + pa
         rot_low = compute_focal_plane_rotation(
             20.0,
             cass_site,
