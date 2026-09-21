@@ -25,22 +25,8 @@ def assert_timeline_valid(timeline, site):
     """
     assert timeline.validate() == []
 
-    blocks = sorted(timeline.blocks, key=lambda b: b.t_start.unix)
-
-    # 0.1 s slack on the time comparisons here: block edges are unix seconds
-    # that abut to within scheduler round-off, not exactly.
-    for i in range(len(blocks) - 1):
-        assert blocks[i].t_stop.unix <= blocks[i + 1].t_start.unix + 0.1, (
-            f"Overlap: '{blocks[i].patch_name}' ends at {blocks[i].t_stop.iso} "
-            f"but '{blocks[i + 1].patch_name}' starts at {blocks[i + 1].t_start.iso}"
-        )
-
-    for b in blocks:
-        assert b.t_start.unix >= timeline.start_time.unix - 0.1
-        assert b.t_stop.unix <= timeline.end_time.unix + 0.1
-
-    # 0.1 deg slack on the elevation-limit comparisons below (degrees, not seconds).
-    for b in blocks:
+    # 0.1 deg slack on the elevation-limit comparisons below.
+    for b in timeline.blocks:
         if b.block_type == "science":
             assert b.elevation >= site.telescope_limits.elevation.min - 0.1
             assert b.elevation <= site.telescope_limits.elevation.max + 0.1
@@ -51,7 +37,7 @@ def assert_timeline_valid(timeline, site):
 
 
 class TestGenerateTimeline:
-    """Tests for generate_timeline()."""
+    """A generated night validates: priority order, cal blocks, scan caps, sun, horizon."""
 
     def test_single_patch_one_night(self):
         site = get_fyst_site()
@@ -259,8 +245,8 @@ class TestGenerateTimeline:
         site = get_fyst_site()
         coords = Coordinates(site)
 
-        # Pick RA=60 at ~08:00 UTC, source will be setting at FYST.
-        # This creates a scenario where the source sets during a long scan.
+        # RA=60, Dec=-30 is descending through this window and crosses the
+        # 20 deg floor at ~20:13, so the last scan must be clipped.
         patches = [
             ObservingPatch(
                 name="setting_source",
@@ -275,8 +261,8 @@ class TestGenerateTimeline:
         timeline = generate_timeline(
             patches=patches,
             site=site,
-            start_time="2026-06-15T07:00:00",
-            end_time="2026-06-15T12:00:00",
+            start_time="2026-06-15T17:00:00",
+            end_time="2026-06-15T22:00:00",
             overhead_model=OverheadModel(max_scan_duration=3600.0),
         )
         assert_timeline_valid(timeline, site)
@@ -319,7 +305,7 @@ class TestGenerateTimeline:
 
 
 class TestTimeUntilSet:
-    """Tests for the _time_until_set helper."""
+    """The full window near transit, a clipped one for a setting source, zero below."""
 
     def test_near_transit_source_returns_max(self):
         """A source near transit stays high, should get full requested duration."""
@@ -336,18 +322,15 @@ class TestTimeUntilSet:
         """A source that sets within the window should return a clipped duration."""
         site = get_fyst_site()
         coords = Coordinates(site)
-        # RA=60, Dec=-30 at 08:00 UTC, this source is heading towards setting
-        # at FYST. The full 2-hour window should be clipped.
-        t = Time("2026-06-15T08:00:00", scale="utc")
-        dur = _time_until_set(60.0, -30.0, t, 7200.0, coords, 20.0)
-        # Should be meaningfully less than 7200 (source sets within 2 hours)
-        # but still positive (source is currently above el_min).
+        # RA=60, Dec=-30 at 19:30 UTC is at el ~29 deg and descending; it
+        # crosses 20 deg at ~20:13, inside the 2-hour window.
+        t = Time("2026-06-15T19:30:00", scale="utc")
         _, el = coords.radec_to_altaz(np.array([60.0]), np.array([-30.0]), t)
-        if float(el[0]) > 20.0:
-            assert 0.0 < dur < 7200.0
+        assert float(el[0]) > 20.0, f"source unexpectedly below el_min: {float(el[0]):.1f} deg"
+        dur = _time_until_set(60.0, -30.0, t, 7200.0, coords, 20.0)
+        assert 0.0 < dur < 7200.0
 
     def test_source_already_below_returns_zero(self):
-        """A source already below el_min should return 0."""
         site = get_fyst_site()
         coords = Coordinates(site)
         # RA=60/dec=-30 at 03:00 UTC is well below the horizon at FYST (el ~ -37),

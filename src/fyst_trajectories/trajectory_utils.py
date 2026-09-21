@@ -49,15 +49,14 @@ if TYPE_CHECKING:
     from .dispatch import SunSafePredicate
 
 
-#: Default wall-clock duration of a single retune event (seconds).
-#: Used as the default for both the inter-scan retunes scheduled by
-#: :class:`~fyst_trajectories.overhead.CalibrationPolicy` (via
-#: :attr:`~fyst_trajectories.overhead.OverheadModel.retune_duration`)
-#: and the in-scan retunes injected by :func:`inject_retune` for
-#: per-module staggering. The two code paths are independent (different
-#: layers, different retune semantics) but share the same nominal
-#: wall-time; exposing the constant here keeps them in sync if the
-#: instrument team re-baselines the value.
+#: Default wall-clock duration of a single in-scan retune gap (seconds):
+#: the per-module tone correction that :func:`inject_retune` stamps into
+#: a trajectory every ``retune_interval``. This is a different operation
+#: from the whole-array retune reserved between scan blocks
+#: (:class:`~fyst_trajectories.overhead.OverheadModel`'s ``retune_duration``,
+#: minutes of probe-tone placement plus a target sweep). The two values
+#: are independent and are deliberately not kept in sync; re-baseline
+#: each with its own instrument-team measurement.
 DEFAULT_RETUNE_DURATION_SEC: float = 5.0
 
 
@@ -169,7 +168,11 @@ def validate_trajectory_dynamics(
     AccelerationLimitWarning
         If any axis acceleration exceeds its configured limit.
     PointingWarning
-        If the trajectory has too few points for meaningful validation.
+        If the trajectory has too few points for meaningful validation, or if
+        high elevation compresses on-sky azimuth motion: either the coordinate
+        azimuth rate exceeds twice the on-sky rate at the fastest sample, or
+        the azimuth is constant and the trajectory reaches cos(el) below 0.5
+        (elevation above about 60 deg).
     """
     if not (np.all(np.isfinite(az)) and np.all(np.isfinite(el)) and np.all(np.isfinite(times))):
         raise ValueError("Non-finite values (NaN or Inf) detected in trajectory az/el/times arrays")
@@ -227,14 +230,20 @@ def validate_trajectory_dynamics(
     cos_el = np.cos(np.radians(el))
     min_cos_el = cos_el.min()
     if min_cos_el > 0 and max_az_vel > 0:
-        on_sky_az_vel = np.abs(az_vel) * cos_el
-        max_on_sky = on_sky_az_vel.max()
+        # Judge the fastest azimuth sample against its OWN on-sky rate. The
+        # global maxima of the two are generally reached at different samples,
+        # and comparing those understates the pinch whenever the trajectory is
+        # fastest somewhere other than where it is highest.
+        i_fast = int(np.argmax(np.abs(az_vel)))
+        cos_el_at_fast = float(cos_el[i_fast])
+        on_sky_at_fast = max_az_vel * cos_el_at_fast
         # Warn when coordinate velocity exceeds on-sky by >2x (el > ~60 deg)
-        if max_az_vel > 2.0 * max_on_sky:
+        if max_az_vel > 2.0 * on_sky_at_fast:
             warnings.warn(
                 f"High elevation reduces on-sky azimuth speed to "
-                f"{max_on_sky:.2f} deg/s (coordinate: {max_az_vel:.2f} deg/s, "
-                f"min cos(el)={min_cos_el:.3f}). Verify scan design is appropriate.",
+                f"{on_sky_at_fast:.2f} deg/s where the trajectory moves fastest "
+                f"(coordinate: {max_az_vel:.2f} deg/s, cos(el)={cos_el_at_fast:.3f}). "
+                f"Verify scan design is appropriate.",
                 PointingWarning,
                 stacklevel=2,
             )
@@ -324,10 +333,12 @@ def validate_trajectory(
     VelocityLimitWarning, AccelerationLimitWarning
         If any velocity or acceleration exceeds its configured limit.
     PointingWarning
-        If any subsampled trajectory point is within the sun exclusion
-        or warning radius (the sun check samples roughly every 60
-        seconds; see :func:`validate_sun_avoidance` for the gap this
-        leaves).
+        If the trajectory has too few points for full dynamics validation, if
+        high elevation compresses on-sky azimuth motion (see
+        :func:`validate_trajectory_dynamics`), or if any subsampled trajectory
+        point is within the sun exclusion or warning radius (the sun check
+        samples roughly every 60 seconds; see :func:`validate_sun_avoidance`
+        for the gap this leaves).
     """
     validate_trajectory_bounds(site, trajectory.az, trajectory.el)
     validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
@@ -399,7 +410,10 @@ def validate_sun_avoidance(
     el : np.ndarray
         Elevation array in degrees.
     times : Time or np.ndarray
-        Absolute times for each trajectory point.
+        Absolute times for each trajectory point. A plain numeric array is
+        accepted only together with ``sun_safe``, which owns its own notion
+        of time; the built-in check needs a :class:`~astropy.time.Time` to
+        solve the Sun ephemeris against.
     coords : Coordinates, optional
         Pre-constructed Coordinates instance. Created internally if
         not provided.
@@ -416,7 +430,10 @@ def validate_sun_avoidance(
         using the same ~60 s subsampling for parity and performance. The
         injected model owns its own boundary, so only
         an "EXCLUSION ZONE" warning is emitted (no separate warning-radius
-        band). Advisory either way. See
+        band). Advisory either way. The whole check, injected predicate
+        included, is skipped when ``site.sun_avoidance.enabled`` is
+        ``False``; enable it on the ``Site`` even when the scalar radii are
+        not the model you intend to use. See
         :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
 
     Warns
@@ -428,9 +445,24 @@ def validate_sun_avoidance(
         "EXCLUSION ZONE" warning is emitted for any subsample the
         predicate reports unsafe. Points between subsamples are not
         checked.
+
+    Raises
+    ------
+    TypeError
+        If ``times`` is not a :class:`~astropy.time.Time` and no
+        ``sun_safe`` predicate was supplied.
     """
     if not site.sun_avoidance.enabled:
         return
+
+    if sun_safe is None and not isinstance(times, Time):
+        # The built-in branch below hands ``times`` to the Sun ephemeris,
+        # which needs a real Time.
+        raise TypeError(
+            "times must be an astropy Time for the built-in Sun check; a plain "
+            f"numeric array is accepted only with an injected sun_safe predicate, "
+            f"got {type(times).__name__}."
+        )
 
     if coords is None:
         coords = Coordinates(site)
@@ -601,12 +633,12 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     ``DisallowUnknownFields``, so the body must be exactly
     ``{"start_time": <abs Unix s>, "coordsys": "Horizon", "points": [...]}``:
 
-    - ``coordsys`` is **required** and must be ``"Horizon"``; these are
-      nominal (vacuum) az/el rows per P-INCM-ICD-0003-A Eq.(1), carrying no
-      refraction, SPEM, or non-repeatable pointing terms (those are applied
-      downstream at OCS and/or the ACU), and ICRS ``/path`` velocities are
-      unimplemented in Go TCS. Omitting ``coordsys`` or adding any extra key
-      yields HTTP 400.
+    - ``coordsys`` is **required**; use ``"Horizon"`` for trajectory upload:
+      these are nominal (vacuum) az/el rows per P-INCM-ICD-0003-A Eq.(1),
+      carrying no refraction, SPEM, or non-repeatable pointing terms (those are
+      applied downstream at execution time, by exactly one of the Go TCS or the
+      ACU), and ICRS ``/path`` velocities are unimplemented in Go TCS. Omitting
+      ``coordsys`` or adding any extra key yields HTTP 400.
     - ``points`` times are **relative** seconds; ``start_time`` is **absolute**
       Unix seconds (``trajectory.start_time.unix``). Do not conflate the two.
 
@@ -643,7 +675,7 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     ).tolist()
 
 
-def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
+def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict[str, object]:
     """Assemble the full Go TCS ``/path`` request body for a trajectory.
 
     Wraps :func:`to_path_format` with the two scalar keys the Go TCS
@@ -663,12 +695,12 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
         or ``"ICRS"``. Use ``"Horizon"`` for trajectory upload: the rows are
         nominal (vacuum) az/el per P-INCM-ICD-0003-A Eq.(1), carrying no
         refraction, SPEM, or non-repeatable pointing terms (those are applied
-        downstream at OCS and/or the ACU), and ICRS ``/path`` velocities are
-        unimplemented in Go TCS.
+        downstream at execution time, by exactly one of the Go TCS or the ACU),
+        and ICRS ``/path`` velocities are unimplemented in Go TCS.
 
     Returns
     -------
-    dict
+    dict of str to object
         ``{"start_time": <abs Unix s>, "coordsys": coordsys, "points": [...]}``,
         ready to JSON-serialize and POST to Go TCS ``/path``. ``start_time``
         is absolute Unix seconds; ``points`` times are relative seconds.
@@ -694,7 +726,7 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> dict:
     about 10 seconds in the future is rejected with HTTP 400. This
     function does not pre-check that, because the remaining lead keeps
     shrinking between serialization and POST; the dispatching layer owns
-    the floor (the PCS scan tasks push a late scheduled start out to now
+    the floor (the typed scan tasks push a late scheduled start out to now
     plus a 10 s dispatch buffer before planning).
     """
     if coordsys not in ("Horizon", "ICRS"):
@@ -727,7 +759,6 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
 
     Lowers a :class:`~fyst_trajectories.trajectory.Trajectory` to the
     per-point representation the Vertex ACU's ProgramTrack stack consumes,
-    the same rows the Go TCS ``/path`` endpoint builds internally, but ready
     for a consumer that drives the ACU **directly** (e.g. the socs ACU
     agent's ``UploadPtStack`` path) rather than through Go TCS. Use
     :func:`to_path_payload` for the Go TCS ``/path`` route; use this for
@@ -748,8 +779,9 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     ``group_flag = 1`` is set on the first
     :data:`TRACKPOINT_NEW_LEG_GROUP_SIZE` points of each new science leg
     (front-loading the stack, matching the SO ACU driver). ``el_flag`` is
-    always 0; FYST scans hold or el-nod within a leg, so the ACU profiler
-    keys off azimuth. Batching the rows for upload is left to the consumer.
+    always 0: the leg flags emitted here describe the azimuth sweep structure,
+    and the socs ACU driver likewise leaves ``el_flag`` 0 on its azimuth scans.
+    Batching the rows for upload is left to the consumer.
 
     Parameters
     ----------
@@ -802,8 +834,15 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
             az_flag = 0
 
         # Front-load the ProgramTrack stack at the start of each science leg.
-        if sf == SCAN_FLAG_SCIENCE and (i == 0 or int(scan_flag[i - 1]) != SCAN_FLAG_SCIENCE):
-            group_countdown = TRACKPOINT_NEW_LEG_GROUP_SIZE
+        if sf == SCAN_FLAG_SCIENCE:
+            if i == 0 or int(scan_flag[i - 1]) != SCAN_FLAG_SCIENCE:
+                group_countdown = TRACKPOINT_NEW_LEG_GROUP_SIZE
+        else:
+            # The countdown belongs to the leg that opened it. A science leg
+            # shorter than the group size would otherwise carry the flag on
+            # past its own end, marking the following turnaround samples as
+            # the start of a new leg.
+            group_countdown = 0
         group_flag = 1 if group_countdown > 0 else 0
         if group_countdown > 0:
             group_countdown -= 1
@@ -823,13 +862,11 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     return rows
 
 
-# Tolerance for treating consecutive events as non-overlapping. A gap
-# smaller than this (in seconds) between the end of one event and the
-# start of the next is treated as a floating-point artefact and allowed.
-# A positive epsilon makes the overlap check stricter: two events are
-# accepted as non-overlapping only when the gap between them exceeds
-# ``EPS`` seconds beyond the event boundary (a gap smaller than EPS is
-# treated as a touching/adjacent boundary, not as overlap).
+# Tolerance for treating consecutive events as non-overlapping. A
+# positive epsilon makes the overlap check more permissive, not
+# stricter: an overlap of up to this many seconds is read as the
+# floating-point residue of two events that touch, and only a longer
+# one is refused.
 _EVENT_OVERLAP_EPS: float = 1e-9
 
 
@@ -844,12 +881,7 @@ def _zero_velocity_guard(trajectory: Trajectory, prefer_turnarounds: bool) -> bo
     """
     if not prefer_turnarounds:
         return prefer_turnarounds
-    if (
-        trajectory.az_vel is not None
-        and trajectory.el_vel is not None
-        and np.all(trajectory.az_vel == 0.0)
-        and np.all(trajectory.el_vel == 0.0)
-    ):
+    if np.all(trajectory.az_vel == 0.0) and np.all(trajectory.el_vel == 0.0):
         warnings.warn(
             "inject_retune called with prefer_turnarounds=True but the "
             "trajectory has all-zero velocities; turnaround detection "
@@ -916,9 +948,7 @@ def _inject_retune_uniform(
 
     As a side-effect the helper also records every retune it scheduled as
     a :class:`~fyst_trajectories.trajectory.RetuneEvent` on the returned
-    trajectory's ``retune_events`` field, so introspection and ECSV
-    round-trip work uniformly regardless of which code path populated
-    ``scan_flag``.
+    trajectory's ``retune_events`` field.
     """
     times = trajectory.times
 
@@ -992,8 +1022,16 @@ def _inject_retune_events(
     pattern metadata and retune provenance are distinct concerns and
     live at different fields on :class:`Trajectory`.
 
-    See :func:`inject_retune` for the user-facing contract.
+    Records the caller's own sorted request; see :func:`inject_retune` for
+    what each mode records and for the user-facing contract.
     """
+    for idx, event in enumerate(events):
+        if not isinstance(event, RetuneEvent):
+            raise TypeError(
+                f"retune_events[{idx}] is a {type(event).__name__}, not a RetuneEvent; "
+                "pass RetuneEvent(t_start=..., duration=...) instances."
+            )
+
     sorted_events = tuple(sorted(events, key=lambda e: e.t_start))
 
     for i in range(1, len(sorted_events)):
@@ -1046,15 +1084,28 @@ def _inject_retune_events(
     if prefer_turnarounds:
         turnaround_starts = _collect_turnaround_starts(scan_flag, times)
 
-    for event in in_bounds:
-        # Trajectory-relative -> absolute-in-times-domain offset. The
-        # uniform path works in the raw ``times`` domain (it seeds
-        # ``next_due_anchor`` with ``float(times[0])``), so we match
-        # that convention here by adding ``t0`` to the caller-supplied
-        # relative time.
-        start = event.t_start + t0
-        if prefer_turnarounds and turnaround_starts:
-            start = _snap_to_turnaround(start, turnaround_starts, turnaround_window)
+    # Trajectory-relative -> absolute-in-times-domain offset. The uniform
+    # path works in the raw ``times`` domain (it seeds ``next_due_anchor``
+    # with ``float(times[0])``), so we match that convention here by adding
+    # ``t0`` to the caller-supplied relative time.
+    starts = [event.t_start + t0 for event in in_bounds]
+    if prefer_turnarounds and turnaround_starts:
+        starts = [_snap_to_turnaround(s, turnaround_starts, turnaround_window) for s in starts]
+        # Snapping can pull two events that did not overlap as requested onto
+        # the same turnaround, where the second would paint samples the first
+        # already claimed and vanish. The request-level check above runs
+        # before snapping and cannot see it, so re-check what will be applied.
+        applied = sorted(zip(starts, (e.duration for e in in_bounds)))
+        for (s_a, d_a), (s_b, _) in zip(applied, applied[1:]):
+            if s_a + d_a > s_b + _EVENT_OVERLAP_EPS:
+                raise ValueError(
+                    f"Retune events overlap after snapping to turnarounds: an event "
+                    f"placed at t_start={s_a - t0} (duration={d_a}) runs into one placed "
+                    f"at t_start={s_b - t0}. Widen turnaround_window, space the events "
+                    "further apart, or pass prefer_turnarounds=False."
+                )
+
+    for event, start in zip(in_bounds, starts):
         end = min(start + event.duration, t_end)
         # When the event is clipped to the trajectory end, include the final
         # sample (``times < end`` would drop the science sample at exactly
@@ -1107,18 +1158,20 @@ def inject_retune(
     verification): Prime-Cam has 7 independent readout modules. If modules
     can retune independently, setting ``n_modules > 1`` offsets the first
     retune by ``module_index * retune_interval / n_modules``, so only one
-    module is retuning at any given time. Each module still pays
-    ``retune_duration / retune_interval`` of its own time (about 1.7% at
-    the defaults, 5 s every 300 s) whether or not retunes are staggered;
-    what staggering changes is where the loss lands. Simultaneous
-    retunes leave whole-array gaps in coverage, while a 7-way stagger
-    keeps at least six modules on sky throughout, provided the
-    non-retuning modules keep observing through each module's retune (an
+    module is retuning at a time, as long as ``retune_duration`` is shorter
+    than ``retune_interval / n_modules`` (it is, at the defaults; the
+    library enforces only ``retune_duration < retune_interval``). Each
+    module still pays ``retune_duration / retune_interval`` of its own time
+    (about 1.7% at the defaults, 5 s every 300 s) whether or not retunes are
+    staggered; what staggering changes is where the loss lands. Simultaneous
+    retunes leave whole-array gaps in coverage, while a 7-way stagger under
+    that condition keeps at least six modules on sky throughout, provided
+    the non-retuning modules keep observing through each module's retune (an
     instrument-team premise this library does not model). Set
     ``n_modules=1`` (the default) to disable staggering and retune all
-    modules simultaneously. Per-module staggering in **event-list mode**
-    is handled by composition: call ``inject_retune`` once per module
-    with its own event list.
+    modules simultaneously. Per-module staggering in **event-list mode** is
+    handled by composition: call ``inject_retune`` once per module with its
+    own event list.
 
     .. note::
 
@@ -1137,8 +1190,8 @@ def inject_retune(
         supplied.
     retune_duration : float, optional
         Duration in seconds of each retune event. Default
-        :data:`DEFAULT_RETUNE_DURATION_SEC` (5 s). Ignored when
-        ``retune_events`` is supplied.
+        :data:`DEFAULT_RETUNE_DURATION_SEC` (5 s). Must be shorter than
+        ``retune_interval``. Ignored when ``retune_events`` is supplied.
     prefer_turnarounds : bool, optional
         If True, snap retunes to nearby turnarounds when possible.
         Default is False (time-based placement for uniform coverage).
@@ -1165,6 +1218,12 @@ def inject_retune(
         field. The uniform-cadence path also populates this field with
         the events it generated, so introspection and ECSV round-trip
         work uniformly regardless of which mode produced the retunes.
+        The two modes record different things, deliberately: event-list
+        mode records the request (an event dropped for running past the
+        trajectory end stays in the tuple, and a ``prefer_turnarounds``
+        snap does not move a recorded ``t_start``), while uniform-cadence
+        mode has no request and records the placements it made.
+        ``scan_flag`` says what was applied in both.
 
     Returns
     -------
@@ -1174,11 +1233,18 @@ def inject_retune(
     Raises
     ------
     ValueError
-        If ``module_index`` is negative or >= ``n_modules``, or if
+        If ``retune_interval`` or ``retune_duration`` is not positive, or
+        if ``retune_duration`` is not shorter than ``retune_interval``
+        (a gap at least as long as its cadence would flag every science
+        sample). If ``module_index`` is negative or >= ``n_modules``, or if
         ``n_modules`` is less than 1 (uniform-cadence mode). If
         ``retune_events`` is supplied with ``module_index != 0`` or
         ``n_modules != 1`` (per-module composition is the caller's
-        responsibility in event-list mode). If events overlap.
+        responsibility in event-list mode). If events overlap, either as
+        supplied or after ``prefer_turnarounds`` has snapped them.
+    TypeError
+        If an element of ``retune_events`` is not a
+        :class:`~fyst_trajectories.trajectory.RetuneEvent`.
 
     Warns
     -----
@@ -1245,6 +1311,11 @@ def inject_retune(
         raise ValueError(f"retune_interval must be positive, got {retune_interval}")
     if retune_duration <= 0:
         raise ValueError(f"retune_duration must be positive, got {retune_duration}")
+    if retune_duration >= retune_interval:
+        raise ValueError(
+            f"retune_duration must be shorter than retune_interval, "
+            f"got {retune_duration} >= {retune_interval}"
+        )
     if n_modules < 1:
         raise ValueError(f"n_modules must be >= 1, got {n_modules}")
     if module_index < 0 or module_index >= n_modules:

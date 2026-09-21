@@ -3,7 +3,7 @@
 import math
 
 import pytest
-from astropy.table import Table
+from astropy.table import QTable, Table
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import Coordinates, get_fyst_site
@@ -89,7 +89,7 @@ def _make_test_timeline():
 
 
 class TestWriteTimeline:
-    """Tests for write_timeline()."""
+    """A written file names its blocks; a timeline with none still writes."""
 
     def test_writes_file(self, tmp_path):
         timeline = _make_test_timeline()
@@ -117,7 +117,7 @@ class TestWriteTimeline:
 
 
 class TestReadTimeline:
-    """Tests for read_timeline()."""
+    """Block count, types, times, scan types and timeline metadata survive a read."""
 
     def test_round_trip(self, tmp_path):
         timeline = _make_test_timeline()
@@ -245,7 +245,7 @@ class TestTimelineWindowRoundTrip:
 
 
 class TestCanonicalColumnNames:
-    """Verify write_timeline produces TOAST canonical column names."""
+    """New writes use the TOAST names and ISO times, never the legacy MJD/scan ones."""
 
     def test_uses_toast_column_names(self, tmp_path):
         """Written ECSV must use start_time/stop_time ISO + scan_index names."""
@@ -274,6 +274,129 @@ class TestCanonicalColumnNames:
         first = str(table["start_time"][0])
         # ISO format looks like "2026-06-15 02:00:00.000"
         assert "2026-06-15" in first
+
+
+class TestEmptyTimelineRoundTrip:
+    """A timeline with no blocks reads back with no blocks."""
+
+    def test_the_placeholder_row_does_not_become_a_block(self, tmp_path):
+        """ECSV needs a row; the timeline it stands for still has none.
+
+        A planner that finds nothing observable inside its window returns
+        an empty timeline, which is a documented outcome. The file needs
+        a placeholder row, but reading that row back as a real idle block
+        dated 2000-01-01 would fail the library's own ``validate()`` and
+        put a fabricated entry into any rendering. The header marks the
+        file empty and the reader drops the row.
+        """
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        timeline = ObservingTimeline(
+            blocks=[],
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(3600, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        path = tmp_path / "empty.ecsv"
+        write_timeline(timeline, path)
+
+        # The file itself carries the placeholder row and says so.
+        table = Table.read(str(path), format="ascii.ecsv")
+        assert len(table) == 1
+        assert table.meta["timeline_is_empty"] is True
+
+        reloaded = read_timeline(path)
+        assert reloaded.blocks == []
+        assert reloaded.validate() == []
+        assert reloaded.start_time.iso == timeline.start_time.iso
+        assert reloaded.end_time.iso == timeline.end_time.iso
+        # The marker is a header field, not stray user metadata.
+        assert "timeline_is_empty" not in reloaded.metadata
+
+
+class TestAzFinalColumn:
+    """The end-pose column: written, read back, and absent in older files.
+
+    ``az_final`` records where a swept block leaves the telescope when
+    that differs from the envelope bound ``azmax``. It is a FYST
+    extension column, so a file written before it existed must still
+    load, with every block reading back as ``None``.
+    """
+
+    def _swept_timeline(self):
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        swept = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(600, format="sec"),
+            block_type="calibration",
+            patch_name="planet_cal",
+            az_start=100.0,
+            az_end=200.0,
+            elevation=50.0,
+            scan_index=0,
+            scan_type="planet_cal",
+            az_final=120.5,
+        )
+        parked = TimelineBlock(
+            t_start=t0 + TimeDelta(600, format="sec"),
+            t_stop=t0 + TimeDelta(900, format="sec"),
+            block_type="idle",
+            patch_name="no_target",
+            az_start=120.5,
+            az_end=120.5,
+            elevation=50.0,
+            scan_index=0,
+            scan_type="idle",
+        )
+        return ObservingTimeline(
+            blocks=[swept, parked],
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(900, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+
+    def test_round_trips_and_leaves_the_envelope_alone(self, tmp_path):
+        timeline = self._swept_timeline()
+        path = tmp_path / "az_final.ecsv"
+        write_timeline(timeline, path)
+
+        table = Table.read(str(path), format="ascii.ecsv")
+        assert "az_final" in table.colnames
+        assert float(table["azmin"][0]) == 100.0
+        assert float(table["azmax"][0]) == 200.0
+
+        reloaded = read_timeline(path)
+        swept, parked = reloaded.blocks
+        assert swept.az_final == pytest.approx(120.5)
+        assert swept.end_pose_az == pytest.approx(120.5)
+        assert (swept.az_start, swept.az_end) == (100.0, 200.0)
+        # A block that ends where its envelope does writes NaN and reads
+        # back as None, not 0.0.
+        assert parked.az_final is None
+        assert parked.end_pose_az == 120.5
+        assert reloaded.validate() == []
+
+    def test_a_file_without_the_column_still_loads(self, tmp_path):
+        """Drop the column the way a writer without ``az_final`` does."""
+        timeline = self._swept_timeline()
+        path = tmp_path / "az_final.ecsv"
+        legacy = tmp_path / "legacy.ecsv"
+        write_timeline(timeline, path)
+
+        table = QTable.read(str(path), format="ascii.ecsv")
+        table.remove_column("az_final")
+        table.write(str(legacy), format="ascii.ecsv", overwrite=True)
+
+        reloaded = read_timeline(legacy)
+        assert all(b.az_final is None for b in reloaded.blocks)
+        # Such a file records only the envelope, so the swept block's end
+        # pose is its envelope bound.
+        assert reloaded.blocks[0].end_pose_az == 200.0
 
 
 class TestMetadataPersistence:
@@ -306,7 +429,6 @@ class TestMetadataPersistence:
             assert b.metadata == {}
 
     def test_metadata_roundtrip_through_simulation_bridge(self, tmp_path):
-        """Ensure schedule_to_trajectories works after ECSV roundtrip."""
         site = get_fyst_site()
         patches = [
             ObservingPatch(
@@ -343,8 +465,7 @@ class TestMetadataPersistence:
 
         # The simulation bridge should succeed end-to-end on the loaded
         # timeline and reproduce the same pong geometry (width/height) as
-        # the in-memory timeline (not the former 180/-30/4x4 hardcoded
-        # fallback).
+        # the in-memory timeline, not a hardcoded 180/-30/4x4 fallback.
         in_mem = schedule_to_trajectories(timeline)
         loaded_pairs = schedule_to_trajectories(loaded)
         assert len(in_mem) == len(loaded_pairs)
@@ -357,7 +478,7 @@ class TestMetadataPersistence:
 
 
 class TestSiteReconstruction:
-    """``read_timeline`` reconstructs Site from table metadata."""
+    """Nasmyth port, plate scale, sun radii and description persist; limits do not."""
 
     def test_fyst_default_site(self, tmp_path):
         """A timeline written with the FYST default site must round-trip."""
@@ -550,7 +671,11 @@ class TestBoresightAngle:
 
 
 class TestNasmythConsistency:
-    """``compute_nasmyth_rotation`` matches ``Coordinates.get_parallactic_angle``.
+    """The parallactic angle inside ``compute_nasmyth_rotation`` matches ``get_parallactic_angle``.
+
+    ``compute_nasmyth_rotation`` returns ``nasmyth_sign*el + pa``, and both
+    tests below add ``nasmyth_sign*el`` before comparing, so the term pinned
+    against ``Coordinates.get_parallactic_angle`` is the ``pa`` inside it.
 
     The two implementations use different input variables (AltAz vs HA)
     but share the same underlying spherical trigonometry for the
@@ -620,7 +745,8 @@ class TestNasmythConsistency:
         ``Coordinates.get_parallactic_angle`` (RA/Dec offset + source-CES path)
         both derive the PA from the *transformed* vacuum Az/El, so they are the
         same computation. An ``HA = apparent LST - ICRS RA`` form instead leaves a
-        precession bias (~0.3-0.5 deg in 2026); this pins that the two agree.
+        precession bias (0.1 to 0.5 deg at these samples in 2026); this pins that
+        the two agree.
         """
         from fyst_trajectories.site import AtmosphericConditions
 
@@ -653,9 +779,9 @@ class TestOverheadModelRoundTrip:
 
         Constructs every field with a value distinct from the class
         default (and distinct from every *other* field's default) so a
-        future field that is added without the corresponding I/O wiring,
-        like the BEAM_MAP regression, fails loudly instead of
-        coincidentally matching a default on the read side.
+        future field added without the corresponding I/O wiring fails
+        loudly instead of coincidentally matching a default on the read
+        side.
         """
         import dataclasses
 
@@ -724,9 +850,8 @@ class TestCalibrationPolicyRoundTrip:
 
         Like the OverheadModel round-trip test, every field is set to a
         value distinct from its class default. The ``beam_map_cadence``
-        field, historically dropped on round-trip because the I/O path
-        was not wired to it, is given a non-None value here so a
-        regression on that field fails loudly.
+        field defaults to ``None``, so it is given a non-None value here
+        and an I/O path not wired to it fails loudly.
         """
         import dataclasses
 
@@ -888,7 +1013,6 @@ class TestCalibrationBlockMetadataRoundTrip:
         assert cal_blocks[0].metadata["cal_type"] == "planet_cal"
 
     def test_retune_block_metadata_empty(self, tmp_path):
-        """Retune blocks without extra metadata still round-trip as empty."""
         site = get_fyst_site()
         t0 = Time("2026-06-15T02:00:00", scale="utc")
 
@@ -936,7 +1060,6 @@ class TestRetuneEventsRoundTrip:
     """
 
     def test_retune_events_round_trip_via_science_block_metadata(self, tmp_path):
-        """Science block carrying ``retune_events`` survives write/read."""
         from fyst_trajectories import RetuneEvent
 
         site = get_fyst_site()

@@ -12,8 +12,7 @@ dec -30, about 100% at dec -60). Treat the numbers as relative
 diagnostics rather than sky areas.
 
 These functions require ``matplotlib`` (install via
-``pip install fyst-trajectories[plotting]``). Gaussian smoothing and
-module footprint convolution require ``scipy``.
+``pip install fyst-trajectories[plotting]``).
 
 Examples
 --------
@@ -45,9 +44,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
     from ..offsets import InstrumentOffset
     from ..site import Site
     from ..trajectory import Trajectory
+
+__all__ = ["plot_hit_map"]
 
 
 def _make_disk_kernel(radius_bins: float) -> np.ndarray:
@@ -61,7 +64,7 @@ def _make_disk_kernel(radius_bins: float) -> np.ndarray:
     Returns
     -------
     ndarray
-        2D array with 1.0 inside the disk and 0.0 outside,
+        2D array, constant inside the disk and 0.0 outside,
         normalized so the sum equals 1.0.
     """
     r_int = int(np.ceil(radius_bins))
@@ -75,7 +78,7 @@ def _make_disk_kernel(radius_bins: float) -> np.ndarray:
 
 
 def _format_ra_hm(deg: float, _pos: Any) -> str:
-    """Format RA in degrees as hour-angle notation."""
+    """Format RA in degrees as hours and minutes."""
     deg = deg % 360
     h = deg / 15.0
     hours = int(h)
@@ -100,7 +103,7 @@ def plot_hit_map(
     stats_threshold: float = 0.5,
     cmap: str = "viridis",
     show: bool = True,
-) -> Any:
+) -> "Figure":
     """Plot hit-density maps in RA/Dec for multiple detector modules.
 
     For each (offset, label) pair, computes the detector's sky track by
@@ -111,8 +114,8 @@ def plot_hit_map(
     kernel of the module's field-of-view diameter (circular in RA/Dec
     coordinate space, so stretched in RA on sky away from the equator),
     producing filled coverage maps suitable for observation planning.
-    Statistics are reported as areas in square coordinate degrees, with
-    no ``cos(dec)`` weighting; see the module docstring.
+    Statistics are reported as areas in square coordinate degrees on a
+    plain RA x Dec grid, with no ``cos(dec)`` weighting.
 
     When ``module_fov`` is None (default), the raw detector-center
     track is plotted. Statistics are reported as fractional coverage
@@ -157,10 +160,10 @@ def plot_hit_map(
     Raises
     ------
     ImportError
-        If matplotlib is not installed, or scipy is missing when
-        ``module_fov`` or ``smooth_sigma`` is set.
+        If matplotlib is not installed.
     ValueError
-        If trajectory has no ``start_time`` set.
+        If ``offsets`` is empty, ``bin_size`` is not positive, or the
+        trajectory has no ``start_time`` set.
     """
     try:
         import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
@@ -171,8 +174,15 @@ def plot_hit_map(
             "Install it with: pip install fyst-trajectories[plotting]"
         ) from None
 
+    if not offsets:
+        raise ValueError("offsets must name at least one module; there is nothing to plot")
+    if not bin_size > 0.0:
+        raise ValueError(f"bin_size must be positive, got {bin_size}")
     if trajectory.start_time is None:
         raise ValueError("Trajectory must have start_time for RA/Dec conversion")
+
+    from scipy.ndimage import gaussian_filter  # pylint: disable=import-outside-toplevel
+    from scipy.signal import fftconvolve  # pylint: disable=import-outside-toplevel
 
     from ..coordinates import Coordinates  # pylint: disable=import-outside-toplevel
     from ..offsets import boresight_to_detector, compute_focal_plane_rotation
@@ -234,13 +244,6 @@ def plot_hit_map(
         )
 
         if coverage_mode:
-            try:
-                from scipy.signal import fftconvolve  # pylint: disable=import-outside-toplevel
-            except ImportError:
-                raise ImportError(
-                    "scipy is required for module_fov convolution. "
-                    "Install it with: pip install fyst-trajectories[plotting]"
-                ) from None
             radius_bins = (module_fov / 2.0) / bin_size
             kernel = _make_disk_kernel(radius_bins)
             hist = fftconvolve(hist, kernel, mode="same")
@@ -248,13 +251,6 @@ def plot_hit_map(
             hist[hist < 1e-10] = 0.0
 
         if smooth_sigma is not None:
-            try:
-                from scipy.ndimage import gaussian_filter  # pylint: disable=import-outside-toplevel
-            except ImportError:
-                raise ImportError(
-                    "scipy is required for smooth_sigma. "
-                    "Install it with: pip install fyst-trajectories[plotting]"
-                ) from None
             hist = gaussian_filter(hist, sigma=smooth_sigma)
 
         ra_centers = 0.5 * (ra_edges[:-1] + ra_edges[1:])
@@ -308,7 +304,7 @@ def plot_hit_map(
                 a_ratio = 0.0
             stats_text = (
                 f"$N_{{footprint}}/N_{{total}}$ = {n_ratio:.2f}\n"
-                f"$A_{{>{thresh_pct}\\%max}}/A_{{total}}$ = {a_ratio:.2f}"
+                f"$A_{{>{thresh_pct}\\%max}}/A_{{footprint}}$ = {a_ratio:.2f}"
             )
 
         ax.text(

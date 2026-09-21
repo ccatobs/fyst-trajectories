@@ -4,8 +4,8 @@ This module holds the value-bearing checks for selected documentation
 examples, the invariants, error/warning behaviours, and regression
 guards that go beyond "this snippet runs". Pure execution coverage for
 every code block in ``docs/*.rst`` lives in
-``tests/test_doc_examples_rst.py``, which extracts and runs each block,
-so the run-only inline copies that used to live here have been retired.
+``tests/test_doc_examples_rst.py``, which extracts and runs each block, so
+nothing here is a run-only inline copy of a documented snippet.
 """
 
 import numpy as np
@@ -140,7 +140,7 @@ def test_pipeline_stage3_trajectory_generation():
 
     site = get_fyst_site()
 
-    # Get the I1 module offset (280 GHz, inner ring)
+    # Get the i1 focal-plane position offset (inner ring)
     offset = get_primecam_offset("i1")
 
     # Build the trajectory from scheduled observation parameters
@@ -381,7 +381,7 @@ def test_planning_field_region_cmb():
     cmb_field = FieldRegion(
         ra_center=0.0,  # deg (0h RA)
         dec_center=-2.0,  # deg
-        width=10.0,  # RA extent in degrees
+        width=10.0,  # on-sky width in degrees, not an RA span
         height=6.0,  # Dec extent in degrees
     )
 
@@ -449,23 +449,17 @@ def test_planning_plan_source_ces():
     assert cp["n_scans"] >= 1
 
 
-@pytest.mark.parametrize(
-    "start_iso",
-    [
-        "2026-03-15T01:00:00",  # the corrected, observable, advisory-clean time
-    ],
-)
-def test_planning_plan_pong_scan_chandra_deep_field_observable(start_iso):
-    """Regression test for docs/planning.rst start_time bug.
+def test_planning_plan_pong_scan_chandra_deep_field_observable():
+    """Pin the observability of the ``plan_pong_scan`` example's start time.
 
-    The Chandra Deep Field South is below the horizon at FYST at
-    2026-03-15T04:00:00.  The example first moved to 22:12 (observable but
-    near transit, where the high-elevation advisory fires) and now uses
-    01:00, where the field sits near 30 deg elevation and the example runs
-    advisory-clean.  This parametrized test locks the corrected time in
-    place. If someone reverts it to an unobservable value, this test will
-    fail loudly.
+    The Chandra Deep Field South is below the horizon at FYST at 04:00 UTC on
+    this date, and at 22:12 it is still 67 deg up, where the high-elevation
+    advisory fires; at 01:00 it sits near 30 deg elevation and the example runs
+    advisory-clean.  The page's own time is executed by the rst guard; this test
+    keeps the outcome explicit.
     """
+    start_iso = "2026-03-15T01:00:00"  # observable, advisory-clean
+
     from astropy.time import Time
 
     from fyst_trajectories import get_fyst_site
@@ -490,20 +484,24 @@ def test_planning_plan_pong_scan_chandra_deep_field_observable(start_iso):
 # Source docstring regression tests
 # ============================================================================
 #
-# These tests guard three docstring examples that were found broken and fixed.
-# They intentionally mirror the shape of the fixed docstring snippets so a
-# regression in the source docstring would immediately break a test.
+# These tests assert the outcome of three docstring examples whose behaviour is
+# easy to break: a rise/set call that returns no set time, and two patterns whose
+# ``generate`` defaults ``start_time`` to None. They mirror the shape of those
+# snippets so a regression in the source docstring breaks a test here.
 
 
 def test_get_rise_set_times_handles_no_set_within_window():
-    """Regression test for coordinates.py ``get_rise_set_times`` docstring fix.
+    """Assert the outcome of the ``get_rise_set_times`` docstring example.
 
-    Some sources rise within the search window but do not set within it.
-    The fixed docstring example uses an explicit ``None`` check on
-    ``set_`` before dereferencing ``set_.iso``.  This test follows the
-    same pattern so a regression that removed the guard would crash here.
+    Some sources rise within the search window but do not set within it, which
+    is why the docstring example guards ``set_`` before dereferencing
+    ``set_.iso``.  These inputs are such a case: the source rises about
+    17:13 UTC and sets past the 24 h window, with roughly four hours of
+    margin either way.  Asserting the outcome, rather than repeating the
+    docstring's ``None`` guard, is what makes this falsifiable: a stub
+    returning ``(None, None)`` must fail it.
     """
-    from astropy.time import Time
+    from astropy.time import Time, TimeDelta
 
     from fyst_trajectories import Coordinates, get_fyst_site
 
@@ -517,24 +515,18 @@ def test_get_rise_set_times_handles_no_set_within_window():
         max_search_hours=24.0,
         step_hours=0.1,
     )
-    # The exact guard pattern from the fixed docstring:
-    if rise is not None and set_ is not None:
-        rise_iso = rise.iso  # would crash if set_ check fired but rise didn't
-        set_iso = set_.iso
-        assert isinstance(rise_iso, str)
-        assert isinstance(set_iso, str)
-    else:
-        # At least one of rise or set_ is None, that's allowed and must
-        # not raise.
-        pass
+    assert set_ is None  # the case the docstring guard exists for
+    assert rise is not None
+    assert isinstance(rise.iso, str)
+    assert start <= rise <= start + TimeDelta(24.0 * 3600.0, format="sec")
 
 
 def test_constant_el_pattern_docstring_example():
     """Regression test for ``ConstantElScanPattern`` docstring example.
 
     The docstring shows ``pattern.generate(site, duration=60.0)`` without
-    ``start_time``.  This only works after the signature gained a default
-    of ``start_time: Time | None = None``.
+    ``start_time``, which works because the signature defaults it to
+    ``start_time: Time | None = None``.
     """
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.patterns import ConstantElScanConfig, ConstantElScanPattern
@@ -556,8 +548,8 @@ def test_linear_motion_pattern_docstring_example():
     """Regression test for ``LinearMotionPattern`` docstring example.
 
     The docstring shows ``pattern.generate(site, duration=60.0)`` without
-    ``start_time``.  This only works after the signature gained a default
-    of ``start_time: Time | None = None``.
+    ``start_time``, which works because the signature defaults it to
+    ``start_time: Time | None = None``.
     """
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.patterns import LinearMotionConfig, LinearMotionPattern

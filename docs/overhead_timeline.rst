@@ -4,9 +4,16 @@ Timeline Generation
 :func:`~fyst_trajectories.overhead.generate_timeline` sequences science scans
 and calibration activities over an observing window. At each time step it
 inserts any calibrations whose cadence has elapsed, picks the best-positioned
-observable patch, schedules a science scan on it, and advances the clock.
-A constant-elevation patch is only selectable while its elevation-crossing
-pass is imminent, so expect idle blocks before such a pass opens.
+observable patch, plans a Sun-checked slew to it, schedules a science scan on
+it, and advances the clock.
+
+Three things make the clock advance without a scan. A constant-elevation
+patch is only selectable while its elevation-crossing pass is imminent, so
+expect idle blocks before such a pass opens. A slew whose direct path would
+cross the Sun zone is refused, and that tick idles at the unmoved pose and
+retries once the Sun has moved. A parked pose the zone has overtaken is
+moved out of it before anything else runs that tick. See
+:doc:`sun_avoidance` for the policy all three apply.
 
 ObservingPatch Setup
 --------------------
@@ -40,6 +47,11 @@ Each sky region is defined as an :class:`~fyst_trajectories.overhead.ObservingPa
     )
 
 Supported ``scan_type`` values: ``"constant_el"``, ``"pong"``, ``"daisy"``.
+
+``velocity`` is forwarded to the pattern unchanged, and its frame follows
+``scan_type``: a tangent-plane (on-sky) speed in deg/s for ``"pong"`` and
+``"daisy"``, and a mount-frame azimuth coordinate rate for ``"constant_el"``,
+whose on-sky speed is ``velocity * cos(elevation)``.
 
 ``priority`` and ``weight`` tune the selection when several patches are
 observable at once: each candidate's score is multiplied by
@@ -83,11 +95,8 @@ for all available fields.
         planet_cal_cadence=43200.0,  # 12 hours
     )
 
-    # Faster retunes, shorter scans
-    overhead = OverheadModel(
-        retune_duration=3.0,
-        max_scan_duration=1800.0,
-    )
+    # Shorter science blocks, so calibrations interleave more often
+    overhead = OverheadModel(max_scan_duration=1800.0)
 
     patches = [
         ObservingPatch(
@@ -152,9 +161,15 @@ The returned :class:`~fyst_trajectories.overhead.ObservingTimeline` contains a l
 | ``"calibration"`` | Retune, pointing, focus, skydip, planet cal,  |
 |                   | or beam map                                   |
 +-------------------+-----------------------------------------------+
-| ``"slew"``        | Telescope slew between positions              |
+| ``"slew"``        | Telescope slew between positions, including   |
+|                   | a move out of the Sun zone                    |
 +-------------------+-----------------------------------------------+
-| ``"idle"``        | No observable target available                |
+| ``"idle"``        | No scan was placed this tick: nothing         |
+|                   | observable or a pass not yet open (neither    |
+|                   | carries a reason), a refused slew, a pose the |
+|                   | Sun zone holds, or the stretch after the last |
+|                   | block; the last three name themselves in      |
+|                   | ``metadata["reason"]``                        |
 +-------------------+-----------------------------------------------+
 
 Inspect individual blocks::
@@ -173,18 +188,9 @@ To rebuild az/el/time arrays for every science block (e.g. for coverage
 simulation),
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` walks the
 timeline, calls the appropriate ``plan_*_scan`` function for each science
-block, and returns a list of ``(TimelineBlock, ScanBlock)`` pairs. Each
-science trajectory covers only its own block's time window: the subscans
-of one constant-elevation visit come back as consecutive slices of a
-single crossing solve rather than one full pass each, so summing samples
-over the pairs no longer multiply-counts a visit. The pair's
-``ScanBlock.duration`` is the slice; its ``computed_params`` and
-``summary`` still describe the full solved pass. Pass
-``science_only=False`` to also rebuild planet calibrations that were
-planned as source-CES passes (one block per pass, returned whole).
-Blocks that no longer reconstruct (a source that has drifted out of the
-recorded geometry, or a window that no longer overlaps the re-solved
-scan) are logged and skipped rather than raising.
+block, and returns a list of ``(TimelineBlock, ScanBlock)`` pairs. Its
+reference entry says what each pair covers, which calibration blocks
+``science_only=False`` adds, and which blocks are logged and skipped.
 
 ::
 
@@ -199,10 +205,11 @@ Validation
 ----------
 
 A timeline can be checked for common authoring defects: blocks that
-overlap in time or fall outside the timeline window, science or
-calibration blocks whose azimuth bounds are unordered, and pose
-discontinuities (a slew whose start azimuth, or an idle whose parked
-az/el, does not match where the previous block left the telescope)::
+overlap in time, gaps between consecutive blocks, blocks that fall
+outside the timeline window, science or calibration blocks whose azimuth
+bounds are unordered, and pose discontinuities (a slew whose start
+azimuth, or an idle whose parked az/el, does not match where the previous
+block left the telescope)::
 
     warnings = timeline.validate()
     if warnings:

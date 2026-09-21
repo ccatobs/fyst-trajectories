@@ -6,25 +6,34 @@ exhausted or remaining time falls below the minimum scan duration.
 
 from __future__ import annotations
 
+from ..calibration_state import CalibrationState
 from ..models import ObservingTimeline, TimelineBlock
-from ..overhead import CalibrationState
+from ..transitions import DeferralReason
 from .phases import (
     CalibrationPhase,
     PatchSelectionPhase,
     ScienceScanPhase,
     SlewPhase,
+    _escape_if_overtaken,
 )
 from .state import SchedulerContext, SchedulerState
 
 __all__ = ["Scheduler"]
 
+# Shortest tail worth a block of its own, in seconds. Below this the
+# remainder is the float noise of a window boundary, not a gap.
+_TAIL_TOLERANCE_SEC = 0.01
+
 
 class Scheduler:
     """Orchestrates scheduler phases to build a timeline.
 
-    The scheduler holds a read-only :class:`SchedulerContext` and runs
+    The scheduler holds a :class:`SchedulerContext` and runs
     the four phases in sequence per iteration:
 
+    0. A pose the Sun zone has overtaken is moved out first
+       (:func:`~fyst_trajectories.overhead.plan_escape`, a SLEW block
+       named ``sun_escape``), so no phase parks inside the zone.
     1. :class:`CalibrationPhase`: emit any due calibration blocks.
     2. :class:`PatchSelectionPhase`: pick the best observable patch,
        or emit an IDLE block if none are observable.
@@ -33,11 +42,20 @@ class Scheduler:
     4. :class:`ScienceScanPhase`: emit science subscans with
        interleaved retunes.
 
+    Whatever the loop exits on, the stretch between the last block and
+    the end of the window is filled with one idle labelled
+    ``window_closed``, so the timeline tiles its declared extent and the
+    science, calibration, slew and idle totals add up to it.
+
     ``Scheduler.run()`` returns the completed
     :class:`~fyst_trajectories.overhead.ObservingTimeline`. Downstream
     code should call :func:`~fyst_trajectories.overhead.generate_timeline`
-    as the public entry point; direct ``Scheduler`` use is for advanced
-    extensions (custom phase lists, lookahead, multi-night stitching).
+    as the public entry point; direct ``Scheduler`` use is for callers
+    that assemble the :class:`SchedulerContext` themselves. The phase
+    sequence is fixed: ``run()`` instantiates the four phases and there
+    is no hook for a different list. Callers needing another loop (a
+    body queue, lookahead, multi-night stitching) compose the phases or
+    the timeline model directly, as the calibration-night planner does.
 
     Notes
     -----
@@ -53,8 +71,9 @@ class Scheduler:
     Parameters
     ----------
     context : SchedulerContext
-        The read-only scheduling context (patches, site, coords,
-        models, constraints, time window).
+        The scheduling context (patches, site, coords, models,
+        constraints, time window); phases read it and write only its
+        crossing-pass and escape memos.
     """
 
     def __init__(self, context: SchedulerContext) -> None:
@@ -76,6 +95,16 @@ class Scheduler:
             if remaining < ctx.overhead_model.min_scan_duration:
                 break
 
+            # A pose the Sun zone has overtaken is moved out before any
+            # phase parks a calibration or idles there.
+            escaped = _escape_if_overtaken(state, ctx)
+            if escaped is not None:
+                blocks.extend(escaped.blocks)
+                state = escaped.state
+                if escaped.stop:
+                    break
+                continue
+
             cal_result = cal_phase.run(state, ctx)
             blocks.extend(cal_result.blocks)
             state = cal_result.state
@@ -86,6 +115,9 @@ class Scheduler:
             selection_result = selection_phase.run(state, ctx)
             blocks.extend(selection_result.blocks)
             state = selection_result.state
+            if selection_result.stop:
+                # The idle path's escape would end past the window.
+                break
             if selection_result.skip_to_next_iter:
                 continue
 
@@ -94,12 +126,33 @@ class Scheduler:
             state = slew_result.state
             if slew_result.stop:
                 break
+            if slew_result.skip_to_next_iter:
+                continue
 
             science_result = science_phase.run(state, ctx, selection=slew_result)
             blocks.extend(science_result.blocks)
             state = science_result.state
             if science_result.skip_to_next_iter:
                 continue
+
+        # Whatever the loop exited on, the window is the timeline's
+        # declared extent, so the stretch after the last block belongs to
+        # a block too: without this the four time totals do not add up to
+        # total_time. The tail is under a minimum scan duration in the
+        # ordinary case and one refused move in the others.
+        tail = (ctx.end_time - state.current_time).sec
+        if tail > _TAIL_TOLERANCE_SEC:
+            blocks.append(
+                TimelineBlock.idle(
+                    t_start=state.current_time,
+                    duration=tail,
+                    az=state.current_az,
+                    el=state.current_el,
+                    site=ctx.site,
+                    scan_index=state.scan_counter,
+                    reason=str(DeferralReason.WINDOW_CLOSED),
+                )
+            )
 
         return ObservingTimeline(
             blocks=blocks,

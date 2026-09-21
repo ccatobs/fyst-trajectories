@@ -1,0 +1,11 @@
+# Text files are LF in the repository and in the working tree. Without this,
+# a Windows checkout with core.autocrlf=true leaves some files CRLF in the
+# working tree while the index holds LF, and an editor that normalises on save
+# then produces a whole-file diff on an unrelated file.
+* text=auto eol=lf
+
+# Vendored binary fixtures (IERS table excerpts are text; ephemeris kernels and
+# the parity archive are not).
+*.bsp binary
+*.npz binary
+*.png binary

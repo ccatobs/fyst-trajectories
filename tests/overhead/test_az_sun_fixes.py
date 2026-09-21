@@ -1,26 +1,27 @@
-"""Regression tests for overhead-scheduler azimuth + sun bugs.
+"""Azimuth and Sun regression tests for the overhead scheduler.
 
 The overhead subpackage is an OFFLINE observing-night simulator. These
-tests pin three fixes:
+tests pin:
 
-1. Cable-wrap azimuth normalization. Raw astropy azimuths must be
-   placed in the telescope's cable-wrap window before any slew or
-   boresight math: a north-straddling pair (350 deg and 10 deg) must
-   give the short-path slew (~20 deg, not ~340 deg), and a slew
-   block's boresight must sit at the arithmetic mid-travel azimuth of
-   the coherent from/to pair.
-2. Sun-aware pong/daisy duration clip. A pong/daisy scan that is
-   sun-unsafe (or drifts into the exclusion radius) must have its
-   duration trimmed, mirroring the constant_el branch.
-3. MinDurationConstraint sun forward-check. A target that stays above
-   the elevation floor but is inside the Sun exclusion zone within
-   ``min_duration`` must be rejected, matching the class docstring.
+- Cable-wrap azimuth normalization. Raw astropy azimuths must be
+  placed in the telescope's cable-wrap window before any slew or
+  boresight math: a north-straddling pair (350 deg and 10 deg) must
+  give the short-path slew (~20 deg, not ~340 deg), and a slew
+  block's boresight must sit at the arithmetic mid-travel azimuth of
+  the coherent from/to pair.
+- Sun-aware pong/daisy duration clip. A pong/daisy scan that is
+  sun-unsafe (or drifts into the exclusion radius) must have its
+  duration trimmed, mirroring the constant_el branch.
+- MinDurationConstraint sun forward-check. A target that stays above
+  the elevation floor but is inside the Sun exclusion zone within
+  ``min_duration`` must be rejected, matching the class docstring.
+- Both Sun checks evaluate a pinned ``patch.elevation`` when the
+  patch declares one, not the field's own drifting elevation.
 """
 
 import pytest
 from astropy.time import Time, TimeDelta
 
-from fyst_trajectories import Coordinates
 from fyst_trajectories.overhead.constraints import MinDurationConstraint
 from fyst_trajectories.overhead.models import ObservingPatch, OverheadModel, TimelineBlock
 from fyst_trajectories.overhead.scheduler.helpers import (
@@ -41,19 +42,14 @@ _SUN_TIME = Time("2026-06-15T17:30:00", scale="utc")
 
 
 @pytest.fixture
-def coords(site):
-    return Coordinates(site)
-
-
-@pytest.fixture
-def sun_radec(coords):
+def sun_radec(coordinates):
     """Sun RA/Dec at the test time (for placing sunward targets)."""
-    ra, dec = coords.get_body_radec("sun", _SUN_TIME)
+    ra, dec = coordinates.get_body_radec("sun", _SUN_TIME)
     return float(ra), float(dec)
 
 
 class TestNorthStraddleSlew:
-    """Fix 1: cable-wrap normalization drives slew distance and boresight."""
+    """Cable-wrap normalization drives slew distance and boresight."""
 
     def test_short_path_slew_time(self, site):
         """Raw [0,360) azimuths 350 and 10 must slew ~20 deg, not ~340 deg."""
@@ -69,20 +65,19 @@ class TestNorthStraddleSlew:
         assert t_norm == pytest.approx(8.667, abs=0.05)
 
         # The un-normalized direct path would be abs(10 - 350) = 340 deg,
-        # an order of magnitude longer, the bug this fix removes.
+        # an order of magnitude longer.
         t_raw = estimate_slew_time(350.0, 50.0, 10.0, 50.0, site)
         assert t_raw > 100.0
         assert t_norm < t_raw / 5.0
 
     def test_boresight_uses_mid_travel_azimuth(self, site):
-        """A slew block's boresight sits at the arithmetic mid-travel azimuth.
+        """A pair written as (355, 5) is a 350 deg unwind, mid-travel 180.
 
         az_start/az_end arrive in one coherent cable-wrap frame (the
         scheduler normalizes the slew target relative to the current
         pose), so the arithmetic mean is the true mid-travel azimuth. A
         short move across north is recorded as a contiguous pair like
-        (-5, 5); a pair written as (355, 5) is a genuine 350 deg
-        cable-wrap unwind whose mid-travel azimuth is 180, not the 0 a
+        (-5, 5); the unwind's mid-travel azimuth is 180, not the 0 a
         circular mean would report.
         """
         # Coherence example, not a discriminator: for a pair this close
@@ -101,7 +96,8 @@ class TestNorthStraddleSlew:
             compute_nasmyth_rotation(0.0, 50.0, site), abs=1e-9
         )
 
-        # The regression pin: the pre-fix circular mean reported 230 here.
+        # The discriminator: the circular mean of this pair is 0 deg, whose
+        # boresight angle is -130 deg, not the mid-travel 180 deg used here.
         unwind = TimelineBlock.slew(
             t_start=_SUN_TIME,
             duration=120.0,
@@ -125,28 +121,28 @@ class TestNorthStraddleSlew:
 
 
 class TestSunAwarePongDuration:
-    """Fix 2: pong/daisy duration is clipped to the sun-safe sub-window."""
+    """Pong/daisy duration is clipped to the sun-safe sub-window."""
 
-    def test_time_until_sun_unsafe_immediate(self, coords, sun_radec, site):
+    def test_time_until_sun_unsafe_immediate(self, coordinates, sun_radec, site):
         """A target already inside the exclusion radius is unsafe from t=0."""
         sun_ra, sun_dec = sun_radec
         # ~20 deg in RA from the Sun -> ~18 deg separation, inside 45 deg.
         ra = (sun_ra + 20.0) % 360
         dur = _time_until_sun_unsafe(
-            ra, sun_dec, _SUN_TIME, 3600.0, coords, site.sun_avoidance.exclusion_radius
+            ra, sun_dec, _SUN_TIME, 3600.0, coordinates, site.sun_avoidance.exclusion_radius
         )
         assert dur == pytest.approx(0.0, abs=1.0)
 
-    def test_time_until_sun_unsafe_far_target(self, coords, sun_radec, site):
+    def test_time_until_sun_unsafe_far_target(self, coordinates, sun_radec, site):
         """A target far from the Sun stays safe for the whole window."""
         sun_ra, sun_dec = sun_radec
         ra = (sun_ra + 120.0) % 360
         dur = _time_until_sun_unsafe(
-            ra, sun_dec, _SUN_TIME, 3600.0, coords, site.sun_avoidance.exclusion_radius
+            ra, sun_dec, _SUN_TIME, 3600.0, coordinates, site.sun_avoidance.exclusion_radius
         )
         assert dur == pytest.approx(3600.0, abs=1.0)
 
-    def test_pong_duration_clipped_by_sun(self, coords, sun_radec, site):
+    def test_pong_duration_clipped_by_sun(self, coordinates, sun_radec, site):
         """A sunward pong scan is clipped though it stays above the el floor.
 
         The target is inside the Sun exclusion radius but well above the
@@ -169,19 +165,101 @@ class TestSunAwarePongDuration:
 
         # Elevation-only window is the full max_scan_duration (target is up).
         el_only = _time_until_set(
-            ra, sun_dec, _SUN_TIME, 3600.0, coords, site.telescope_limits.elevation.min
+            ra, sun_dec, _SUN_TIME, 3600.0, coordinates, site.telescope_limits.elevation.min
         )
         assert el_only == pytest.approx(3600.0, abs=1.0)
 
         # But the sun-aware duration is clipped to ~0.
-        dur = _compute_scan_duration(patch, _SUN_TIME, end_time, site, coords, overhead, 43.0)
+        dur = _compute_scan_duration(patch, _SUN_TIME, end_time, site, coordinates, overhead, 43.0)
         assert dur < 60.0
 
 
-class TestMinDurationConstraintSun:
-    """Fix 3: MinDurationConstraint forward-checks Sun exclusion."""
+class TestPinnedElevationIsClippedAtThePinnedPose:
+    """The Sun clip evaluates the pose the visit commands, not the field's.
 
-    def test_rejects_target_entering_exclusion(self, coords, sun_radec):
+    A patch that pins ``elevation`` is scored at that elevation, slewed to
+    it and recorded at it on every emitted block, so the clip that decides
+    how long the visit may run has to ask about the same pose. Asking
+    about the field's own drifting elevation instead would book a visit
+    for the whole window while the pose it records sits inside the zone
+    for most of it.
+    """
+
+    def _model(self, t0):
+        """Build a model that turns unsafe above 45 deg after 600 s."""
+
+        def sun_safe(az, el, t):
+            if (t - t0).sec < 600.0:
+                return True
+            return float(el) < 45.0
+
+        return sun_safe
+
+    def test_clip_follows_the_pinned_elevation(self, coordinates, site):
+        t0 = Time("2026-06-15T08:00:00", scale="utc")
+        end_time = t0 + TimeDelta(8 * 3600, format="sec")
+        overhead = OverheadModel()
+        # The test field (RA 24, dec -32): up and well away from the Sun on this night, and
+        # rising from 30 to 42 deg over the hour, so its own elevation
+        # never reaches the 45 deg the model closes at.
+        kwargs = dict(
+            name="pinned",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=10.0,
+            height=10.0,
+            scan_type="pong",
+            velocity=1.0,
+        )
+        _, true_el = coordinates.radec_to_altaz(24.0, -32.0, t0)
+        assert float(true_el) < 45.0  # the two elevations disagree here
+
+        pinned = ObservingPatch(**kwargs, elevation=50.0)
+        free = ObservingPatch(**kwargs)
+        model = self._model(t0)
+
+        pinned_dur = _compute_scan_duration(
+            pinned, t0, end_time, site, coordinates, overhead, float(true_el), sun_safe=model
+        )
+        free_dur = _compute_scan_duration(
+            free, t0, end_time, site, coordinates, overhead, float(true_el), sun_safe=model
+        )
+
+        # The pinned pose sits at 50 deg, which the model closes at 600 s.
+        assert pinned_dur == pytest.approx(600.0, abs=30.0)
+        # The field's own track never reaches 45 deg here, so an unpinned
+        # patch is not clipped at all: the difference is the pose asked about.
+        assert free_dur == pytest.approx(overhead.max_scan_duration, abs=1.0)
+
+    def test_min_duration_forward_check_uses_the_pinned_elevation(self, coordinates):
+        t0 = Time("2026-06-15T08:00:00", scale="utc")
+        seen: list[float] = []
+
+        def sun_safe(az, el, t):
+            seen.append(float(el))
+            return True
+
+        patch = ObservingPatch(
+            name="pinned",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=10.0,
+            height=10.0,
+            scan_type="pong",
+            velocity=1.0,
+            elevation=50.0,
+        )
+        az, el = coordinates.radec_to_altaz(24.0, -32.0, t0)
+        constraint = MinDurationConstraint(min_duration=600.0, sun_safe=sun_safe)
+
+        assert constraint.score(patch, t0, float(az), float(el), coordinates) == 1.0
+        assert seen == [50.0]
+
+
+class TestMinDurationConstraintSun:
+    """MinDurationConstraint forward-checks Sun exclusion."""
+
+    def test_rejects_target_entering_exclusion(self, coordinates, sun_radec):
         """Above the el floor but inside the exclusion zone -> score 0.0."""
         sun_ra, sun_dec = sun_radec
         ra = (sun_ra + 20.0) % 360
@@ -198,9 +276,9 @@ class TestMinDurationConstraintSun:
         # At time + 600s the target is still high (el ~44) but ~18 deg from
         # the Sun, inside the 45 deg exclusion. An elevation-only check would
         # score 1.0; the sun forward-check rejects it.
-        assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coords) == 0.0
+        assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coordinates) == 0.0
 
-    def test_accepts_sun_safe_high_target(self, coords):
+    def test_accepts_sun_safe_high_target(self, coordinates):
         """A sun-safe target above the el floor still scores 1.0."""
         # ra=45, dec=-40 at the test time: el ~40, ~73 deg from the Sun.
         patch = ObservingPatch(
@@ -213,4 +291,4 @@ class TestMinDurationConstraintSun:
             velocity=0.5,
         )
         constraint = MinDurationConstraint(min_duration=600.0)
-        assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coords) == 1.0
+        assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coordinates) == 1.0

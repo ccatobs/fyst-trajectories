@@ -5,8 +5,7 @@ Planning-side renderers for calibration-target work:
 - :func:`plot_visibility`: multi-target elevation / azimuth (and optionally
   Sun-separation) vs. time for one observing span, with night/twilight
   shading, sunrise/sunset markers, and sun-proximity highlighting computed
-  from the true angular separation (never from per-axis distance to the
-  Sun's own curve, which is not a separation test).
+  from the true angular separation.
 - :func:`plot_observability_windows`: the Gantt view of the same span, one
   bar lane per target from ``check_observability``'s windows.
 - :func:`plot_array_footprint`: the instantaneous PrimeCam module layout
@@ -69,6 +68,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
 
 __all__ = [
@@ -190,7 +190,7 @@ def plot_visibility(
     atmosphere: AtmosphericConditions | None = None,
     extra_targets: "dict[str, Target] | None" = None,
     tz: tzinfo | None = None,
-    sun_model=None,
+    sun_model: "str | SunSafePredicate | None" = None,
     panels: "Sequence[str]" = ("elevation", "azimuth"),
     title: str | None = None,
     axes: "Sequence[Axes] | None" = None,
@@ -488,8 +488,8 @@ def plot_visibility(
                 )
         else:
             for color, label in (
-                (EXCLUSION_COLOR, f"< {sun_cfg.exclusion_radius:.0f}° from Sun (exclusion)"),
-                (WARNING_COLOR, f"< {sun_cfg.warning_radius:.0f}° (warning)"),
+                (EXCLUSION_COLOR, f"≤ {sun_cfg.exclusion_radius:.0f}° from Sun (exclusion)"),
+                (WARNING_COLOR, f"≤ {sun_cfg.warning_radius:.0f}° (warning)"),
             ):
                 handles.append(plt.Line2D([], [], color=color, lw=2.6, label=label))
     axes[0].legend(handles=handles, ncol=4, fontsize=8.5, loc="upper right", framealpha=0.85)
@@ -527,7 +527,7 @@ def plot_observability_windows(
     avoid: "list[AvoidZone] | None" = None,
     atmosphere: AtmosphericConditions | None = None,
     extra_targets: "dict[str, Target] | None" = None,
-    sun_model=None,
+    sun_model: "str | SunSafePredicate | None" = None,
     tz: tzinfo | None = None,
     title: str | None = None,
     ax: "Axes | None" = None,
@@ -608,7 +608,7 @@ def plot_observability_windows(
         If ``targets`` is empty, ``horizon_hours`` or
         ``window_step_minutes`` is not a finite positive value, or an
         injected ``sun_model`` misbehaves (propagated from
-        :func:`~fyst_trajectories.check_observability`).
+        :func:`~fyst_trajectories.observability.check_observability`).
     """
     try:
         import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
@@ -706,12 +706,12 @@ def plot_observability_windows(
     ax.set_axisbelow(True)
 
     el_floor = site.telescope_limits.elevation.min if el_min is None else el_min
-    if sun_model is not None:
-        policy = getattr(sun_model, "describe", "injected model")
-    elif site.sun_avoidance.enabled:
-        policy = f"Sun > {site.sun_avoidance.exclusion_radius:.0f}\N{DEGREE SIGN}"
-    else:
+    if not site.sun_avoidance.enabled:
         policy = "sun avoidance disabled"
+    elif sun_model is not None:
+        policy = getattr(sun_model, "describe", "injected model")
+    else:
+        policy = f"Sun > {site.sun_avoidance.exclusion_radius:.0f}\N{DEGREE SIGN}"
     criteria = (
         f"observable: el \N{GREATER-THAN OR EQUAL TO} {el_floor:.0f}\N{DEGREE SIGN}, {policy}"
     )
@@ -765,8 +765,9 @@ def plot_array_footprint(
     (offsets are rotated in the tangent plane, never projected through the
     spherical forward map and flattened back, which degenerates toward
     ``el = 90``). The axes are to scale (equal aspect), unlike schematic
-    focal-plane rosettes; at FYST opposite PrimeCam module centres sit
-    ~3.6 deg apart and the full footprint spans ~4.9 deg edge to edge.
+    focal-plane rosettes; with the module geometry this package ships,
+    opposite PrimeCam module centres sit ~3.6 deg apart and the full
+    footprint spans ~4.9 deg edge to edge.
 
     The layout depends on elevation only through the Nasmyth rotation;
     azimuth plays no role in the boresight-relative frame.

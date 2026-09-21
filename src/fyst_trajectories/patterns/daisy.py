@@ -7,8 +7,8 @@ Performance
 -----------
 The inner loop runs at an internal timestep of at most 1/150 s (it
 follows the output timestep when that is finer), so a 300-second scan
-at an output timestep of 1/150 s or coarser produces 45,000 iterations,
-and proportionally more at finer output timesteps.
+runs 45,000 to 90,000 iterations at any output timestep of 1/150 s or
+coarser, and ``duration / timestep`` at finer ones.
 
 With numba (``pip install fyst-trajectories[performance]``):
     JIT-compiled; the inner loop runs one to two orders of magnitude

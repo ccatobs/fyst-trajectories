@@ -325,3 +325,192 @@ class TestChooseEncoderSolutionObstimeArray:
 
         az, _ = choose_encoder_solution(120.0, 45.0, 120.0, 45.0, _T0, site, sun_safe=unsafe_at_t1)
         assert az == pytest.approx(120.0)
+
+
+class TestEncoderSolutionErrorCauses:
+    """Each refusing stage raises the typed error with its cause and diagnostics."""
+
+    @staticmethod
+    def _catch(**kwargs):
+        from fyst_trajectories.exceptions import EncoderSolutionError
+
+        site = kwargs.pop("site", None) or get_fyst_site(sun_avoidance_enabled=False)
+        args = kwargs.pop("args")
+        with pytest.raises(EncoderSolutionError) as info:
+            choose_encoder_solution(*args, site, **kwargs)
+        exc = info.value
+        assert isinstance(exc, PointingError)
+        return exc
+
+    def test_goal_elevation(self):
+        exc = self._catch(args=(190.0, 45.0, 200.0, 10.0, OBSTIME))
+        assert exc.cause == "goal_elevation"
+        assert (exc.goal_az, exc.goal_el) == (200.0, 10.0)
+        assert exc.candidates == ()
+        assert exc.current_az is None
+
+    def test_span_unreachable(self):
+        exc = self._catch(args=(0.0, 45.0, 100.0, 45.0, OBSTIME), goal_az_span=(-200.0, 400.0))
+        assert exc.cause == "span_unreachable"
+        assert exc.candidates == ()
+
+    def test_no_image(self):
+        base = get_fyst_site(sun_avoidance_enabled=False)
+        narrow = dataclasses.replace(base.telescope_limits.azimuth, min=0.0, max=90.0)
+        site = dataclasses.replace(
+            base, telescope_limits=dataclasses.replace(base.telescope_limits, azimuth=narrow)
+        )
+        exc = self._catch(args=(10.0, 45.0, 180.0, 45.0, OBSTIME), site=site)
+        assert exc.cause == "no_image"
+
+    def test_sun_blocked_carries_the_in_range_wraps(self):
+        exc = self._catch(
+            args=(190.0, 45.0, 200.0, 45.0, OBSTIME),
+            site=get_fyst_site(),
+            sun_safe=lambda az, el, t: False,
+        )
+        assert exc.cause == "sun_blocked"
+        assert sorted(exc.candidates) == [-160.0, 200.0]
+        assert exc.time_iso == OBSTIME.iso
+
+    def test_path_blocked_carries_the_point_safe_wraps_and_the_start(self):
+        exc = self._catch(
+            args=(190.0, 45.0, 200.0, 45.0, OBSTIME),
+            site=get_fyst_site(),
+            sun_safe=lambda az, el, t: True,
+            slew_safe=lambda a, b, c, d, t: False,
+        )
+        assert exc.cause == "path_blocked"
+        assert sorted(exc.candidates) == [-160.0, 200.0]
+        assert (exc.current_az, exc.current_el) == (190.0, 45.0)
+        assert exc.time_iso == OBSTIME.iso
+
+
+class TestSunGateBatching:
+    """The Sun gate consults a batch-capable model once, not once per pair.
+
+    The default predicate solves the Sun ephemeris on every call, so a long
+    dwell grid has to be consulted once rather than once per (wrap, time)
+    pair: a dispatcher has about 10 s before the scan must start.
+    """
+
+    def test_default_predicate_exposes_batch(self):
+        from fyst_trajectories.dispatch import _SiteScalarSunSafe
+
+        model = _SiteScalarSunSafe(get_fyst_site())
+        assert callable(getattr(model, "batch", None))
+
+    def test_batch_capable_model_is_called_once(self):
+        import numpy as np
+        from astropy import units as u
+
+        calls = {"batch": 0, "scalar": 0}
+
+        class _Model:
+            def __call__(self, az, el, t):
+                calls["scalar"] += 1
+                return True
+
+            def batch(self, az, el, t):
+                calls["batch"] += 1
+                return np.ones(np.shape(az), dtype=bool)
+
+        grid = OBSTIME + np.arange(50) * 1.0 * u.s
+        choose_encoder_solution(190.0, 45.0, 200.0, 45.0, grid, get_fyst_site(), sun_safe=_Model())
+        assert calls["batch"] == 1
+        assert calls["scalar"] == 0
+
+    def test_bare_predicate_still_works_per_pair(self):
+        import numpy as np
+        from astropy import units as u
+
+        seen = []
+
+        def predicate(az, el, t):
+            seen.append((az, float(t.unix)))
+            return True
+
+        grid = OBSTIME + np.arange(4) * 1.0 * u.s
+        choose_encoder_solution(190.0, 45.0, 200.0, 45.0, grid, get_fyst_site(), sun_safe=predicate)
+        # Two in-range wraps of sky azimuth 200 in [-180, 360], four times.
+        assert len(seen) == 8
+        assert sorted({az for az, _ in seen}) == [-160.0, 200.0]
+
+    def test_a_wrap_is_rejected_when_any_grid_time_is_unsafe(self):
+        """The batch path keeps the all-times-must-pass semantics."""
+        import numpy as np
+        from astropy import units as u
+
+        grid = OBSTIME + np.arange(3) * 1.0 * u.s
+
+        class _BlocksOneWrapLate:
+            def batch(self, az, el, t):
+                az = np.asarray(az, dtype=float)
+                unix = np.asarray(t.unix, dtype=float)
+                # Wrap 200 is unsafe at the last sample only.
+                return ~((az > 0.0) & (unix >= float(grid[-1].unix)))
+
+            def __call__(self, az, el, t):  # pragma: no cover - batch is used
+                raise AssertionError("batch should have been used")
+
+        az, _ = choose_encoder_solution(
+            190.0, 45.0, 200.0, 45.0, grid, get_fyst_site(), sun_safe=_BlocksOneWrapLate()
+        )
+        assert az == -160.0
+
+
+class TestEncoderSolutionCarriesTheWrapShift:
+    """The chosen wrap's 360-degree multiple is returned, not discarded.
+
+    ``choose_encoder_solution`` computes the shift that maps the caller's goal
+    azimuth frame onto the wrap it picked; dropping it on the way out would
+    leave every consumer to rediscover it. The return value is a two-element
+    tuple so the shift is additive: two-value unpacking is unchanged.
+    """
+
+    def test_unpacks_to_two_values(self):
+        """``az, el = ...`` still works, and the tuple compares equal to the pair."""
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        az, el = solution
+        assert (az, el) == (200.0, 45.0)
+        assert solution == (200.0, 45.0)
+        assert len(solution) == 2
+
+    def test_named_access_matches_the_tuple(self):
+        """``.az`` and ``.el`` name the two elements."""
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        assert (solution.az, solution.el) == (solution[0], solution[1])
+
+    def test_shift_is_zero_when_the_goal_wrap_is_chosen(self):
+        """Sky az 200 from current az 190 lands on the goal's own wrap."""
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        assert solution.az_shift == 0.0
+
+    def test_shift_names_the_multiple_that_reaches_the_chosen_wrap(self):
+        """From current az -170 the near wrap is -160, one turn below the goal."""
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        solution = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        assert solution.az == -160.0
+        assert solution.az_shift == -360.0
+        assert 200.0 + solution.az_shift == solution.az
+
+    def test_shift_is_a_whole_number_of_turns(self):
+        """Whatever the geometry, the shift is a multiple of 360."""
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        for current, goal in ((0.0, 350.0), (350.0, 10.0), (190.0, 200.0)):
+            shift = choose_encoder_solution(current, 45.0, goal, 45.0, OBSTIME, site).az_shift
+            assert shift % 360.0 == 0.0
+
+    def test_survives_copy_and_pickle(self):
+        """The shift is carried through the marshalling a task boundary performs."""
+        import copy
+        import pickle
+
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        solution = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        for revived in (copy.copy(solution), pickle.loads(pickle.dumps(solution))):
+            assert revived == solution
+            assert revived.az_shift == solution.az_shift

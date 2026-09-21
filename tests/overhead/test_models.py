@@ -20,7 +20,7 @@ _DURATION_TOL_SEC = 0.01
 
 
 class TestObservingPatch:
-    """Tests for ObservingPatch dataclass."""
+    """Derived dec bounds, and the width/scan_type/velocity construction refusals."""
 
     def test_dec_bounds(self):
         patch = ObservingPatch(
@@ -73,7 +73,7 @@ class TestObservingPatch:
 
 
 class TestCalibrationSpec:
-    """Tests for CalibrationSpec dataclass."""
+    """The six accepted calibration names, and the name/duration refusals."""
 
     def test_valid_types(self):
         for name in ("retune", "pointing_cal", "focus", "skydip", "planet_cal", "beam_map"):
@@ -90,7 +90,7 @@ class TestCalibrationSpec:
 
 
 class TestCalibrationTypeFieldMappings:
-    """Tests for the ``duration_field`` / ``state_field`` mappings."""
+    """Every CalibrationType names a live OverheadModel and CalibrationState field."""
 
     def test_duration_field_resolves_on_overhead_model(self):
         """Every CalibrationType's duration_field must name an OverheadModel attribute."""
@@ -112,7 +112,7 @@ class TestCalibrationTypeFieldMappings:
 
 
 class TestTimelineBlock:
-    """Tests for TimelineBlock dataclass."""
+    """Duration arithmetic, block_type validation, and string-to-enum coercion."""
 
     def test_duration(self):
         t0 = Time("2026-06-15T02:00:00", scale="utc")
@@ -144,7 +144,6 @@ class TestTimelineBlock:
             )
 
     def test_string_block_type_coerced(self):
-        """String block_type should be coerced to BlockType enum."""
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         block = TimelineBlock(
             t_start=t0,
@@ -177,7 +176,7 @@ class TestTimelineBlock:
 
 
 class TestTimelineBlockFactories:
-    """Tests for the TimelineBlock factory classmethods."""
+    """What each factory stamps on a block, and the metadata keys it refuses."""
 
     def _t0(self) -> Time:
         return Time("2026-06-15T02:00:00", scale="utc")
@@ -355,7 +354,7 @@ class TestTimelineBlockFactories:
         assert block.metadata["scan_params"] == scan_params
 
     def test_calibration_factory_default_no_key_leakage(self, site):
-        """The parked default path emits exactly the legacy 2-key metadata.
+        """The parked default path emits exactly the two-key metadata.
 
         No ``scan_params`` / ``t0_scan`` keys leak in when the source-CES
         kwargs are omitted, and the block stays parked (az_start == az_end).
@@ -375,9 +374,29 @@ class TestTimelineBlockFactories:
         assert block.az_start == block.az_end == 90.0
         assert block.rising is True
 
+    def test_calibration_factory_rejects_an_unknown_extra_key(self, site):
+        """A key the metadata schema does not declare is a refusal.
+
+        The sibling channels validate what they carry (``scan_params``
+        against its scan type, the geometry records against theirs), so a
+        mistyped ``science_fraction`` is the one thing on this block that
+        would otherwise be recorded unchecked and read back as a stranger.
+        """
+        with pytest.raises(ValueError, match="not CalibrationBlockMetadata fields"):
+            TimelineBlock.calibration(
+                cal_type="planet_cal",
+                t_start=self._t0(),
+                duration=600.0,
+                az=90.0,
+                el=30.0,
+                site=site,
+                scan_index=0,
+                extra_metadata={"sceince_fraction": 0.9},
+            )
+
 
 class TestBlockType:
-    """Tests for the BlockType enum."""
+    """BlockType is a str subclass, so it compares equal to its own value."""
 
     def test_equals_string(self):
         """BlockType inherits from str so == string comparisons work."""
@@ -386,7 +405,7 @@ class TestBlockType:
 
 
 class TestOverheadModel:
-    """Tests for OverheadModel dataclass."""
+    """Duration lookup by calibration name, and the negative / min-above-max refusals."""
 
     def test_negative_duration(self):
         with pytest.raises(ValueError, match="non-negative"):
@@ -408,7 +427,7 @@ class TestOverheadModel:
 
 
 class TestCalibrationPolicy:
-    """Tests for CalibrationPolicy dataclass."""
+    """Cadence sign rules, the manual-only beam-map default, and footprint tags."""
 
     def test_negative_cadence(self):
         with pytest.raises(ValueError, match="non-negative"):
@@ -441,7 +460,7 @@ class TestCalibrationPolicy:
 
 
 class TestBeamMapScheduling:
-    """Tests for BEAM_MAP first-class scheduling behaviour."""
+    """A beam map is due only when a cadence is set, and records its own state field."""
 
     def test_default_policy_skips_beam_map(self):
         """With ``beam_map_cadence=None`` no automatic beam map is scheduled."""
@@ -478,7 +497,7 @@ class TestBeamMapScheduling:
 
 
 class TestObservingTimeline:
-    """Tests for ObservingTimeline dataclass."""
+    """Science totals and efficiency, plus validate()'s overlap, gap, az and pose checks."""
 
     def test_empty_timeline(self, site):
         t0 = Time("2026-06-15T02:00:00", scale="utc")
@@ -589,12 +608,55 @@ class TestObservingTimeline:
         assert len(warnings) == 1
         assert "Overlap" in warnings[0]
 
+    def test_validate_gap(self, site):
+        """Time between two blocks that belongs to neither is reported.
+
+        Every emitter in the package tiles its window, filling waits
+        with idles, so an unaccounted stretch means time that is neither
+        science, calibration, slew nor idle and the four totals do not
+        add up. Gap and overlap are the two directions of one invariant,
+        and the gap is the easier half.
+        """
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        t1 = t0 + TimeDelta(1800, format="sec")
+        first = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(600, format="sec"),
+            block_type="science",
+            patch_name="a",
+            az_start=100.0,
+            az_end=200.0,
+            elevation=50.0,
+            scan_index=0,
+        )
+        second = TimelineBlock(
+            t_start=t0 + TimeDelta(1140, format="sec"),
+            t_stop=t0 + TimeDelta(1800, format="sec"),
+            block_type="science",
+            patch_name="b",
+            az_start=100.0,
+            az_end=200.0,
+            elevation=50.0,
+            scan_index=1,
+        )
+        tl = ObservingTimeline(
+            blocks=[first, second],
+            site=site,
+            start_time=t0,
+            end_time=t1,
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        warnings = tl.validate()
+        assert len(warnings) == 1
+        assert warnings[0].startswith("Gap of 540.000 s")
+
     def test_validate_unordered_azimuth_bounds(self, site):
         """A science block with az_start > az_end is flagged.
 
-        The fixture pair is a real torn range from the cable-wrap seam
-        bug; the westward slew alongside it is unordered by design and
-        must not be flagged.
+        The fixture pair is a real torn range across the cable-wrap seam;
+        the westward slew alongside it is unordered by design and must
+        not be flagged.
         """
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         t1 = t0 + TimeDelta(1000, format="sec")
@@ -727,3 +789,68 @@ class TestObservingTimeline:
             calibration_policy=CalibrationPolicy(),
         )
         assert tl.validate() == []
+
+    @pytest.mark.parametrize(
+        ("idle_az", "expected_warnings"),
+        [(120.0, 0), (200.0, 1)],
+        ids=["parks_at_az_final", "parks_at_the_envelope_max"],
+    )
+    def test_validate_follows_az_final_on_a_swept_block(self, site, idle_az, expected_warnings):
+        """A swept block hands ``az_final`` forward, not its envelope bound.
+
+        The pass sweeps 100 to 200 deg and stops at 120, so the idle that
+        follows parks at 120. Both directions are pinned: parking at the
+        envelope maximum instead is the case that is flagged.
+        """
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        t1 = t0 + TimeDelta(1200, format="sec")
+        swept = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(600, format="sec"),
+            block_type="calibration",
+            patch_name="planet_cal",
+            az_start=100.0,
+            az_end=200.0,
+            elevation=50.0,
+            scan_index=0,
+            az_final=120.0,
+        )
+        assert swept.end_pose_az == 120.0
+        idle = TimelineBlock(
+            t_start=t0 + TimeDelta(600, format="sec"),
+            t_stop=t0 + TimeDelta(900, format="sec"),
+            block_type="idle",
+            patch_name="no_target",
+            az_start=idle_az,
+            az_end=idle_az,
+            elevation=50.0,
+            scan_index=0,
+        )
+        tl = ObservingTimeline(
+            blocks=[swept, idle],
+            site=site,
+            start_time=t0,
+            end_time=t1,
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        warnings = tl.validate()
+        assert len(warnings) == expected_warnings
+        if warnings:
+            assert "previous block ended at az 120.000" in warnings[0]
+
+    def test_end_pose_az_defaults_to_az_end(self, site):
+        """A block without ``az_final`` ends at ``az_end``, as every parked block does."""
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        parked = TimelineBlock.calibration(
+            "pointing_cal", t0, 180.0, 45.0, 50.0, site, scan_index=0
+        )
+        assert parked.az_final is None
+        assert parked.end_pose_az == parked.az_end == 45.0
+        swept = TimelineBlock.calibration(
+            "planet_cal", t0, 600.0, 40.0, 50.0, site, scan_index=0, az_end=60.0, az_final=44.0
+        )
+        assert swept.end_pose_az == 44.0
+        # The envelope is untouched, so azmin/azmax and the midpoint
+        # boresight angle keep their meaning.
+        assert (swept.az_start, swept.az_end) == (40.0, 60.0)

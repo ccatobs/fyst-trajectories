@@ -15,10 +15,9 @@ from fyst_trajectories.patterns import PlanetTrackConfig, PlanetTrackPattern
 
 
 class TestPlanetTrackPattern:
-    """Tests for planet tracking pattern."""
+    """Body tracking: metadata, the apparent centre RA/Dec, and no ra/dec constructor args."""
 
     def test_track_mars(self, site):
-        """Test tracking Mars."""
         start_time = Time("2026-01-15T14:00:00", scale="utc")
         config = PlanetTrackConfig(timestep=0.1, body="mars")
         pattern = PlanetTrackPattern(config=config)
@@ -33,12 +32,12 @@ class TestPlanetTrackPattern:
 
     @pytest.mark.slow
     def test_planet_track_has_motion(self, site):
-        """Test that planet position changes over time.
+        """An hour of Moon tracking produces more than 1 degree of total motion.
 
-        The Moon moves approximately 0.5 degrees per minute in the sky,
-        so in 1 hour there should significant motion. However, the distribution
-        between azimuth and elevation depends on where the Moon is in the sky.
-        So just verify there is meaningful motion in at least one axis.
+        Apparent Az/El motion is dominated by Earth's rotation, of order 15 degrees
+        per hour, not by the Moon's own ~0.5 deg/hour drift against the stars. How
+        that motion splits between azimuth and elevation depends on where the Moon
+        is, so assert only that the combined motion is well over 1 degree.
         """
         # Use a fixed time when Moon is observable from FYST
         start_time = Time("2026-01-15T10:00:00", scale="utc")
@@ -59,7 +58,6 @@ class TestPlanetTrackPattern:
         )
 
     def test_metadata(self):
-        """Test that metadata is correctly populated."""
         config = PlanetTrackConfig(timestep=0.1, body="jupiter")
         pattern = PlanetTrackPattern(config=config)
 
@@ -70,14 +68,12 @@ class TestPlanetTrackPattern:
         assert metadata.target_name == "jupiter"
 
     def test_does_not_accept_ra_dec(self):
-        """Test that PlanetTrackPattern does not accept ra/dec parameters."""
         sig = inspect.signature(PlanetTrackPattern.__init__)
         param_names = list(sig.parameters.keys())
         assert "ra" not in param_names
         assert "dec" not in param_names
 
     def test_finite_positions(self, site):
-        """Test that positions are finite."""
         start_time = Time("2026-01-15T14:00:00", scale="utc")
         config = PlanetTrackConfig(timestep=0.1, body="venus")
         pattern = PlanetTrackPattern(config=config)
@@ -90,7 +86,6 @@ class TestPlanetTrackPattern:
         assert np.all(np.isfinite(trajectory.el_vel))
 
     def test_metadata_has_radec_after_generate(self, site):
-        """Test that generated trajectory metadata includes planet RA/Dec."""
         start_time = Time("2026-01-15T14:00:00", scale="utc")
         config = PlanetTrackConfig(timestep=0.1, body="mars")
         pattern = PlanetTrackPattern(config=config)
@@ -104,7 +99,6 @@ class TestPlanetTrackPattern:
         assert -90.0 <= trajectory.center_dec <= 90.0
 
     def test_get_metadata_without_args_has_no_radec(self):
-        """Test that get_metadata() without args returns None RA/Dec."""
         config = PlanetTrackConfig(timestep=0.1, body="jupiter")
         pattern = PlanetTrackPattern(config=config)
 
@@ -114,10 +108,10 @@ class TestPlanetTrackPattern:
         assert metadata.center_dec is None
 
     def test_apply_detector_offset_no_warning(self, site):
-        """Test that apply_detector_offset on a planet trajectory does not warn.
+        """``apply_detector_offset`` on a planet trajectory does not warn.
 
         apply_detector_offset is a horizon-frame projection using the
-        mechanical rotation only (pa-in-horizon-frame fix), so it needs no
+        mechanical rotation only, not the parallactic angle, so it needs no
         celestial metadata and must never emit a PointingWarning.
         """
         start_time = Time("2026-01-15T14:00:00", scale="utc")
@@ -137,9 +131,11 @@ class TestPlanetTrackPattern:
         """The track's metadata center RA/Dec is the planet's apparent position.
 
         ``center_ra``/``center_dec`` feed celestial-frame consumers (map
-        orientation via ``get_field_rotation``, ECSV provenance). The
-        barycentric ``get_body_radec`` bug skewed this (up to ~17 deg
-        for Mars), so guard that the reported center round-trips back to Mars'
+        orientation via ``get_field_rotation``, ECSV provenance). A barycentric
+        (solar-system-barycentre-relative) direction differs from the apparent
+        place of a nearby body by degrees to tens of degrees, about 24 deg for
+        Mars at this epoch, so the round trip is a real apparent-place check and
+        not a tautology: guard that the reported center round-trips back to Mars'
         Az/El at the track midpoint.
         """
         start_time = Time("2026-06-15T14:00:00", scale="utc")

@@ -1,7 +1,7 @@
 """Constant elevation scan pattern.
 
 Scans back and forth in azimuth at a fixed elevation using a
-quintic polynomial velocity profile with smooth turnarounds.
+smooth polynomial turnaround profile.
 """
 
 import warnings
@@ -16,7 +16,7 @@ from ..trajectory_utils import validate_trajectory_bounds
 from .base import AltAzPattern, TrajectoryMetadata
 from .configs import ConstantElScanConfig
 from .registry import register_pattern
-from .turnarounds import quintic_turnaround
+from .turnarounds import quintic_turnaround, swept_az_envelope, turnaround_duration_sec
 from .utils import validate_sample_count
 
 
@@ -25,8 +25,8 @@ class ConstantElScanPattern(AltAzPattern):
     """Constant elevation scan pattern.
 
     Generates a trajectory that scans back and forth in azimuth at
-    a fixed elevation, using a quintic polynomial velocity profile
-    for smooth turnarounds.
+    a fixed elevation, using the smooth polynomial turnaround of
+    :func:`~fyst_trajectories.patterns.turnarounds.quintic_turnaround`.
 
     The quintic turnaround has zero acceleration at the cruise/turn
     boundaries, providing C2 continuity. The peak acceleration is
@@ -201,18 +201,16 @@ class ConstantElScanPattern(AltAzPattern):
             Per-sample scan flag (1 = science, 2 = turnaround).
         """
         az_throw = az_max - az_min
-        # Factor 2: trapezoidal velocity profile = ramp-up time (v/a) + ramp-down time (v/a)
-        t_turnaround = 2.0 * az_speed / az_accel
-        d_half_turn = 5.0 * az_speed**2 / (8.0 * az_accel)
+        t_turnaround = turnaround_duration_sec(az_speed, az_accel)
 
         # The cruise covers exactly the science region [az_min, az_max] at constant
         # speed; the quintic turnaround lives in the overscan zone, overshooting the
-        # science edge by ``d_half_turn`` (the quintic peak displacement) before
-        # returning to it. So the motion range is [az_min - d_half_turn,
-        # az_max + d_half_turn] and every science sample is at cruise velocity.
+        # science edge by the quintic peak displacement before returning to it.
+        # ``swept_az_envelope`` is the shared definition of that wider range, so
+        # every envelope consumer (axis limits, Sun screens) sees the same numbers
+        # this generator produces; every science sample is at cruise velocity.
         d_cruise = az_throw
-        motion_min = az_min - d_half_turn
-        motion_max = az_max + d_half_turn
+        motion_min, motion_max = swept_az_envelope(az_min, az_max, az_speed, az_accel)
 
         dir_fwd = 1.0 if start_increasing else -1.0
         dir_rev = -dir_fwd

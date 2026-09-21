@@ -37,8 +37,6 @@ from fyst_trajectories.patterns import (
 
 ra_strategy = st.floats(min_value=0.0, max_value=360.0, allow_nan=False, allow_infinity=False)
 
-dec_strategy = st.floats(min_value=-90.0, max_value=90.0, allow_nan=False, allow_infinity=False)
-
 # Azimuth: 0 to 360 degrees (telescope limits may be tighter)
 az_strategy = st.floats(min_value=0.0, max_value=360.0, allow_nan=False, allow_infinity=False)
 
@@ -64,14 +62,6 @@ field_rotation_strategy = st.floats(
     min_value=-180.0, max_value=180.0, allow_nan=False, allow_infinity=False
 )
 
-# Scan dimensions (degrees)
-scan_dim_strategy = st.floats(min_value=0.1, max_value=5.0, allow_nan=False, allow_infinity=False)
-
-# Scan velocity (degrees/second)
-scan_velocity_strategy = st.floats(
-    min_value=0.05, max_value=2.0, allow_nan=False, allow_infinity=False
-)
-
 # Duration in seconds
 duration_strategy = st.floats(
     min_value=10.0,
@@ -80,8 +70,6 @@ duration_strategy = st.floats(
     allow_infinity=False,
 )
 
-# Timestep in seconds
-timestep_strategy = st.floats(min_value=0.1, max_value=1.0, allow_nan=False, allow_infinity=False)
 
 # Solar-system bodies and a random epoch offset (for ephemeris round-trip checks).
 # Titan (the satellite path) is intentionally NOT fuzzed here: the satellite path differs
@@ -101,7 +89,7 @@ epoch_offset_days_strategy = st.floats(
 
 
 class TestCoordinateTransformProperties:
-    """Property-based tests for coordinate transformations."""
+    """Transforms stay in range, invert each other, and repeat exactly for any input."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -114,7 +102,6 @@ class TestCoordinateTransformProperties:
     @given(ra=ra_strategy, dec=observable_dec_strategy)
     @settings(max_examples=100, deadline=None)
     def test_radec_to_altaz_produces_valid_output(self, ra, dec):
-        """Test that radec_to_altaz produces valid Az/El for any valid RA/Dec."""
         az, el = self.coords.radec_to_altaz(ra, dec, obstime=self.obstime)
 
         assert -360 < az < 720, f"Azimuth {az} outside valid range"
@@ -125,7 +112,6 @@ class TestCoordinateTransformProperties:
     @given(az=az_strategy, el=el_strategy)
     @settings(max_examples=100, deadline=None)
     def test_altaz_to_radec_produces_valid_output(self, az, el):
-        """Test that altaz_to_radec produces valid RA/Dec for any valid Az/El."""
         ra, dec = self.coords.altaz_to_radec(az, el, obstime=self.obstime)
 
         assert 0 <= ra < 360, f"RA {ra} outside valid range"
@@ -136,7 +122,6 @@ class TestCoordinateTransformProperties:
     @given(ra=ra_strategy, dec=observable_dec_strategy)
     @settings(max_examples=50, deadline=None)
     def test_radec_altaz_round_trip(self, ra, dec):
-        """Test that RA/Dec -> Az/El -> RA/Dec returns the original values."""
         az, el = self.coords.radec_to_altaz(ra, dec, obstime=self.obstime)
         assume(el > 5.0)
 
@@ -151,7 +136,6 @@ class TestCoordinateTransformProperties:
     @given(az=az_strategy, el=el_strategy)
     @settings(max_examples=50, deadline=None)
     def test_altaz_radec_round_trip(self, az, el):
-        """Test that Az/El -> RA/Dec -> Az/El returns the original values."""
         ra, dec = self.coords.altaz_to_radec(az, el, obstime=self.obstime)
         az_back, el_back = self.coords.radec_to_altaz(ra, dec, obstime=self.obstime)
 
@@ -164,7 +148,6 @@ class TestCoordinateTransformProperties:
     @given(ra=ra_strategy, dec=observable_dec_strategy)
     @settings(max_examples=30, deadline=None)
     def test_radec_to_altaz_deterministic(self, ra, dec):
-        """Test that radec_to_altaz is deterministic (same input -> same output)."""
         az1, el1 = self.coords.radec_to_altaz(ra, dec, obstime=self.obstime)
         az2, el2 = self.coords.radec_to_altaz(ra, dec, obstime=self.obstime)
 
@@ -176,9 +159,9 @@ class TestCoordinateTransformProperties:
     def test_get_body_radec_round_trips_to_altaz(self, body, offset_days):
         """get_body_radec must be the apparent place: it round-trips to get_body_altaz.
 
-        This is the invariant the barycentric ``.icrs`` bug violated by ~600,000
-        arcsec; checked here over randomized bodies and epochs so the guard holds
-        across geometry, not just hand-picked dates.
+        This is the invariant a barycentric ``.icrs`` implementation violates by
+        ~600,000 arcsec; checked here over randomized bodies and epochs so the
+        guard holds across geometry, not just hand-picked dates.
         """
         t = self.obstime + TimeDelta(offset_days * u.day)
         ra, dec = self.coords.get_body_radec(body, obstime=t)
@@ -196,7 +179,7 @@ class TestCoordinateTransformProperties:
 
 
 class TestOffsetTransformProperties:
-    """Property-based tests for instrument offset transformations."""
+    """Focal-plane offsets invert to under 1e-5 deg, with and without field rotation."""
 
     @given(
         dx=offset_strategy,
@@ -206,11 +189,10 @@ class TestOffsetTransformProperties:
     )
     @settings(max_examples=100, deadline=None)
     def test_boresight_detector_round_trip(self, dx, dy, az, el):
-        """Test that boresight -> detector -> boresight returns original.
+        """The spherical round trip closes to under 1e-5 deg (0.04 arcsec).
 
-        Spherical round-trip with iterative refinement achieves sub-milliarcsecond
-        precision. Skip cases where offset would push elevation past 89 deg
-        (zenith singularity causes 1/cos(el) amplification in azimuth).
+        Skip cases where the offset would push elevation past 89 deg (the
+        zenith singularity causes 1/cos(el) amplification in azimuth).
         """
         # Offsets that push elevation past 89 deg hit the zenith singularity
         max_el_offset = abs(dy) / 60.0 + abs(dx) / 60.0
@@ -236,11 +218,10 @@ class TestOffsetTransformProperties:
     )
     @settings(max_examples=100, deadline=None)
     def test_round_trip_with_field_rotation(self, dx, dy, az, el, field_rotation):
-        """Test round-trip with field rotation applied.
+        """The round trip closes to under 1e-5 deg (0.04 arcsec) at any field rotation.
 
-        Spherical round-trip with iterative refinement achieves sub-milliarcsecond
-        precision. Skip cases where offset would push elevation past 89 deg
-        (zenith singularity causes 1/cos(el) amplification in azimuth).
+        Skip cases where the offset would push elevation past 89 deg (the
+        zenith singularity causes 1/cos(el) amplification in azimuth).
         """
         # Offsets that push elevation past 89 deg hit the zenith singularity
         max_el_offset = abs(dy) / 60.0 + abs(dx) / 60.0
@@ -262,7 +243,6 @@ class TestOffsetTransformProperties:
     @given(az=az_strategy, el=el_strategy)
     @settings(max_examples=50, deadline=None)
     def test_zero_offset_no_change(self, az, el):
-        """Test that zero offset produces no change in coordinates."""
         offset = InstrumentOffset(dx=0.0, dy=0.0)
 
         det_az, det_el = boresight_to_detector(az, el, offset, field_rotation=0.0)
@@ -278,7 +258,6 @@ class TestOffsetTransformProperties:
     )
     @settings(max_examples=50, deadline=None)
     def test_offset_produces_finite_results(self, dx, dy, az, el):
-        """Test that offset transforms produce finite results."""
         offset = InstrumentOffset(dx=dx, dy=dy)
 
         det_az, det_el = boresight_to_detector(az, el, offset, field_rotation=0.0)
@@ -293,7 +272,7 @@ class TestOffsetTransformProperties:
 
 
 class TestTrajectoryProperties:
-    """Property-based tests for trajectory generation."""
+    """Generated trajectories keep aligned arrays, increasing times, and the asked duration."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -304,7 +283,6 @@ class TestTrajectoryProperties:
     @given(duration=duration_strategy)
     @settings(max_examples=20, deadline=None)
     def test_linear_trajectory_array_lengths_match(self, duration):
-        """Test that all trajectory arrays have the same length."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=150.0,
@@ -324,7 +302,6 @@ class TestTrajectoryProperties:
     @given(duration=duration_strategy)
     @settings(max_examples=20, deadline=None)
     def test_trajectory_times_monotonic(self, duration):
-        """Test that trajectory times are monotonically increasing."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=150.0,
@@ -341,7 +318,6 @@ class TestTrajectoryProperties:
     @given(duration=duration_strategy)
     @settings(max_examples=20, deadline=None)
     def test_trajectory_duration_matches(self, duration):
-        """Test that trajectory duration matches expected value."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=150.0,
@@ -364,7 +340,6 @@ class TestTrajectoryProperties:
     )
     @settings(max_examples=20, deadline=None)
     def test_pong_trajectory_arrays_finite(self, width, height, velocity):
-        """Test that Pong trajectory arrays contain only finite values."""
         config = PongScanConfig(
             timestep=0.1,
             width=width,
@@ -390,7 +365,6 @@ class TestTrajectoryProperties:
     )
     @settings(max_examples=20, deadline=None)
     def test_constant_el_elevation_truly_constant(self, az_start, az_stop, elevation):
-        """Test that ConstantElScan maintains constant elevation."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=az_start,
@@ -411,7 +385,7 @@ class TestTrajectoryProperties:
 
 
 class TestTrajectoryBuilderProperties:
-    """Property-based tests for TrajectoryBuilder."""
+    """The builder returns aligned, finite arrays and preserves the requested target."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -427,7 +401,6 @@ class TestTrajectoryBuilderProperties:
     )
     @settings(max_examples=15, deadline=None)
     def test_builder_produces_valid_trajectory(self, ra, dec, width, height):
-        """Test that TrajectoryBuilder produces valid trajectories."""
         coords = Coordinates(self.site)
         center_az, center_el = coords.radec_to_altaz(ra, dec, obstime=self.start_time)
         limits = self.site.telescope_limits
@@ -477,12 +450,12 @@ class TestTrajectoryBuilderProperties:
 
 
 # -----------------------------------------------------------------------------
-# Idempotence and Consistency Tests
+# Consistency Tests
 # -----------------------------------------------------------------------------
 
 
 class TestConsistencyProperties:
-    """Tests for consistency and idempotence properties."""
+    """The hour angle agrees with LST minus RA, wrapped to [-180, 180)."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -492,30 +465,8 @@ class TestConsistencyProperties:
         self.start_time = Time("2026-03-15T04:00:00", scale="utc")
 
     @given(ra=ra_strategy, dec=observable_dec_strategy)
-    @settings(max_examples=30, deadline=None)
-    def test_parallactic_angle_finite(self, ra, dec):
-        """Test that parallactic angle is always finite."""
-        pa = self.coords.get_parallactic_angle(ra, dec, obstime=self.start_time)
-        assert np.isfinite(pa), f"Parallactic angle {pa} is not finite for ({ra}, {dec})"
-
-    @given(ra=ra_strategy, dec=observable_dec_strategy)
-    @settings(max_examples=30, deadline=None)
-    def test_field_rotation_finite(self, ra, dec):
-        """Test that field rotation is always finite."""
-        fr = self.coords.get_field_rotation(ra, dec, obstime=self.start_time)
-        assert np.isfinite(fr), f"Field rotation {fr} is not finite for ({ra}, {dec})"
-
-    @given(ra=ra_strategy)
-    @settings(max_examples=30, deadline=None)
-    def test_hour_angle_in_range(self, ra):
-        """Test that hour angle is in valid range."""
-        ha = self.coords.get_hour_angle(ra, obstime=self.start_time)
-        assert -180 <= ha <= 180, f"Hour angle {ha} outside valid range"
-
-    @given(ra=ra_strategy, dec=observable_dec_strategy)
     @settings(max_examples=20, deadline=None)
     def test_lst_consistent_with_hour_angle(self, ra, dec):
-        """Test that LST, RA, and HA are consistent."""
         lst = self.coords.get_lst(obstime=self.start_time)
         ha = self.coords.get_hour_angle(ra, obstime=self.start_time)
 

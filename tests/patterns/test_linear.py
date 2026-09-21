@@ -12,10 +12,9 @@ _START_TIME = Time("2026-03-15T04:00:00", scale="utc")
 
 
 class TestLinearMotionPattern:
-    """Tests for linear motion pattern."""
+    """Constant-velocity az/el motion: endpoints, velocity signs, timestep density, bounds."""
 
     def test_basic_linear_motion(self, site):
-        """Test generating a basic linear motion trajectory."""
         start_time = _START_TIME
         config = LinearMotionConfig(
             timestep=0.1,
@@ -34,7 +33,6 @@ class TestLinearMotionPattern:
         assert trajectory.pattern_type == "linear"
 
     def test_linear_motion_positions(self, site):
-        """Test that positions follow linear motion."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,
@@ -53,7 +51,6 @@ class TestLinearMotionPattern:
         assert trajectory.el[-1] == pytest.approx(50.0, abs=0.2)
 
     def test_linear_motion_constant_velocity(self, site):
-        """Test that velocities are constant throughout trajectory."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,
@@ -73,7 +70,6 @@ class TestLinearMotionPattern:
         )
 
     def test_linear_motion_zero_velocity(self, site):
-        """Test linear motion with zero velocity (stationary)."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=120.0,
@@ -93,7 +89,6 @@ class TestLinearMotionPattern:
         )
 
     def test_linear_motion_negative_velocity(self, site):
-        """Test linear motion with negative velocity."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=150.0,
@@ -111,7 +106,6 @@ class TestLinearMotionPattern:
         assert np.all(trajectory.el_vel < 0)
 
     def test_linear_motion_custom_timestep(self, site):
-        """Test linear motion with custom timestep."""
         config_fine = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,
@@ -137,7 +131,6 @@ class TestLinearMotionPattern:
         assert traj_fine.n_points > traj_coarse.n_points * 5
 
     def test_linear_motion_metadata_stored(self, site):
-        """Test that linear motion stores pattern parameters correctly."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,
@@ -157,7 +150,6 @@ class TestLinearMotionPattern:
         assert params["el_velocity"] == 0.1
 
     def test_linear_motion_validates_bounds(self, site):
-        """Test that linear motion validates trajectory against telescope limits."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,
@@ -171,7 +163,6 @@ class TestLinearMotionPattern:
             pattern.generate(site, duration=60.0, start_time=_START_TIME)
 
     def test_linear_motion_el_only(self, site):
-        """Test linear motion in elevation only."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=150.0,
@@ -189,7 +180,6 @@ class TestLinearMotionPattern:
         assert trajectory.el[-1] > trajectory.el[0]
 
     def test_linear_motion_az_only(self, site):
-        """Test linear motion in azimuth only."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,
@@ -207,7 +197,6 @@ class TestLinearMotionPattern:
         assert trajectory.az[-1] > trajectory.az[0]
 
     def test_linear_motion_start_time_optional(self, site):
-        """Test that start_time=None produces a valid trajectory."""
         config = LinearMotionConfig(
             timestep=0.1,
             az_start=100.0,

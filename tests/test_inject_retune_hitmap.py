@@ -53,7 +53,6 @@ class TestScienceMaskReduction:
     """Verify science_mask correctly tracks retune overhead."""
 
     def test_science_mask_reduces_sample_count(self, ce_trajectory):
-        """Injecting retunes should reduce the number of science samples."""
         original_science = ce_trajectory.science_mask.sum()
         result = inject_retune(
             ce_trajectory,
@@ -70,7 +69,8 @@ class TestScienceMaskReduction:
     def test_science_ratio_matches_efficiency(self, ce_trajectory):
         """Ratio of science samples to total should match expected efficiency.
 
-        For 30s/5s retune, theoretical efficiency is ~83.3%.
+        For 30s/5s retune, theoretical efficiency is ~85.7% (30 s of science
+        per 35 s cadence).
         CE scans have turnarounds that reduce effective science fraction
         further, so we allow a wider range.
         """
@@ -84,8 +84,8 @@ class TestScienceMaskReduction:
         science_samples = result.science_mask.sum()
         ratio = science_samples / total_samples
 
-        # CE scans already have ~2-5% turnaround overhead, plus ~16.7%
-        # retune overhead, so science fraction should be roughly 78-87%
+        # CE scans already have ~4.6% turnaround overhead, plus ~14% retune
+        # overhead, so science fraction should be roughly 78-87%
         assert 0.75 <= ratio <= 0.90, (
             f"Science ratio {ratio:.3f} outside expected range [0.75, 0.90]"
         )
@@ -154,7 +154,6 @@ class TestPrimecamIntegration:
     """
 
     def test_trajectory_compatible_with_primecam(self, ce_trajectory):
-        """Retune-injected trajectory should have valid arrays for primecam."""
         result = inject_retune(
             ce_trajectory,
             retune_interval=30.0,

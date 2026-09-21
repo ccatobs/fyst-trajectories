@@ -15,6 +15,7 @@ from astropy.time import Time
 matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")  # headless backend
 import matplotlib.pyplot as plt  # noqa: E402
+from _sun_stubs import fake_sun_model  # noqa: E402
 from matplotlib.contour import QuadContourSet  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
@@ -66,19 +67,9 @@ def _grid(step=STEP):
     return np.meshgrid(az_c, el_c)
 
 
-class _StubModel:
-    """Minimal injected model: everything unsafe, recognizable describe."""
-
-    describe = "stub policy"
-
-    def __call__(self, az_deg, el_deg, time):
-        return False
-
-    def batch(self, az_deg, el_deg, times):
-        return np.zeros(np.shape(np.asarray(az_deg)), dtype=bool)
-
-
 class _BadShapeModel:
+    """Deliberately breaks the batch shape contract, so it stays hand-written."""
+
     describe = "bad shape"
 
     def batch(self, az_deg, el_deg, times):
@@ -102,7 +93,7 @@ def test_default_returns_polar_figure_with_scalar_shading():
     assert any("warning" in text for text in labels)
     # The site radii appear in the legend, not hardcoded numbers.
     cfg = get_fyst_site().sun_avoidance
-    assert any(f"< {cfg.exclusion_radius:.0f}" in text for text in labels)
+    assert any(f"\N{LESS-THAN OR EQUAL TO} {cfg.exclusion_radius:.0f}" in text for text in labels)
     # The Sun and every drawn body are identified in the legend.
     assert "Sun" in labels
     assert "moon" in labels
@@ -136,7 +127,12 @@ def test_night_sun_reported_in_legend_not_drawn():
 
 
 def test_injected_model_drives_shading_and_legend():
-    fig = plot_sky_view(T0, sun_model=_StubModel(), grid_step_deg=STEP, show=False)
+    fig = plot_sky_view(
+        T0,
+        sun_model=fake_sun_model(False, describe="stub policy"),
+        grid_step_deg=STEP,
+        show=False,
+    )
     (ax,) = fig.axes
     assert len(_zone_fills(ax)) == 1  # no warning band for injected models
     assert any("stub policy" in text for text in _legend_texts(ax))

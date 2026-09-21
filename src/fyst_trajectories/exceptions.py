@@ -20,11 +20,44 @@ Exception Hierarchy
             AzimuthBoundsError
             ElevationBoundsError
         TargetNotObservableError
+        EncoderSolutionError
+        OffsetInversionError
 
 ``PointingError`` inherits from ``ValueError``, and every exception
 below it inherits from ``PointingError``, so all of them can be caught
-as ``ValueError`` for backward compatibility.
+as ``ValueError``. That is the single reason recorded for the
+subclassing, and the reason is live rather than historical: a control
+system's ``except ValueError`` around a dispatch, and the offline
+simulator's best-effort rebuild path, both rely on it, and the
+calibration-night planner relies on the ordering it creates (a handler
+must catch ``PointingError`` before ``ValueError`` to tell an
+infeasibility from a malformed argument).
+
+The bounds family and :class:`EncoderSolutionError` overlap at one
+condition, deliberately. ``TrajectoryBoundsError`` and its two
+subclasses report a *trajectory or position* that violates a limit;
+``EncoderSolutionError`` reports that *no commandable encoder solution
+exists*. ``cause="goal_elevation"`` is where the two coincide, because
+the goal elevation is refused before any azimuth wrap is considered, so
+the caller learns there is no solution rather than which sample was out
+of range.
+
+Every exception in the hierarchy survives :mod:`pickle` and
+:mod:`copy`. The structured subclasses take more than the single
+message argument :class:`BaseException` reconstructs from, so each one
+defines ``__reduce__``; a consumer that marshals errors across a
+process boundary gets the attributes back, not a ``TypeError``.
 """
+
+import functools
+from collections.abc import Sequence
+from typing import Literal
+
+#: The stages at which :func:`~fyst_trajectories.dispatch.choose_encoder_solution`
+#: can refuse a goal; the vocabulary of :attr:`EncoderSolutionError.cause`.
+EncoderSolutionCause = Literal[
+    "goal_elevation", "no_image", "span_unreachable", "sun_blocked", "path_blocked"
+]
 
 
 class PointingWarning(UserWarning):
@@ -60,14 +93,11 @@ class AccelerationLimitWarning(PointingWarning):
 class PointingError(ValueError):
     """Base exception for all fyst-trajectories errors.
 
-    Inherits from ``ValueError`` for backward compatibility with
-    code that catches ``ValueError``.
+    Inherits from ``ValueError``; see the module docstring for why.
 
     Examples
     --------
-    The ``PointingError`` family subclasses ``ValueError``, so ``except
-    ValueError`` catches it alongside this library's plain input-validation
-    errors. Narrow to ``except PointingError`` to catch only the
+    Narrow to ``except PointingError`` to catch only the
     physical-infeasibility and bounds family:
 
     >>> from fyst_trajectories import validate_trajectory
@@ -130,6 +160,13 @@ class TrajectoryBoundsError(PointingError):
         )
         super().__init__(message)
 
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error."""
+        return (
+            TrajectoryBoundsError,
+            (self.axis, self.actual_min, self.actual_max, self.limit_min, self.limit_max),
+        )
+
 
 class AzimuthBoundsError(TrajectoryBoundsError):
     """Raised when trajectory azimuth exceeds telescope limits.
@@ -171,6 +208,13 @@ class AzimuthBoundsError(TrajectoryBoundsError):
     ):
         super().__init__("azimuth", actual_min, actual_max, limit_min, limit_max)
 
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error."""
+        return (
+            type(self),
+            (self.actual_min, self.actual_max, self.limit_min, self.limit_max),
+        )
+
 
 class ElevationBoundsError(TrajectoryBoundsError):
     """Raised when trajectory elevation exceeds telescope limits.
@@ -211,6 +255,13 @@ class ElevationBoundsError(TrajectoryBoundsError):
         limit_max: float,
     ):
         super().__init__("elevation", actual_min, actual_max, limit_min, limit_max)
+
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error."""
+        return (
+            type(self),
+            (self.actual_min, self.actual_max, self.limit_min, self.limit_max),
+        )
 
 
 class TargetNotObservableError(PointingError):
@@ -278,3 +329,142 @@ class TargetNotObservableError(PointingError):
                 f"Try a different observation time or shorter duration."
             )
         super().__init__(message)
+
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error."""
+        return (type(self), (self.target, self.time_info, self.bounds_error, str(self)))
+
+
+class EncoderSolutionError(PointingError):
+    """Raised when no encoder position can be commanded for a goal.
+
+    Raised by :func:`~fyst_trajectories.dispatch.choose_encoder_solution`
+    when the goal cannot be reached at all, in any azimuth wrap, or only
+    through the Sun. The ``cause`` names which stage refused, so a caller
+    can decide between deferring the goal and dropping it without matching
+    on the message text.
+
+    Parameters
+    ----------
+    cause : {"goal_elevation", "no_image", "span_unreachable", \
+"sun_blocked", "path_blocked"}
+        Which stage refused. ``"goal_elevation"``: the goal elevation is
+        outside the telescope limits. ``"no_image"``: no 360 degree image
+        of the goal azimuth lands within the azimuth limits.
+        ``"span_unreachable"``: the goal itself has an in-range image but
+        the requested azimuth span fits no wrap. ``"sun_blocked"``: every
+        in-range wrap is inside the Sun avoidance zone at some requested
+        time. ``"path_blocked"``: every point-safe wrap has a direct slew
+        path through the Sun avoidance zone.
+    message : str
+        Human-readable description, composed at the raise site from the
+        values that refused.
+    goal_az, goal_el : float
+        The requested sky azimuth and elevation in degrees.
+    current_az, current_el : float, optional
+        The encoder position the slew would have started from, when the
+        stage that refused depends on it (``"path_blocked"``).
+    candidates : sequence of float, optional
+        Encoder azimuths that survived the previous stages, in degrees:
+        the in-range wraps for ``"sun_blocked"``, the point-safe wraps for
+        ``"path_blocked"``, empty otherwise. A caller planning a detour
+        starts from these.
+    time_iso : str, optional
+        ISO UTC time (or time range) at which the refusing check was
+        evaluated, when one applies.
+
+    Examples
+    --------
+    Catch a refused goal and branch on its cause:
+
+    >>> from astropy.time import Time
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.dispatch import choose_encoder_solution
+    >>> from fyst_trajectories.exceptions import EncoderSolutionError
+    >>> site = get_fyst_site(sun_avoidance_enabled=False)
+    >>> t = Time("2026-03-15T12:00:00", scale="utc")
+    >>> try:
+    ...     choose_encoder_solution(190.0, 45.0, 200.0, 10.0, t, site)
+    ... except EncoderSolutionError as exc:
+    ...     print(exc.cause, exc.goal_el)
+    goal_elevation 10.0
+    """
+
+    def __init__(
+        self,
+        cause: "EncoderSolutionCause",
+        message: str,
+        *,
+        goal_az: float,
+        goal_el: float,
+        current_az: float | None = None,
+        current_el: float | None = None,
+        candidates: "Sequence[float]" = (),
+        time_iso: str | None = None,
+    ):
+        self.cause = cause
+        self.goal_az = goal_az
+        self.goal_el = goal_el
+        self.current_az = current_az
+        self.current_el = current_el
+        self.candidates = tuple(float(az) for az in candidates)
+        self.time_iso = time_iso
+        super().__init__(message)
+
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error.
+
+        The structured fields are keyword-only, so the reconstruction
+        callable is a :func:`functools.partial` that binds them.
+        """
+        return (
+            functools.partial(
+                type(self),
+                goal_az=self.goal_az,
+                goal_el=self.goal_el,
+                current_az=self.current_az,
+                current_el=self.current_el,
+                candidates=self.candidates,
+                time_iso=self.time_iso,
+            ),
+            (self.cause, str(self)),
+        )
+
+
+class OffsetInversionError(PointingError):
+    """Raised when a detector position cannot be inverted to a boresight.
+
+    The focal-plane inverse
+    (:func:`~fyst_trajectories.offsets.detector_to_boresight` and the
+    trajectory-level :func:`~fyst_trajectories.offsets.apply_detector_offset`)
+    refuses in two situations: the requested detector position is within
+    the pole guard, where azimuth is degenerate and the residual check
+    cannot validate the answer, and the iterative refinement failing to
+    converge. Both are geometric infeasibility, so they belong in the
+    :class:`PointingError` hierarchy the callers' ``Raises`` sections
+    advertise rather than escaping as a bare ``RuntimeError``.
+
+    Parameters
+    ----------
+    message : str
+        Human-readable description, composed at the raise site.
+    indices : sequence of int, optional
+        Positions of the offending samples in the input arrays, for an
+        array-valued call. Empty for a scalar call and when the refusal
+        is not sample-specific.
+
+    Examples
+    --------
+    >>> from fyst_trajectories.exceptions import OffsetInversionError
+    >>> exc = OffsetInversionError("degenerate at the pole", indices=[3, 4])
+    >>> exc.indices
+    (3, 4)
+    """
+
+    def __init__(self, message: str, *, indices: "Sequence[int]" = ()):
+        self.indices = tuple(int(i) for i in indices)
+        super().__init__(message)
+
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error."""
+        return (functools.partial(type(self), indices=self.indices), (str(self),))

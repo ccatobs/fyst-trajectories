@@ -255,21 +255,25 @@ class MinDurationConstraint(Constraint):
         Forward check: verify the target is still above the elevation limit
         after ``min_duration`` seconds, and, when the site has sun
         avoidance enabled, that it is still outside the Sun exclusion
-        radius then.
+        radius then. Setting is judged on the field's own elevation; the
+        Sun check is made at the elevation the visit will command, which
+        for a patch pinning ``elevation`` is that value rather than the
+        field's.
         """
         future_time = time + TimeDelta(self.min_duration, format="sec")
         future_az, future_el = coords.radec_to_altaz(patch.ra_center, patch.dec_center, future_time)
         el_min = coords.site.telescope_limits.elevation.min
         if future_el < el_min:
             return 0.0
+        sun_el_check = float(patch.elevation if patch.elevation is not None else future_el)
         sun_avoidance = coords.site.sun_avoidance
         if sun_avoidance.enabled:
             if self.sun_safe is not None:
-                if not self.sun_safe(float(future_az), float(future_el), future_time):
+                if not self.sun_safe(float(future_az), sun_el_check, future_time):
                     return 0.0
             else:
                 sun_az, sun_el = coords.get_sun_altaz(future_time)
-                sep = coords.angular_separation(future_az, future_el, sun_az, sun_el)
+                sep = coords.angular_separation(future_az, sun_el_check, sun_az, sun_el)
                 # `<=`: at the radius is NOT clear, matching is_sun_safe.
                 if sep <= sun_avoidance.exclusion_radius:
                     return 0.0

@@ -8,7 +8,7 @@ accounting for field rotation.
 Quick Example
 -------------
 
-::
+Point a named Prime-Cam module at the target instead of the boresight::
 
     from astropy.time import Time
 
@@ -19,7 +19,7 @@ Quick Example
     site = get_fyst_site()
     start_time = Time("2026-03-15T02:00:00", scale="utc")
 
-    # Use predefined PrimeCam offset
+    # Use predefined Prime-Cam offset
     offset = get_primecam_offset("i1")
 
     # Boresight adjusted so detector I1 tracks the target
@@ -39,39 +39,28 @@ Quick Example
 Field Rotation Decomposition
 -----------------------------
 
-For alt-az mounted telescopes like FYST, the focal plane rotates as objects
-are tracked. The total rotation applied to detector offsets is decomposed into:
+FYST is alt-az mounted, so the focal plane rotates as a source is
+tracked, and the rotation splits in two.
 
-**Mechanical rotation** (needs no celestial metadata):
+**Mechanical rotation**, ``nasmyth_sign * elevation +
+instrument_rotation``, is the focal plane's orientation relative to the
+horizon axes and needs no celestial metadata. ``nasmyth_sign`` is +1 for
+Right Nasmyth, -1 for Left, 0 for Cassegrain, from ``Site.nasmyth_port``
+(default ``"right"``); ``instrument_rotation`` is the instrument's fixed
+rotation relative to the Nasmyth flange, on ``InstrumentOffset`` (default
+0.0). This is the rotation the az/el projections use
+(``apply_detector_offset``, ``boresight_to_detector``,
+``detector_to_boresight``), identically for celestial and AltAz patterns.
 
-    ``nasmyth_sign * elevation + instrument_rotation``
+**Celestial rotation** adds the parallactic angle,
+``nasmyth_sign * elevation + instrument_rotation + parallactic_angle``,
+giving the orientation relative to the equatorial axes: the quantity for
+sky-map orientation, image rotation and polarization angles.
+``Coordinates.get_field_rotation`` returns the offset-independent form,
+without ``instrument_rotation``.
 
-- ``nasmyth_sign``: +1 for Right Nasmyth, -1 for Left Nasmyth, 0 for Cassegrain.
-  Configured via ``Site.nasmyth_port`` (default: ``"right"``).
-- ``instrument_rotation``: fixed rotation of the instrument relative to the
-  Nasmyth flange, in degrees. Set on ``InstrumentOffset`` (default: 0.0).
-
-The mechanical rotation is the orientation of the focal plane relative to
-the horizon (az/el) axes. It is the rotation used by the az/el
-projections (``apply_detector_offset``, ``boresight_to_detector``,
-``detector_to_boresight``); celestial and AltAz patterns behave
-identically, and no celestial metadata is consumed.
-
-**Parallactic angle** (celestial frame):
-
-    Adding the parallactic angle gives the orientation of the focal plane
-    relative to the celestial (equatorial) axes:
-
-    ``rotation = nasmyth_sign * elevation + instrument_rotation + parallactic_angle``
-
-    This is the quantity needed for sky-map orientation, image rotation,
-    and polarization angles. Use ``compute_focal_plane_rotation`` (below)
-    to evaluate it; ``Coordinates.get_field_rotation`` returns the
-    offset-independent form, without ``instrument_rotation``.
-
-The helper ``compute_focal_plane_rotation`` computes either frame's
-rotation (the ``parallactic_angle`` argument defaults to 0.0, the
-mechanical / horizon-frame value)::
+``compute_focal_plane_rotation`` evaluates either frame; its
+``parallactic_angle`` argument defaults to 0.0, the mechanical value::
 
     from fyst_trajectories import get_fyst_site, InstrumentOffset
     from fyst_trajectories.offsets import compute_focal_plane_rotation
@@ -92,27 +81,21 @@ mechanical / horizon-frame value)::
 Point Transformations
 ---------------------
 
-Compute detector position from boresight::
+Where a detector lands for a given boresight, and the boresight that puts
+a detector on a target. ``field_rotation`` is the **mechanical** rotation
+(``compute_focal_plane_rotation`` with its default
+``parallactic_angle=0.0``), not the celestial form::
 
     from fyst_trajectories import InstrumentOffset
-    from fyst_trajectories.offsets import boresight_to_detector
+    from fyst_trajectories.offsets import boresight_to_detector, detector_to_boresight
 
     offset = InstrumentOffset(dx=5.0, dy=3.0)  # arcmin
 
     det_az, det_el = boresight_to_detector(
-        az=180.0, el=45.0,
-        offset=offset,
-        field_rotation=30.0,  # degrees
+        az=180.0, el=45.0, offset=offset, field_rotation=30.0,
     )
-
-Compute boresight position to place detector on target::
-
-    from fyst_trajectories.offsets import detector_to_boresight
-
     bore_az, bore_el = detector_to_boresight(
-        det_az=180.0, det_el=45.0,
-        offset=offset,
-        field_rotation=30.0,
+        det_az=180.0, det_el=45.0, offset=offset, field_rotation=30.0,
     )
 
 Trajectory Adjustment
@@ -144,10 +127,10 @@ Apply offset to entire trajectory with time-varying field rotation::
     offset = InstrumentOffset(dx=30.0, dy=0.0)
     adjusted = apply_detector_offset(trajectory, offset, site)
 
-PrimeCam Offsets
-----------------
+Prime-Cam Offsets
+-----------------
 
-Predefined offsets for PrimeCam focal plane
+Predefined offsets for the Prime-Cam focal plane
 (:func:`~fyst_trajectories.visualization.plot_array_footprint` draws
 this layout, and ``primecam_geometry_dict()`` exports it as a
 scheduler geometry schema):
@@ -180,6 +163,13 @@ scheduler geometry schema):
    with both, so a revision to either shifts the whole inner ring. See
    :doc:`index` for the full list of parameters pending verification.
 
+   The offset math is exact spherical trigonometry at any radius, but
+   numerical accuracy is not pointing performance: FYST's offset-pointing
+   error is specified (requirements document P-TSSS-RQT-0001 rev G) only up
+   to a 25 degree radial offset, for a time period after calibration of one
+   minute, and over 30 to 85 degrees elevation, so treat large offsets as a
+   library capability rather than a telescope pointing guarantee.
+
 **Module naming**
 
 The names ``c`` and ``i1`` .. ``i6`` label *positions* on the focal plane:
@@ -190,7 +180,9 @@ observatory, and deliberately not modelled by this library.
 
 The Prime-Cam instrument team designates the same positions ``IM0``
 (on-axis) through ``IM6`` (inner ring); see Keller et al. 2026
-(arXiv:2608.05121, Fig. 1) for the planned first-light configuration. The
+(arXiv:2608.05121, Fig. 1) for the first four planned modules, where the
+figure writes them ``Im0`` .. ``Im6``. Module names resolve
+case-insensitively here, so the casing is a spelling difference only. The
 two schemes do **not** correspond index-for-index: on sky, they number the
 ring in opposite senses, so ``i1`` must not be translated to ``IM1``. The
 correspondence is pending confirmation against the as-built focal plane
@@ -214,11 +206,9 @@ position); ``IM1`` .. ``IM6`` are rejected until the confirmation lands.
     for name, offset in PRIMECAM_MODULES.items():
         print(f"{name}: dx={offset.dx:.1f}', dy={offset.dy:.1f}'")
 
-Resolving user input with ``resolve_offset``:
-
-``resolve_offset`` is the preferred entry point when offset specification comes
-from user input (CLI, config file, API request). It handles all three cases in
-one call: named module, custom dx/dy, or boresight (``None``)::
+``resolve_offset`` is the entry point when the offset comes from user
+input (CLI, config file, API request): it handles all three cases in one
+call, named module, custom dx/dy, or boresight (``None``)::
 
     from fyst_trajectories.primecam import resolve_offset
 
@@ -234,12 +224,10 @@ one call: named module, custom dx/dy, or boresight (``None``)::
     # No arguments -> None (boresight pointing)
     offset = resolve_offset()
 
-Multi-module footprint with ``resolve_module_tag``:
-
-``resolve_module_tag`` expands an SO-style module tag (``"i1,i2"``, a list of
-names, or ``"all"``) into a ``list[InstrumentOffset]``. Pass it straight to
-``plan_source_ces(footprint=...)`` to point the centroid of the selected
-modules at a source::
+``resolve_module_tag`` expands a comma-separated module tag (``"i1,i2"``,
+a list of names, or ``"all"``) into a ``list[InstrumentOffset]``. Pass it
+straight to ``plan_source_ces(footprint=...)`` to point the centroid of
+the selected modules at a source::
 
     from astropy.time import Time
 
@@ -295,20 +283,3 @@ Custom Offsets
         name="RotatedModule",
         instrument_rotation=15.0,
     )
-
-The plate scale (13.89 arcsec/mm) is a property of the telescope optical
-system (6m primary + reimaging optics), accessible via ``site.plate_scale``.
-It converts detector positions in the focal plane to angular offsets on
-the sky.
-
-Offset Calculation
-------------------
-
-All offset math uses exact spherical trigonometry, so the calls shown
-above lose no numerical precision as the
-offset grows: an offset at the PrimeCam ring radius costs no more than a
-5-arcmin one. Numerical accuracy is not pointing performance, though:
-FYST's offset-pointing error is specified only up to a 25 degree radial
-offset and within one minute of a pointing calibration, so treat large
-offsets as a library capability rather than a telescope pointing
-guarantee.

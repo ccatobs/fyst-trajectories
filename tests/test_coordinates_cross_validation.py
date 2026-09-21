@@ -4,12 +4,11 @@ This module validates the coordinate transformations in fyst-trajectories by
 comparing results against Skyfield, an independent Python library for
 high-precision astronomy calculations.
 
-Expected tolerances:
-- Position agreement: ~1 arcsec (0.0003 degrees)
-- This accounts for differences in:
-  - Atmospheric refraction models
-  - Earth orientation parameter handling
-  - Nutation/precession models
+Each test class sets its own assertion threshold. Catalogue-star positions and
+sidereal time agree with Skyfield to about an arcsecond; solar-system bodies
+agree to tens of arcseconds, where ephemeris version, light-time and aberration
+handling differ. The thresholds sit well above the measured agreement, so an
+ephemeris or Earth-orientation update cannot turn a cross-check into a flake.
 
 Skyfield is chosen as the reference because it:
 - Uses JPL DE ephemerides for solar system positions
@@ -72,15 +71,12 @@ def fyst_topos(skyfield_planets):
 
 
 class TestRadecToAltazCrossValidation:
-    """Cross-validate RA/Dec to Az/El transformations against Skyfield."""
+    """RA/Dec to Az/El matches Skyfield at six sky positions and four epochs."""
 
-    # Tolerance in degrees
-    # The difference between astropy and Skyfield can be ~10 arcminutes near
-    # the horizon due to different atmospheric refraction models. At higher
-    # elevations, agreement is typically within 1 arcminute.
-    # We use a more permissive tolerance for general tests and stricter
-    # tolerance for high-elevation tests.
-    POSITION_TOLERANCE = 0.2  # degrees (~12 arcmin) - allows refraction differences
+    # Both sides are airless (vacuum Coordinates, airless skyfield altaz); the measured
+    # disagreement is ~1 arcsec. The 0.2 deg threshold is headroom for ephemeris and
+    # Earth-orientation differences between the two libraries, not a refraction budget.
+    POSITION_TOLERANCE = 0.2  # degrees
 
     @pytest.fixture
     def comparison_cases(self):
@@ -150,11 +146,6 @@ class TestRadecToAltazCrossValidation:
         skyfield_planets,
         fyst_topos,
     ):
-        """Test that fyst-trajectories matches Skyfield for RA/Dec to Az/El.
-
-        This is the primary cross-validation test comparing coordinate
-        transformations between fyst-trajectories (using astropy) and Skyfield.
-        """
         for ra, dec, time_str, description in comparison_cases:
             obstime = Time(time_str, scale="utc")
 
@@ -194,11 +185,7 @@ class TestRadecToAltazCrossValidation:
         fyst_topos,
         time_str,
     ):
-        """Test agreement at multiple times throughout the year.
-
-        This tests that the Earth orientation and precession/nutation
-        handling is consistent between implementations.
-        """
+        """Varying the epoch exercises Earth-orientation and precession/nutation."""
         ra, dec = 83.633, 22.014  # Crab Nebula
         obstime = Time(time_str, scale="utc")
 
@@ -216,14 +203,13 @@ class TestRadecToAltazCrossValidation:
 
 
 class TestSolarSystemCrossValidation:
-    """Cross-validate solar system body positions against Skyfield."""
+    """Five solar-system bodies match Skyfield's apparent Az/El."""
 
     # Solar system body positions can differ more due to:
     # - Different ephemeris versions (astropy may use different JPL DE)
     # - Light time corrections
     # - Aberration handling
     # - Different geocentric vs topocentric calculation approaches
-    # Near the horizon, refraction also plays a big role.
     POSITION_TOLERANCE = 0.5  # degrees - permissive for solar system
 
     @pytest.mark.slow
@@ -239,11 +225,7 @@ class TestSolarSystemCrossValidation:
         skyfield_planets,
         fyst_topos,
     ):
-        """Test that solar system body positions match between implementations.
-
-        Solar system bodies move significantly, so we expect some differences
-        due to light-time corrections and aberration handling.
-        """
+        """Bodies move fast, so light-time and aberration set the looser tolerance."""
         time_str = "2026-06-15T04:00:00"
         obstime = Time(time_str, scale="utc")
 
@@ -281,7 +263,7 @@ class TestSolarSystemCrossValidation:
 
 
 class TestLSTCrossValidation:
-    """Cross-validate Local Sidereal Time calculation against Skyfield."""
+    """LST matches Skyfield's own sidereal time at five points around the year."""
 
     LST_TOLERANCE = 0.01  # degrees (~2.4 seconds of time)
 
@@ -303,11 +285,7 @@ class TestLSTCrossValidation:
         skyfield_timescale,
         fyst_topos,
     ):
-        """Test that LST calculations agree with Skyfield.
-
-        LST is fundamental to all coordinate transformations, so this
-        validates the underlying time handling.
-        """
+        """LST underpins every transform, so this pins the underlying time handling."""
         obstime = Time(time_str, scale="utc")
 
         lst_ccat = coordinates.get_lst(obstime)
@@ -329,15 +307,11 @@ class TestLSTCrossValidation:
 
 
 class TestConsistencyAcrossTimescales:
-    """Test consistency of transformations across different timescales."""
+    """Az/El varies smoothly minute to minute and nearly repeats after 24 hours."""
 
     @pytest.mark.slow
     def test_transformation_stability_over_hour(self, coordinates):
-        """Test that transformations vary smoothly over an hour.
-
-        This catches any discontinuities or jumps in the transformation
-        that might indicate bugs in time handling.
-        """
+        """A discontinuity in time handling shows up as a large minute-to-minute step."""
         ra, dec = 180.0, -30.0
 
         base_time = Time("2026-06-15T04:00:00", scale="utc")
@@ -363,11 +337,7 @@ class TestConsistencyAcrossTimescales:
 
     @pytest.mark.slow
     def test_transformation_stability_over_day(self, coordinates):
-        """Test that transformations complete a reasonable cycle over 24 hours.
-
-        A sidereal day is ~23h 56m, so RA/Dec positions should nearly repeat
-        after exactly 24 hours (with small precession drift).
-        """
+        """A sidereal day is ~23h 56m, so Az/El nearly repeats after exactly 24 h."""
         ra, dec = 180.0, -30.0
 
         t1 = Time("2026-06-15T04:00:00", scale="utc")
@@ -387,10 +357,10 @@ class TestConsistencyAcrossTimescales:
 
 
 class TestProperMotionCrossValidation:
-    """Cross-validate proper motion handling against Skyfield.
+    """``radec_to_altaz_with_pm`` matches Skyfield's ``Star`` propagation.
 
-    Compares fyst-trajectories's radec_to_altaz_with_pm() against Skyfield's
-    Star() object which natively handles proper motion propagation.
+    Skyfield's ``Star()`` object handles proper motion natively, so it is an
+    independent oracle for the two highest-proper-motion catalogue stars.
     """
 
     POSITION_TOLERANCE = 0.2  # degrees
@@ -456,7 +426,6 @@ class TestProperMotionCrossValidation:
         skyfield_planets,
         fyst_topos,
     ):
-        """Test that PM-corrected positions agree with Skyfield at multiple times."""
         ref_epoch = Time("J2000.0")
 
         for name, ra, dec, pmra, pmdec in high_pm_stars:
@@ -500,7 +469,11 @@ class TestProperMotionCrossValidation:
 
     @pytest.mark.slow
     def test_proper_motion_makes_difference(self, coordinates):
-        """Barnard's Star PM (~10"/yr) accumulates ~4.3' over 26 years."""
+        """Barnard's Star PM (10.4 arcsec/yr) moves it ~4.6 arcmin in 26.5 years.
+
+        The assertion is a floor at 0.01 deg on the raw az/el offset, not the on-sky
+        separation; test_doc_examples.py pins the projected 0.076 deg.
+        """
         ra, dec = 269.452, 4.694
         pmra, pmdec = -798.58, 10328.12
         ref_epoch = Time("J2000.0")
@@ -523,7 +496,7 @@ class TestProperMotionCrossValidation:
 
 
 class TestRiseSetCrossValidation:
-    """Cross-validate rise/set times against Skyfield (find_risings/find_settings).
+    """Rise and set times match Skyfield's ``find_risings``/``find_settings``.
 
     fyst-trajectories uses linear interpolation on a coarse grid; Skyfield
     uses root-finding. Both run without refraction (pressure=0).
@@ -539,11 +512,7 @@ class TestRiseSetCrossValidation:
         skyfield_planets,
         fyst_topos,
     ):
-        """Test rise/set times for Sirius agree with Skyfield.
-
-        Sirius (RA=101.29, Dec=-16.72) rises and sets normally at FYST
-        latitude (-22.96 deg).
-        """
+        """Sirius (RA=101.29, Dec=-16.72) rises and sets normally at FYST latitude."""
         from skyfield.almanac import find_risings, find_settings
 
         ra, dec = 101.29, -16.72
@@ -627,20 +596,20 @@ class TestRiseSetCrossValidation:
             step_hours=0.1,
         )
 
-        # A source at Dec=-70 has a minimum altitude of ~90-|lat-dec| ~ 42.96 deg
-        # at FYST, so it never sets below horizon=0.
+        # Dec=-70 is circumpolar from FYST: upper culmination is near 90-|lat-dec| = 43 deg
+        # and lower culmination is only ~3 deg above the horizon, so it never sets below
+        # horizon=0.
         assert rise is None and set_ is None, (
             f"Expected (None, None) for circumpolar source, got rise={rise}, set={set_}"
         )
 
 
 class TestRefractionIsolation:
-    """Cross-validate atmospheric refraction corrections against Skyfield.
+    """The refraction delta matches Skyfield's, so transform differences cancel.
 
-    Compares the refraction delta (with-atmosphere minus no-atmosphere)
-    between fyst-trajectories and Skyfield. By comparing deltas rather than
-    absolute positions, systematic differences in coordinate transforms
-    cancel out, isolating the refraction model agreement.
+    Comparing the delta (with-atmosphere minus no-atmosphere) rather than
+    absolute positions cancels systematic differences in the coordinate
+    transforms, isolating the refraction model agreement.
     """
 
     # Both libraries use slightly different refraction models, but the

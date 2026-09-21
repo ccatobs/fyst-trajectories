@@ -13,10 +13,9 @@ from fyst_trajectories.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
 
 class TestConstantElScanPattern:
-    """Tests for constant elevation scan pattern."""
+    """Basic CE generation: fixed elevation, overscan beyond the science bounds, metadata."""
 
     def test_basic_scan(self, site):
-        """Test generating a basic constant elevation scan."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=120.0,
@@ -34,7 +33,6 @@ class TestConstantElScanPattern:
         assert trajectory.pattern_type == "constant_el"
 
     def test_constant_elevation(self, site):
-        """Test that elevation stays constant throughout scan."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -52,7 +50,7 @@ class TestConstantElScanPattern:
         )
 
     def test_azimuth_range(self, site):
-        """Test that azimuth extends beyond science bounds."""
+        """Azimuth extends beyond the science bounds into the overscan."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -74,7 +72,6 @@ class TestConstantElScanPattern:
         assert trajectory.az.max() > 150.0
 
     def test_velocity_bounds(self, site):
-        """Test that velocities don't exceed limits."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -95,7 +92,6 @@ class TestConstantElScanPattern:
         assert np.abs(trajectory.az_vel).max() <= 1.0 * 1.05
 
     def test_scan_direction_reverse(self, site):
-        """Test scan in reverse direction (az_start > az_stop)."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=180.0,
@@ -115,7 +111,6 @@ class TestConstantElScanPattern:
         assert trajectory.az.max() <= 180.0 + d_half_turn + 0.05
 
     def test_metadata(self, site):
-        """Test that metadata is correctly populated."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -136,10 +131,9 @@ class TestConstantElScanPattern:
 
 
 class TestTurnaroundBehavior:
-    """Tests for smooth turnaround behavior."""
+    """The quintic turnaround: bounded peak acceleration, a zero crossing, full cruise speed."""
 
     def test_velocity_is_continuous(self, site):
-        """Test that velocity changes smoothly."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -160,7 +154,6 @@ class TestTurnaroundBehavior:
         assert np.abs(acceleration).max() <= 1.5 * 1.1
 
     def test_velocity_passes_through_zero(self, site):
-        """Test that velocity passes through zero at turnarounds."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -182,7 +175,7 @@ class TestTurnaroundBehavior:
             assert v_near_turnaround < 0.5
 
     def test_cruise_velocity_profile(self, site):
-        """Test that cruise segments reach full speed."""
+        """Cruise segments reach the full configured speed."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -220,10 +213,9 @@ class TestTurnaroundBehavior:
 
 
 class TestEdgeCases:
-    """Tests for edge cases."""
+    """Short throws, very slow scans, and an explicit start time all generate."""
 
     def test_very_short_scan(self, site):
-        """Test generating a very short scan."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -238,7 +230,6 @@ class TestEdgeCases:
         assert trajectory.n_points > 0
 
     def test_very_slow_scan(self, site):
-        """Test generating a very slow scan."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -253,7 +244,6 @@ class TestEdgeCases:
         assert trajectory.n_points > 0
 
     def test_with_start_time(self, site):
-        """Test generating scan with explicit start time."""
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -271,7 +261,7 @@ class TestEdgeCases:
 
 
 class TestConstantElPropertyBased:
-    """Property-based tests for constant elevation scan pattern."""
+    """A randomised parameter sweep over the CE invariants: bounds, speed, continuity."""
 
     @given(
         az_start=st.floats(min_value=-170.0, max_value=170.0),
@@ -290,7 +280,7 @@ class TestConstantElPropertyBased:
         suppress_health_check=[HealthCheck.function_scoped_fixture],
     )
     def test_invariants(self, site, az_start, az_throw, elevation, az_speed, az_accel, duration):
-        """Test invariants hold for random valid parameters.
+        """Every CE invariant holds across random valid parameters.
 
         Invariants checked:
         - All positions within motion range (science + overscan, within tolerance)
@@ -367,14 +357,13 @@ class TestConstantElPropertyBased:
 
 
 class TestPositionContinuity:
-    """Regression tests for the half-cycle position-discontinuity bug.
+    """The forward and reverse half-cycles meet at the seam.
 
-    Previously the forward and reverse half-cycles did not meet at the
-    seam: the forward half ended near ``az_max - d_half_turn`` while the
+    Were the forward half to end near ``az_max - d_half_turn`` while the
     reverse half restarted its cruise at ``motion_max = az_max + d_half_turn``,
-    so the sampled az jumped by ~``2 * d_half_turn`` at every half-cycle
-    boundary even though the stored ``az_vel`` stayed smooth. That made
-    position inconsistent with velocity and tripped spurious "azimuth
+    the sampled az would jump by ~``2 * d_half_turn`` at every half-cycle
+    boundary even though the stored ``az_vel`` stayed smooth. That makes
+    position inconsistent with velocity and trips spurious "azimuth
     acceleration exceeds limit" warnings (``validate_trajectory_dynamics``
     recomputes acceleration from the position array).
     """
@@ -410,12 +399,12 @@ class TestPositionContinuity:
         max_step = np.abs(np.diff(trajectory.az)).max()
 
         # The largest legitimate step is the cruise step (the turnaround is
-        # slower). The old seam jump would be ~2 * d_half_turn.
+        # slower). A seam jump would be ~2 * d_half_turn.
         assert max_step <= cruise_step * 1.05 + 1e-9, (
             f"Max az step {max_step:.5f} exceeds cruise step {cruise_step:.5f}"
         )
-        # Sanity: confirm the test would actually catch the old bug, i.e. the
-        # seam jump it guards against is much larger than the cruise step.
+        # Sanity: confirm the test would actually catch a seam jump, i.e. the
+        # jump it guards against is much larger than the cruise step.
         assert 2 * d_half_turn > 5 * cruise_step
 
     @pytest.mark.parametrize(("az_start", "az_stop", "az_speed", "az_accel"), CONFIGS)
@@ -439,7 +428,7 @@ class TestPositionContinuity:
 
     @pytest.mark.parametrize(("az_start", "az_stop", "az_speed", "az_accel"), CONFIGS)
     def test_no_spurious_dynamics_warnings(self, site, az_start, az_stop, az_speed, az_accel):
-        """Continuous CE trajectories no longer trip spurious acceleration warnings."""
+        """Continuous CE trajectories trip no acceleration warnings."""
         from fyst_trajectories.exceptions import PointingWarning
         from fyst_trajectories.trajectory_utils import validate_trajectory_dynamics
 
@@ -466,7 +455,7 @@ class TestPositionContinuity:
 
 
 class TestScanFlags:
-    """Tests for turnaround flagging in constant elevation scans."""
+    """Overscan flagging: science samples sit inside the science bounds at cruise speed."""
 
     def _make_trajectory(self, site, az_start=100.0, az_stop=150.0, az_speed=2.0, az_accel=1.0):
         config = ConstantElScanConfig(
@@ -511,14 +500,14 @@ class TestScanFlags:
 
         # All samples outside the science region should be turnaround
         outside_science = (trajectory.az < az_min) | (trajectory.az > az_max)
-        if outside_science.sum() > 0:
-            assert np.all(trajectory.scan_flag[outside_science] == SCAN_FLAG_TURNAROUND)
+        assert outside_science.sum() > 0
+        assert np.all(trajectory.scan_flag[outside_science] == SCAN_FLAG_TURNAROUND)
 
         # All science-flagged samples should be within science bounds
         science_mask = trajectory.scan_flag == SCAN_FLAG_SCIENCE
-        if science_mask.sum() > 0:
-            assert trajectory.az[science_mask].min() >= az_min - 0.01
-            assert trajectory.az[science_mask].max() <= az_max + 0.01
+        assert science_mask.sum() > 0
+        assert trajectory.az[science_mask].min() >= az_min - 0.01
+        assert trajectory.az[science_mask].max() <= az_max + 0.01
 
     def test_overscan_science_at_cruise_velocity(self, site):
         """With overscan, all samples in the science region should be at cruise velocity."""

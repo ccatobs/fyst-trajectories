@@ -1,8 +1,8 @@
 """Run every ``>>>`` docstring example in the package, so published Examples cannot drift.
 
 Autodoc renders every NumPy ``Examples`` block and ``sphinx.ext.viewcode`` serves the
-annotated source, so docstring examples are published output; before this guard none of
-them ever executed. Each module's docstrings run under :mod:`doctest` with
+annotated source, so docstring examples are published output and have to be executed
+somewhere. Each module's docstrings run under :mod:`doctest` with
 ``ELLIPSIS`` and ``NORMALIZE_WHITESPACE`` enabled.
 
 Like ``test_doc_examples_rst.py``, the runner seeds the ambient objects the examples
@@ -16,14 +16,18 @@ package is not installed, the same conditional ``test_doc_examples_rst.py`` appl
 the docs pages; they still execute wherever the library is present.
 """
 
+import ast
 import doctest
 import importlib
+import inspect
 import io
 import os
-import pkgutil
 import warnings
+from pathlib import Path
 
 import pytest
+from _sun_stubs import HAVE_SUN_AVOIDANCE, needs_sun_avoidance
+from _tiers import PACKAGE, is_simulator_tier
 from astropy.time import Time
 
 import fyst_trajectories
@@ -36,28 +40,38 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 _FLAGS = doctest.ELLIPSIS | doctest.NORMALIZE_WHITESPACE
 
-try:
-    import sun_avoidance  # noqa: F401
-
-    HAVE_SUN_AVOIDANCE = True
-except ImportError:
-    HAVE_SUN_AVOIDANCE = False
+SRC = Path(__file__).resolve().parents[1] / "src" / PACKAGE
 
 
 def _needs_sun_avoidance(test: doctest.DocTest) -> bool:
     """Whether a doctest's examples select a shared-library sun model."""
-    source = "".join(example.source for example in test.examples)
-    return any(marker in source for marker in ('"cad"', "'cad'", '"cone"', "'cone'"))
+    return needs_sun_avoidance("".join(example.source for example in test.examples))
 
 
 def _module_names():
-    names = ["fyst_trajectories"]
-    for info in pkgutil.walk_packages(fyst_trajectories.__path__, "fyst_trajectories."):
-        names.append(info.name)
+    """Every module in the package, read off the source tree.
+
+    Walking the files rather than the import system matters for the tier
+    split: ``pkgutil.walk_packages`` imports each package it descends into,
+    which would load the simulator tier during collection of the library-tier
+    job.
+    """
+    names = []
+    for path in SRC.rglob("*.py"):
+        parts = path.relative_to(SRC).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        names.append(".".join((PACKAGE, *parts)))
     return sorted(names)
 
 
-MODULE_NAMES = _module_names()
+def _module_param(name: str):
+    """Parametrize a module, marking the simulator tier ``offline``."""
+    marks = [pytest.mark.offline] if is_simulator_tier(name) else []
+    return pytest.param(name, id=name, marks=marks)
+
+
+MODULE_NAMES = [_module_param(name) for name in _module_names()]
 
 
 @pytest.fixture(scope="session")
@@ -93,7 +107,7 @@ def _doctest_globs():
 @pytest.mark.parametrize("name", MODULE_NAMES)
 def test_module_docstring_examples(name, _doctest_globs, tmp_path, monkeypatch):
     """Every doctest in the module passes (with the seeded ambient namespace)."""
-    if name.startswith("fyst_trajectories.visualization"):
+    if name.startswith(f"{PACKAGE}.visualization"):
         pytest.importorskip("matplotlib")
     monkeypatch.chdir(tmp_path)
     mod = importlib.import_module(name)
@@ -114,3 +128,44 @@ def test_module_docstring_examples(name, _doctest_globs, tmp_path, monkeypatch):
             f"{results.failed} of {results.attempted} docstring example(s) in "
             f"{name} failed:\n{report.getvalue()}"
         )
+
+
+@pytest.mark.parametrize("name", MODULE_NAMES)
+def test_skipped_docstring_examples_still_parse_and_bind(name, _doctest_globs):
+    """A ``# doctest: +SKIP`` example must still parse and bind its calls.
+
+    Skipped examples never execute, so nothing else keeps them from rotting,
+    and they are published: autodoc renders the Examples block and Sphinx
+    strips the directive. The rst guard closes the same hole for its own skip
+    list. Each call to a resolvable package symbol is bound against the real
+    signature, so a removed or newly required parameter fails here; a call
+    abbreviated with a literal ``...`` argument is resolution-checked only.
+    """
+    if name.startswith(f"{PACKAGE}.visualization"):
+        pytest.importorskip("matplotlib")
+    mod = importlib.import_module(name)
+    namespace = {**vars(fyst_trajectories), **vars(mod), **_doctest_globs}
+    for test in doctest.DocTestFinder().find(mod, mod.__name__):
+        sources = [ex.source for ex in test.examples if ex.options.get(doctest.SKIP)]
+        if not sources:
+            continue
+        tree = ast.parse("".join(sources))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            func = namespace.get(node.func.id)
+            if func is None or not callable(func):
+                continue
+            if any(isinstance(a, ast.Constant) and a.value is Ellipsis for a in node.args):
+                continue  # explicit `...` abbreviation: resolution check only
+            if any(isinstance(a, ast.Starred) for a in node.args):
+                continue
+            positional = [object()] * len(node.args)
+            keywords = {kw.arg: None for kw in node.keywords if kw.arg is not None}
+            try:
+                inspect.signature(func).bind(*positional, **keywords)
+            except TypeError as exc:
+                pytest.fail(
+                    f"{test.name}: a skipped example calls {node.func.id}() in a way that "
+                    f"no longer binds: {exc}"
+                )

@@ -4,8 +4,9 @@ Pins the P-INCM-ICD-0003-A Eq.(1) contract that fyst-trajectories emits
 ``Az_nominal`` / ``El_nominal`` (astronomically calculated, unrefracted): the
 default no-atmosphere planner path must equal the explicit vacuum path, and a
 silent default flip to refracted coordinates (``for_fyst()``) must fail here.
-Refraction is applied downstream at OCS and/or the ACU, never in the emitted
-trajectory. Sibling seams: ``test_coordinates.py`` (constructor refraction),
+Refraction is applied downstream at execution time, by exactly one of the
+telescope control system or the ACU, never in the emitted trajectory. Sibling
+seams: ``test_coordinates.py`` (constructor refraction),
 ``test_ac_schema_contract.py`` (A-to-C params).
 """
 
@@ -31,7 +32,7 @@ from fyst_trajectories.patterns import (
 )
 
 # A single mid-elevation celestial target shared by the refracting families.
-# At the FYST site this culminates near el ~43 deg at ``_START``, where the
+# At the FYST site this sits at el ~43 deg at ``_START``, where the
 # ``for_fyst()`` refraction lift is tens of arcsec: comfortably above the
 # ~1e-9 deg tolerance used for the vacuum-equality check, so the guard both
 # holds and discriminates. ``_START`` stays within the vendored IERS table.
@@ -40,8 +41,8 @@ _START = Time("2026-03-15T04:00:00", scale="utc")
 _DURATION = 30.0
 _TIMESTEP = 0.2
 
-# source_ces search anchor (a setting Jupiter-free sidereal arc that reaches
-# ``el_bore`` within the night).
+# source_ces search anchor: a setting sidereal arc that reaches ``el_bore``
+# within the night.
 _SOURCE_NIGHT = Time("2026-03-15T00:00:00", scale="utc")
 
 

@@ -14,7 +14,7 @@ Controls the duration of each non-science activity::
     from fyst_trajectories.overhead import OverheadModel
 
     model = OverheadModel(
-        retune_duration=5.0,          # KID probe tone reset (s)
+        retune_duration=300.0,        # whole-array KID retune between blocks (s)
         pointing_cal_duration=180.0,  # pointing correction scan (s)
         focus_duration=300.0,         # focus check (s)
         skydip_duration=300.0,        # elevation nod (s)
@@ -25,12 +25,18 @@ Controls the duration of each non-science activity::
         max_scan_duration=3600.0,     # forced split threshold (s)
     )
 
-``min_scan_duration`` prevents short, wasteful scans. ``max_scan_duration``
-forces long observations to split into sub-scans with retune breaks.
-``beam_map_duration`` defaults to the same value as
-``planet_cal_duration`` because beam maps typically run on the same
-planet targets, but can be tuned independently when the science goals
-demand a different map size or velocity.
+``min_scan_duration`` prevents short, wasteful scans; ``max_scan_duration``
+forces long observations to split into sub-scans with retune breaks; and
+``beam_map_duration`` starts equal to ``planet_cal_duration`` because beam
+maps run on the same planet targets.
+
+``retune_duration`` reserves a whole-array detector retune between
+scan blocks (probe-tone placement followed by a target sweep across
+every module; the default is the instrument team's commissioning
+estimate, pending on-sky timing). It is a different operation from the
+few-second in-scan tone-correction gap that
+:func:`~fyst_trajectories.trajectory_utils.inject_retune` stamps into a
+trajectory (see :doc:`retune_events`).
 
 CalibrationPolicy
 -----------------
@@ -69,17 +75,8 @@ realised (see :ref:`planet-cal-source-ces` below). Like the cadences and
 durations, these are commissioning-era placeholders for the
 instrument/operations team to confirm.
 
-Scheduling Beam Maps
-~~~~~~~~~~~~~~~~~~~~
-
-``BEAM_MAP`` is a :class:`~fyst_trajectories.overhead.CalibrationType`
-with its own cadence (``CalibrationPolicy.beam_map_cadence``) and
-duration (``OverheadModel.beam_map_duration``). It is off the automatic
-schedule by default (``beam_map_cadence=None``); set a positive cadence
-to opt in. Beam maps then use the same ``planet_targets`` machinery as
-``planet_cal``.
-
-**Example: 6-hour beam-map cadence**
+Beam maps run on the same ``planet_targets`` machinery as planet
+calibrations once a cadence opts them in:
 
 .. code-block:: python
 

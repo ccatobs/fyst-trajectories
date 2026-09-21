@@ -9,11 +9,8 @@ directional CAD zone renders its true shape), the band below the telescope
 elevation floor, and optionally the PrimeCam footprint projected onto the
 sky at a boresight, at honest angular scale.
 
-Two layers are deliberately absent: the surveyed landscape horizon (no
-Cerro Chajnantor skyline survey exists; the telescope elevation floor
-dominates the terrain from the summit) and site-structure occlusion (no
-FYST as-built model; structure geometry belongs to the shared
-sun-avoidance library).
+Two layers are deliberately absent: the surveyed landscape horizon and
+site-structure occlusion. Neither model ships with this package.
 
 Requires ``matplotlib`` (``pip install fyst-trajectories[plotting]``).
 
@@ -57,6 +54,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
 
 __all__ = ["plot_sky_view"]
@@ -134,7 +132,7 @@ def _footprint_on_sky(
 def _policy_masks(
     coords: Coordinates,
     site: Site,
-    sun_model,
+    sun_model: "str | SunSafePredicate | None",
     az_grid: np.ndarray,
     el_grid: np.ndarray,
     time: Time,
@@ -194,7 +192,7 @@ def plot_sky_view(
     *,
     site: Site | None = None,
     boresight: "str | Target | tuple[float, float] | None" = None,
-    sun_model=None,
+    sun_model: "str | SunSafePredicate | None" = None,
     el_min: float | None = None,
     extra_targets: "dict[str, Target] | None" = None,
     modules: "Mapping[str, InstrumentOffset] | None" = None,
@@ -465,7 +463,8 @@ def plot_sky_view(
         if sun_model is not None:
             zone_label = f"unsafe ({getattr(sun_model, 'describe', 'injected model')})"
         else:
-            zone_label = f"< {sun_cfg.exclusion_radius:.0f}\N{DEGREE SIGN} from Sun (exclusion)"
+            radius = f"{sun_cfg.exclusion_radius:.0f}\N{DEGREE SIGN}"
+            zone_label = f"\N{LESS-THAN OR EQUAL TO} {radius} from Sun (exclusion)"
         handles.append(Patch(facecolor=mcolors.to_rgba(EXCLUSION_COLOR, 0.30), label=zone_label))
     if warn_band is not None:
         handles.append(

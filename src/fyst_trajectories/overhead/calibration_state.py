@@ -1,6 +1,8 @@
-"""Calibration state tracking and overhead injection.
+"""Calibration cadence tracking.
 
-Manages when calibrations are due based on cadence policies.
+Holds :class:`CalibrationState`, the frozen record of when each
+calibration last ran, and the cadence arithmetic that says which ones
+are due.
 """
 
 from __future__ import annotations
@@ -82,8 +84,11 @@ class CalibrationState:
             Duration information for calibration operations.
         coords : Coordinates or None
             Coordinate transformer. When provided, planet_cal and
-            beam_map are only included if at least one planet target
-            is above the horizon.
+            beam_map are only included if one of
+            ``policy.planet_targets`` is above
+            ``policy.planet_min_elevation``. With an empty
+            ``planet_targets`` no visibility check runs and they are
+            included with no target.
 
         Returns
         -------

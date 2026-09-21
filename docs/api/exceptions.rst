@@ -34,14 +34,5 @@ Usage Examples
             print(f"  Axis: {e.bounds_error.axis}")
             print(f"  Actual: {e.bounds_error.actual_min:.1f} to {e.bounds_error.actual_max:.1f}")
 
-**Catch pointing warnings**::
-
-    import warnings
-
-    from fyst_trajectories import plan_constant_el_scan
-    from fyst_trajectories.exceptions import PointingWarning
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        block = plan_constant_el_scan(...)
-        pointing_warnings = [x for x in w if issubclass(x.category, PointingWarning)]
+Advisories are ordinary warnings; :doc:`../quickstart` collects them with
+``warnings.catch_warnings(record=True)``.

@@ -221,3 +221,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Figures written by the documentation examples' savefig calls when they
+# are run from the repository root.
+sky_view.png
+visibility.png
+source_track.png
+calibration_night.png
+first_pass_track.png
+/tables.csv

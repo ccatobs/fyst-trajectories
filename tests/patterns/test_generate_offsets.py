@@ -13,7 +13,7 @@ from fyst_trajectories.patterns import (
 
 
 class TestPongGenerateOffsets:
-    """Tests for PongScanPattern.generate_offsets()."""
+    """The Pong offset-frame API: shapes, time span, magnitudes, and duration refusals."""
 
     @pytest.fixture
     def pong_pattern(self):
@@ -30,7 +30,6 @@ class TestPongGenerateOffsets:
         return PongScanPattern(ra=180.0, dec=-30.0, config=config)
 
     def test_returns_three_equal_length_arrays(self, pong_pattern):
-        """Test that generate_offsets returns 3 arrays of equal length."""
         times, x_off, y_off = pong_pattern.generate_offsets(duration=60.0)
 
         assert isinstance(times, np.ndarray)
@@ -40,7 +39,6 @@ class TestPongGenerateOffsets:
         assert len(times) > 0
 
     def test_times_span_duration(self, pong_pattern):
-        """Test that times array spans the requested duration."""
         duration = 60.0
         times, _, _ = pong_pattern.generate_offsets(duration=duration)
 
@@ -48,7 +46,6 @@ class TestPongGenerateOffsets:
         assert times[-1] == pytest.approx(duration)
 
     def test_offsets_in_reasonable_degree_range(self, pong_pattern):
-        """Test that offsets are in degrees with reasonable magnitude."""
         _, x_off, y_off = pong_pattern.generate_offsets(duration=60.0)
 
         # For a 2x2 degree scan, offsets should be within a few degrees
@@ -59,7 +56,6 @@ class TestPongGenerateOffsets:
         assert np.abs(y_off).max() > 0.1
 
     def test_all_values_finite(self, pong_pattern):
-        """Test that all returned values are finite."""
         times, x_off, y_off = pong_pattern.generate_offsets(duration=60.0)
 
         assert np.all(np.isfinite(times))
@@ -67,7 +63,6 @@ class TestPongGenerateOffsets:
         assert np.all(np.isfinite(y_off))
 
     def test_generate_uses_generate_offsets(self, pong_pattern, site):
-        """Test that generate() produces results consistent with generate_offsets()."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         duration = 60.0
 
@@ -77,30 +72,15 @@ class TestPongGenerateOffsets:
         np.testing.assert_array_equal(trajectory.times, times)
         assert trajectory.n_points == len(times)
 
-    def test_generate_still_works(self, pong_pattern, site):
-        """Regression test: generate() still produces valid trajectories."""
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        trajectory = pong_pattern.generate(site, duration=60.0, start_time=start_time)
-
-        assert trajectory.n_points > 0
-        assert trajectory.duration == pytest.approx(60.0, abs=0.2)
-        assert trajectory.pattern_type == "pong"
-        assert trajectory.coordsys == "altaz"
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
-
     def test_generate_offsets_negative_duration_raises(self, pong_pattern):
-        """Test that a negative duration raises ValueError."""
         with pytest.raises(ValueError, match="fewer than 2 samples"):
             pong_pattern.generate_offsets(-1.0)
 
     def test_generate_offsets_zero_duration_raises(self, pong_pattern):
-        """Test that zero duration raises ValueError."""
         with pytest.raises(ValueError, match="fewer than 2 samples"):
             pong_pattern.generate_offsets(0.0)
 
     def test_rotation_applied(self):
-        """Test that rotation angle affects offsets."""
         config_0 = PongScanConfig(
             timestep=0.1,
             width=2.0,
@@ -129,7 +109,7 @@ class TestPongGenerateOffsets:
 
 
 class TestDaisyGenerateOffsets:
-    """Tests for DaisyScanPattern.generate_offsets()."""
+    """The Daisy offset-frame API: shapes, the uniform time grid, and duration refusals."""
 
     @pytest.fixture
     def daisy_pattern(self):
@@ -146,7 +126,6 @@ class TestDaisyGenerateOffsets:
         return DaisyScanPattern(ra=180.0, dec=-30.0, config=config)
 
     def test_returns_three_equal_length_arrays(self, daisy_pattern):
-        """Test that generate_offsets returns 3 arrays of equal length."""
         times, x_off, y_off = daisy_pattern.generate_offsets(duration=60.0)
 
         assert isinstance(times, np.ndarray)
@@ -160,7 +139,7 @@ class TestDaisyGenerateOffsets:
 
         The Daisy integrator samples at fixed ``timestep`` intervals, so the
         last sample lands at ``duration - timestep`` (not exactly ``duration``),
-        and the grid must be uniform (M-1: no ``linspace`` stretch).
+        and the grid must be uniform (no ``linspace`` stretch).
         """
         duration = 60.0
         timestep = daisy_pattern.config.timestep
@@ -171,15 +150,15 @@ class TestDaisyGenerateOffsets:
         assert np.allclose(np.diff(times), timestep, rtol=0, atol=1e-9)
 
     def test_offsets_in_reasonable_degree_range(self, daisy_pattern):
-        """Test that offsets are in degrees with reasonable magnitude."""
         _, x_off, y_off = daisy_pattern.generate_offsets(duration=120.0)
 
-        # For a 0.5 degree radius daisy, offsets should stay within a few degrees
-        assert np.abs(x_off).max() < 5.0
-        assert np.abs(y_off).max() < 5.0
+        # The rosette stays inside the radius plus the turn-radius overshoot, and
+        # must actually cover some area.
+        envelope = daisy_pattern.config.radius + 2.0 * daisy_pattern.config.turn_radius
+        assert 0.1 < np.abs(x_off).max() < envelope
+        assert 0.1 < np.abs(y_off).max() < envelope
 
     def test_all_values_finite(self, daisy_pattern):
-        """Test that all returned values are finite."""
         times, x_off, y_off = daisy_pattern.generate_offsets(duration=60.0)
 
         assert np.all(np.isfinite(times))
@@ -187,7 +166,6 @@ class TestDaisyGenerateOffsets:
         assert np.all(np.isfinite(y_off))
 
     def test_generate_uses_generate_offsets(self, daisy_pattern, site):
-        """Test that generate() produces results consistent with generate_offsets()."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         duration = 60.0
 
@@ -197,30 +175,15 @@ class TestDaisyGenerateOffsets:
         np.testing.assert_array_equal(trajectory.times, times)
         assert trajectory.n_points == len(times)
 
-    def test_generate_still_works(self, daisy_pattern, site):
-        """Regression test: generate() still produces valid trajectories."""
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        trajectory = daisy_pattern.generate(site, duration=60.0, start_time=start_time)
-
-        assert trajectory.n_points > 0
-        assert trajectory.duration == pytest.approx(60.0, abs=0.2)
-        assert trajectory.pattern_type == "daisy"
-        assert trajectory.coordsys == "altaz"
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
-
     def test_generate_offsets_negative_duration_raises(self, daisy_pattern):
-        """Test that a negative duration raises ValueError."""
         with pytest.raises(ValueError, match="fewer than 2 samples"):
             daisy_pattern.generate_offsets(-1.0)
 
     def test_generate_offsets_zero_duration_raises(self, daisy_pattern):
-        """Test that zero duration raises ValueError."""
         with pytest.raises(ValueError, match="fewer than 2 samples"):
             daisy_pattern.generate_offsets(0.0)
 
     def test_y_offset_affects_offsets(self):
-        """Test that y_offset parameter affects the generated offsets."""
         config_0 = DaisyScanConfig(
             timestep=0.1,
             radius=0.5,

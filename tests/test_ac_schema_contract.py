@@ -48,6 +48,8 @@ it cannot be forgotten.
 """
 
 import inspect
+import json
+from pathlib import Path
 
 import pytest
 
@@ -416,8 +418,9 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     assert "velocity" in accepted
 
     # Structural keys: present in fystplan, NOT direct planner kwargs (the
-    # planner computes az range + duration itself).
-    structural_keys = {"az_min", "az_max", "duration", "nominal_alt", "elevation"}
+    # planner computes az range + duration itself). Derived from the carrier
+    # dict itself, so a key added there has to be classified here.
+    structural_keys = set(fystplan_ce_dict) - {"name", "onsky_velocity"}
     direct_planner_overlap = structural_keys & accepted
     # Of those, only ``elevation`` is also a literal planner kwarg; az_min/
     # az_max/duration/nominal_alt are not.
@@ -434,7 +437,7 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     )
 
 
-def test_ce_required_params_are_satisfiable(site, fystplan_ce_dict):
+def test_ce_required_params_are_satisfiable():
     """Every required ``plan_constant_el_scan`` param is adapter-satisfiable.
 
     field (from the source's RA/Dec + extent), elevation (from nominal_alt),
@@ -452,7 +455,6 @@ def test_ce_required_params_are_satisfiable(site, fystplan_ce_dict):
 
 
 def test_ce_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
-    """End-to-end: structural CE adapter output drives ``plan_constant_el_scan``."""
     field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=8.0)
     block = plan_constant_el_scan(
         field=field,
@@ -474,7 +476,7 @@ def test_source_ces_required_keyword_only_params():
 
     These have no default and are keyword-only (leading bare ``*``). A
     schedlib FYST policy / PCS source_scan task calling this must supply both.
-    ``el_bore`` is now optional: a caller may instead anchor with an
+    ``el_bore`` is optional: a caller may instead anchor with an
     approximate ``start_time`` and let the planner derive the boresight
     elevation. Callers on the classic ``night``/``window`` forms must still
     supply ``el_bore`` (enforced at runtime, see
@@ -486,7 +488,7 @@ def test_source_ces_required_keyword_only_params():
     assert required == {"footprint", "site"}, (
         f"plan_source_ces required params changed: {sorted(required)}"
     )
-    # el_bore remains an accepted (now optional) selector param, and the
+    # el_bore remains an accepted (optional) selector param, and the
     # start_time anchor that makes it optional is present alongside it.
     accepted = _planner_param_names(plan_source_ces)
     assert {"el_bore", "start_time"} <= accepted, (
@@ -568,3 +570,74 @@ def test_source_ces_body_and_radec_are_mutually_exclusive(site):
     # MODULE_FOV_RADIUS_DEG referenced to keep the import meaningful for readers
     # comparing against the schedlib make_geometry radius; not load-bearing here.
     assert MODULE_FOV_RADIUS_DEG > 0
+
+
+# ---------------------------------------------------------------------------
+# Emitted source-CES keys vs the pinned execution-layer forwarding list.
+# ---------------------------------------------------------------------------
+_EXECUTION_LAYER_SNAPSHOT = Path(__file__).parent / "data" / "pcs_source_scan_kwargs_2cb9a8a.json"
+
+# Sequence bookkeeping that no consumer needs to rebuild or execute a pass.
+_PROVENANCE_ONLY = frozenset(
+    {
+        "pass_index",  # position of the pass in its sequence
+        "n_passes",  # size of the sequence the pass belongs to
+    }
+)
+
+# Load-bearing on rebuild (schedule_to_trajectories applies every one of
+# them) but not read by the pinned execution layer, which re-plans from the
+# keys it forwards and drops the rest without a message. Each is part of the
+# outbound ask to have them forwarded; move a key out of this set only when a
+# re-pinned snapshot shows it forwarded.
+_AWAITING_FORWARD = frozenset(
+    {
+        "eta_offset_deg",  # per-pass focal-plane row shift
+        "footprint_margin",  # on-sky inflation of the base footprint
+        "az_speed",  # per-leg speed of a fast drag
+        "az_throw",  # explicit swept window
+        "dwell",  # narrowed time on source
+    }
+)
+
+
+# The one test in this file that reaches into the simulator tier: the emitted
+# key set is a TypedDict the offline simulator owns. Marking the test rather
+# than the module keeps the rest of the contract in the library-tier job.
+@pytest.mark.offline
+def test_emitted_source_ces_keys_partition_against_the_execution_layer_pin():
+    """Every emitted key is forwarded, provenance-only, or explicitly awaiting.
+
+    The snapshot is re-cut only on a deliberate re-pin of the execution layer
+    (see tests/data/README.md). A failure here means a key changed class:
+    classify a new ``SourceCESScanParams`` key above, or move a key out of the
+    awaiting set once the new pin forwards it. Never edit the snapshot to make
+    this pass.
+    """
+    from fyst_trajectories.overhead import SourceCESScanParams
+
+    snapshot = json.loads(_EXECUTION_LAYER_SNAPSHOT.read_text(encoding="utf-8"))
+    forwarded = frozenset(snapshot["forwarded_keys"])
+    assert len(forwarded) == 18, f"pin {snapshot['commit']}: expected 18 keys, got {len(forwarded)}"
+    assert snapshot["commit"] == "2cb9a8a"
+
+    emitted = frozenset(SourceCESScanParams.__optional_keys__)
+    forwarded_emitted = emitted & forwarded
+
+    assert not (forwarded_emitted & _PROVENANCE_ONLY)
+    assert not (forwarded_emitted & _AWAITING_FORWARD), (
+        f"pin {snapshot['commit']} now forwards {sorted(forwarded_emitted & _AWAITING_FORWARD)}; "
+        "move them out of the awaiting set"
+    )
+    assert not (_PROVENANCE_ONLY & _AWAITING_FORWARD)
+
+    classified = forwarded_emitted | _PROVENANCE_ONLY | _AWAITING_FORWARD
+    assert classified == emitted, (
+        f"unclassified emitted keys {sorted(emitted - classified)} or stale classes "
+        f"{sorted(classified - emitted)} against pin {snapshot['commit']}"
+    )
+
+    # Every forwarded key is also a real kernel parameter at this revision of
+    # the library, so the pin and the kernel have not drifted apart either.
+    accepted = _planner_param_names(plan_source_ces)
+    assert forwarded <= accepted, sorted(forwarded - accepted)

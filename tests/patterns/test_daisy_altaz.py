@@ -42,24 +42,20 @@ class TestDaisyAltAzScanConfig:
         assert config.timestep == 0.1
 
     def test_frozen(self):
-        """Config is immutable after creation."""
         config = _base_config()
         with pytest.raises((AttributeError, TypeError)):
             config.az_center = 200.0
 
     @pytest.mark.parametrize("field", ["radius", "velocity", "turn_radius"])
     def test_nonpositive_geometry_raises(self, field):
-        """Non-positive radius/velocity/turn_radius raises ValueError."""
         with pytest.raises(ValueError, match=f"{field} must be positive"):
             _base_config(**{field: 0.0})
 
     def test_negative_avoidance_radius_raises(self):
-        """Negative avoidance_radius raises ValueError."""
         with pytest.raises(ValueError, match="avoidance_radius must be non-negative"):
             _base_config(avoidance_radius=-0.1)
 
     def test_nonpositive_start_acceleration_raises(self):
-        """Non-positive start_acceleration raises ValueError."""
         with pytest.raises(ValueError, match="start_acceleration must be positive"):
             _base_config(start_acceleration=0.0)
 
@@ -75,7 +71,6 @@ class TestDaisyAltAzScanConfig:
             _base_config(el_center=el_center)
 
     def test_large_radius_warns(self):
-        """An unusually large radius emits a PointingWarning."""
         with pytest.warns(PointingWarning, match="Daisy radius"):
             _base_config(radius=20.0)
 
@@ -106,7 +101,6 @@ class TestDaisyAltAzScanPattern:
         assert np.all(np.isfinite(trajectory.el))
 
     def test_start_time_not_required(self, site):
-        """AltAz pattern builds without a start_time."""
         pattern = DaisyAltAzScanPattern(_base_config())
         trajectory = pattern.generate(site, duration=100.0, start_time=None)
         assert trajectory.start_time is None
@@ -277,7 +271,6 @@ class TestRegistryAndBuilderIntegration:
     """The pattern is discoverable via the registry and the builder."""
 
     def test_registered_under_name(self):
-        """get_pattern('daisy_altaz') returns the pattern class."""
         assert get_pattern("daisy_altaz") is DaisyAltAzScanPattern
 
     def test_builder_infers_pattern_from_config(self, site):
@@ -285,3 +278,33 @@ class TestRegistryAndBuilderIntegration:
         trajectory = TrajectoryBuilder(site).with_config(_base_config()).duration(100.0).build()
         assert trajectory.pattern_type == "daisy_altaz"
         assert trajectory.coordsys == "altaz"
+
+
+class TestDelegateConfigIsBuiltOnce:
+    """The equivalent celestial config is built once per pattern instance.
+
+    Rebuilding it re-runs the celestial config's validation, so an advisory it
+    carries would be emitted once per construction rather than once per
+    pattern.
+    """
+
+    def test_advisory_is_emitted_once_per_pattern(self, site, recwarn):
+        config = _base_config(velocity=12.0)
+        recwarn.clear()
+        pattern = DaisyAltAzScanPattern(config)
+        pattern.generate(site, duration=20.0)
+        pattern.generate(site, duration=20.0)
+        pattern.get_metadata()
+        advisories = [
+            w
+            for w in recwarn.list
+            if issubclass(w.category, PointingWarning) and "unusually large" in str(w.message)
+        ]
+        assert len(advisories) == 1, [str(w.message) for w in advisories]
+
+    def test_the_same_object_is_reused(self):
+        """Both consumers see one delegate config."""
+        pattern = DaisyAltAzScanPattern(_base_config())
+        first = pattern._offset_pattern().config
+        assert first is pattern._delegate_config
+        assert pattern._offset_pattern().config is first

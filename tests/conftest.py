@@ -8,8 +8,10 @@ should remain within the range of the vendored IERS table at
 epochs approach that limit, re-cut the snapshot (see ``tests/data/README.md``).
 """
 
+from collections import defaultdict
 from pathlib import Path
 
+import _tiers
 import pytest
 from astropy.utils import iers
 
@@ -42,12 +44,30 @@ def pytest_addoption(parser):
     )
 
 
-# The ``slow`` marker is registered in pyproject.toml under
-# ``[tool.pytest.ini_options].markers``; no ``pytest_configure`` hook
-# needed here.
+def _mark_simulator_tier(items):
+    """Apply the ``offline`` marker to every item that exercises the simulator.
+
+    A test module is classified by the modules it imports (``_tiers``, the one
+    boundary definition), not by the directory it sits in. A module that
+    already marks items itself owns its classification: the documentation
+    guards split their parameters page by page, and two files mark the single
+    test in them that reaches into the simulator, so a blanket module-level
+    mark would move their library-tier tests to the wrong job.
+    """
+    by_module = defaultdict(list)
+    for item in items:
+        by_module[Path(str(item.fspath))].append(item)
+    for path, module_items in by_module.items():
+        if any(item.get_closest_marker("offline") for item in module_items):
+            continue
+        if not _tiers.module_is_simulator_tier(path):
+            continue
+        for item in module_items:
+            item.add_marker(pytest.mark.offline)
 
 
 def pytest_collection_modifyitems(config, items):
+    _mark_simulator_tier(items)
     if config.getoption("--run-slow"):
         return
     skip_slow = pytest.mark.skip(reason="need --run-slow option to run")

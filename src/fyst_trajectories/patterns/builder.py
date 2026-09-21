@@ -3,8 +3,8 @@
 The TrajectoryBuilder provides a fluent API for constructing
 trajectories, allowing incremental configuration with validation.
 
-The pattern type is automatically inferred from the config class,
-so there is no need to explicitly call `.pattern()`.
+The pattern type is automatically inferred from the config class passed to
+``with_config()``.
 """
 
 import warnings
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
-from ..exceptions import PointingWarning
+from ..exceptions import PointingError, PointingWarning
 from ..offsets import apply_detector_offset
 from ..site import AtmosphericConditions, Site
 from ..trajectory import Trajectory
@@ -142,15 +142,21 @@ class TrajectoryBuilder:
 
         Raises
         ------
-        ValueError
-            If the config type is not recognized.
+        PointingError
+            If the config type is not recognized. A subclass of
+            ``ValueError``, so an existing ``except ValueError`` still
+            catches it.
         """
         self._config = config
 
         try:
             self._pattern_name = get_pattern_for_config(type(config))
         except KeyError as exc:
-            raise ValueError(str(exc)) from None
+            # The registry lookup is a genuine key miss, but a builder
+            # caller is handed a value it passed in, so re-raise inside the
+            # library's own hierarchy. ``str(exc)`` strips the quoting
+            # ``KeyError`` adds.
+            raise PointingError(str(exc).strip('"')) from None
 
         return self
 
@@ -298,7 +304,7 @@ class TrajectoryBuilder:
         """
         return getattr(pattern_cls, "requires_start_time", False)
 
-    def build(self) -> Trajectory:
+    def build(self, *, validate_dynamics: bool = True) -> Trajectory:
         """Build the trajectory.
 
         Validates all required parameters are set, instantiates the
@@ -314,6 +320,24 @@ class TrajectoryBuilder:
         are exceeded, and ``validate_trajectory_bounds()`` is called
         as a defence-in-depth check that the final trajectory is
         within telescope position limits.
+
+        No Sun check runs here. The builder is the low-level path and
+        will happily point at the Sun; the ``plan_*_scan`` planners
+        screen Sun proximity, and
+        :func:`~fyst_trajectories.trajectory_utils.validate_sun_avoidance`
+        screens a trajectory this method has already returned.
+
+        Parameters
+        ----------
+        validate_dynamics : bool, optional
+            Run the velocity and acceleration check on the built
+            trajectory (default True). A caller that post-processes the
+            result, for example by adding an azimuth drift, passes
+            ``False`` and runs
+            :func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`
+            on the final trajectory itself, so each limit violation is
+            reported once and against the trajectory actually returned.
+            The position-bounds check always runs.
 
         Returns
         -------
@@ -392,7 +416,8 @@ class TrajectoryBuilder:
 
         # Validate dynamics after detector offset so the check covers
         # the actual trajectory the telescope will execute.
-        validate_trajectory_dynamics(self._site, trajectory.az, trajectory.el, trajectory.times)
+        if validate_dynamics:
+            validate_trajectory_dynamics(self._site, trajectory.az, trajectory.el, trajectory.times)
 
         # Defence in depth: patterns already validate their own bounds,
         # but applying a detector offset can push points past telescope

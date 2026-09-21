@@ -127,6 +127,8 @@ def _resolve_satellite_kernel(explicit: str | None) -> str:
         If no kernel is configured (message includes actionable guidance).
     FileNotFoundError
         If the configured path does not exist.
+    ModuleNotFoundError
+        If the optional ``jplephem`` dependency is not installed.
     """
     path = explicit or os.environ.get(_SATELLITE_KERNEL_ENV)
     if not path:
@@ -153,13 +155,12 @@ def _resolve_satellite_kernel(explicit: str | None) -> str:
     return abspath
 
 
-# Frame name aliases for KOSMA/OCS compatibility
-# Maps common telescope control system names to astropy frame names.
+# Frame name aliases mapping telescope control-system names to astropy frame names.
 # Note: ``"J2000"`` maps to ICRS, not FK5 J2000.0. The two frames differ at the
 # tens-of-milliarcsecond level: the FK5 equinox sits -22.9 +/- 2.3 mas from the
 # ICRS right-ascension origin, and the FK5 pole agrees with the ICRS pole only
 # to within FK5's own +/-50 mas uncertainty (IERS Conventions 2010, TN36
-# sections 2.1.1-2.1.2). The ICRS was adopted by IAU 1997 Resolution B2,
+# chapter 2). The ICRS was adopted by IAU 1997 Resolution B2,
 # effective 1998 January 1. For sub-arcsecond catalogue work this matters; for
 # telescope pointing it is well below the beam and is harmless.
 #
@@ -174,7 +175,7 @@ FRAME_ALIASES: MappingProxyType[str, str] = MappingProxyType(
         "HORIZON": "altaz",
     }
 )
-"""Frame-name aliases mapping KOSMA/OCS names to astropy frame names.
+"""Frame-name aliases mapping telescope control-system names to astropy frame names.
 
 Only spherical RA/Dec frames are aliased; ``"J2000"`` maps to ICRS (not FK5
 J2000.0), which is harmless for telescope pointing. Consumed by ``normalize_frame``.
@@ -182,7 +183,7 @@ J2000.0), which is harmless for telescope pointing. Consumed by ``normalize_fram
 
 
 def normalize_frame(frame: str) -> str:
-    """Convert KOSMA/OCS frame names to astropy equivalents.
+    """Convert telescope control-system frame names to astropy equivalents.
 
     Handles common frame name aliases used in telescope control systems,
     converting them to the corresponding astropy coordinate frame names.
@@ -191,7 +192,7 @@ def normalize_frame(frame: str) -> str:
     Parameters
     ----------
     frame : str
-        Frame name, either a KOSMA/OCS alias or an astropy frame name.
+        Frame name, either a control-system alias or an astropy frame name.
 
     Returns
     -------
@@ -203,6 +204,9 @@ def normalize_frame(frame: str) -> str:
     Only spherical RA/Dec frames (``icrs``/``J2000``, ``fk5``/``FK5``,
     ``fk4``/``B1950``) are usable with :meth:`Coordinates.radec_to_altaz` and
     :meth:`Coordinates.altaz_to_radec`, which read ``ra``/``dec`` attributes.
+    ``HORIZON`` is aliased so a control system's own spelling of the
+    horizontal frame resolves, but those two methods refuse it by name for
+    the same reason: azimuth and elevation are separate arguments there.
     ``GALACTIC`` and ``ECLIPTIC`` are deliberately not aliased: those frames
     use ``l``/``b`` and ``lon``/``lat`` and would raise in the transform
     methods. (An unknown name is still lowercased for astropy, so a caller can
@@ -222,6 +226,73 @@ def normalize_frame(frame: str) -> str:
     return FRAME_ALIASES.get(frame.upper(), frame.lower())
 
 
+def _radec_frame(frame: str) -> str:
+    """Resolve a caller's frame name to an astropy RA/Dec frame name.
+
+    Wraps :func:`normalize_frame` for the entry points that read
+    ``ra``/``dec``, so a horizontal-frame name is refused by name rather
+    than dying inside astropy on a missing attribute.
+
+    Raises
+    ------
+    ValueError
+        If the name resolves to the horizontal frame.
+    """
+    resolved = normalize_frame(frame)
+    if resolved == "altaz":
+        raise ValueError(
+            f"frame={frame!r} names the horizontal frame, which has no RA/Dec to "
+            f"read. Pass an RA/Dec frame name ('J2000', 'FK5', 'B1950' or an "
+            f"astropy spelling); azimuth and elevation are separate arguments."
+        )
+    return resolved
+
+
+def _parallactic_angle_from_altaz(
+    az_rad: float | np.ndarray,
+    el_rad: float | np.ndarray,
+    latitude_deg: float,
+) -> float | np.ndarray:
+    """Compute the parallactic angle from a vacuum horizon position.
+
+    The package's single definition of the IAU AltAz parallactic-angle
+    formula. Shared rather than duplicated because two entry points
+    publish the same quantity from different inputs:
+    :meth:`Coordinates.get_field_rotation` takes RA/Dec and
+    ``overhead.compute_nasmyth_rotation`` takes an already-transformed
+    horizon position, and both add the mechanical Nasmyth term to it.
+
+    Parameters
+    ----------
+    az_rad : float or array
+        Azimuth in radians.
+    el_rad : float or array
+        Elevation in radians.
+    latitude_deg : float
+        Site latitude in degrees.
+
+    Returns
+    -------
+    float or array
+        Parallactic angle in degrees, in the same shape as the inputs.
+    """
+    lat_rad = np.deg2rad(latitude_deg)
+
+    sin_az = np.sin(az_rad)
+    cos_az = np.cos(az_rad)
+    sin_el = np.sin(el_rad)
+    cos_el = np.cos(el_rad)
+    sin_lat = np.sin(lat_rad)
+    cos_lat = np.cos(lat_rad)
+
+    numerator = -sin_az * cos_lat
+    denominator = sin_lat * cos_el - cos_lat * sin_el * cos_az
+
+    return np.rad2deg(np.arctan2(numerator, denominator))
+
+
+# Not re-exported from the package root, so importing it names the module it
+# lives in.
 @dataclass(frozen=True)
 class AltAzCoord:
     """Horizontal coordinate (Altitude-Azimuth).
@@ -369,7 +440,11 @@ class Coordinates:
         obstime : Time
             Observation time.
         frame : str, optional
-            Celestial reference frame. Default is "icrs" (J2000).
+            Celestial reference frame. Default is "icrs" (J2000). The name is
+            passed through :func:`normalize_frame`, so the control-system
+            spellings ``"J2000"``, ``"FK5"`` and ``"B1950"`` are accepted
+            alongside the astropy names. ``"HORIZON"`` names the horizontal
+            frame and is refused here, since this method reads ``ra``/``dec``.
 
         Returns
         -------
@@ -385,7 +460,7 @@ class Coordinates:
         >>> obstime = Time("2026-03-15T04:00:00", scale="utc")
         >>> az, el = coords.radec_to_altaz(83.633, 22.014, obstime)
         """
-        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame=frame)
+        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame=_radec_frame(frame))
 
         altaz_frame = self._get_altaz_frame(obstime)
         altaz = sky_coord.transform_to(altaz_frame)
@@ -417,7 +492,12 @@ class Coordinates:
         obstime : Time
             Observation time.
         frame : str, optional
-            Output celestial reference frame. Default is "icrs" (J2000).
+            Output celestial reference frame. Default is "icrs" (J2000). The
+            name is passed through :func:`normalize_frame`, so the
+            control-system spellings ``"J2000"``, ``"FK5"`` and ``"B1950"``
+            are accepted alongside the astropy names. ``"HORIZON"`` names the
+            horizontal frame and is refused here, since this method returns
+            ``ra``/``dec``.
 
         Returns
         -------
@@ -429,7 +509,7 @@ class Coordinates:
         altaz_frame = self._get_altaz_frame(obstime)
         altaz = SkyCoord(az=az * u.deg, alt=alt * u.deg, frame=altaz_frame)
 
-        sky_coord = altaz.transform_to(frame)
+        sky_coord = altaz.transform_to(_radec_frame(frame))
 
         ra = sky_coord.ra.deg
         dec = sky_coord.dec.deg
@@ -508,13 +588,14 @@ class Coordinates:
         body_spec, ephemeris = self._resolve_body(body)
 
         # Use get_body uniformly (not get_sun) so every body shares one
-        # topocentric code path. Passing location= is what makes the AltAz
-        # apparent place site-topocentric; that parallax is physically
-        # meaningful for finite-distance bodies (the Moon, ~1°) and negligible
-        # for the Sun (~0.01″ on-sky). The visible get_sun()-vs-get_body()
-        # difference (sub-arcsecond) is an ephemeris/algorithm difference,
-        # not parallax (8.8 arcsec is the solar horizontal-parallax
-        # constant, not the on-sky shift).
+        # topocentric code path. The AltAz frame's own location is what makes
+        # the apparent place site-topocentric: measured against the geocentric
+        # direction that shift is 8.8 arcsec * cos(el) for the Sun and up to
+        # ~1 deg for the Moon. Passing location= here moves only the
+        # light-travel-time reference point to the site, which moves this AltAz
+        # result by under 0.001 arcsec (Sun) and under 0.4 arcsec (Moon). The
+        # visible get_sun()-vs-get_body() difference (~0.01 arcsec typical) is
+        # an ephemeris/algorithm difference, not parallax.
         body_coord = get_body(body_spec, obstime, location=self.location, ephemeris=ephemeris)
 
         altaz_frame = self._get_altaz_frame(obstime)
@@ -623,24 +704,26 @@ class Coordinates:
 
     def angular_separation(
         self,
-        az1: float,
-        alt1: float,
-        az2: float,
-        alt2: float,
-    ) -> float:
+        az1: float | np.ndarray,
+        alt1: float | np.ndarray,
+        az2: float | np.ndarray,
+        alt2: float | np.ndarray,
+    ) -> float | np.ndarray:
         """Calculate angular separation between two Az/El positions.
 
         Parameters
         ----------
-        az1, alt1 : float
+        az1, alt1 : float or array
             First position (azimuth, altitude) in degrees.
-        az2, alt2 : float
+        az2, alt2 : float or array
             Second position (azimuth, altitude) in degrees.
 
         Returns
         -------
-        float
-            Angular separation in degrees.
+        float or array
+            Angular separation in degrees. Array inputs broadcast against
+            each other and the result keeps the broadcast shape, which is
+            how the observability grid and the Sun-zone renderers use it.
         """
         c1 = SkyCoord(az=az1 * u.deg, alt=alt1 * u.deg, frame="altaz")
         c2 = SkyCoord(az=az2 * u.deg, alt=alt2 * u.deg, frame="altaz")
@@ -648,28 +731,37 @@ class Coordinates:
 
     def is_sun_safe(
         self,
-        az: float,
-        el: float,
+        az: float | np.ndarray,
+        el: float | np.ndarray,
         obstime: Time,
-    ) -> bool:
+    ) -> bool | np.ndarray:
         """Check if a position is safe from Sun exposure.
 
         Parameters
         ----------
-        az : float
+        az : float or array
             Azimuth in degrees.
-        el : float
+        el : float or array
             Elevation in degrees.
         obstime : Time
             Observation time.
 
         Returns
         -------
-        bool
+        bool or array of bool
             True if the Sun separation is strictly greater than the site's
             exclusion radius; a position exactly at the exclusion radius
             counts as unsafe. Returns True unconditionally when the site's
             sun avoidance is disabled.
+
+        Notes
+        -----
+        The scalar form is the
+        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract, and
+        that is the only form dispatch uses. Array inputs are an extension
+        for grid work: the verdict then broadcasts to the shape of the
+        inputs, except with avoidance disabled, where the answer is a plain
+        ``True`` whatever the input shape.
         """
         if not self.site.sun_avoidance.enabled:
             return True
@@ -906,7 +998,7 @@ class Coordinates:
 
         Notes
         -----
-        ``HA = LST − RA`` pairs the apparent-equinox local sidereal time
+        ``HA = LST - RA`` pairs the apparent-equinox local sidereal time
         (``sidereal_time("apparent")``) with the supplied RA. When that RA is a
         catalogue (ICRS/J2000) value, the result carries the precession of RA
         since J2000 (dec-dependent, ~0.3° in 2026, growing ~0.018°/yr): it is
@@ -959,13 +1051,13 @@ class Coordinates:
         The parallactic angle is derived from the *transformed* horizontal
         coordinates (Az, El), using the IAU North-through-East AltAz form
 
-        tan(q) = (−sin(A) cos(φ)) / (sin(φ) cos(a) − cos(φ) sin(a) cos(A))
+        tan(q) = (-sin(A) cos(φ)) / (sin(φ) cos(a) - cos(φ) sin(a) cos(A))
 
         where ``A`` is azimuth, ``a`` is elevation and ``φ`` is the site
         latitude. RA/Dec are transformed to Az/El first, so the full
         precession/nutation/aberration chain is folded into the geometry and
         the result is referenced to the **apparent** celestial pole. Computing
-        the angle from ``HA = LST − RA`` instead would mix the apparent-equinox
+        the angle from ``HA = LST - RA`` instead would mix the apparent-equinox
         LST with the catalogue (ICRS/J2000) RA, leaving an uncorrected
         precession term (~0.3° in 2026, growing ~0.013-0.018°/yr depending on
         declination) in the parallactic angle. This is the same AltAz form used by
@@ -983,7 +1075,7 @@ class Coordinates:
         ``arctan2`` keeps the computation
         finite, but the result is **not** ≈ 0 there; downstream consumers that
         depend on PA continuity (e.g. focal-plane rotation rate) should be
-        aware. FYST's lat = −22.99° puts sources with dec ≈ −18° to −28° in
+        aware. FYST's lat = -22.99° puts sources with dec ≈ -18° to -28° in
         this regime; the ``el_min = 20°`` constraint mitigates but does not
         eliminate the issue.
 
@@ -999,29 +1091,43 @@ class Coordinates:
         # Transform RA/Dec -> vacuum Az/El, then take the AltAz-form PA (see
         # Notes): this references the result to the apparent pole and keeps it
         # geometric, independent of this instance's atmosphere.
-        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-        altaz_frame = AltAz(obstime=obstime, location=self.location, pressure=0 * u.hPa)
-        altaz = sky_coord.transform_to(altaz_frame)
-
-        az_rad = altaz.az.rad
-        el_rad = altaz.alt.rad
-        lat_rad = np.deg2rad(self.site.latitude)
-
-        sin_az = np.sin(az_rad)
-        cos_az = np.cos(az_rad)
-        sin_el = np.sin(el_rad)
-        cos_el = np.cos(el_rad)
-        sin_lat = np.sin(lat_rad)
-        cos_lat = np.cos(lat_rad)
-
-        numerator = -sin_az * cos_lat
-        denominator = sin_lat * cos_el - cos_lat * sin_el * cos_az
-
-        pa_deg = np.rad2deg(np.arctan2(numerator, denominator))
+        altaz = self._vacuum_altaz(ra, dec, obstime)
+        pa_deg = _parallactic_angle_from_altaz(altaz.az.rad, altaz.alt.rad, self.site.latitude)
 
         if np.isscalar(ra) and np.isscalar(dec) and obstime.isscalar:
             return float(pa_deg)
         return pa_deg
+
+    def _vacuum_altaz(
+        self,
+        ra: float | np.ndarray,
+        dec: float | np.ndarray,
+        obstime: Time,
+    ) -> SkyCoord:
+        """Transform an ICRS position into the site's vacuum horizon frame.
+
+        The zero-pressure frame is what the geometric quantities are defined
+        in, so building it here keeps the parallactic angle and the field
+        rotation on one convention and lets a caller that needs both pay for
+        a single transform.
+
+        Parameters
+        ----------
+        ra : float or array
+            Right Ascension in degrees.
+        dec : float or array
+            Declination in degrees.
+        obstime : Time
+            Observation time.
+
+        Returns
+        -------
+        SkyCoord
+            The position in a zero-pressure ``AltAz`` frame at this site.
+        """
+        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+        altaz_frame = AltAz(obstime=obstime, location=self.location, pressure=0 * u.hPa)
+        return sky_coord.transform_to(altaz_frame)
 
     def get_field_rotation(
         self,
@@ -1035,10 +1141,19 @@ class Coordinates:
         with no instrument rotation. This is the sky rotation component
         only, using the Nasmyth port sign from the site configuration.
 
-        For the full focal-plane rotation that also includes instrument
-        rotation, use
-        :func:`~fyst_trajectories.offsets.compute_focal_plane_rotation`
-        instead.
+        For the focal plane's orientation relative to the horizon (az/el)
+        axes, the rotation the az/el projections use, call
+        :func:`~fyst_trajectories.offsets.compute_focal_plane_rotation`,
+        which returns ``nasmyth_sign * elevation + instrument_rotation`` and
+        takes the parallactic angle only as an optional argument.
+
+        This is the RA/Dec entry point to one quantity that the package
+        publishes under two names, both of which share a single
+        parallactic-angle kernel and agree to machine precision:
+        ``overhead.compute_nasmyth_rotation`` returns the same sum from an
+        already-transformed horizon position and is what stamps a timeline
+        block's ``boresight_angle``. This method is the canonical one: it
+        owns the vacuum transform the geometry is defined in.
 
         Parameters
         ----------
@@ -1070,8 +1185,8 @@ class Coordinates:
         See Also
         --------
         :func:`~fyst_trajectories.offsets.compute_focal_plane_rotation` :
-            Full focal-plane rotation including Nasmyth sign and
-            instrument rotation.
+            Mechanical (horizon-frame) focal-plane rotation; the parallactic
+            angle is an optional argument there.
 
         Examples
         --------
@@ -1084,12 +1199,11 @@ class Coordinates:
         # refracted el would leak the refraction bump into the mechanical term
         # while pa stays vacuum. Matches get_parallactic_angle's convention, so
         # the result is the geometric field rotation regardless of this
-        # instance's atmosphere.
-        sky_coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-        altaz_frame = AltAz(obstime=obstime, location=self.location, pressure=0 * u.hPa)
-        el = sky_coord.transform_to(altaz_frame).alt.deg
-
-        pa = self.get_parallactic_angle(ra, dec, obstime)
+        # instance's atmosphere. Both terms come from one transform: the
+        # elevation and the parallactic angle are read off the same position.
+        altaz = self._vacuum_altaz(ra, dec, obstime)
+        el = altaz.alt.deg
+        pa = _parallactic_angle_from_altaz(altaz.az.rad, altaz.alt.rad, self.site.latitude)
 
         field_rotation = self.site.nasmyth_sign * el + pa
 
@@ -1139,7 +1253,9 @@ class Coordinates:
             Radial velocity in km/s (positive = receding). Used for full 3D
             space motion propagation when distance is also provided.
         frame : str, optional
-            Input coordinate frame. Default is "icrs".
+            Input coordinate frame. Default is "icrs". Passed through
+            :func:`normalize_frame`; ``"HORIZON"`` is refused, since this
+            method reads ``ra``/``dec``.
 
         Returns
         -------
@@ -1162,6 +1278,7 @@ class Coordinates:
         ...     ra, dec, pmra, pmdec, ref_epoch, obstime=obs_time, distance=1.8
         ... )
         """
+        frame = _radec_frame(frame)
         coord_kwargs = {
             "ra": ra * u.deg,
             "dec": dec * u.deg,
@@ -1199,6 +1316,14 @@ class Coordinates:
                 frame=frame,
                 obstime=ref_epoch,
             )
+            # The warning filter this installs is process-global for its
+            # duration, so a concurrent thread can lose an unrelated ERFA
+            # warning for the length of one call. The standard library
+            # offers no thread-local alternative, and the dummy-distance
+            # workaround above is what raises the warning, so this is a
+            # known limitation rather than an oversight. Nothing on the
+            # dispatch path reaches it: proper motion is a catalogue-side
+            # correction applied before a scan is planned.
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",

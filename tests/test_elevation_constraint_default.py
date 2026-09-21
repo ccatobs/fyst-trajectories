@@ -9,7 +9,6 @@ defaults of ``el_min=30.0, el_max=70.0``.
 import pytest
 from astropy.time import Time
 
-from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.overhead.constraints import ElevationConstraint
 from fyst_trajectories.overhead.models import ObservingPatch
 from fyst_trajectories.site import FYST_EL_MAX, FYST_EL_MIN
@@ -27,12 +26,6 @@ def patch():
         scan_type="pong",
         velocity=0.5,
     )
-
-
-@pytest.fixture
-def coords():
-    """Return a Coordinates instance for the default FYST site."""
-    return Coordinates(get_fyst_site())
 
 
 @pytest.fixture
@@ -55,7 +48,7 @@ def test_default_el_min_matches_fyst_el_min():
     assert c.el_min == 20.0
 
 
-def test_default_allows_elevation_89_deg(patch, time, coords):
+def test_default_allows_elevation_89_deg(patch, time, coordinates):
     """An elevation of 89 deg must score as valid under the new defaults.
 
     Under the previous default (``el_max=70.0``) this case was scored
@@ -63,16 +56,16 @@ def test_default_allows_elevation_89_deg(patch, time, coords):
     valid (1.0).
     """
     c = ElevationConstraint()
-    assert c.score(patch, time, 180.0, 89.0, coords) == 1.0
+    assert c.score(patch, time, 180.0, 89.0, coordinates) == 1.0
 
 
-def test_default_rejects_elevation_below_fyst_min(patch, time, coords):
+def test_default_rejects_elevation_below_fyst_min(patch, time, coordinates):
     """An elevation of 10 deg must still score infeasible under defaults."""
     c = ElevationConstraint()
-    assert c.score(patch, time, 180.0, 10.0, coords) == 0.0
+    assert c.score(patch, time, 180.0, 10.0, coordinates) == 0.0
 
 
-def test_default_rejects_elevation_above_fyst_max(patch, time, coords):
+def test_default_rejects_elevation_above_fyst_max(patch, time, coordinates):
     """An elevation of 95 deg must still score infeasible under defaults."""
     c = ElevationConstraint()
-    assert c.score(patch, time, 180.0, 95.0, coords) == 0.0
+    assert c.score(patch, time, 180.0, 95.0, coordinates) == 0.0

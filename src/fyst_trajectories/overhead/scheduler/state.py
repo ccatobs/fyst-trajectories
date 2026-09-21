@@ -3,12 +3,15 @@
 The :class:`SchedulerState` is an immutable snapshot of scheduler
 progress that is evolved between phases via
 :func:`dataclasses.replace`. :class:`SchedulerContext` bundles the
-read-only configuration (site, patches, overhead/calibration policy,
-constraints, time window) that every phase reads but never mutates.
+configuration (site, patches, overhead/calibration policy, constraints,
+time window) that every phase reads, with two carve-outs: the ``ce_corridors``
+and ``escapes`` memos, which are written as solves are made and are documented
+on the fields themselves. Nothing else in the context changes once it is built.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -18,11 +21,11 @@ from .helpers import _default_constraints
 
 if TYPE_CHECKING:
     from ...coordinates import Coordinates
-    from ...dispatch import SunSafePredicate
+    from ...dispatch import SlewSafePredicate, SunSafePredicate
     from ...site import Site
+    from ..calibration_state import CalibrationState
     from ..constraints import Constraint
     from ..models import CalibrationPolicy, ObservingPatch, OverheadModel
-    from ..overhead import CalibrationState
 
 __all__ = ["SchedulerContext", "SchedulerState"]
 
@@ -82,11 +85,15 @@ class SchedulerState:
 
 @dataclass(frozen=True)
 class SchedulerContext:
-    """Read-only scheduling context passed to every phase.
+    """Scheduling context passed to every phase.
 
     Holds all configuration that remains constant across the entire
     timeline: patches, site, coordinate transform, overhead/calibration
-    models, constraint list, time window, and idle time step.
+    models, constraint list, time window, and idle time step. A phase
+    reads it and does not change it, except for the ``ce_corridors`` and
+    ``escapes`` memos it fills as crossing passes and escapes are solved;
+    those fields are within-run caches of results the inputs already
+    determine, so two runs of the same context still plan the same night.
 
     Attributes
     ----------
@@ -122,12 +129,37 @@ class SchedulerContext:
     #: the mid-scan duration clips; ``None`` keeps the scalar site radius.
     #: The Sun *constraint* is bound at construction time (see ``build``).
     sun_safe: SunSafePredicate | None = None
+    #: Path-level Sun model (:class:`~fyst_trajectories.dispatch.SlewSafePredicate`)
+    #: swept along a slew. Built once in ``build`` from ``sun_safe`` and the
+    #: site's axis limits, so the transition and escape planners are handed
+    #: one model instead of rebuilding it on every call.
+    slew_safe: SlewSafePredicate | None = None
     #: Per-run memo of constant-elevation crossing-pass solves, keyed
     #: ``(patch_name, elevation, rising)`` (name, float, bool) with values
     #: ``("ok", t_open, t_close)`` or ``("miss", solved_from)``. Written
     #: only by the scheduler helper ``helpers._ce_crossing_corridor``; a
     #: cache, not state.
     ce_corridors: dict = field(default_factory=dict)
+    #: Per-run memo of escape searches, keyed by pose, time, elevation
+    #: floor and settle time (see ``_moves.plan_escape_move``). The loop
+    #: asks about one pose and time from three places per tick and each
+    #: search costs a Sun ephemeris solve; a cache, not state.
+    escapes: dict = field(default_factory=dict)
+
+    @property
+    def el_floor(self) -> float:
+        """Lowest elevation the schedule uses, in degrees.
+
+        The tightest ``el_min`` among the elevation constraints, or the
+        site's own elevation limit when none is configured. An escape
+        searches down to this floor rather than to the mount limit, so it
+        never parks the telescope below the sky the selection phase is
+        willing to observe.
+        """
+        from ..constraints import ElevationConstraint
+
+        floors = [c.el_min for c in self.constraints if isinstance(c, ElevationConstraint)]
+        return max(floors) if floors else self.site.telescope_limits.elevation.min
 
     @classmethod
     def build(
@@ -141,16 +173,40 @@ class SchedulerContext:
         constraints: list[Constraint] | None = None,
         time_step: float = 300.0,
         sun_safe: SunSafePredicate | None = None,
+        slew_safe: SlewSafePredicate | None = None,
     ) -> SchedulerContext:
         """Assemble a context, filling in default overhead/policy/constraints.
 
-        ``sun_safe`` reaches both consumers: the default constraint set
-        (when ``constraints`` is None) and the scan-duration clips. A
+        ``sun_safe`` is the point-level Sun model the whole run uses: the
+        default constraint set (when ``constraints`` is None), the
+        scan-duration clips, the slew and escape checks, the
+        planet-calibration planner, and the path model built from it. A
         caller supplying an explicit ``constraints`` list owns its Sun
-        constraint; ``sun_safe`` then affects the duration clips only.
+        constraint; ``sun_safe`` still drives everything else. ``slew_safe``
+        defaults to that point model swept along the direct path under the
+        site's axis limits, built once here rather than per call.
+
+        Raises
+        ------
+        ValueError
+            If two patches share a name. Names identify a patch in the
+            corridor memo and in every emitted block, so they have to be
+            unique across one schedule.
         """
         from ...coordinates import Coordinates
         from ..models import CalibrationPolicy, OverheadModel
+        from ..transitions import _default_slew_safe
+
+        # Patch names key the constant-elevation corridor memo, so two
+        # patches sharing one name would read each other's crossing solve and
+        # observe the wrong field. ``ObservingPatch`` states the uniqueness
+        # precondition; this is where the schedule can actually check it.
+        counts = Counter(p.name for p in patches)
+        duplicates = sorted(name for name, n in counts.items() if n > 1)
+        if duplicates:
+            raise ValueError(
+                f"Patch names must be unique within a schedule; repeated: {duplicates}."
+            )
 
         if overhead_model is None:
             overhead_model = OverheadModel()
@@ -158,6 +214,11 @@ class SchedulerContext:
             calibration_policy = CalibrationPolicy()
         if constraints is None:
             constraints = _default_constraints(site, sun_safe=sun_safe)
+        if slew_safe is None:
+            from ...sun_models import make_sun_safe
+
+            point = make_sun_safe("scalar", site=site) if sun_safe is None else sun_safe
+            slew_safe = _default_slew_safe(point, site)
         return cls(
             patches=patches,
             site=site,
@@ -169,4 +230,5 @@ class SchedulerContext:
             end_time=end_time,
             time_step=time_step,
             sun_safe=sun_safe,
+            slew_safe=slew_safe,
         )

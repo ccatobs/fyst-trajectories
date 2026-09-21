@@ -2,6 +2,15 @@
 
 Public to the package-internal planner; not part of the
 :mod:`fyst_trajectories.planning` public API.
+
+:func:`_compute_ce_duration`, the forward crossing search, has one
+in-repo consumer outside this subpackage: the offline scheduler gates
+its constant-elevation emission on the same solve the planner runs at
+reconstruction, so that what is scheduled is what can be rebuilt. That
+coupling is deliberate and the function stays private, because its
+return value is an internal of the search rather than a contract: it
+answers "when does this field cross this elevation next", with the
+assumptions the planner brings to that question.
 """
 
 import math
@@ -13,6 +22,7 @@ from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
 from ..exceptions import PointingError, PointingWarning
+from ..patterns.turnarounds import turnaround_duration_sec
 from ._types import FieldRegion
 
 
@@ -34,7 +44,9 @@ def _field_region_corners(
     dec_center : float
         Declination of the field center in degrees.
     width : float
-        RA extent of the field in degrees (before rotation).
+        Angular width of the field in degrees (before rotation). This is the
+        physical angular extent, not the RA span; the ``cos(dec)`` division
+        into an RA span is applied here.
     height : float
         Dec extent of the field in degrees (before rotation).
     angle_deg : float
@@ -161,6 +173,14 @@ def _compute_ce_duration(
     ------
     ValueError
         If elevation crossings cannot be found in the search window.
+
+    Notes
+    -----
+    This signature is load-bearing outside the planner: the offline
+    simulator gates constant-elevation emission on the same solve, so the
+    pass a schedule is built around and the pass a consumer reconstructs
+    are one. See the module docstring for why that coupling is deliberate
+    and the function stays private.
     """
     if step_seconds <= 0:
         raise ValueError(
@@ -237,9 +257,16 @@ def _compute_ce_az_range(
     with padding. Using three times captures the temporal variation in
     azimuth coverage as the field transits.
 
+    Three samples bound a monotone or single-turning-point azimuth track
+    exactly, which is what a field sweeping to or from transit does. A
+    track that turns twice inside the window could exceed the sampled
+    extent between them; the 2 degree default padding absorbs that, and
+    the trajectory's own bounds validation is what refuses a genuinely
+    out-of-range scan.
+
     Handles the azimuth = 0/360 discontinuity for sources transiting through
-    north (plausible at FYST's −23° latitude for sources with dec ≳ +20°):
-    when the naive max−min span exceeds 180°, the samples are unwrapped
+    north (plausible at FYST's -23° latitude for sources with dec ≳ +20°):
+    when the naive max-min span exceeds 180°, the samples are unwrapped
     around the median azimuth so the returned range is contiguous. The
     padded interval is then shifted by a whole turn onto a branch inside
     the telescope azimuth limits when one fits, so a setting pass (west
@@ -323,8 +350,8 @@ def _compute_ce_duration_from_lsa(
     Searches forward from ``base_search_time`` for the first time at which
     Local Sidereal Time (in degrees) crosses ``lsa_window[0]`` in the
     increasing direction. The end time is fixed at ``t_start +
-    (max_lsa - min_lsa) mod 360 / 15`` hours, so the scan spans exactly
-    the requested LSA window.
+    (max_lsa - min_lsa) mod 360 / 15`` hours of UTC, about 0.3 percent
+    longer than the sidereal window it names.
 
     Wrap-around windows (``max_lsa < min_lsa``) are handled explicitly:
     the duration is computed modulo 360°, so ``(310, 10)`` is a
@@ -364,8 +391,8 @@ def _compute_ce_duration_from_lsa(
     ------
     ValueError
         If ``min_lsa == max_lsa`` (zero-duration window), either
-        endpoint is outside ``[0, 360)``, or ``max_search_hours`` is
-        not positive.
+        endpoint is outside ``[0, 360)``, or ``max_search_hours`` or
+        ``step_seconds`` is not positive.
     PointingError
         If no increasing crossing of ``min_lsa`` is found within
         ``max_search_hours`` of ``base_search_time``.
@@ -390,6 +417,14 @@ def _compute_ce_duration_from_lsa(
         raise ValueError(
             f"max_search_hours must be positive, got {max_search_hours}; "
             f"cannot search for LSA crossings in a non-positive horizon"
+        )
+    if step_seconds <= 0:
+        # 0 makes the arange below divide by zero; a negative step makes it
+        # empty, and the crossing search then reports "no crossing found"
+        # over a horizon it never sampled.
+        raise ValueError(
+            f"step_seconds must be positive, got {step_seconds}; "
+            f"the LSA crossing search steps forward in time"
         )
 
     duration_deg = (max_lsa - min_lsa) % 360.0
@@ -483,13 +518,29 @@ def _quantize_ce_duration(
         Number of azimuth legs (at least 1).
     actual_duration : float
         Duration in seconds for ``n_scans`` legs including turnarounds.
+
+    Raises
+    ------
+    ValueError
+        If ``az_throw`` is not positive. A zero throw is a scan that sweeps
+        nothing, and its leg count would be made entirely of turnarounds.
     """
-    scan_leg_time = az_throw / velocity
-    n_scans = max(1, round(duration / scan_leg_time))
-    # Factor 2: trapezoidal velocity profile = ramp-up time (v/a) + ramp-down time (v/a)
-    t_turnaround = 2.0 * velocity / az_accel
+    if not (az_throw > 0.0):
+        raise ValueError(
+            f"az_throw must be positive, got {az_throw}; a constant-elevation "
+            "scan with no azimuth sweep covers nothing."
+        )
     t_cruise = az_throw / velocity
+    t_turnaround = turnaround_duration_sec(velocity, az_accel)
     # ``n_scans`` cruises with ``n_scans - 1`` inter-leg turnarounds (the
-    # trailing turnaround of the final leg is unused).
-    actual_duration = n_scans * t_cruise + max(0, n_scans - 1) * t_turnaround
+    # trailing turnaround of the final leg is unused), so the window holds
+    # ``(duration + t_turnaround) / (t_cruise + t_turnaround)`` legs. Counting
+    # legs by the cruise time alone overshoots the window whenever the
+    # turnaround is not negligible against a leg (fast, short legs).
+    # ``floor(x + 0.5)`` rather than ``round``: the built-in rounds a tie to
+    # the even count, so an exact 2.5 legs quantised down and an exact 3.5 up,
+    # which is a surprise in a duration and not a property anything wants.
+    legs = (duration + t_turnaround) / (t_cruise + t_turnaround)
+    n_scans = max(1, int(math.floor(legs + 0.5)))
+    actual_duration = n_scans * t_cruise + (n_scans - 1) * t_turnaround
     return n_scans, actual_duration

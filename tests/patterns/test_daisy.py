@@ -9,10 +9,9 @@ from fyst_trajectories.patterns import DaisyScanConfig, DaisyScanPattern
 
 
 class TestDaisyScanPattern:
-    """Tests for Daisy scan pattern."""
+    """Rosette generation: centre crossing, steady cruise speed, y_offset, finite output."""
 
     def test_basic_daisy_scan(self, site):
-        """Test generating a basic Daisy scan pattern."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = DaisyScanConfig(
             timestep=0.1,
@@ -35,7 +34,6 @@ class TestDaisyScanPattern:
         assert trajectory.center_dec == -30.0
 
     def test_daisy_crosses_center(self, site):
-        """Test that Daisy pattern crosses near the center."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = DaisyScanConfig(
             timestep=0.1,
@@ -56,7 +54,7 @@ class TestDaisyScanPattern:
         # On-sky offset frame: the az component must be scaled by cos(el) or the
         # metric over-weights azimuth at this declination. The rosette passes
         # essentially through the centre, so the closest approach is well under
-        # a turn radius, far tighter than the old 0.5 deg bound.
+        # a turn radius.
         dx = (trajectory.az - center_az) * np.cos(np.radians(trajectory.el))
         dy = trajectory.el - center_el
         min_distance = np.hypot(dx, dy).min()
@@ -65,7 +63,13 @@ class TestDaisyScanPattern:
 
     @pytest.mark.slow
     def test_daisy_constant_velocity(self, site):
-        """Test that Daisy pattern maintains approximately constant velocity."""
+        """Horizon-frame speed stays in a bounded band during the cruise.
+
+        ``az_vel`` is a mount-frame rate inflated by ``1 / cos(el)``, so it is not
+        constant even when the offset-frame speed is; this pins only that it does
+        not wander. The offset-frame speed itself is pinned by
+        ``TestDaisyTimeGrid::test_cruise_speed_recovers_velocity``.
+        """
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = DaisyScanConfig(
             timestep=0.1,
@@ -93,7 +97,6 @@ class TestDaisyScanPattern:
         assert vel_std / vel_mean < 0.5
 
     def test_daisy_with_offset(self, site):
-        """Test Daisy pattern with y_offset."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config_no_offset = DaisyScanConfig(
             timestep=0.1,
@@ -123,7 +126,6 @@ class TestDaisyScanPattern:
         assert not np.allclose(traj_no_offset.az, traj_with_offset.az)
 
     def test_daisy_metadata_stored(self, site):
-        """Test that Daisy pattern stores metadata correctly."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = DaisyScanConfig(
             timestep=0.1,
@@ -148,7 +150,6 @@ class TestDaisyScanPattern:
         assert params["y_offset"] == 0.05
 
     def test_daisy_small_radius(self, site):
-        """Test Daisy pattern with small radius."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = DaisyScanConfig(
             timestep=0.1,
@@ -168,7 +169,6 @@ class TestDaisyScanPattern:
         assert np.all(np.isfinite(trajectory.el))
 
     def test_daisy_finite_positions(self, site):
-        """Test that Daisy pattern produces finite positions."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = DaisyScanConfig(
             timestep=0.1,
@@ -193,7 +193,7 @@ class TestDaisyScanFlags:
     """Daisy emits scan_flag, with the start ramp-up flagged as non-science."""
 
     def test_scan_flag_populated(self, site):
-        """``Trajectory.scan_flag`` is no longer ``None`` for Daisy patterns."""
+        """Daisy patterns populate ``Trajectory.scan_flag``."""
         from fyst_trajectories.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -308,8 +308,8 @@ class TestDaisyTimeGrid:
         # discretization error that np.gradient adds on a curving path. A
         # stretched time axis scales every segment speed by the stretch factor.
         seg_speed = np.hypot(np.diff(x), np.diff(y)) / np.diff(times)
-        # Cruise = the petal arcs held at the target speed; the start ramp and
-        # center turnarounds are slower, so threshold near ``velocity``.
+        # Cruise = every petal arc after the start ramp; the ramp is the only
+        # sub-speed phase, so threshold near ``velocity``.
         cruise = seg_speed[seg_speed >= 0.95 * config.velocity]
         assert cruise.size > 10
         rel = abs(cruise.mean() - config.velocity) / config.velocity

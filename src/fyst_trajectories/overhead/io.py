@@ -5,6 +5,7 @@ with FYST-specific extensions for calibration blocks.
 """
 
 import json
+import math
 import warnings
 from pathlib import Path
 
@@ -101,12 +102,15 @@ def write_timeline(
     ``stop_time`` as ISO strings, ``name``, ``azmin``, ``azmax``,
     ``el``, ``boresight_angle``, ``scan_index``, ``subscan_index``)
     plus FYST extension columns (``block_type``, ``scan_type``,
-    ``rising``, the science-block geometry columns ``ra_center``,
-    ``dec_center``, ``width``, ``height``, ``velocity``, and the JSON
-    payload columns ``scan_params_json`` and ``block_meta_json``).
+    ``rising``, ``az_final``, the science-block geometry columns
+    ``ra_center``, ``dec_center``, ``width``, ``height``, ``velocity``,
+    and the JSON payload columns ``scan_params_json`` and
+    ``block_meta_json``).
     For slew rows ``azmin`` / ``azmax`` carry the from / to azimuths of
     the move and may be unordered; they are true minimum / maximum
-    bounds only for science and calibration rows.
+    bounds only for science and calibration rows. ``az_final`` holds the
+    azimuth a swept block ends at when that differs from ``azmax``, and
+    is ``nan`` (read back as ``None``) on every other block.
     The timeline window, site, overhead model, and calibration policy
     are stored in the table header metadata, so ``read_timeline``
     restores them.
@@ -143,6 +147,10 @@ def write_timeline(
                 "name": block.patch_name,
                 "azmin": block.az_start,
                 "azmax": block.az_end,
+                # NaN is the "no separate end pose" marker: an ECSV float
+                # column has a value in every row, and the reader maps it
+                # back to ``None``.
+                "az_final": float("nan") if block.az_final is None else float(block.az_final),
                 "el": block.elevation,
                 "scan_index": block.scan_index,
                 "subscan_index": block.subscan_index,
@@ -173,7 +181,14 @@ def write_timeline(
             }
         )
 
-    if not rows:
+    # ECSV cannot express a table with no rows and a typed header, so a
+    # timeline with no blocks (a night the Sun never leaves, for
+    # instance) writes one placeholder row. The header says so, and
+    # ``read_timeline`` drops the row again, otherwise the file reads
+    # back as a timeline holding one block dated 2000-01-01 that fails
+    # the library's own ``validate()``.
+    substituted = not rows
+    if substituted:
         rows = [_empty_row()]
 
     table = Table(rows)
@@ -187,7 +202,7 @@ def write_timeline(
     # promoted to ``QTable`` at write time (below) so these columns serialize
     # as Quantity mixins, which is what round-trips. ``read_timeline`` reads
     # with a plain ``Table`` and ``float(row[...])``, so it is unaffected.
-    for _deg_col in ("azmin", "azmax", "el", "boresight_angle"):
+    for _deg_col in ("azmin", "azmax", "az_final", "el", "boresight_angle"):
         table[_deg_col].unit = u.deg
 
     # Persist the declared timeline window so total_time / efficiency survive
@@ -197,6 +212,7 @@ def write_timeline(
     # fall back to the block-extent derivation in ``read_timeline``.
     table.meta["timeline_start_time"] = timeline.start_time.iso
     table.meta["timeline_end_time"] = timeline.end_time.iso
+    table.meta["timeline_is_empty"] = substituted
     table.meta["site_name"] = timeline.site.name
     table.meta["site_description"] = timeline.site.description
     table.meta["telescope_name"] = timeline.site.name
@@ -256,6 +272,16 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     Handles both standard TOAST format (science blocks only, no
     ``block_type`` column) and FYST extended format with calibration
     blocks, scan metadata, and patch geometry columns.
+
+    A file whose header marks the timeline empty reads back with no
+    blocks: the single placeholder row such a file carries exists only
+    because ECSV cannot hold a typed table with no rows.
+
+    Block times are stored to millisecond precision, so a block's start
+    and stop can shift by up to half a millisecond across a round trip.
+    The rendered forms (``str(timeline)``, the summary and the dispatch
+    sheet) are byte-identical either way; an equality test on raw
+    durations is not.
 
     Parameters
     ----------
@@ -361,9 +387,14 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     has_rising = "rising" in table.colnames
     has_boresight = "boresight_angle" in table.colnames
     has_metadata = "ra_center" in table.colnames
+    has_az_final = "az_final" in table.colnames
+
+    # A file the writer marked empty holds one placeholder row only
+    # because ECSV needs one; the timeline it stands for has no blocks.
+    rows = [] if bool(meta.get("timeline_is_empty", False)) else table
 
     blocks = []
-    for row in table:
+    for row in rows:
         t_start = Time(str(row["start_time"]), scale="utc")
         t_stop = Time(str(row["stop_time"]), scale="utc")
 
@@ -416,6 +447,14 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
 
         boresight = float(row["boresight_angle"]) if has_boresight else 0.0
 
+        # A missing column and a NaN both mean "this block ends at azmax":
+        # files written before the column existed read back unchanged.
+        az_final: float | None = None
+        if has_az_final:
+            _raw_final = float(row["az_final"])
+            if not math.isnan(_raw_final):
+                az_final = _raw_final
+
         block = TimelineBlock(
             t_start=t_start,
             t_stop=t_stop,
@@ -430,6 +469,7 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
             scan_type=scan_type,
             boresight_angle=boresight,
             metadata=block_meta,
+            az_final=az_final,
         )
         blocks.append(block)
 
@@ -552,6 +592,7 @@ def _empty_row() -> dict:
         "name": "",
         "azmin": 0.0,
         "azmax": 0.0,
+        "az_final": float("nan"),
         "el": 0.0,
         "scan_index": 0,
         "subscan_index": 0,
@@ -572,6 +613,7 @@ _KNOWN_META_KEYS = frozenset(
     {
         "timeline_start_time",
         "timeline_end_time",
+        "timeline_is_empty",
         "site_name",
         "site_description",
         "telescope_name",

@@ -41,7 +41,7 @@ from fyst_trajectories.overhead.scheduler import (
 )
 from fyst_trajectories.overhead.simulation import _SOURCE_CES_WINDOW_BUFFER_SEC
 from fyst_trajectories.planning import plan_source_ces
-from fyst_trajectories.planning.source_ces import _offset_footprint_eta, _resolve_footprint
+from fyst_trajectories.planning.footprints import offset_footprint_eta, resolve_footprint
 
 # Anchor inside Jupiter's rising arc where a 3-pass sequence is feasible.
 _ANCHOR = "2026-03-15T20:45:00"
@@ -157,8 +157,8 @@ def _reference_pass(scan_params, site):
     (eta-shifted footprint, widened window), so a reconstruction that
     skipped the eta shift would not match it.
     """
-    base = _resolve_footprint(scan_params["footprint"])
-    fp = _offset_footprint_eta(base, scan_params["eta_offset_deg"])
+    base = resolve_footprint(scan_params["footprint"])
+    fp = offset_footprint_eta(base, scan_params["eta_offset_deg"])
     t0 = Time(scan_params["window"][0], scale="utc")
     t1 = Time(scan_params["window"][1], scale="utc")
     buf = TimeDelta(_SOURCE_CES_WINDOW_BUFFER_SEC, format="sec")
@@ -233,6 +233,55 @@ class TestPlanetCalScanEmit:
         assert result.state.cal_state.last_planet_cal is not None
         assert result.state.cal_state.last_planet_cal.unix == anchor.unix
 
+    def test_each_pass_has_its_own_identity(self):
+        """The sequence is one scan whose passes are numbered as subscans.
+
+        ``scan_index`` and ``subscan_index`` are the canonical
+        observation / sub-observation columns of the emitted table, so
+        three passes all writing ``(0, 0)`` would leave an external
+        consumer unable to tell them apart.
+        """
+        anchor = Time(_ANCHOR, scale="utc")
+        ctx = _ctx(_scan_policy(planet_cal_passes=3))
+        state = SchedulerState(
+            current_time=anchor,
+            current_az=180.0,
+            current_el=50.0,
+            cal_state=_only_planet_cal_due(anchor),
+            scan_counter=4,
+        )
+
+        blocks = CalibrationPhase().run(state, ctx).blocks
+
+        assert [(b.scan_index, b.subscan_index) for b in blocks] == [(4, 0), (4, 1), (4, 2)]
+
+    def test_the_end_pose_is_where_the_drag_stopped(self):
+        """The pose carried forward is the trajectory's last azimuth.
+
+        The block's ``az_start`` / ``az_end`` are the pass's azimuth
+        envelope; the drag stops on whichever leg endpoint its last
+        turnaround left it on, generally neither bound. Carrying the
+        envelope maximum forward would price and Sun-check the next move
+        from a pose the telescope is not at.
+        """
+        anchor = Time(_ANCHOR, scale="utc")
+        ctx = _ctx(_scan_policy(planet_cal_passes=3))
+        state = SchedulerState(
+            current_time=anchor,
+            current_az=180.0,
+            current_el=50.0,
+            cal_state=_only_planet_cal_due(anchor),
+            scan_counter=0,
+        )
+
+        result = CalibrationPhase().run(state, ctx)
+        last = result.blocks[-1]
+
+        assert last.az_final is not None
+        assert last.az_start <= last.az_final < last.az_end - 1.0
+        assert last.end_pose_az == last.az_final
+        assert result.state.current_az == pytest.approx(last.az_final)
+
     def test_scan_params_recorded_and_valid(self):
         anchor = Time(_ANCHOR, scale="utc")
         ctx = _ctx(_scan_policy(planet_cal_passes=3))
@@ -301,10 +350,10 @@ class TestPlanetCalScanEmit:
     def test_setting_planet_steps_el_bore_down(self):
         """A setting anchor produces a descending, contiguous setting sequence.
 
-        Jupiter sets over roughly 00:00-04:00 UTC on the same night, so an
-        anchor at 01:30 sits inside the setting arc: the passes step the
-        boresight elevation strictly downward and every block observes the
-        setting side.
+        Jupiter sets over roughly 00:00-04:00 UTC on the same UTC date (the
+        tail of the previous night), so an anchor at 01:30 sits inside a
+        setting arc: the passes step the boresight elevation strictly
+        downward and every block observes the setting side.
         """
         anchor = Time("2026-03-15T01:30:00", scale="utc")
         ctx = _ctx(
@@ -517,6 +566,34 @@ class TestPlanetCalScanTruncation:
         assert blocks[0].metadata["scan_params"]["pass_index"] == 0
         assert blocks[0].t_stop.unix <= ctx.end_time.unix
 
+    def test_a_pass_quantised_short_of_its_window_is_still_dropped(self):
+        # Leg quantisation moves the trajectory end and the recorded window
+        # close apart in either direction. This window closes 3.75 s before
+        # the third pass's ``t1_iso`` while the pass's own quantised
+        # trajectory ends before the close, so a filter that looks only at
+        # the trajectory end keeps a block whose ``t_stop`` lies past the
+        # window, breaking the tiling invariant ``validate`` checks.
+        anchor = Time("2026-03-15T20:30:00", scale="utc")
+        ctx = _ctx(
+            _scan_policy(planet_cal_passes=3),
+            start="2026-03-15T20:30:00",
+            end="2026-03-15T20:56:45",
+        )
+        state = SchedulerState(
+            current_time=anchor,
+            current_az=180.0,
+            current_el=50.0,
+            cal_state=_only_planet_cal_due(anchor),
+            scan_counter=0,
+        )
+
+        result = CalibrationPhase().run(state, ctx)
+
+        assert result.blocks
+        for block in result.blocks:
+            assert block.t_stop.unix <= ctx.end_time.unix
+        assert result.state.current_time.unix <= ctx.end_time.unix
+
 
 class TestPlanetCalScanECSVRoundTrip:
     """The recorded pass parameters survive a TOAST-ECSV write/read."""
@@ -555,7 +632,7 @@ class TestPlanetCalScanECSVRoundTrip:
 
 
 class TestScheduleToTrajectoriesScienceOnly:
-    """The ``science_only`` flag on :func:`schedule_to_trajectories`."""
+    """Default True returns science pairs only; False adds nothing without cal params."""
 
     def test_flag_on_timeline_default_returns_science_only(self, flag_on_recon, flag_on_timeline):
         """Default ``science_only=True`` returns science pairs and no calibration."""

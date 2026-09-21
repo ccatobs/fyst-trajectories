@@ -1,9 +1,10 @@
-API Reference
-=============
+Library API Reference
+=====================
 
-The complete module reference: the core stack first (site through
-dispatch, bottom to top), then observability and visualization, and
-finally the offline ``overhead`` simulator's five pages.
+The library tier's module reference: the core stack first (site through
+dispatch, bottom to top), then observability, the sun-avoidance models,
+and visualization. The offline simulator has its own reference,
+:doc:`overhead_index`.
 
 .. toctree::
    :maxdepth: 2
@@ -20,8 +21,3 @@ finally the offline ``overhead`` simulator's five pages.
    observability
    sun_models
    visualization
-   overhead_models
-   overhead_timeline
-   overhead_scheduler
-   overhead_simulation
-   overhead_io

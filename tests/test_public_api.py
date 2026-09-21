@@ -1,9 +1,8 @@
 """Public API surface guard.
 
 These tests constrain the ``__all__`` surface that downstream consumers
-(``scan_patterns``, the offline simulation tooling, the OCS client, the KOSMA
-translator) import from. They guarantee that every advertised symbol is
-actually importable and that no private name leaks into the public surface.
+import from. They guarantee that every advertised symbol is actually importable
+and that no private name leaks into the public surface.
 
 Scope and limits:
 

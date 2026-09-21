@@ -10,10 +10,8 @@ that every ``sun_safe=`` seam accepts;
 to the path level for dispatch. The ``"cone"`` and ``"cad"`` models bind
 the shared `ccatobs/sun-avoidance
 <https://github.com/ccatobs/sun-avoidance>`_ library (an optional git
-dependency; install instructions in :doc:`../sun_avoidance`), and only
-its *point geometry* is bound (``calc_sun_distance`` +
-``get_mask_fixed_pos``); Sun positions, site constants, and kinematics
-stay fyst-trajectories'.
+dependency from a CCAT-internal repository, so the link needs
+collaboration access; install instructions in :doc:`../sun_avoidance`).
 
 .. automodule:: fyst_trajectories.sun_models
    :members:

@@ -1,8 +1,9 @@
 """Tests for PrimeCam module positions and offsets.
 
-Validates the hexagonal geometry of the PrimeCam inner ring modules,
-ensuring correct trigonometric convention (standard polar: x = r*cos(theta),
-y = r*sin(theta)) and cross-validates angular separations against scan_patterns.
+Validates the hexagonal geometry of the PrimeCam inner-ring modules (standard
+polar convention, x = r*cos(theta), y = r*sin(theta)), the module-name lookup
+and tag-resolution helpers, the scheduler geometry dict, and the IM position
+designations.
 """
 
 import numpy as np
@@ -45,7 +46,6 @@ class TestHexagonalSymmetry:
         np.testing.assert_allclose(distances, EXPECTED_DISTANCE_ARCMIN, rtol=1e-6)
 
     def test_distance_is_1_78_degrees(self):
-        """Inner ring distance should be approximately 1.78 degrees."""
         dist_deg = np.sqrt(PRIMECAM_I1.dx_deg**2 + PRIMECAM_I1.dy_deg**2)
         assert dist_deg == pytest.approx(1.78, abs=0.01)
 
@@ -64,13 +64,12 @@ class TestAxisAlignedModules:
         assert PRIMECAM_I4.dy > 0
 
     def test_i1_i4_diametrically_opposite(self):
-        """I1 and I4 should be diametrically opposite."""
         assert PRIMECAM_I1.dx == pytest.approx(-PRIMECAM_I4.dx, abs=1e-10)
         assert PRIMECAM_I1.dy == pytest.approx(-PRIMECAM_I4.dy, abs=1e-10)
 
 
 class TestMirrorSymmetry:
-    """Adjacent module pairs should exhibit mirror symmetry about x-axis."""
+    """Adjacent pairs mirror about the x-axis; opposite pairs invert through the origin."""
 
     def test_i2_i3_mirror_symmetry(self):
         """I2 and I3 should be mirror images across the x-axis."""
@@ -82,8 +81,8 @@ class TestMirrorSymmetry:
         assert PRIMECAM_I5.dx == pytest.approx(PRIMECAM_I6.dx, abs=1e-10)
         assert PRIMECAM_I5.dy == pytest.approx(-PRIMECAM_I6.dy, abs=1e-10)
 
-    def test_i2_i5_mirror_symmetry(self):
-        """I2 and I5 should be mirror images across the y-axis."""
+    def test_i2_i5_diametrically_opposite(self):
+        """I2 and I5 are diametrically opposite (180 deg apart on the ring)."""
         assert PRIMECAM_I2.dx == pytest.approx(-PRIMECAM_I5.dx, abs=1e-10)
         assert PRIMECAM_I2.dy == pytest.approx(-PRIMECAM_I5.dy, abs=1e-10)
 
@@ -103,11 +102,9 @@ class TestAdjacentModuleSeparation:
         return np.sqrt(ddx**2 + ddy**2)
 
     def test_i1_i2_separation(self):
-        """I1-I2 separation should be ~1.78 deg (not the ~0.92 deg a sin/cos mix-up gives)."""
+        """I1-I2 separation equals the ring radius (adjacent vertices of a regular hexagon)."""
         sep = self._angular_separation(PRIMECAM_I1, PRIMECAM_I2)
         assert sep == pytest.approx(EXPECTED_DISTANCE_DEG, rel=0.01)
-        # The buggy code gave ~0.92 deg; verify we are NOT close to that
-        assert sep > 1.5, f"Separation {sep:.2f} deg is too small (old sin/cos bug?)"
 
     def test_i1_i6_separation(self):
         """I1-I6 separation should be ~1.78 deg."""
@@ -115,7 +112,6 @@ class TestAdjacentModuleSeparation:
         assert sep == pytest.approx(EXPECTED_DISTANCE_DEG, rel=0.01)
 
     def test_all_adjacent_separations(self):
-        """All adjacent module pairs should have the same separation."""
         ordered = [PRIMECAM_I1, PRIMECAM_I2, PRIMECAM_I3, PRIMECAM_I4, PRIMECAM_I5, PRIMECAM_I6]
         separations = []
         for i in range(6):
@@ -136,7 +132,7 @@ class TestAdjacentModuleSeparation:
 
 
 class TestCartesianPositions:
-    """Verify expected Cartesian positions in mm (before plate-scale conversion)."""
+    """Verify each module's arcminute offset against its millimetre focal-plane position."""
 
     def test_i1_position_mm(self):
         """I1: (0, -461.3) mm."""
@@ -184,10 +180,9 @@ class TestAllModulesDistinct:
 
 
 class TestGetPrimecamOffset:
-    """Tests for get_primecam_offset function."""
+    """Name lookup: every module key, case-insensitively, with a KeyError on a miss."""
 
     def test_returns_correct_module(self):
-        """get_primecam_offset returns the correct module for each name."""
         assert get_primecam_offset("c") is PRIMECAM_CENTER
         assert get_primecam_offset("center") is PRIMECAM_CENTER
         assert get_primecam_offset("i1") is PRIMECAM_I1
@@ -198,7 +193,6 @@ class TestGetPrimecamOffset:
         assert get_primecam_offset("i6") is PRIMECAM_I6
 
     def test_case_insensitive(self):
-        """Module names should be case-insensitive."""
         assert get_primecam_offset("I1") is PRIMECAM_I1
         assert get_primecam_offset("CENTER") is PRIMECAM_CENTER
 
@@ -209,19 +203,17 @@ class TestGetPrimecamOffset:
 
 
 class TestCenterModule:
-    """Tests for the center module."""
+    """The center module is the zero offset on the optical axis."""
 
     def test_center_is_zero(self):
-        """Center module should have zero offset."""
         assert PRIMECAM_CENTER.dx == 0.0
         assert PRIMECAM_CENTER.dy == 0.0
 
 
 class TestModulesDict:
-    """Tests for the PRIMECAM_MODULES dictionary."""
+    """``PRIMECAM_MODULES`` holds eight keys, with ``center`` an alias of ``c``."""
 
     def test_contains_all_modules(self):
-        """Dictionary should contain center and all 6 inner ring modules."""
         expected_keys = {"c", "center", "i1", "i2", "i3", "i4", "i5", "i6"}
         assert set(PRIMECAM_MODULES.keys()) == expected_keys
 
@@ -231,30 +223,25 @@ class TestModulesDict:
 
 
 class TestResolveOffset:
-    """Tests for the resolve_offset function."""
+    """Module name, custom dx/dy, or boresight - and a refusal when both are given."""
 
     def test_module_i1_returns_primecam_i1(self):
-        """resolve_offset(module='i1') should return the same object as PRIMECAM_I1."""
         assert resolve_offset(module="i1") is PRIMECAM_I1
 
     def test_module_i3_returns_primecam_i3(self):
-        """resolve_offset(module='i3') should return the same object as PRIMECAM_I3."""
         assert resolve_offset(module="i3") is PRIMECAM_I3
 
     def test_custom_dx_dy_returns_instrument_offset(self):
-        """resolve_offset(dx=10.0, dy=20.0) should return InstrumentOffset with those values."""
         result = resolve_offset(dx=10.0, dy=20.0)
         assert isinstance(result, InstrumentOffset)
         assert result.dx == pytest.approx(10.0)
         assert result.dy == pytest.approx(20.0)
 
     def test_custom_name_is_preserved(self):
-        """resolve_offset(dx=10.0, dy=20.0, name='my-offset') should set the name."""
         result = resolve_offset(dx=10.0, dy=20.0, name="my-offset")
         assert result.name == "my-offset"
 
     def test_dx_only_defaults_dy_to_zero(self):
-        """resolve_offset(dx=10.0) should default dy to 0.0."""
         result = resolve_offset(dx=10.0)
         assert result.dx == pytest.approx(10.0)
         assert result.dy == pytest.approx(0.0)
@@ -284,7 +271,7 @@ class TestResolveOffset:
 
 
 class TestPrimecamGeometryDict:
-    """Tests for the schedlib-style geometry adapter (primecam_geometry_dict)."""
+    """Geometry adapter: seven deduped slots, degree centers, radius, boresight shift."""
 
     def test_seven_slots_and_center_alias_deduped(self):
         """Returns 7 slots ('c' + i1..i6); the duplicate 'center' alias is dropped."""
@@ -298,7 +285,6 @@ class TestPrimecamGeometryDict:
         assert geom["c"]["center"] == pytest.approx([0.0, 0.0])
 
     def test_default_radius_on_every_slot(self):
-        """Every slot carries the default per-module FOV radius."""
         geom = primecam_geometry_dict()
         for slot in geom.values():
             assert slot["radius"] == pytest.approx(MODULE_FOV_RADIUS_DEG)
@@ -331,7 +317,7 @@ class TestPrimecamGeometryDict:
 
 
 class TestResolveModuleTag:
-    """Tests for the resolve_module_tag string-tag entry point."""
+    """String and sequence tags: expansion, dedup, case folding, and the refusals."""
 
     def test_comma_tag(self):
         """A comma tag resolves to the named modules, in order."""
@@ -339,7 +325,6 @@ class TestResolveModuleTag:
         assert [o.name for o in offsets] == ["PrimeCam-I1", "PrimeCam-I2"]
 
     def test_sequence_equals_comma_tag(self):
-        """A sequence of names matches the equivalent comma tag."""
         assert resolve_module_tag(["i1", "i2"]) == resolve_module_tag("i1,i2")
 
     def test_all_expands_to_seven_modules(self):
@@ -356,11 +341,9 @@ class TestResolveModuleTag:
         ]
 
     def test_case_and_whitespace_insensitive(self):
-        """Case and surrounding whitespace are ignored."""
         assert resolve_module_tag(" I1 , I2 ") == resolve_module_tag("i1,i2")
 
     def test_c_and_center_dedup_to_single_module(self):
-        """'c' and 'center' are the same module and collapse to one entry."""
         offsets = resolve_module_tag("c,center")
         assert len(offsets) == 1
         assert offsets[0] is get_primecam_offset("c")
@@ -370,7 +353,6 @@ class TestResolveModuleTag:
         assert [o.name for o in resolve_module_tag("i1,i2,i1")] == ["PrimeCam-I1", "PrimeCam-I2"]
 
     def test_unknown_token_raises_key_error(self):
-        """An unrecognised token raises KeyError."""
         with pytest.raises(KeyError, match="Unknown PrimeCam module"):
             resolve_module_tag("i1,bogus")
 
@@ -401,11 +383,10 @@ class TestResolveModuleTag:
         [("i1,i2", ["i1", "i2"]), ("all", ["c", "i1", "i2", "i3", "i4", "i5", "i6"])],
     )
     def test_footprint_matches_hand_built_list(self, tag, names):
-        """The tag output produces an identical footprint to a hand-built list."""
-        from fyst_trajectories.planning.source_ces import _resolve_footprint
+        from fyst_trajectories.planning.footprints import resolve_footprint
 
-        from_tag = _resolve_footprint(resolve_module_tag(tag))
-        from_list = _resolve_footprint([get_primecam_offset(n) for n in names])
+        from_tag = resolve_footprint(resolve_module_tag(tag))
+        from_list = resolve_footprint([get_primecam_offset(n) for n in names])
         assert from_tag.center_xi_deg == pytest.approx(from_list.center_xi_deg)
         assert from_tag.center_eta_deg == pytest.approx(from_list.center_eta_deg)
 
@@ -427,11 +408,9 @@ class TestIMDesignations:
         assert get_primecam_offset(name) is PRIMECAM_CENTER
 
     def test_im0_through_resolve_offset(self):
-        """resolve_offset accepts the IM0 alias."""
         assert resolve_offset(module="IM0") is PRIMECAM_CENTER
 
     def test_im0_through_resolve_module_tag_dedups_with_c(self):
-        """IM0 and c are the same module: the tag dedups them to one entry."""
         offsets = resolve_module_tag("im0,c,center")
         assert len(offsets) == 1
         assert offsets[0] is PRIMECAM_CENTER

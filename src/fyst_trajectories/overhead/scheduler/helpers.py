@@ -11,14 +11,16 @@ import numpy as np
 from astropy.time import Time, TimeDelta
 
 from ...coordinates import Coordinates
+from ...patterns.turnarounds import swept_az_envelope
 from ...patterns.utils import normalize_azimuth
 from ...planning import FieldRegion
 
 # Private planner reuse, on purpose: the scheduler must gate constant-elevation
 # emission on exactly the crossing solve that plan_constant_el_scan runs at
 # reconstruction (planning = execution), so it calls the planner's own solver
-# rather than approximating it.
-from ...planning._ce_geometry import _compute_ce_duration
+# rather than approximating it. The corridor helper is reused for the same
+# reason: it is where the swept azimuth range comes from at reconstruction.
+from ...planning._ce_geometry import _compute_ce_az_range, _compute_ce_duration
 from ...site import Site
 from ..constraints import Constraint, ElevationConstraint, SunAvoidanceConstraint
 from ..models import ObservingPatch, OverheadModel
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "_ce_crossing_corridor",
+    "_ce_swept_az_envelope",
     "_ce_visit_plan",
     "_compute_az_range",
     "_compute_scan_duration",
@@ -61,8 +64,8 @@ def _normalize_az(az: float, site: Site, ref: float | None = None) -> float:
     operates on arrays) for the scalar azimuths the scheduler carries.
     Raw astropy azimuths are in ``[0, 360)``; the slew-time and boresight
     math must compare them in the telescope's ``[az_min, az_max]`` window
-    or a north-straddling pair inflates the slew distance ~17x and flips
-    the boresight ~180 deg.
+    or a north-straddling pair measures the long way round instead of the
+    short one and flips the boresight by ~180 deg.
 
     With ``ref`` given, the in-limits 360-degree representative nearest
     ``ref`` is returned, so the scheduler models the mount's direct
@@ -172,8 +175,8 @@ def _ce_crossing_corridor(
     :data:`_CE_MISS_RESOLVE_SEC` of scheduler time. Elevation is part of
     the key because a patch without a pinned ``elevation`` is gated at its
     instantaneous fallback elevation, which varies between calls; patch
-    names are assumed unique (an ``ObservingPatch`` documented
-    precondition).
+    names are unique within a schedule, which ``SchedulerContext.build``
+    rejects a duplicate of.
 
     Parameters
     ----------
@@ -279,6 +282,63 @@ def _ce_visit_plan(
     return best
 
 
+def _ce_swept_az_envelope(
+    patch: ObservingPatch,
+    t_open: Time,
+    t_close: Time,
+    coords: Coordinates,
+) -> tuple[float, float]:
+    """Return the azimuth envelope a constant-elevation pass sweeps.
+
+    The planner's own corridor for the crossing ``[t_open, t_close]`` (the
+    azimuth extent of the field's corners over the whole pass, plus
+    padding), widened by one turnaround overshoot per side. That is the
+    range the mount occupies, and it is what the rebuilt trajectory
+    sweeps, so a phase that has to reason about where the telescope goes
+    before any trajectory exists can ask for it here.
+
+    It is much wider than the instantaneous field width
+    :func:`_compute_az_range` estimates, because the field drifts across
+    the corridor for the whole pass; on an eight-hour single-patch night
+    the two differ by tens of degrees, not by the fraction of a degree a
+    turnaround overshoot adds.
+
+    The ``az_padding`` and ``az_accel`` defaults read here are the ones
+    the reconstruction path applies, so this estimate and the rebuild
+    describe one geometry.
+
+    Parameters
+    ----------
+    patch : ObservingPatch
+        Constant-elevation patch supplying the field geometry, the scan
+        velocity, and the optional ``az_padding`` / ``az_accel``
+        overrides.
+    t_open, t_close : Time
+        First and last RA-edge crossing of the pass, as returned by
+        :func:`_ce_visit_plan`.
+    coords : Coordinates
+        Site coordinate transformer.
+
+    Returns
+    -------
+    tuple of float
+        ``(env_min, env_max)`` in degrees, ordered. The pair may lie
+        outside ``[0, 360)`` when the pass straddles north, the
+        unwrapped representation the planner also returns.
+    """
+    params = patch.scan_params
+    field = FieldRegion(
+        ra_center=patch.ra_center,
+        dec_center=patch.dec_center,
+        width=patch.width,
+        height=patch.height,
+    )
+    az_lo, az_hi = _compute_ce_az_range(
+        field, 0.0, coords, t_open, t_close, float(params.get("az_padding", 2.0))
+    )
+    return swept_az_envelope(az_lo, az_hi, patch.velocity, float(params.get("az_accel", 1.0)))
+
+
 def _time_until_set(
     ra: float,
     dec: float,
@@ -335,8 +395,15 @@ def _time_until_sun_unsafe(
     min_sun_angle: float,
     step_seconds: float = 60.0,
     sun_safe: "SunSafePredicate | None" = None,
+    fixed_el: float | None = None,
 ) -> float:
     """Compute how long a source stays sun-safe from *start_time*.
+
+    With ``fixed_el`` the track is followed in azimuth but held at that
+    elevation, which is the pose a patch with a pinned ``elevation``
+    actually commands: the selection phase scores it there, the slew
+    drives there and every emitted block records it. Without it the
+    field's own instantaneous elevation is used.
 
     Samples the track at ``step_seconds`` intervals up to *max_duration*
     and locates where it first stops being sun-safe. In scalar mode
@@ -367,6 +434,8 @@ def _time_until_sun_unsafe(
         np.full(n_steps, dec),
         times,
     )
+    if fixed_el is not None:
+        el_arr = np.full(n_steps, float(fixed_el))
 
     if sun_safe is not None:
         has_batch = hasattr(sun_safe, "batch")
@@ -397,6 +466,8 @@ def _time_until_sun_unsafe(
         def _verdict_at(offset_s: float) -> bool:
             t_probe = start_time + TimeDelta(offset_s, format="sec")
             az_p, el_p = coords.radec_to_altaz(ra, dec, t_probe)
+            if fixed_el is not None:
+                el_p = float(fixed_el)
             if has_batch:
                 return bool(np.atleast_1d(sun_safe.batch([float(az_p)], [float(el_p)], t_probe))[0])
             return bool(sun_safe(float(az_p), float(el_p), t_probe))
@@ -460,6 +531,11 @@ def _compute_scan_duration(
     observability window so the source never drops below the telescope
     elevation limit mid-scan.
 
+    Both Sun clips evaluate the pose the visit will actually command: a
+    patch that pins ``elevation`` is clipped at that elevation, the one
+    the selection phase scored and every emitted block records, while the
+    field's own elevation still decides when the source sets.
+
     Parameters
     ----------
     patch : ObservingPatch
@@ -512,7 +588,7 @@ def _compute_scan_duration(
         _, _, t_close = plan
         corridor_dur = min((t_close - start_time).sec, remaining)
         # Sun-safety clip on top of the corridor: trim the visit before the
-        # field center drifts inside the exclusion radius (the planner
+        # commanded pose drifts inside the exclusion radius (the planner
         # re-validates the trajectory at rebuild).
         if site.sun_avoidance.enabled:
             sun_safe_dur = _time_until_sun_unsafe(
@@ -523,6 +599,7 @@ def _compute_scan_duration(
                 coords,
                 site.sun_avoidance.exclusion_radius,
                 sun_safe=sun_safe,
+                fixed_el=patch.elevation,
             )
             corridor_dur = min(corridor_dur, sun_safe_dur)
         return corridor_dur
@@ -550,6 +627,7 @@ def _compute_scan_duration(
                 coords,
                 site.sun_avoidance.exclusion_radius,
                 sun_safe=sun_safe,
+                fixed_el=patch.elevation,
             )
             observable_dur = min(observable_dur, sun_safe_dur)
         return min(max_dur, observable_dur)
@@ -558,10 +636,22 @@ def _compute_scan_duration(
 def _compute_az_range(
     patch: ObservingPatch, center_az: float, center_el: float, site: Site
 ) -> tuple[float, float]:
-    """Compute azimuth range for a scan.
+    """Estimate the azimuth range a scan occupies at one instant.
 
     Uses explicit overrides from scan_params if provided, otherwise
-    estimates from the field width and elevation. The endpoints are
+    extends the field's projected half width,
+    ``patch.width / (2 cos el)``, to each side of ``center_az`` (the
+    cosine is floored at 0.1, capping the half throw at five field widths
+    near the zenith). That is
+    a scalar estimate at the tick time, not the envelope a built
+    trajectory sweeps: a drifting constant-elevation pass crosses a
+    corridor far wider than the instantaneous field width
+    (:func:`_ce_swept_az_envelope` is that corridor). Use it only where
+    nothing is built yet, to choose a slew target and to place the scan
+    on a cable-wrap branch; an emitted block records the envelope of its
+    own trajectory.
+
+    The endpoints are
     normalized **jointly**: the pair is placed as one contiguous range
     in the site's cable-wrap window (a per-endpoint normalization would
     tear a range straddling the window seam into an unordered pair).

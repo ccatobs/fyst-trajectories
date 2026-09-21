@@ -148,16 +148,16 @@ def _make_site(nasmyth_port: str = "right") -> Site:
         atmosphere=None,
         telescope_limits=TelescopeLimits(
             azimuth=AxisLimits(
-                min=-270,
-                max=270,
-                max_velocity=3,
-                max_acceleration=1,
+                min=-180,
+                max=360,
+                max_velocity=3.0,
+                max_acceleration=1.5,
             ),
             elevation=AxisLimits(
                 min=20,
                 max=90,
-                max_velocity=1,
-                max_acceleration=0.5,
+                max_velocity=1.0,
+                max_acceleration=0.75,
             ),
         ),
         sun_avoidance=SunAvoidanceConfig(
@@ -299,8 +299,8 @@ class TestKOSMAElevationDependentOffsets:
         ccat_xel_arcsec = (det_az - 180.0) * cos_el * 3600.0
         ccat_del_arcsec = (det_el - el) * 3600.0
 
-        # Flat-projection error scales as ~offset^3 and grows with
-        # 1/cos(el); at ~155 arcsec and el=85 it can reach ~0.6 arcsec.
+        # Flat-projection error scales as ~offset^2 and grows with tan(el);
+        # at ~155 arcsec and el=85 it can reach ~0.6 arcsec.
         offset_arcsec = math.sqrt(
             kosma_mm_to_arcsec(ref_x_mm) ** 2 + kosma_mm_to_arcsec(ref_y_mm) ** 2
         )
@@ -320,7 +320,7 @@ class TestKOSMACrossValidationSmallOffsets:
 
     For small offsets (< ~0.5 degrees), the KOSMA flat-projection and
     the fyst-trajectories spherical model should agree to within a few
-    arcseconds. The flat-plane error scales as offset^3.
+    arcseconds. The flat-plane error scales as the square of the offset.
     """
 
     @pytest.mark.parametrize(
@@ -334,11 +334,7 @@ class TestKOSMACrossValidationSmallOffsets:
         ],
     )
     def test_small_offset_agreement(self, ref_x_mm, ref_y_mm):
-        """Test that small offsets agree between KOSMA flat and ccat spherical.
-
-        For offsets under ~3 arcmin, the flat-projection error is
-        negligible (< 0.01 arcsec).
-        """
+        """Under ~3 arcmin the flat and spherical projections agree to better than 0.1 arcsec."""
         elevation = 45.0
         site = _make_site("right")
 
@@ -392,10 +388,10 @@ class TestKOSMACrossValidationLargeOffsets:
     projection error becomes significant. This test documents where the
     two models diverge and by how much.
 
-    The flat-plane error for a great-circle offset of angular distance
-    rho scales as ~rho^3/6 for the leading-order term. At 1.78 degrees
-    (0.031 rad), the error is ~5e-6 rad = ~1 arcsec. At 5 degrees
-    (0.087 rad), the error is ~1.1e-4 rad = ~23 arcsec.
+    The flat-plane error is dominated by the convergence of azimuth lines,
+    ``rho^2 * tan(el) / 2`` to leading order, so it grows as the SQUARE of the
+    offset. At 1.78 degrees and el = 45 that is ~100 arcsec (measured 114); at 5
+    degrees, ~790 arcsec (measured 938).
     """
 
     @pytest.mark.parametrize(
@@ -468,11 +464,7 @@ class TestKOSMACrossValidationLargeOffsets:
         )
 
     def test_divergence_increases_with_offset(self):
-        """Verify that the flat-vs-spherical difference increases with offset.
-
-        The error from flat-plane approximation grows with offset^3,
-        so larger offsets should produce larger discrepancies.
-        """
+        """Flat-plane error grows as the offset squared, so each larger offset diverges further."""
         elevation = 45.0
         site = _make_site("right")
 
@@ -529,21 +521,18 @@ class TestKOSMACrossValidationLargeOffsets:
 
 
 class TestKOSMAPlateScaleConsistency:
-    """Verify plate scale and focal length relationships."""
+    """Plate scale, derived focal length and mm->arcsec stay mutually consistent."""
 
     def test_plate_scale_to_focal_length(self):
-        """Test the KOSMA plate_scale -> focal_length conversion."""
         expected_fl = (180.0 * 3600.0) / (KOSMA_PLATE_SCALE * math.pi)
         assert KOSMA_FOCAL_LENGTH == pytest.approx(expected_fl)
 
     def test_mm_to_arcsec_roundtrip(self):
-        """Test that mm_to_arcsec is consistent with plate_scale."""
         # 1mm at the focal plane should be plate_scale arcsec on sky
         one_mm_arcsec = kosma_mm_to_arcsec(1.0)
         assert one_mm_arcsec == pytest.approx(KOSMA_PLATE_SCALE, rel=1e-10)
 
     def test_focal_length_reasonable(self):
-        """Test that derived focal length is physically reasonable for FYST."""
         # FYST is a 6m telescope with f/0.6 primary + reimaging.
         # Effective focal length depends on optical design.
         # The plate scale of 13.89"/mm implies f ~ 14.8m effective.

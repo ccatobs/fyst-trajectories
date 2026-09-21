@@ -12,9 +12,12 @@ from dataclasses import dataclass, field
 
 from ..coordinates import SATELLITE_BODIES, SOLAR_SYSTEM_BODIES
 from ..exceptions import PointingWarning
+from .turnarounds import turnaround_overshoot_deg
 
-# Advisory upper bounds, NOT hard telescope limits (those live in
-# Site.telescope_limits). Exceeding these values emits PointingWarning.
+# Advisory upper bounds, separate from the per-axis limits in
+# Site.telescope_limits (whose position bounds are enforced by
+# validate_trajectory_bounds and whose rate bounds are advisory as well).
+# Exceeding these values emits PointingWarning.
 MAX_REASONABLE_SCAN_WIDTH_DEG: float = 30.0
 """Maximum scan width/height (or azimuth throw) before a warning is issued."""
 
@@ -26,6 +29,53 @@ MAX_REASONABLE_VELOCITY_DEG_S: float = 5.0
 
 MAX_REASONABLE_ACCELERATION_DEG_S2: float = 3.0
 """Maximum scan acceleration before a warning is issued."""
+
+
+def _require_positive(value: float, name: str) -> None:
+    """Raise unless ``value`` is a finite, strictly positive number.
+
+    ``value <= 0`` alone lets NaN and infinity through: NaN fails every
+    comparison, and infinity is genuinely positive. Both then surface far
+    from the config that accepted them (as ``cannot convert float NaN to
+    integer`` from the leg quantiser, or as an empty sample array), so the
+    finiteness test belongs here with the sign test.
+
+    Parameters
+    ----------
+    value : float
+        The field being validated.
+    name : str
+        Field name used in the message.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not finite or is not strictly positive.
+    """
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+
+
+def _require_non_negative(value: float, name: str) -> None:
+    """Raise unless ``value`` is a finite, non-negative number.
+
+    The non-negative counterpart of :func:`_require_positive`; see that
+    function for why finiteness is checked alongside the sign.
+
+    Parameters
+    ----------
+    value : float
+        The field being validated.
+    name : str
+        Field name used in the message.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not finite or is negative.
+    """
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be non-negative, got {value}")
 
 
 def _warn_if_unusual(value: float, threshold: float, label: str, unit: str) -> None:
@@ -47,10 +97,13 @@ def _warn_if_unusual(value: float, threshold: float, label: str, unit: str) -> N
         (e.g. ``"deg"``, ``"deg/s"``, ``"deg/s^2"``).
     """
     if value > threshold:
+        # 4 frames out: this helper, __post_init__, the dataclass-generated
+        # __init__ (whose filename is "<string>"), then the caller. A 3 here
+        # attributed every advisory to that generated __init__.
         warnings.warn(
             f"{label} {value} {unit} is unusually large (> {threshold} {unit}).",
             PointingWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
 
 
@@ -72,8 +125,7 @@ class ScanConfig:
     timestep: float
 
     def __post_init__(self) -> None:
-        if self.timestep <= 0:
-            raise ValueError(f"timestep must be positive, got {self.timestep}")
+        _require_positive(self.timestep, "timestep")
 
 
 @dataclass(frozen=True)
@@ -91,8 +143,8 @@ class ConstantElScanConfig(ScanConfig):
     az_speed : float
         Azimuth scan speed in azimuth coordinate degrees/second
         (not on-sky). The on-sky speed is
-        ``az_speed * cos(elevation)``. This is the value sent
-        directly to the Vertex ACU.
+        ``az_speed * cos(elevation)``; this is the mount-frame rate the
+        telescope executes.
     az_accel : float
         Azimuth acceleration in azimuth coordinate
         degrees/second^2 (not on-sky).
@@ -103,6 +155,13 @@ class ConstantElScanConfig(ScanConfig):
     ------
     ValueError
         If az_speed or az_accel is not positive.
+
+    Warns
+    -----
+    PointingWarning
+        If the azimuth throw, speed or acceleration is unusually large, or
+        if the turnaround overshoot exceeds the science throw (the scan
+        would spend most of its time turning around).
 
     Notes
     -----
@@ -139,10 +198,8 @@ class ConstantElScanConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.az_speed <= 0:
-            raise ValueError(f"az_speed must be positive, got {self.az_speed}")
-        if self.az_accel <= 0:
-            raise ValueError(f"az_accel must be positive, got {self.az_accel}")
+        _require_positive(self.az_speed, "az_speed")
+        _require_positive(self.az_accel, "az_accel")
         az_throw = abs(self.az_stop - self.az_start)
         _warn_if_unusual(az_throw, MAX_REASONABLE_SCAN_WIDTH_DEG, "Azimuth throw", "deg")
         _warn_if_unusual(self.az_speed, MAX_REASONABLE_VELOCITY_DEG_S, "Azimuth speed", "deg/s")
@@ -152,14 +209,15 @@ class ConstantElScanConfig(ScanConfig):
             "Azimuth acceleration",
             "deg/s^2",
         )
-        d_half_turn = 5 * self.az_speed**2 / (8 * self.az_accel)
+        d_half_turn = turnaround_overshoot_deg(self.az_speed, self.az_accel)
         if d_half_turn > az_throw:
             warnings.warn(
                 f"Turnaround distance ({d_half_turn:.1f} deg) exceeds science throw "
                 f"({az_throw:.1f} deg). The telescope will spend most of its time "
                 f"in turnarounds. Consider increasing az_accel or decreasing az_speed.",
                 PointingWarning,
-                stacklevel=2,
+                # 3 frames out: __post_init__, the generated __init__, the caller.
+                stacklevel=3,
             )
 
 
@@ -186,10 +244,11 @@ class PongScanConfig(ScanConfig):
         the *mean* cruise speed: each axis follows a truncated Fourier triangle
         wave whose slope ripples about the nominal rate, so the *peak* on-sky
         diagonal speed exceeds ``velocity``. Measured on the shipped pattern
-        the overshoot oscillates roughly between 9 and 18 percent, varying
-        with ``num_terms`` and the scan geometry rather than converging
-        (about 27 percent at ``num_terms=1``); 18 percent is the practical
-        ceiling, reached when the two axes' ripple peaks align. A planner
+        the overshoot oscillates roughly between 9 and 18 percent for
+        ``num_terms >= 4``, varying with ``num_terms`` and the scan geometry
+        rather than converging; coarser truncations are worse, about 19
+        percent at ``num_terms=3``, 20 percent at ``num_terms=2`` and 27
+        percent at ``num_terms=1``. A planner
         sizing ``velocity`` against axis rate limits should budget for the
         top of that band; the realized mount-frame velocity is checked by
         ``validate_trajectory_dynamics``. Must be positive.
@@ -205,6 +264,11 @@ class PongScanConfig(ScanConfig):
     ValueError
         If width, height, spacing, or velocity is not positive.
         If num_terms is less than 1.
+
+    Warns
+    -----
+    PointingWarning
+        If the scan width, height or velocity is unusually large.
 
     Notes
     -----
@@ -224,14 +288,10 @@ class PongScanConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.width <= 0:
-            raise ValueError(f"width must be positive, got {self.width}")
-        if self.height <= 0:
-            raise ValueError(f"height must be positive, got {self.height}")
-        if self.spacing <= 0:
-            raise ValueError(f"spacing must be positive, got {self.spacing}")
-        if self.velocity <= 0:
-            raise ValueError(f"velocity must be positive, got {self.velocity}")
+        _require_positive(self.width, "width")
+        _require_positive(self.height, "height")
+        _require_positive(self.spacing, "spacing")
+        _require_positive(self.velocity, "velocity")
         if self.num_terms < 1:
             raise ValueError(f"num_terms must be at least 1, got {self.num_terms}")
         _warn_if_unusual(self.width, MAX_REASONABLE_SCAN_WIDTH_DEG, "Scan width", "deg")
@@ -256,8 +316,13 @@ class PongAltAzScanConfig(ScanConfig):
     tangent-plane (on-sky) quantities, identical in meaning to the
     :class:`PongScanConfig` fields of the same name. The azimuth coordinate
     is stretched by ``1 / cos(el_center)``: the azimuth-coordinate extent is
-    ``width / cos(el_center)`` and the azimuth-coordinate speed exceeds the
-    on-sky speed by the same factor. Pick ``velocity`` against the mount
+    ``width / cos(el_center)`` up to the vertex quantisation: the box is
+    rounded up to a whole number of ``sqrt(2) * spacing`` steps, and further
+    to make the two vertex counts coprime, so the realised extent runs from a
+    few percent narrower at fine ``spacing`` to tens of percent wider once
+    ``spacing`` is a large fraction of ``width``; the azimuth-coordinate speed
+    exceeds the on-sky speed by the same ``1 / cos(el_center)`` factor. Pick
+    ``velocity`` against the mount
     azimuth-rate limit with that factor (and the Pong peak-speed overshoot,
     see :class:`PongScanConfig`) in mind.
 
@@ -301,6 +366,13 @@ class PongAltAzScanConfig(ScanConfig):
         If width, height, spacing, or velocity is not positive, if
         num_terms is less than 1, or if el_center is not in ``(0, 90)``.
 
+    Warns
+    -----
+    PointingWarning
+        If the scan width, height or velocity is unusually large, or if the
+        derived azimuth-coordinate speed ``velocity / cos(el_center)`` is,
+        which is a quantity the caller never passed in.
+
     Notes
     -----
     The scan geometry uses a flat-sky (tangent-plane) approximation, so it
@@ -322,14 +394,10 @@ class PongAltAzScanConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.width <= 0:
-            raise ValueError(f"width must be positive, got {self.width}")
-        if self.height <= 0:
-            raise ValueError(f"height must be positive, got {self.height}")
-        if self.spacing <= 0:
-            raise ValueError(f"spacing must be positive, got {self.spacing}")
-        if self.velocity <= 0:
-            raise ValueError(f"velocity must be positive, got {self.velocity}")
+        _require_positive(self.width, "width")
+        _require_positive(self.height, "height")
+        _require_positive(self.spacing, "spacing")
+        _require_positive(self.velocity, "velocity")
         if self.num_terms < 1:
             raise ValueError(f"num_terms must be at least 1, got {self.num_terms}")
         if not 0.0 < self.el_center < 90.0:
@@ -388,6 +456,12 @@ class DaisyScanConfig(ScanConfig):
         If avoidance_radius is negative.
         If start_acceleration is not positive.
 
+    Warns
+    -----
+    PointingWarning
+        If the daisy radius, velocity or start acceleration is unusually
+        large.
+
     Notes
     -----
     The internal simulation uses a timestep of at most ~1/150 s (the output
@@ -404,7 +478,7 @@ class DaisyScanConfig(ScanConfig):
     ``[0, D]``). This is deliberate: sampling on the integrator grid avoids the
     ~1% velocity bias that a stretched ``linspace(0, D)`` time axis would inject.
     The per-sample ``times`` array is internally self-consistent, so serialized
-    output (``to_path_format``) and PCS ``/path`` dispatch are unaffected.
+    output (``to_path_format``) and ``/path`` dispatch are unaffected.
     """
 
     radius: float
@@ -416,16 +490,11 @@ class DaisyScanConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.radius <= 0:
-            raise ValueError(f"radius must be positive, got {self.radius}")
-        if self.velocity <= 0:
-            raise ValueError(f"velocity must be positive, got {self.velocity}")
-        if self.turn_radius <= 0:
-            raise ValueError(f"turn_radius must be positive, got {self.turn_radius}")
-        if self.avoidance_radius < 0:
-            raise ValueError(f"avoidance_radius must be non-negative, got {self.avoidance_radius}")
-        if self.start_acceleration <= 0:
-            raise ValueError(f"start_acceleration must be positive, got {self.start_acceleration}")
+        _require_positive(self.radius, "radius")
+        _require_positive(self.velocity, "velocity")
+        _require_positive(self.turn_radius, "turn_radius")
+        _require_non_negative(self.avoidance_radius, "avoidance_radius")
+        _require_positive(self.start_acceleration, "start_acceleration")
         _warn_if_unusual(self.radius, MAX_REASONABLE_DAISY_RADIUS_DEG, "Daisy radius", "deg")
         _warn_if_unusual(self.velocity, MAX_REASONABLE_VELOCITY_DEG_S, "Scan velocity", "deg/s")
         _warn_if_unusual(
@@ -453,10 +522,13 @@ class DaisyAltAzScanConfig(ScanConfig):
     ``avoidance_radius``, and ``start_acceleration`` are tangent-plane
     (on-sky) quantities, identical in meaning to the :class:`DaisyScanConfig`
     fields of the same name. The azimuth coordinate is stretched by
-    ``1 / cos(el_center)``: the azimuth-coordinate extent is
-    ``2 * radius / cos(el_center)`` and the azimuth-coordinate speed exceeds
-    the on-sky speed by the same factor. Pick ``velocity`` against the mount
-    azimuth-rate limit with that factor in mind.
+    ``1 / cos(el_center)``: the azimuth-coordinate extent is about
+    ``2 * r_max / cos(el_center)``, where the petal's reach
+    ``r_max = sqrt(radius**2 + turn_radius**2) + turn_radius`` exceeds
+    ``radius`` because the petal only starts to turn once it is ``radius``
+    from the center, and the azimuth-coordinate speed exceeds the on-sky
+    speed by the same ``1 / cos(el_center)`` factor. Pick ``velocity``
+    against the mount azimuth-rate limit with that factor in mind.
 
     Unlike the celestial Daisy, no coordinate transform or ``start_time`` is
     needed to build the pattern (it is an :class:`AltAzPattern`); the mapping
@@ -494,6 +566,14 @@ class DaisyAltAzScanConfig(ScanConfig):
         avoidance_radius is negative, if start_acceleration is not positive,
         or if el_center is not in ``(0, 90)``.
 
+    Warns
+    -----
+    PointingWarning
+        If the daisy radius, velocity or start acceleration is unusually
+        large, or if the derived azimuth-coordinate speed
+        ``velocity / cos(el_center)`` is, which is a quantity the caller
+        never passed in.
+
     Notes
     -----
     The internal simulation uses a timestep of at most ~1/150 s (the output
@@ -517,16 +597,11 @@ class DaisyAltAzScanConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.radius <= 0:
-            raise ValueError(f"radius must be positive, got {self.radius}")
-        if self.velocity <= 0:
-            raise ValueError(f"velocity must be positive, got {self.velocity}")
-        if self.turn_radius <= 0:
-            raise ValueError(f"turn_radius must be positive, got {self.turn_radius}")
-        if self.avoidance_radius < 0:
-            raise ValueError(f"avoidance_radius must be non-negative, got {self.avoidance_radius}")
-        if self.start_acceleration <= 0:
-            raise ValueError(f"start_acceleration must be positive, got {self.start_acceleration}")
+        _require_positive(self.radius, "radius")
+        _require_positive(self.velocity, "velocity")
+        _require_positive(self.turn_radius, "turn_radius")
+        _require_non_negative(self.avoidance_radius, "avoidance_radius")
+        _require_positive(self.start_acceleration, "start_acceleration")
         if not 0.0 < self.el_center < 90.0:
             raise ValueError(
                 f"el_center must be in (0, 90) degrees so cos(el_center) is nonzero, "
@@ -659,9 +734,31 @@ class LinearMotionConfig(ScanConfig):
         Elevation velocity in degrees/second.
     timestep : float
         Time between trajectory points in seconds.
+
+    Raises
+    ------
+    ValueError
+        If ``timestep`` is not positive, or if any of the four motion
+        fields is not finite.
     """
 
     az_start: float
     el_start: float
     az_velocity: float
     el_velocity: float
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # Sign and magnitude are all free here (a velocity may be zero or
+        # negative, a start position may be anywhere in the mount range), so
+        # finiteness is the whole contract. Without it a NaN reaches the
+        # generator and produces an all-NaN trajectory that only the
+        # position-bounds check refuses, with no mention of which field.
+        for name, value in (
+            ("az_start", self.az_start),
+            ("el_start", self.el_start),
+            ("az_velocity", self.az_velocity),
+            ("el_velocity", self.el_velocity),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value}")

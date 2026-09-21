@@ -1,8 +1,14 @@
 Quickstart
 ==========
 
-Basic Usage
------------
+The shortest path from the FYST site constants to a trajectory the
+telescope can execute. This page walks the site, a coordinate transform,
+two scan patterns and the request body for the FYST telescope control
+system's (Go TCS) ``/path`` endpoint; :doc:`planning` and
+:doc:`trajectory_examples` go deeper.
+
+The site
+--------
 
 Get the FYST site configuration::
 
@@ -31,19 +37,11 @@ section 6), so vacuum (geometric) coordinates are correct either way::
     az, el = coords.radec_to_altaz(ra=83.82, dec=-5.39, obstime=obstime)
     print(f"Orion is at Az={az:.1f}, El={el:.1f}")
 
-.. note::
-
-   Applying refraction here would double-refract the trajectory. For
-   planning and simulation output that never reaches the telescope, see
-   :ref:`quickstart-planning-refraction` below.
-
 **Frame name translation** (string alias resolution)::
 
-    from fyst_trajectories import FRAME_ALIASES, normalize_frame
+    from fyst_trajectories import FRAME_ALIASES
 
     print(sorted(FRAME_ALIASES))     # ['B1950', 'FK5', 'HORIZON', 'J2000']
-    print(normalize_frame("J2000"))  # icrs
-    print(normalize_frame("B1950"))  # fk4
 
 **Proper motion support** (for high proper motion stars)::
 
@@ -86,9 +84,8 @@ conditions::
     obstime = Time("2026-01-15T02:00:00", scale="utc")
     az, el = coords.radec_to_altaz(ra=83.82, dec=-5.39, obstime=obstime)
 
-``AtmosphericConditions.no_refraction()`` is available as an explicit
-synonym for vacuum when you want to be self-documenting about the
-choice, but bare ``Coordinates(site)`` is equivalent and cleaner.
+``AtmosphericConditions.no_refraction()`` is an explicit synonym for
+vacuum; bare ``Coordinates(site)`` is equivalent.
 
 Trajectory Generation
 ---------------------
@@ -98,49 +95,10 @@ for generating telescope trajectories compatible with the ACU ProgramTrack mode.
 
 The pattern type is inferred from the config class you provide. Available
 patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``,
-``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``. The
-examples below are minimal; :doc:`api/patterns` documents every config
-field, and :doc:`trajectory_examples` has worked examples for the
-common patterns.
-
-**Track a celestial source** (sidereal tracking)::
-
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import SiderealTrackConfig, TrajectoryBuilder
-
-    site = get_fyst_site()
-    start_time = Time("2026-01-15T02:00:00", scale="utc")
-
-    # Track the Crab Nebula for 5 minutes
-    trajectory = (
-        TrajectoryBuilder(site)
-        .at(ra=83.633, dec=22.014)
-        .with_config(SiderealTrackConfig(timestep=0.1))
-        .duration(300.0)
-        .starting_at(start_time)
-        .build()
-    )
-    print(f"Generated {trajectory.n_points} points")
-
-**Track a planet**::
-
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import PlanetTrackConfig, TrajectoryBuilder
-
-    site = get_fyst_site()
-    start_time = Time("2026-03-15T18:30:00", scale="utc")
-
-    trajectory = (
-        TrajectoryBuilder(site)
-        .with_config(PlanetTrackConfig(timestep=0.1, body="mars"))
-        .duration(600.0)
-        .starting_at(start_time)
-        .build()
-    )
+``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``. Two
+are shown here, :doc:`trajectory_examples` works through the celestial
+and AltAz-frame trackers, :doc:`planning` covers the two AltAz-native
+scans, and :doc:`api/patterns` documents every config field.
 
 **Constant elevation scan** (auto-computed from a field region, recommended)::
 
@@ -159,29 +117,6 @@ common patterns.
         az_accel=0.5,
     )
     trajectory = block.trajectory
-
-**Constant elevation scan** (manual parameters, for engineering or known az ranges)::
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
-
-    site = get_fyst_site()
-
-    config = ConstantElScanConfig(
-        timestep=0.1,
-        az_start=120.0,
-        az_stop=150.0,
-        elevation=45.0,
-        az_speed=1.0,
-        az_accel=0.5,
-    )
-
-    trajectory = (
-        TrajectoryBuilder(site)
-        .with_config(config)
-        .duration(300.0)
-        .build()
-    )
 
 **Pong scan** (curvy box pattern for wide-field mapping)::
 
@@ -207,30 +142,6 @@ common patterns.
         .build()
     )
 
-**Daisy scan** (petal pattern for point sources)::
-
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import DaisyScanConfig, TrajectoryBuilder
-
-    site = get_fyst_site()
-    start_time = Time("2026-03-15T02:00:00", scale="utc")
-
-    config = DaisyScanConfig(
-        timestep=0.1, radius=0.5, velocity=0.3, turn_radius=0.2,
-        avoidance_radius=0.0, start_acceleration=0.5, y_offset=0.0,
-    )
-
-    trajectory = (
-        TrajectoryBuilder(site)
-        .at(ra=180.0, dec=-30.0)
-        .with_config(config)
-        .duration(300.0)
-        .starting_at(start_time)
-        .build()
-    )
-
 **Dynamics safety checks** (the builder flags scans that exceed limits)::
 
     import warnings
@@ -242,10 +153,8 @@ common patterns.
 
     site = get_fyst_site()
 
-    # A 2 deg field scanned at 0.5 deg/s with the target high in the sky:
-    # cos(el) inflates the mount-frame azimuth rate and pushes both
-    # accelerations past the telescope limits, so the builder emits
-    # PointingWarnings (it still returns the trajectory).
+    # cos(el) inflates the mount-frame azimuth rate at high elevation, so
+    # the builder warns and still returns the trajectory.
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         trajectory = (
@@ -290,54 +199,10 @@ selectable policies, and the dispatch-time gate.
 Instrument Offsets
 ------------------
 
-When using off-axis detectors, use ``.for_detector()`` to adjust trajectories
-so the detector (not the boresight) tracks the target::
+When an off-axis detector should track the target, ``.for_detector()``
+offsets the boresight in the opposite direction, accounting for field
+rotation.
 
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
-    from fyst_trajectories.primecam import get_primecam_offset
-
-    site = get_fyst_site()
-    start_time = Time("2026-03-15T02:00:00", scale="utc")
-
-    # Use a PrimeCam module offset
-    offset = get_primecam_offset("i1")
-
-    # Boresight adjusted so detector tracks the target
-    trajectory = (
-        TrajectoryBuilder(site)
-        .at(ra=180.0, dec=-30.0)
-        .with_config(PongScanConfig(
-            timestep=0.1, width=1.0, height=1.0, spacing=0.1,
-            velocity=0.2, num_terms=4, angle=0.0,
-        ))
-        .for_detector(offset)
-        .duration(60.0)
-        .starting_at(start_time)
-        .build()
-    )
-
-**Custom detector offset (from angular values)**::
-
-    from fyst_trajectories import InstrumentOffset
-
-    offset = InstrumentOffset(dx=30.0, dy=15.0, name="CustomDetector")
-
-**Custom detector offset (from focal plane coordinates)**::
-
-    from fyst_trajectories import InstrumentOffset, get_fyst_site
-
-    site = get_fyst_site()
-
-    # Convert physical mm position to angular offset
-    offset = InstrumentOffset.from_focal_plane(
-        x_mm=100.0, y_mm=200.0,
-        plate_scale=site.plate_scale,  # 13.89 arcsec/mm
-        name="CustomDetector",
-    )
-
-See :doc:`api/offsets` for full details on instrument offset handling.
-
-For comprehensive examples of each pattern, see :doc:`trajectory_examples`.
+See :doc:`instrument_offsets` for the field-rotation decomposition,
+custom offsets from angular or focal-plane coordinates, and the
+PrimeCam module layout.

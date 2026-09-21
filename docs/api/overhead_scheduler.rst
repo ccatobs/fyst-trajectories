@@ -1,13 +1,14 @@
-Overhead Scheduler Internals
-============================
+Scheduler Internals
+===================
 
 The :func:`~fyst_trajectories.overhead.generate_timeline` entry point
 is a thin wrapper around the
 :class:`~fyst_trajectories.overhead.scheduler.Scheduler` class, which
 orchestrates a sequence of phase objects. This page documents the
-phase API for advanced users who want to extend scheduling behavior
-(e.g., priority-weighted scheduling, lookahead, multi-night
-stitching).
+phase API for callers who assemble a
+:class:`~fyst_trajectories.overhead.scheduler.SchedulerContext`
+themselves or compose the phases into a different loop; ``run()`` itself
+fixes its four phases.
 
 .. note::
 

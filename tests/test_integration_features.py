@@ -1,9 +1,7 @@
-"""Tests for integration features.
+"""Tests for rise/set time calculations.
 
-These tests verify the integration features added for compatibility
-with external systems, including:
-- Longitude convention conversion
-- Rise/set time calculations
+Covers the happy path, circumpolar and never-visible sources, a custom horizon,
+and the search-window and step-size parameters.
 """
 
 from astropy.time import Time
@@ -39,7 +37,7 @@ class TestRiseSetTimes:
             assert isinstance(set_, Time)
             assert set_ > rise  # Set should be after rise
 
-    def test_circumpolar_source_returns_none(self, coordinates, site):
+    def test_circumpolar_source_returns_none(self, coordinates):
         """Test that circumpolar sources return None for both times.
 
         From Chile (latitude ~-23), a source at dec -80 is circumpolar
@@ -49,7 +47,7 @@ class TestRiseSetTimes:
         dec = -80.0  # Far south, circumpolar from Chile
         obstime = Time("2026-06-15T00:00:00", scale="utc")
 
-        rise, _set = coordinates.get_rise_set_times(
+        rise, set_ = coordinates.get_rise_set_times(
             ra,
             dec,
             start_time=obstime,
@@ -59,8 +57,9 @@ class TestRiseSetTimes:
         )
 
         assert rise is None, "Circumpolar source should not have a rise time"
+        assert set_ is None, "Circumpolar source should not have a set time"
 
-    def test_never_visible_source_returns_none(self, coordinates, site):
+    def test_never_visible_source_returns_none(self, coordinates):
         """Test that sources never visible return None for both times.
 
         From Chile (latitude ~-23), a source at dec +80 (far north)
@@ -124,7 +123,7 @@ class TestRiseSetTimes:
     def test_max_search_hours_parameter(self, coordinates):
         """Test that max_search_hours limits the search window."""
         # Choose a source at RA=270 (18h), Dec=+10. From Chile at this start time,
-        # the source is below the horizon and rises in ~6-12 hours.
+        # the source is below the horizon and rises about 23 hours later.
         ra = 270.0
         dec = 10.0
         obstime = Time("2026-06-15T00:00:00", scale="utc")

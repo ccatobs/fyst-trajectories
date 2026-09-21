@@ -72,7 +72,7 @@ instead of the scalar radius. See :doc:`../sun_avoidance` and
 
 **Satellite targets** (Titan). A ``SATELLITE`` in the built-in
 :data:`~fyst_trajectories.observability.FLUX_CALIBRATORS` catalog is evaluated
-at its parent body's position (Titan at Saturn, within ~3 arcmin), which is
+at its parent body's position (Titan at Saturn, within ~3.5 arcmin), which is
 ample for an up/down/sun-safe verdict and is flagged on the report::
 
     reports = check_observability(

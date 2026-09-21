@@ -87,7 +87,7 @@ def test_cross_model_containment(fx):
     assert np.array_equal(fx["verdict_scalar"], v45)
     # A wider cone only removes safe samples.
     assert np.all(~v50 | v45)
-    # The CAD zone (floor 50) is contained in nothing smaller: CAD-safe implies cone-50-safe.
+    # CAD-safe implies cone-50-safe: the zone never reaches inside its own floor.
     assert np.all(~cad | v50)
     # The night exemption only ADDS safe samples; the island check only removes.
     assert np.all(~cad | msa0)
@@ -106,8 +106,13 @@ def test_make_sun_safe_validation_offline():
         make_sun_safe("scalar", min_solar_altitude=float("nan"))
     with pytest.raises(ValueError, match="maxoffset"):
         make_sun_safe("cad", maxoffset=-1.0)
-    with pytest.raises(ValueError, match="Unknown avoidance model"):
+    with pytest.raises(ValueError, match="Unknown avoidance model") as excinfo:
         make_sun_safe("bogus")
+    # The message names every model this entry point accepts. "scalar" is
+    # handled before the delegation, so the delegate's own message would list
+    # only two of the three: a caller who mistypes "Cad" must still see all three.
+    for name in ("scalar", "cad", "cone"):
+        assert repr(name) in str(excinfo.value)
     with pytest.raises(ValueError, match="radius"):
         make_sun_safe("cone")  # cone requires a radius, with or without the library
 

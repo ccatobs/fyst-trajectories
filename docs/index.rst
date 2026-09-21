@@ -7,14 +7,10 @@ limits, and scan pattern generators.
 
 What it does: nine scan patterns (pong, daisy, constant-elevation,
 linear, sidereal, planet and satellite tracking, plus AltAz-frame pong
-and daisy), focal-plane offsets for the PrimeCam modules, source-crossing
-constant-elevation planning (single- and multi-pass), target-visibility
-and Sun-almanac reporting, selectable sun-avoidance models (the site
-scalar radii by default; FYST's directional CAD zone is opt-in today and
-is expected to become the default in a future release), an offline
-observing-night overhead simulator, and matplotlib figures for
-trajectories, visibility, all-sky and coverage views, focal-plane
-footprints, hit maps, and night timelines.
+and daisy) and focal-plane offsets for the Prime-Cam modules, with scan
+planning, selectable sun-avoidance models, observability reporting and
+matplotlib figures on top. The offline observing-night simulator and the
+calibration-night planner are a separate tier (below).
 
 Start here:
 
@@ -25,34 +21,50 @@ Start here:
   avoidance policy, and gate a slew at dispatch.
 - :doc:`api/observability` - which calibrators are up, when, and why not.
 - :doc:`api/visualization` - visibility curves, the instantaneous all-sky
-  view, the focal-plane footprint, and night-level overhead figures.
+  view, the focal-plane footprint, and hit-density maps.
+- :doc:`overhead_calibration_night` - one night of solar-system
+  calibration passes, planned back to back.
+
+Two tiers
+---------
+
+The package has a library tier and a simulator tier, and the dependency
+between them runs one way.
+
+- **Library tier** (``import fyst_trajectories``): the site, coordinate
+  transforms, scan patterns and trajectories, focal-plane offsets, the
+  scan planners, the dispatch-time encoder gate, the sun-avoidance
+  models, the observability reports, and the plotting subpackage
+  ``fyst_trajectories.visualization``. This is what a control system
+  or a scheduler imports, and it never loads the simulator.
+- **Simulator tier** (``import fyst_trajectories.overhead``): the offline
+  observing-night simulator and its scheduler, the calibration-night
+  planner, the timeline model with its ECSV format, and the figures that
+  draw timelines. It imports the library; nothing in the library imports
+  it.
 
 Scope and boundaries
 --------------------
 
 This library generates planning-time trajectories and overhead
-estimates. A few concerns deliberately live outside its scope:
+estimates. A few concerns live outside its scope:
 
-- **Pointing-model corrections** are applied at execution time by the
-  Telescope Control System. They are not computed here.
+- **Pointing-model corrections** are applied downstream at execution
+  time, nominally in the ACU. They are not computed here.
 - **PWV / atmospheric opacity** affects sky brightness and absolute
   flux calibration but does not affect trajectory geometry; opacity
   modelling lives downstream in the calibration pipeline / sky model.
-- **Hard interlocks** are enforced downstream by the TCS at execution
-  time. The library's own checks split two ways: elevation and azimuth
-  position bounds *raise* (``ElevationBoundsError``, ``AzimuthBoundsError``;
-  the planners wrap them as ``TargetNotObservableError``) and refuse to
-  return an out-of-bounds trajectory, while dynamics (scan velocity,
-  acceleration) and in-scan Sun proximity are advisory only, emitting
-  ``PointingWarning`` without refusing to generate. The dispatch-time
-  gate is stricter:
-  :func:`~fyst_trajectories.dispatch.choose_encoder_solution` raises
-  when no sun-safe azimuth wrap is available (see :doc:`sun_avoidance`).
-  Downstream consumers must still enforce the actual hardware limits.
+- **Hard limits** live downstream: the telescope control system range-checks
+  commanded position and velocity, and the Sun interlock is an ACU function,
+  not a control-system one. The library's own checks are planning aids: the
+  "Where the check runs" table in :doc:`sun_avoidance` says which stage raises
+  and which only warns, and :doc:`api/exceptions` documents the classes.
+  Nothing downstream is guaranteed to enforce this library's limits, so a
+  consumer must enforce the ones it relies on.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Library
 
    installation
    quickstart
@@ -66,20 +78,22 @@ estimates. A few concerns deliberately live outside its scope:
 
 .. toctree::
    :maxdepth: 2
-   :caption: Overhead Modeling:
+   :caption: Offline simulator
 
    overhead_quickstart
-   overhead_integration
    overhead_timeline
    overhead_model
    overhead_io
+   overhead_calibration_night
+   overhead_integration
+   api/overhead_index
 
 Pending instrument verification
 -------------------------------
 
 The following parameters use commissioning-era defaults that should be
 confirmed by the FYST instrument and operations teams before production
-use.
+use. A row whose Override is a module constant has no call-time keyword.
 
 .. list-table::
    :header-rows: 1
@@ -90,7 +104,7 @@ use.
      - Override
    * - Nasmyth port
      - ``"right"`` (+1 sign)
-     - module constant ``site.FYST_NASMYTH_PORT`` (not a call-time option)
+     - module constant ``site.FYST_NASMYTH_PORT``
    * - Sun exclusion / warning radii
      - 45° / 50° (the Prime-Cam observing baseline, not yet formalised in
        an interface control document)
@@ -100,27 +114,33 @@ use.
    * - Az/El velocity limits
      - 3.0 / 1.0 deg/s
      - module constants ``site.FYST_AZ_MAX_VELOCITY`` /
-       ``site.FYST_EL_MAX_VELOCITY`` (not a call-time option)
+       ``site.FYST_EL_MAX_VELOCITY``
    * - Az/El acceleration limits
      - 1.5 / 0.75 deg/s²
      - module constants ``site.FYST_AZ_MAX_ACCELERATION`` /
-       ``site.FYST_EL_MAX_ACCELERATION`` (not a call-time option)
+       ``site.FYST_EL_MAX_ACCELERATION``
    * - Plate scale
      - 13.89 arcsec/mm
-     - module constant ``site.FYST_PLATE_SCALE`` (not a call-time option)
+     - module constant ``site.FYST_PLATE_SCALE``
    * - PrimeCam inner ring radius
      - 461.3 mm
-     - module constant ``primecam.INNER_RING_RADIUS_MM`` (not a call-time option)
+     - module constant ``primecam.INNER_RING_RADIUS_MM``
    * - PrimeCam inner-ring ordering (clocking and parity)
-     - ``i1`` at focal-plane angle -90°; ``i1`` .. ``i6`` counterclockwise
-       on sky. The labels are positional; the instrument team's ``IM0`` ..
-       ``IM6`` designations do not correspond index-for-index, and the
-       mapping is pending confirmation (see :doc:`instrument_offsets`)
-     - module constants ``primecam.PRIMECAM_I1`` .. ``PRIMECAM_I6`` (not a
-       call-time option)
-   * - Retune interval
+     - ``i1`` at focal-plane angle -90°, ``i1`` .. ``i6`` counterclockwise
+       in the focal-plane (cross-elevation, elevation) frame, the
+       orientation
+       :func:`~fyst_trajectories.visualization.plot_array_footprint`
+       draws; the mapping to the instrument team's ``IM0`` .. ``IM6``
+       labels is pending confirmation (see :doc:`instrument_offsets`)
+     - module constants ``primecam.PRIMECAM_I1`` .. ``PRIMECAM_I6``
+   * - Retune interval (in-scan)
      - 300 s
      - ``inject_retune(retune_interval=...)``
+   * - Whole-array retune duration
+     - 300 s
+     - ``OverheadModel(retune_duration=...)``; distinct from the few-second
+       in-scan gap ``inject_retune(retune_duration=...)`` stamps into a
+       trajectory
    * - Skydip cadence
      - 10 800 s (3 h)
      - ``CalibrationPolicy(skydip_cadence=...)``
@@ -131,6 +151,16 @@ use.
      - 0.65°
      - ``primecam.MODULE_FOV_RADIUS_DEG`` or pass an explicit
        ``ArrayFootprint`` to ``plan_source_ces``
+   * - Calibration cadences (offline simulator)
+     - pointing 3600 s, focus 7200 s, planet cal 43 200 s
+     - ``CalibrationPolicy(pointing_cadence=, ...)``
+   * - Planet-calibration scan geometry
+     - parked block; 3 passes on ``c`` if ``planet_cal_scan=True``
+     - ``CalibrationPolicy(planet_cal_passes=, planet_cal_footprint=, ...)``
+   * - Calibration-night scan tables and slew rates
+     - ``DEFAULT_SCAN_TABLES["default"]``; 1.5 deg/s, 1.5 deg/s²
+     - ``CalibrationNightPolicy(az_speed=, az_accel=)``,
+       ``plan_calibration_night(tables=)``
 
 Indices and tables
 ==================

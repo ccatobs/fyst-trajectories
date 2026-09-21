@@ -7,27 +7,26 @@ Any change to these values means the timeline generation algorithm
 changed, which requires explicit acknowledgment and updating the
 anchors.
 
-Re-anchored for the CE crossing-corridor gate: the scheduler now emits
-constant-elevation science only while the pass is plannable and imminent
-(see tests/overhead/test_ce_corridor.py). On this fixture night Deep56's
-el=50 rising pass opens ~07:50 UTC, so the honest schedule idles until
-then and books ~2 h of science instead of the old ~6.6 h (most of which
-pointed at empty sky before the pass and could not be reconstructed as
-scheduled).
-
-Also re-anchored for scan-coupled retunes: a cadence-0 retune now fires
-only at scan boundaries (once at startup, then immediately before every
-science subscan), never on idle ticks, so the idle wait no longer books
-a retune every 300 s.
+Two properties of this fixture night explain the shape of the schedule.
+Constant-elevation science is corridor-gated (see
+tests/overhead/test_ce_corridor.py), so the schedule idles until Deep56's el=50
+rising pass is imminent and books ~1.8 h of science rather than pointing at
+empty sky beforehand. And a cadence-0 retune is scan-coupled: it fires once at
+startup and then immediately before every science subscan, never on an idle
+tick, so each of the three subscans pays a 300 s whole-array retune out of the
+crossing corridor.
 """
 
 import pytest
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.overhead import (
+    BudgetStats,
+    CalibrationBudget,
     CalibrationPolicy,
     ObservingPatch,
     OverheadModel,
+    PatchBudget,
     compute_budget,
     generate_timeline,
 )
@@ -93,7 +92,7 @@ class TestRegressionTimeline:
 
     def test_block_count(self, regression_timeline):
         """Total number of blocks should be stable."""
-        assert len(regression_timeline.blocks) == 81
+        assert len(regression_timeline.blocks) == 80
 
     def test_science_scan_count(self, regression_timeline):
         """Number of science scans should be stable."""
@@ -105,15 +104,15 @@ class TestRegressionTimeline:
 
     def test_science_time(self, regression_timeline):
         """Total science time should match within 1 second."""
-        assert abs(regression_timeline.total_science_time - 7271.3) < 1.0
+        assert abs(regression_timeline.total_science_time - 6391.3) < 1.0
 
     def test_calibration_time(self, regression_timeline):
         """Total calibration time should match exactly (deterministic)."""
-        assert abs(regression_timeline.total_calibration_time - 3200.0) < 0.1
+        assert abs(regression_timeline.total_calibration_time - 4380.0) < 0.1
 
     def test_efficiency(self, regression_timeline):
         """Science efficiency should match within 0.1%."""
-        assert abs(regression_timeline.efficiency - 0.2524) < 0.001
+        assert abs(regression_timeline.efficiency - 0.2219) < 0.001
 
     def test_block_type_distribution(self, regression_timeline):
         """Block type counts should match expected distribution."""
@@ -123,7 +122,7 @@ class TestRegressionTimeline:
         assert type_counts["calibration"] == 16
         assert type_counts["slew"] == 1
         assert type_counts["science"] == 3
-        assert type_counts.get("idle", 0) == 61
+        assert type_counts.get("idle", 0) == 60
 
     def test_only_deep56_scheduled(self, regression_timeline):
         """COSMOS is below elevation limits; only Deep56 should be scheduled."""
@@ -138,7 +137,7 @@ class TestRegressionTimeline:
         # Scan-coupled retunes (cadence 0): one at startup plus one
         # immediately before each of the 3 subscans, none during idle.
         assert cal["retune"]["count"] == 4
-        assert abs(cal["retune"]["total_time"] - 20.0) < 0.1
+        assert abs(cal["retune"]["total_time"] - 1200.0) < 0.1
 
         assert cal["pointing_cal"]["count"] == 6
         assert abs(cal["pointing_cal"]["total_time"] - 1080.0) < 0.1
@@ -161,12 +160,13 @@ class TestRegressionTimeline:
     def test_idle_time_is_the_pre_pass_wait(self, regression_timeline):
         """Idle time equals the honest wait before Deep56's crossing pass.
 
-        Deep56's el=50 rising pass opens ~07:50 UTC; until then nothing on
-        this fixture night is observable, and the corridor-gated scheduler
-        reports that as idle instead of booking dead-air science.
+        Deep56's el=50 rising pass opens ~08:02 UTC and the corridor gate
+        admits it one tick earlier, at 07:58; until then nothing on this
+        fixture night is observable, and the corridor-gated scheduler reports
+        that as idle instead of booking dead-air science.
         """
         idle_time = sum(b.duration for b in regression_timeline.blocks if b.block_type == "idle")
-        assert abs(idle_time - 18300.0) < 1.0
+        assert abs(idle_time - 18000.0) < 1.0
 
     def test_timeline_validates_clean(self, regression_timeline):
         """Timeline should pass internal validation with no warnings."""
@@ -174,9 +174,16 @@ class TestRegressionTimeline:
         assert warnings == []
 
     def test_compute_budget_keys(self, regression_timeline):
-        """compute_budget() should return all expected keys."""
+        """compute_budget() returns exactly the keys its schema declares.
+
+        The expected set is derived from ``BudgetStats`` rather than written
+        out again: the return type used to be a bare ``dict`` whose shape was
+        pinned only by a hand-maintained literal here, so a key added to the
+        summary and not to this list went unnoticed.
+        """
         stats = compute_budget(regression_timeline)
-        expected_keys = {
+        assert set(stats.keys()) == set(BudgetStats.__annotations__)
+        assert set(stats.keys()) == {
             "total_time",
             "science_time",
             "calibration_time",
@@ -188,7 +195,14 @@ class TestRegressionTimeline:
             "per_patch",
             "calibration_breakdown",
         }
-        assert set(stats.keys()) == expected_keys
+
+    def test_compute_budget_nested_keys_match_their_schemas(self, regression_timeline):
+        """The per-patch and per-calibration entries match their own TypedDicts."""
+        stats = compute_budget(regression_timeline)
+        for entry in stats["per_patch"].values():
+            assert set(entry) == set(PatchBudget.__annotations__)
+        for entry in stats["calibration_breakdown"].values():
+            assert set(entry) == set(CalibrationBudget.__annotations__)
 
     def test_total_time_conservation(self, regression_timeline):
         """All block durations should sum to less than total timeline span.
@@ -209,8 +223,10 @@ class TestRegressionTimeline:
     def test_initial_calibration_sequence(self, regression_timeline):
         """First blocks should be the initial calibration burst.
 
-        The scheduler performs all due calibrations at startup:
-        retune, pointing_cal, focus, skydip, planet_cal.
+        The scheduler performs the due in-place calibrations at startup:
+        retune, pointing_cal, focus, skydip. The planet calibration waits
+        for a planet above ``planet_min_elevation``, which on this night is
+        not until ~06:45 UTC.
         """
         initial_cals = []
         for b in regression_timeline.blocks:
@@ -218,11 +234,7 @@ class TestRegressionTimeline:
                 break
             initial_cals.append(str(b.scan_type))
 
-        # Planet cal may be absent if no planet is visible at the test time.
-        expected_base = ["retune", "pointing_cal", "focus", "skydip"]
-        assert initial_cals[:4] == expected_base
-        if len(initial_cals) > 4:
-            assert initial_cals[4] == "planet_cal"
+        assert initial_cals == ["retune", "pointing_cal", "focus", "skydip"]
 
     def test_ce_visit_reconstruction_tiles_blocks(self, regression_timeline):
         """CE subscans rebuild as slices of one shared crossing solve.
@@ -264,3 +276,26 @@ class TestRegressionTimeline:
         # The slice, not the full pass: duration diverges from the
         # computed_params of the solved pass on purpose.
         assert pairs[0][1].duration < pairs[0][1].computed_params["duration"]
+
+    def test_science_blocks_record_their_executed_envelope(self, regression_timeline):
+        """A science block's azimuth bounds are what its trajectory sweeps.
+
+        The bounds used to be a scalar estimate of the field width at the
+        tick time, ``(83.71, 145.94)`` here, while the crossing pass these
+        blocks belong to drifts across ``(102.33, 215.62)``. They are read
+        from the block's own rebuilt trajectory now, so the two cannot
+        diverge again. The corridor is pinned as well: agreement alone
+        would also hold if both numbers were wrong together.
+        """
+        from fyst_trajectories.overhead import schedule_to_trajectories
+
+        pairs = schedule_to_trajectories(regression_timeline)
+        assert len(pairs) == 3
+
+        for sblock, scan_block in pairs:
+            az = scan_block.trajectory.az
+            assert sblock.az_start == pytest.approx(float(az.min()), abs=1e-9)
+            assert sblock.az_end == pytest.approx(float(az.max()), abs=1e-9)
+            assert sblock.end_pose_az == pytest.approx(float(az[-1]), abs=1e-9)
+            assert sblock.az_start == pytest.approx(102.33, abs=0.01)
+            assert sblock.az_end == pytest.approx(215.62, abs=0.01)

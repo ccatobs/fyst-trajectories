@@ -7,6 +7,7 @@ time when the Sun sits mid-low in the west so through-Sun and around-Sun
 azimuth sweeps discriminate cleanly.
 """
 
+import math
 import time as _clock
 
 import numpy as np
@@ -14,9 +15,8 @@ import pytest
 from astropy.time import Time
 
 from fyst_trajectories import Coordinates, get_fyst_site
-from fyst_trajectories.dispatch import SlewSafePredicate, choose_encoder_solution
+from fyst_trajectories.dispatch import choose_encoder_solution
 from fyst_trajectories.exceptions import PointingError
-from fyst_trajectories.overhead.utils import _axis_slew_time
 from fyst_trajectories.sun_models import (
     _axis_positions,
     _axis_slew_duration,
@@ -27,6 +27,23 @@ from fyst_trajectories.sun_models import (
 
 # Evening at FYST: the Sun mid-low (el ~31) in the west (az ~261).
 T_EVENING = Time("2026-11-15T20:30:00", scale="utc")
+
+
+def _trapezoid_duration(distance, max_vel, max_accel):
+    """Duration of a symmetric trapezoidal move, from the kinematics.
+
+    The oracle for the sampler's own timing, written from the kinematics so
+    the guarantee does not rest on any other implementation in the package
+    (the offline simulator's slew estimate calls the very function under test,
+    so it cannot serve as an independent check). Both ramps together cover
+    ``max_vel ** 2 / max_accel``, a move shorter than that never reaches
+    ``max_vel`` and is triangular, and a longer one costs the cruise time plus
+    one full ramp.
+    """
+    ramp_distance = max_vel**2 / max_accel
+    if distance <= ramp_distance:
+        return 2.0 * math.sqrt(distance / max_accel)
+    return distance / max_vel + max_vel / max_accel
 
 
 @pytest.fixture(scope="module")
@@ -54,11 +71,11 @@ def sun_evening():
 def test_axis_profile_endpoints_and_duration(delta, vmax, amax):
     """Profile positions are exact at both ends and monotone.
 
-    The duration matches the scheduler's trapezoidal slew-time formula
-    exactly, and the per-sample speed never exceeds the axis limit.
+    The duration matches the closed-form trapezoidal profile exactly, and
+    the per-sample speed never exceeds the axis limit.
     """
     duration = _axis_slew_duration(abs(delta), vmax, amax)
-    assert duration == pytest.approx(_axis_slew_time(abs(delta), vmax, amax))
+    assert duration == pytest.approx(_trapezoid_duration(abs(delta), vmax, amax))
     t = np.linspace(0.0, duration * 1.2, 400)  # overshoot: must hold at delta
     pos = _axis_positions(delta, vmax, amax, t)
     assert pos[0] == pytest.approx(0.0, abs=1e-12)
@@ -116,7 +133,10 @@ def test_slew_evaluate_returns_path_and_arrival(sun_evening):
 
 def test_make_slew_safe_validation_and_protocol():
     predicate = make_slew_safe("scalar")
-    assert isinstance(predicate, SlewSafePredicate)
+    # SlewSafePredicate is a callable Protocol, so isinstance() accepts any
+    # callable at all; the contract worth asserting is the path signature and
+    # the verdict type.
+    assert isinstance(predicate(0.0, 45.0, 10.0, 45.0, T_EVENING), bool)
     with pytest.raises(ValueError, match="az_speed"):
         make_slew_safe("scalar", az_speed=0.0)
     with pytest.raises(ValueError, match="step_seconds"):
@@ -166,8 +186,8 @@ def test_wrap_ranking_prefers_path_safe(sun_evening):
     sun_az, _ = sun_evening
     site = get_fyst_site()
     goal_el = 25.0
-    goal_sky_az = (sun_az + 90.0) % 360.0  # ~335: images at 335 and -25
-    current_az = sun_az - 65.0  # ~180: nearer image (335) crosses the Sun
+    goal_sky_az = (sun_az + 90.0) % 360.0  # ~351: encoder images at 351 and -9
+    current_az = sun_az - 65.0  # ~196: the nearer image (351) crosses the Sun
 
     without = choose_encoder_solution(current_az, goal_el, goal_sky_az, goal_el, T_EVENING, site)
     with_path = choose_encoder_solution(
@@ -265,6 +285,57 @@ def test_detour_none_under_the_fyst_policy(sun_evening):
     assert find_sun_safe_detour(start_az, 25.0, goal_az, 25.0, T_EVENING, slew_safe) is None
 
 
+def test_detour_rejects_bounds_outside_the_mount_range():
+    """Caller bounds may narrow the search, never widen it past the mount.
+
+    The docstring promises the intermediate is directly commandable, and the
+    intermediate is commanded as-is, so a bound outside the telescope's own
+    elevation range must be refused rather than honoured: honouring it would
+    hand back a pose the mount cannot reach, which a caller would feed straight
+    into a slew. Both ends are checked.
+    """
+    site = get_fyst_site()
+    limits = site.telescope_limits.elevation
+    slew_safe = make_slew_safe("scalar")
+
+    with pytest.raises(ValueError, match="telescope elevation limits"):
+        find_sun_safe_detour(0.0, 45.0, 90.0, 45.0, T_EVENING, slew_safe, site=site, el_min=-40.0)
+    with pytest.raises(ValueError, match="telescope elevation limits"):
+        find_sun_safe_detour(
+            0.0, 45.0, 90.0, 45.0, T_EVENING, slew_safe, site=site, el_max=limits.max + 1.0
+        )
+
+    # Bounds that narrow the range are still accepted.
+    find_sun_safe_detour(
+        0.0,
+        45.0,
+        90.0,
+        45.0,
+        T_EVENING,
+        slew_safe,
+        site=site,
+        el_min=limits.min + 5.0,
+        el_max=limits.max - 5.0,
+    )
+
+
+@pytest.mark.parametrize("bound", ["el_min", "el_max"], ids=["el_min", "el_max"])
+def test_a_nan_elevation_bound_is_refused(bound):
+    """NaN fails every comparison, so it needs the same guard as an out-of-range bound.
+
+    Unguarded it fell through both range tests and died inside the
+    elevation grid as ``arange: cannot compute length``, several frames from
+    the caller.
+    """
+    site = get_fyst_site()
+    slew_safe = make_slew_safe("scalar")
+
+    with pytest.raises(ValueError, match="telescope elevation limits"):
+        find_sun_safe_detour(
+            0.0, 45.0, 90.0, 45.0, T_EVENING, slew_safe, site=site, **{bound: float("nan")}
+        )
+
+
 def test_detour_requires_evaluate():
     class _Bare:
         def __call__(self, *args):
@@ -277,7 +348,7 @@ def test_detour_requires_evaluate():
 def test_cad_slew_end_to_end():
     """The CAD point model drives the path evaluator (skips without the lib)."""
     pytest.importorskip("sun_avoidance", exc_type=ImportError)
-    slew_safe = make_slew_safe("cad")
-    assert isinstance(slew_safe, SlewSafePredicate)
-    verdict = slew_safe(100.0, 45.0, 140.0, 45.0, T_EVENING)
-    assert isinstance(verdict, bool)
+    # The 45 deg scalar circle clears this sweep; the directional CAD zone, which
+    # requires 50 to 90 deg, refuses it. Only the CAD model can return False here.
+    assert make_slew_safe("scalar")(100.0, 45.0, 140.0, 45.0, T_EVENING)
+    assert not make_slew_safe("cad")(100.0, 45.0, 140.0, 45.0, T_EVENING)

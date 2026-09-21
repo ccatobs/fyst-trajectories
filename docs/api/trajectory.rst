@@ -10,25 +10,6 @@ velocity setpoints for Az/El axes. Worked examples are in
    :undoc-members:
    :show-inheritance:
 
-Derived Dynamics Properties
----------------------------
-
-``az_accel``/``el_accel`` and ``az_jerk``/``el_jerk`` are read-only
-properties derived from the velocity arrays with ``np.gradient``::
-
-    import numpy as np
-
-    accel = trajectory.az_accel          # np.ndarray, same shape as times
-    max_jerk = np.abs(trajectory.el_jerk).max()
-
-Coordinate System Fields
-------------------------
-
-- ``coordsys``: Coordinate system of trajectory points (``"altaz"`` for patterns)
-- ``epoch``: Optional epoch annotation (e.g., ``"J2000"``)
-- ``metadata.input_frame``: Input coordinate frame used for generation
-- ``metadata.epoch``: Epoch of input coordinates
-
 Scan Flags
 ----------
 
@@ -45,27 +26,16 @@ The ``science_mask`` property returns a boolean mask that is ``True``
 for science samples, making it easy to filter trajectory data::
 
     import numpy as np
-    from fyst_trajectories import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
-    # Build a constant-elevation (AltAz) trajectory; no start_time needed.
-    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories import SCAN_FLAG_TURNAROUND, get_fyst_site
     from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
 
-    traj = (
-        TrajectoryBuilder(get_fyst_site())
-        .with_config(
-            ConstantElScanConfig(
-                timestep=0.1,
-                az_start=120.0,
-                az_stop=145.0,
-                elevation=45.0,
-                az_speed=1.0,
-                az_accel=0.5,
-            )
-        )
-        .duration(3600.0)
-        .build()
+    # A constant-elevation (AltAz) trajectory; no start_time needed.
+    config = ConstantElScanConfig(
+        timestep=0.1, az_start=120.0, az_stop=145.0,
+        elevation=45.0, az_speed=1.0, az_accel=0.5,
     )
+    traj = TrajectoryBuilder(get_fyst_site()).with_config(config).duration(3600.0).build()
 
     # Get only science samples (excludes turnarounds)
     science_data = traj.az[traj.science_mask]
@@ -84,7 +54,7 @@ Usage Examples
     import numpy as np
     from fyst_trajectories import Trajectory
 
-    trajectory = Trajectory(
+    manual = Trajectory(
         times=np.array([0, 1, 2, 3, 4]),
         az=np.array([100, 101, 102, 101, 100]),
         el=np.full(5, 45.0),
@@ -92,30 +62,17 @@ Usage Examples
         el_vel=np.zeros(5),
     )
 
-**Pattern generation** (recommended)::
+Pattern generation is the recommended route; a built ``trajectory``
+carries its provenance in ``pattern_type``, ``pattern_params`` and, for
+celestial patterns, ``center_ra`` / ``center_dec``.
+:doc:`../trajectory_examples` builds one of every pattern.
 
-    from astropy.time import Time
+**Derived dynamics**::
 
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
+    import numpy as np
 
-    start_time = Time("2026-03-15T01:00:00", scale="utc")
-
-    trajectory = (
-        TrajectoryBuilder(get_fyst_site())
-        .at(ra=180.0, dec=-30.0)
-        .with_config(PongScanConfig(
-            timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-            velocity=0.4, num_terms=4, angle=0.0,
-        ))
-        .duration(300.0)
-        .starting_at(start_time)
-        .build()
-    )
-
-    print(trajectory.pattern_type)   # "pong"
-    print(trajectory.center_ra)      # 180.0
-    print(trajectory.pattern_params) # {'width': 2.0, ...}
+    accel = trajectory.az_accel          # np.ndarray, same shape as times
+    max_jerk = np.abs(trajectory.el_jerk).max()
 
 **Export**::
 

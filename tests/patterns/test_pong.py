@@ -10,10 +10,9 @@ from fyst_trajectories.patterns import PongScanConfig, PongScanPattern, compute_
 
 
 class TestPongScanPattern:
-    """Tests for Pong scan pattern."""
+    """Pong generation: metadata, offset-frame coverage extent, smoothness, and rotation."""
 
     def test_basic_pong_scan(self, site):
-        """Test generating a basic Pong scan pattern."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -38,7 +37,6 @@ class TestPongScanPattern:
         assert trajectory.metadata.input_frame == "icrs"
 
     def test_pong_covers_expected_region(self, site):
-        """Test that Pong pattern covers approximately the expected region."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -71,7 +69,6 @@ class TestPongScanPattern:
         assert np.ptp(y_off) == pytest.approx(9 * np.sqrt(2) * 0.1, abs=0.1)
 
     def test_pong_smooth_velocities(self, site):
-        """Test that Pong pattern has smooth velocities."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -97,7 +94,6 @@ class TestPongScanPattern:
         assert np.abs(el_accel).max() < 10.0
 
     def test_pong_with_rotation(self, site):
-        """Test Pong pattern with non-zero rotation angle."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config_no_rot = PongScanConfig(
             timestep=0.1,
@@ -127,7 +123,6 @@ class TestPongScanPattern:
         assert not np.allclose(traj_no_rot.az, traj_with_rot.az)
 
     def test_pong_metadata_stored(self, site):
-        """Test that Pong pattern stores metadata correctly."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -155,7 +150,6 @@ class TestPongScanPattern:
         assert "y_numvert" in params
 
     def test_pong_narrow_pattern(self, site):
-        """Test Pong pattern with very different width and height."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -175,46 +169,8 @@ class TestPongScanPattern:
         assert np.all(np.isfinite(trajectory.el))
 
 
-class TestPongVertexComputation:
-    """Tests for Pong vertex computation algorithm."""
-
-    def test_vertices_are_coprime(self):
-        """Test that computed vertex counts are coprime."""
-        config = PongScanConfig(
-            timestep=0.1,
-            width=2.0,
-            height=2.0,
-            spacing=0.1,
-            velocity=0.5,
-            num_terms=4,
-            angle=0.0,
-        )
-        pattern = PongScanPattern(ra=180.0, dec=-30.0, config=config)
-
-        x_numvert, y_numvert, _, _ = pattern._compute_vertices()
-
-        assert math.gcd(x_numvert, y_numvert) == 1
-
-    def test_vertices_have_opposite_parity(self):
-        """Test that vertex counts have opposite parity."""
-        config = PongScanConfig(
-            timestep=0.1,
-            width=2.0,
-            height=2.0,
-            spacing=0.1,
-            velocity=0.5,
-            num_terms=4,
-            angle=0.0,
-        )
-        pattern = PongScanPattern(ra=180.0, dec=-30.0, config=config)
-
-        x_numvert, y_numvert, _, _ = pattern._compute_vertices()
-
-        assert (x_numvert % 2) != (y_numvert % 2)
-
-
 class TestPongScanFlags:
-    """Tests for scan flag behavior on Pong trajectories."""
+    """Pong trajectories carry both science and turnaround flags, with science dominant."""
 
     def test_pong_trajectory_has_science_and_turnaround_flags(self, site):
         """Pong trajectory carries SCIENCE and TURNAROUND scan flags (not None)."""
@@ -244,9 +200,8 @@ class TestComputePongPeriod:
 
     ``compute_pong_period`` is exported in ``__all__`` as the canonical entry
     point for external code (e.g. the scan_patterns cross-validation
-    reference). The Lissajous ``period`` and the two vertex counts it returns
-    were previously never value-checked anywhere in the suite, so a regression
-    in the period math would have passed silently.
+    reference); the Lissajous ``period`` and the two vertex counts it returns
+    are pinned here to hand-derived values.
     """
 
     def test_known_square_field_period(self):

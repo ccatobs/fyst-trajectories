@@ -18,6 +18,7 @@ from astropy.time import Time
 matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")  # headless backend
 import matplotlib.pyplot as plt  # noqa: E402
+from _sun_stubs import fake_sun_model  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.patches import Circle  # noqa: E402
 
@@ -122,8 +123,8 @@ def test_visibility_radii_come_from_the_site():
         T0, ["mars"], site=site, panels=("elevation", "sun_separation"), show=False
     )
     labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
-    assert any("< 30°" in label for label in labels)
-    assert any("< 37°" in label for label in labels)
+    assert any("\N{LESS-THAN OR EQUAL TO} 30°" in label for label in labels)
+    assert any("\N{LESS-THAN OR EQUAL TO} 37°" in label for label in labels)
     sep_ax = fig.axes[1]
     hline_ys = {
         line.get_ydata()[0]
@@ -228,29 +229,6 @@ def test_visibility_no_figure_leak_on_bad_target():
     assert plt.get_fignums() == []
 
 
-class _StubSunModel:
-    """Duck-typed sun model: unsafe above el 40, flat 60 deg threshold."""
-
-    describe = "stub 60°"
-
-    def __call__(self, az, el, t):
-        return bool(self.batch(az, el, t)[0])
-
-    def batch(self, az, el, times):
-        az_b, el_b = np.broadcast_arrays(
-            np.atleast_1d(np.asarray(az, dtype=float)),
-            np.atleast_1d(np.asarray(el, dtype=float)),
-        )
-        return el_b <= 40.0
-
-    def threshold(self, az, el, times):
-        az_b, _ = np.broadcast_arrays(
-            np.atleast_1d(np.asarray(az, dtype=float)),
-            np.atleast_1d(np.asarray(el, dtype=float)),
-        )
-        return np.full(az_b.shape, 60.0)
-
-
 def test_visibility_sun_model_object_drives_overlays():
     """An injected model replaces the radius masks.
 
@@ -260,7 +238,11 @@ def test_visibility_sun_model_object_drives_overlays():
     fig = plot_visibility(
         T0,
         ["mars"],
-        sun_model=_StubSunModel(),
+        sun_model=fake_sun_model(
+            lambda az, el, t: np.asarray(el, dtype=float) <= 40.0,
+            describe="stub 60°",
+            threshold=60.0,
+        ),
         panels=("elevation", "sun_separation"),
         show=False,
     )

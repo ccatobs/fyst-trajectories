@@ -1,6 +1,7 @@
 """Tests for plan_daisy_altaz_scan."""
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -53,7 +54,7 @@ def _plan(site, start_time, **overrides):
 
 
 class TestPlanDaisyAltAzScan:
-    """Tests for plan_daisy_altaz_scan."""
+    """Block shape, the computed-params schema, and the el_center / bounds guards."""
 
     def test_basic_plan(self, site, start_time):
         """Returns a ScanBlock with a daisy_altaz config and trajectory."""
@@ -67,7 +68,6 @@ class TestPlanDaisyAltAzScan:
         assert "AltAz Daisy scan" in block.summary
 
     def test_computed_params_schema_validates(self, site, start_time):
-        """The returned computed_params matches the DaisyAltAz schema."""
         block = _plan(site, start_time)
 
         params = block.computed_params
@@ -80,7 +80,6 @@ class TestPlanDaisyAltAzScan:
         validate_computed_params(params, "daisy_altaz")
 
     def test_duration_honored(self, site, start_time):
-        """The explicit duration is passed through to the ScanBlock."""
         block = _plan(site, start_time, duration=250.0)
         assert block.duration == pytest.approx(250.0)
         assert block.computed_params["duration"] == pytest.approx(250.0)
@@ -113,7 +112,6 @@ class TestPlanDaisyAltAzScan:
             )
 
     def test_detector_offset_changes_trajectory(self, site, start_time):
-        """A detector offset shifts the trajectory (smoke)."""
         block_no_offset = _plan(site, start_time)
         offset = InstrumentOffset(dx=5.0, dy=3.0, name="TestDet")
         block_with_offset = _plan(site, start_time, detector_offset=offset)
@@ -160,6 +158,58 @@ class TestPlanDaisyAltAzSunSafety:
             )
         assert block.trajectory.n_points > 0
 
+    def test_injected_predicate_drives_the_verdict(self, site):
+        """An injected predicate replaces the scalar radius, in both directions.
+
+        The seam is what lets the directional sun-avoidance model reach the
+        AltAz planners; without a test on each planner a refactor could drop
+        the keyword silently.
+        """
+        obstime = Time("2026-03-15T02:00:00", scale="utc")
+
+        # Precondition: the scalar default is silent for this night-time centre.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _plan(site, obstime)
+        assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            _plan(site, obstime, sun_safe=lambda az, el, t: False)
+
+    def test_injected_predicate_receives_the_converted_center(self, site):
+        """The predicate is consulted at the pattern centre's own (az, el, time)."""
+        obstime = Time("2026-03-15T02:00:00", scale="utc")
+        seen: list[tuple[float, float]] = []
+
+        def spy(az, el, t):
+            seen.append((float(az), float(el)))
+            return True
+
+        _plan(site, obstime, sun_safe=spy)
+        assert seen, "sun_safe predicate was never consulted"
+        # The planner round-trips the centre through RA/Dec, so allow the
+        # transform's own round-off rather than pinning an exact equality.
+        assert seen[0][0] == pytest.approx(120.0, abs=1e-6)
+        assert seen[0][1] == pytest.approx(60.0, abs=1e-6)
+
+    def test_permissive_predicate_overrides_the_scalar_radius(self, site, coordinates):
+        """A permissive predicate suppresses the warning a sun-adjacent centre earns."""
+        obstime = Time("2026-03-15T17:00:00", scale="utc")
+        sun_az, sun_alt = coordinates.get_sun_altaz(obstime)
+        if not 20.0 < sun_alt < 80.0:
+            pytest.skip(f"Sun elevation {sun_alt:.1f} not in a convenient test band")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _plan(
+                site,
+                obstime,
+                az_center=float(sun_az),
+                el_center=float(sun_alt),
+                sun_safe=lambda az, el, t: True,
+            )
+        assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
+
 
 @pytest.mark.slow
 @pytest.mark.skipif(not HAS_SCANNING, reason="requires the scanning (scan_patterns) package")
@@ -173,7 +223,6 @@ class TestLegacyMappingParity:
     """
 
     def test_trajectory_matches_legacy_mapping(self, site):
-        """plan_daisy_altaz_scan az/el equals the inline legacy mapping."""
         from scanning import Daisy
 
         az_center = 130.0
@@ -203,8 +252,8 @@ class TestLegacyMappingParity:
         )
         traj = block.trajectory
 
-        # Build scanning.Daisy with matching parameters and apply the legacy
-        # horizon-frame mapping inline, exactly as the sims repo did:
+        # Build scanning.Daisy with matching parameters and apply the
+        # horizon-frame mapping inline:
         #   coscorr = cos(radians(el_center))
         #   az = x/coscorr + az_center ; el = y + el_center
         daisy = Daisy(

@@ -1,7 +1,7 @@
 """Math utilities and constants for numerical operations.
 
-This module provides named constants for numerical tolerances and small
-epsilon values used throughout the fyst_trajectories library.
+One named tolerance constant, shared so the value is stated in a single
+place.
 
 Constants
 ---------

@@ -49,7 +49,7 @@ def _pa_diff(a, b):
 
 
 class TestParallacticAngleApparentPlace:
-    """Compare ``get_parallactic_angle`` against the apparent-place reference."""
+    """Pin PA against an ERFA apparent-place reference: scalar, vectorised, by epoch."""
 
     @pytest.fixture
     def grid(self):
@@ -68,7 +68,6 @@ class TestParallacticAngleApparentPlace:
         return ras, decs, times
 
     def test_scalar_agreement_apparent_place(self, coordinates, grid):
-        """Library PA matches the apparent-place reference at every observable point."""
         ras, decs, times = grid
         max_pa = 0.0
         n_checked = 0
@@ -91,7 +90,6 @@ class TestParallacticAngleApparentPlace:
         assert max_pa > 0.0  # not comparing zero against zero
 
     def test_vectorised_agreement_apparent_place(self, coordinates):
-        """Vectorised library call matches the vectorised apparent-place reference."""
         n = 60
         rng = np.random.default_rng(seed=42)
         ras = rng.uniform(0.0, 360.0, size=n)
@@ -107,6 +105,13 @@ class TestParallacticAngleApparentPlace:
         diff = _pa_diff(pa_lib, pa_ref)[mask]
         assert diff.max() < 0.01, f"max diff = {diff.max():.4f} deg"
 
+    # This test alone samples epochs past the vendored IERS table (2026-2035),
+    # where erfa reports a dubious year and astropy degrades the EOP terms.
+    # Both are expected here and are filtered at the test rather than in the
+    # ini file, so the rest of the suite stays warning-clean.
+    @pytest.mark.filterwarnings("ignore:.*dubious year.*")
+    @pytest.mark.filterwarnings("ignore:.*outside of range covered by IERS table.*")
+    @pytest.mark.filterwarnings("ignore:Tried to get polar motions for times after IERS")
     def test_agreement_across_epochs(self, coordinates):
         """Regression: agreement holds across 2026-2035 as precession accumulates.
 

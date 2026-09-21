@@ -2,8 +2,7 @@
 
 The planning and overhead subpackages each carry a scan-type "union" and a
 scan-type "table", and the two subpackages are mirror-inverted about
-``source_ces`` by design (see the "Scan-type vocabularies" section in
-docs/overhead_integration.rst). These tests fail closed if a future change
+``source_ces`` by design. These tests fail closed if a future change
 accidentally equalizes the two sides.
 """
 
@@ -29,10 +28,9 @@ from fyst_trajectories.planning._types import (
 def test_source_ces_computed_params_message_signposts():
     """A source_ces computed_params check points the caller at the right validator.
 
-    Passing ``"source_ces"`` raises ``KeyError`` (unchanged exception type)
-    whose message names the public ``validate_scan_params`` entry point, so a
-    caller who reaches this corner is directed to the validator that does
-    accept source-CES params.
+    Passing ``"source_ces"`` raises ``KeyError`` whose message names the public
+    ``validate_scan_params`` entry point, so a caller who reaches this corner is
+    directed to the validator that does accept source-CES params.
     """
     with pytest.raises(KeyError, match="validate_scan_params"):
         validate_computed_params({}, "source_ces")

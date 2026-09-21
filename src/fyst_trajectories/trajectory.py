@@ -8,17 +8,17 @@ The trajectory data is intentionally minimal; metadata about pattern
 type, generation parameters, and input coordinates can be attached
 via the optional ``metadata`` attribute.
 
-All utility functions (validate, export, format) are free functions in
+Utility functions (validate, export, format) are free functions in
 :mod:`fyst_trajectories.trajectory_utils`; plotting lives in
-:mod:`fyst_trajectories.visualization`. Together they are the sole API for
-operating on a :class:`Trajectory`, so the container itself stays
-dependency-free.
+:mod:`fyst_trajectories.visualization`. Keeping them out of the container
+leaves it free of intra-package imports.
 
 Examples
 --------
 Create a trajectory manually:
 
 >>> import numpy as np
+>>> from fyst_trajectories import get_fyst_site, Trajectory
 >>> times = np.array([0, 1, 2, 3, 4])
 >>> az = np.array([100, 101, 102, 101, 100])
 >>> el = np.full(5, 45.0)
@@ -29,6 +29,7 @@ Create a trajectory manually:
 Use with pattern generators:
 
 >>> from astropy.time import Time
+>>> site = get_fyst_site()
 >>> from fyst_trajectories.patterns import TrajectoryBuilder, PongScanConfig
 >>> start_time = Time("2026-03-15T01:00:00", scale="utc")
 >>> trajectory = (
@@ -135,7 +136,9 @@ class Trajectory:
     Parameters
     ----------
     times : np.ndarray
-        Timestamps in seconds from start.
+        Timestamps in seconds; must be strictly increasing. They need not
+        start at 0, since the absolute-time and ``/path`` exports are taken
+        relative to ``times[0]``.
     az : np.ndarray
         Azimuth positions in degrees.
     el : np.ndarray
@@ -173,9 +176,10 @@ class Trajectory:
     Raises
     ------
     ValueError
-        If ``times`` is empty, any array's length differs from
-        ``times``, or any of ``times``/``az``/``el``/``az_vel``/
-        ``el_vel`` contains a non-finite value.
+        If ``times`` is empty, any array's length (including
+        ``scan_flag``'s) differs from ``times``, any of
+        ``times``/``az``/``el``/``az_vel``/``el_vel`` contains a non-finite
+        value, or ``times`` is not strictly increasing.
 
     Notes
     -----
@@ -219,9 +223,10 @@ class Trajectory:
                     f"but scan_flag has {len(self.scan_flag)}"
                 )
             # Coerce scan_flag to int8; downstream indexes with the int-valued
-            # SCAN_FLAG_* constants and the ECSV writer expects a fixed dtype.
-            # object.__setattr__ performs the one-time canonicalisation under
-            # frozen=True (the sibling value types coerce the same way).
+            # SCAN_FLAG_* constants and the pattern generators all produce int8,
+            # so the field has one dtype everywhere. object.__setattr__ performs
+            # the one-time canonicalisation under frozen=True (the sibling value
+            # types coerce the same way).
             if self.scan_flag.dtype != np.int8:
                 object.__setattr__(self, "scan_flag", np.asarray(self.scan_flag, dtype=np.int8))
         for name, arr in [
@@ -233,6 +238,19 @@ class Trajectory:
         ]:
             if not np.all(np.isfinite(arr)):
                 raise ValueError(f"Non-finite values (NaN or Inf) detected in '{name}' array")
+        if n > 1:
+            # Every derived quantity divides by a time step: the acceleration
+            # and jerk properties, and the dynamics validator. A repeated or
+            # out-of-order sample turns those into inf or nan silently, so
+            # reject it at construction where the caller can see it.
+            steps = np.diff(self.times)
+            if not np.all(steps > 0):
+                first = int(np.argmax(steps <= 0))
+                raise ValueError(
+                    "Trajectory times must be strictly increasing; "
+                    f"times[{first + 1}]={float(self.times[first + 1])!r} does not exceed "
+                    f"times[{first}]={float(self.times[first])!r}"
+                )
 
     @property
     def duration(self) -> float:

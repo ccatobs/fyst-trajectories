@@ -42,9 +42,10 @@ import numpy as np
 from astropy import units as u
 
 from ..coordinates import Coordinates
-from ..overhead.models import BlockType
-from ..overhead.simulation import compute_budget, schedule_to_trajectories
 
+# The simulator tier (fyst_trajectories.overhead) is imported inside the
+# functions that draw its timelines, so importing this subpackage for the
+# library-tier plots never loads it (tests/test_tier_boundary.py).
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
@@ -107,6 +108,8 @@ def _lanes_for(timeline: "ObservingTimeline") -> tuple[list, dict[str, str]]:
     patch_color : dict of str to str
         Science patch name to lane/track color.
     """
+    from ..overhead.models import BlockType
+
     sci_order: list[str] = []
     cal_seen: list[str] = []
     groups: dict[tuple[str, str], list] = {}
@@ -204,7 +207,10 @@ def plot_timeline_gantt(
     title : str, optional
         Axes title. Default is an auto-generated summary
         (site name, start date, duration, block counts, efficiency from
-        :func:`~fyst_trajectories.overhead.compute_budget`).
+        :func:`~fyst_trajectories.overhead.compute_budget`); a night with
+        no science and at least one planet-calibration pass is summarised
+        as a calibration night instead (passes, detector operations, the
+        fraction of the night on source).
     ax : matplotlib.axes.Axes, optional
         Draw into this axes instead of creating a new figure. When given,
         ``show`` is ignored and no layout call is made on the caller's
@@ -273,16 +279,30 @@ def plot_timeline_gantt(
     ax.set_axisbelow(True)
 
     if title is None:
+        from ..overhead.simulation import compute_budget
+
         budget = compute_budget(timeline)
         hours = (timeline.end_time - timeline.start_time).sec / 3600.0
         site_name = timeline.site.name.strip()
-        head = f"{site_name} observing night" if site_name else "Observing night"
-        title = (
-            f"{head} {night_label}  -  {hours:.1f} h, "
-            f"{budget['n_science_scans']} science scans, "
-            f"{budget['n_calibration_blocks']} calibrations, "
-            f"efficiency {budget['efficiency'] * 100:.1f}%"
-        )
+        passes = [b for b in timeline.blocks if b.scan_type == "planet_cal"]
+        if budget["n_science_scans"] == 0 and passes:
+            # A calibration night: its yield is time on source, not science.
+            on_source = sum(b.duration for b in passes) / max(timeline.total_time, 1e-9)
+            head = f"{site_name} calibration night" if site_name else "Calibration night"
+            title = (
+                f"{head} {night_label}  -  {hours:.1f} h, "
+                f"{len(passes)} passes, "
+                f"{budget['n_calibration_blocks'] - len(passes)} detector operations, "
+                f"on source {on_source * 100:.1f}%"
+            )
+        else:
+            head = f"{site_name} observing night" if site_name else "Observing night"
+            title = (
+                f"{head} {night_label}  -  {hours:.1f} h, "
+                f"{budget['n_science_scans']} science scans, "
+                f"{budget['n_calibration_blocks']} calibrations, "
+                f"efficiency {budget['efficiency'] * 100:.1f}%"
+            )
     ax.set_title(title, fontsize=13)
 
     legend_labels = {"science": "science: {}", "calibration": "cal: {}"}
@@ -379,6 +399,8 @@ def plot_sky_coverage(
     if stride < 1:
         raise ValueError(f"plot_sky_coverage: stride must be >= 1, got {stride}.")
     if pairs is None:
+        from ..overhead.simulation import schedule_to_trajectories
+
         pairs = schedule_to_trajectories(timeline)
     if not pairs:
         raise ValueError(

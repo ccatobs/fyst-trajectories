@@ -18,19 +18,15 @@ from astropy.time import Time
 
 
 class TestZenithSingularity:
-    """Tests for coordinate transformations at or near the zenith (el=90 deg).
+    """Transforms stay well-behaved at and near el=90 deg.
 
-    At the zenith, azimuth is undefined (all azimuth values converge to a
-    single point). The coordinate transformation code should handle this
-    gracefully.
+    At the zenith azimuth is undefined (every azimuth converges on a single
+    point), so elevation must still round-trip and the resulting Dec must not
+    depend on which azimuth was fed in.
     """
 
     def test_altaz_to_radec_at_zenith(self, coordinates, site):
-        """Test that altaz_to_radec handles zenith position.
-
-        At el=90, the azimuth is undefined. The transformation should
-        return valid RA/Dec even though azimuth is meaningless.
-        """
+        """At el=90 the azimuth is meaningless, but the Dec is still the site latitude."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         ra, dec = coordinates.altaz_to_radec(0.0, 90.0, obstime=obstime)
@@ -39,11 +35,7 @@ class TestZenithSingularity:
         assert 0 <= ra < 360
 
     def test_radec_at_zenith_gives_high_elevation(self, coordinates, site):
-        """Test that a source at site latitude can reach near-zenith elevation.
-
-        A source at the same declination as the site latitude should reach
-        approximately 90 degrees elevation when it transits the meridian.
-        """
+        """A source at ``dec = site latitude`` reaches ~90 deg as it transits."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         # RA = LST places source at meridian; dec = site latitude gives zenith
@@ -53,7 +45,6 @@ class TestZenithSingularity:
         assert el == pytest.approx(90.0, abs=1.0)
 
     def test_near_zenith_stability(self, coordinates):
-        """Test transformation stability for positions very close to zenith."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         test_elevations = [85.0, 87.0, 89.0, 89.5, 89.9, 89.99]
@@ -72,11 +63,7 @@ class TestZenithSingularity:
         [0.0, 90.0, 180.0, 270.0, 45.0, 135.0, 225.0, 315.0],
     )
     def test_all_azimuths_at_zenith_give_same_radec(self, coordinates, azimuth):
-        """Test that at zenith, different azimuths give same RA/Dec.
-
-        Since azimuth is undefined at the zenith, all azimuth values should
-        produce the same RA/Dec (within numerical precision).
-        """
+        """Azimuth is undefined at the zenith, so every azimuth gives the same Dec."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         _ra_ref, dec_ref = coordinates.altaz_to_radec(0.0, 90.0, obstime=obstime)
@@ -86,21 +73,20 @@ class TestZenithSingularity:
 
 
 class TestHorizonEdge:
-    """Tests for coordinate transformations at the horizon (el=0 deg).
+    """Transforms round-trip at the horizon (el=0 deg).
 
-    At the horizon, atmospheric refraction has its maximum effect (~0.5 deg)
-    and sources are at the limit of visibility.
+    The horizon is where a refracted transform would bend the position most, but
+    these coordinates are vacuum, so the round trip must close exactly.
     """
 
     def test_round_trip_at_horizon(self, coordinates):
-        """Test round-trip consistency at horizon."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         az_orig, el_orig = 180.0, 0.0
         ra, dec = coordinates.altaz_to_radec(az_orig, el_orig, obstime=obstime)
         az_back, el_back = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
 
-        # Allow larger tolerance due to refraction effects
+        # Vacuum round trip; the tolerance is slack, not a refraction budget.
         assert el_back == pytest.approx(el_orig, abs=1.0)
 
         # Azimuth should be close
@@ -110,18 +96,14 @@ class TestHorizonEdge:
 
 
 class TestCelestialPoles:
-    """Tests for coordinate transformations at celestial poles (dec=+/-90 deg).
+    """The pole transform is RA-independent and stable approaching dec=-90.
 
     At the celestial poles, RA is undefined (all RA values converge to a point).
     This is analogous to the azimuth singularity at the zenith.
     """
 
     def test_south_pole_transform(self, coordinates, site):
-        """Test transformation of the south celestial pole.
-
-        From a southern site, the south celestial pole should be visible
-        and at an elevation equal to the absolute value of the latitude.
-        """
+        """From a southern site the south celestial pole sits due south at el = |lat|."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         az, el = coordinates.radec_to_altaz(0.0, -90.0, obstime=obstime)
@@ -133,11 +115,7 @@ class TestCelestialPoles:
 
     @pytest.mark.parametrize("ra", [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0])
     def test_all_ra_at_poles_give_same_altaz(self, coordinates, ra):
-        """Test that at celestial poles, all RA values give same Az/El.
-
-        Since RA is undefined at the poles, all RA values should produce
-        the same Az/El (within numerical precision).
-        """
+        """RA is undefined at the poles, so every RA gives the same Az/El."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         az_ref, el_ref = coordinates.radec_to_altaz(0.0, -90.0, obstime=obstime)
@@ -150,7 +128,6 @@ class TestCelestialPoles:
         assert az_diff < 0.01
 
     def test_near_pole_stability(self, coordinates):
-        """Test transformation stability for positions near the pole."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         test_decs = [-85.0, -87.0, -89.0, -89.5, -89.9, -89.99]
@@ -165,14 +142,13 @@ class TestCelestialPoles:
 
 
 class TestAzimuthWrapAround:
-    """Tests for azimuth wrap-around at the 0/360 degree boundary.
+    """Transforms cross the 0/360 azimuth seam without a discontinuity.
 
-    Azimuth is a circular coordinate that wraps from 360 back to 0.
-    The code should handle this correctly in both directions.
+    Azimuth is a circular coordinate that wraps from 360 back to 0, and the
+    seam must be invisible to both directions, scalar and array alike.
     """
 
     def test_altaz_to_radec_across_north(self, coordinates):
-        """Test transformation across the north direction (az=0/360)."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
         el = 45.0
 
@@ -187,16 +163,14 @@ class TestAzimuthWrapAround:
             assert dec_diff < 2.0, f"Large dec jump at az boundary: {dec_diff}"
 
     def test_radec_to_altaz_produces_valid_azimuth(self, coordinates):
-        """Test that radec_to_altaz always produces valid azimuth values."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         for ra in range(0, 360, 15):
             az, _el = coordinates.radec_to_altaz(float(ra), -30.0, obstime=obstime)
 
-            assert -180 <= az < 360 or 0 <= az < 360
+            assert 0.0 <= az < 360.0
 
     def test_round_trip_across_azimuth_boundary(self, coordinates):
-        """Test round-trip consistency across the azimuth boundary."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         for az_orig in [0.0, 0.1, 359.9, 360.0]:
@@ -214,7 +188,6 @@ class TestAzimuthWrapAround:
             assert az_diff < 0.1
 
     def test_array_input_across_boundary(self, coordinates):
-        """Test array inputs that span the azimuth boundary."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         azs = np.array([350.0, 355.0, 0.0, 5.0, 10.0])
@@ -229,14 +202,10 @@ class TestAzimuthWrapAround:
 
 
 class TestParallacticAngleEdgeCases:
-    """Tests for parallactic angle at edge cases."""
+    """The parallactic angle stays finite at the pole and through a zenith transit."""
 
     def test_parallactic_angle_at_pole(self, coordinates):
-        """Test parallactic angle for source at celestial pole.
-
-        At the pole, parallactic angle behavior depends on the formula
-        used, but should not produce NaN or Inf.
-        """
+        """At the pole the PA value is formula-dependent, but must not be NaN or Inf."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         pa = coordinates.get_parallactic_angle(0.0, -90.0, obstime=obstime)
@@ -249,8 +218,8 @@ class TestParallacticAngleEdgeCases:
         of the zenith, where the parallactic angle is ill-conditioned: it is
         undefined exactly at the zenith and swings through 180 deg at transit.
         The AltAz-form computation must remain finite. It is **not** ~ 0 here
-        (the old HA-form only returned 0 by the ``atan2(0, 0)`` coincidence of
-        forming HA = LST - RA with RA = LST).
+        (an HA-form would return 0 only through the ``atan2(0, 0)`` coincidence
+        of forming HA = LST - RA with RA = LST).
         """
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
@@ -260,10 +229,9 @@ class TestParallacticAngleEdgeCases:
 
 
 class TestFieldRotationEdgeCases:
-    """Tests for field rotation at edge cases."""
+    """Field rotation stays finite at the pole and through a near-zenith transit."""
 
     def test_field_rotation_at_pole(self, coordinates):
-        """Test field rotation for source at celestial pole."""
         obstime = Time("2026-06-15T04:00:00", scale="utc")
 
         fr = coordinates.get_field_rotation(0.0, -90.0, obstime=obstime)

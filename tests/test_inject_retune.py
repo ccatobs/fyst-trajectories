@@ -91,10 +91,9 @@ def _group_retune_events(retune_times: np.ndarray) -> list[float]:
 
 
 class TestInjectRetuneBasic:
-    """Basic retune flag placement tests."""
+    """Uniform placement: the next retune is due one interval after the last one ends."""
 
     def test_retune_flags_placed_at_correct_intervals(self):
-        """Retune events should appear at the expected interval positions."""
         traj = _make_trajectory(duration=120.0, timestep=0.1)
         result = inject_retune(
             traj, retune_interval=30.0, retune_duration=5.0, prefer_turnarounds=False
@@ -121,7 +120,6 @@ class TestInjectRetuneBasic:
         np.testing.assert_allclose(events, [30.0, 65.0, 100.0], atol=0.15)
 
     def test_retune_duration_correct(self):
-        """Each retune event should span the configured duration."""
         traj = _make_trajectory(duration=120.0, timestep=0.1)
         result = inject_retune(
             traj, retune_interval=30.0, retune_duration=5.0, prefer_turnarounds=False
@@ -147,10 +145,9 @@ class TestInjectRetuneBasic:
 
 
 class TestInjectRetuneTurnaroundSnapping:
-    """Tests for turnaround snapping behavior."""
+    """Snapping to a turnaround inside the window, the time-based fallback outside it."""
 
     def test_snaps_to_nearby_turnaround(self):
-        """Retune should snap to a nearby turnaround when within window."""
         # Turnaround at 28-31s (3s), near the 30s due time.
         # Retune duration is 5s, so retune covers 28-33s.
         # Turnaround occupies 28-31, so RETUNE flags appear at 31-33 (science region).
@@ -182,7 +179,6 @@ class TestInjectRetuneTurnaroundSnapping:
         assert ta_count == original_ta_count
 
     def test_no_turnaround_nearby_falls_back_to_time_based(self):
-        """Without a nearby turnaround, retune falls back to time-based placement."""
         # Turnaround far from the 30s due time
         traj = _make_trajectory(
             duration=120.0,
@@ -247,10 +243,9 @@ class TestInjectRetuneTurnaroundSnapping:
 
 
 class TestInjectRetuneDaisyContinuous:
-    """Tests for continuous scan (no turnarounds), like daisy patterns."""
+    """A continuous scan with no turnaround flags gets time-based retunes."""
 
     def test_no_turnarounds_uses_time_based(self):
-        """Continuous scan with no turnarounds should still place retunes."""
         traj = _make_trajectory(duration=120.0, timestep=0.1)
         result = inject_retune(
             traj, retune_interval=30.0, retune_duration=5.0, prefer_turnarounds=True
@@ -261,10 +256,9 @@ class TestInjectRetuneDaisyContinuous:
 
 
 class TestInjectRetuneScienceMask:
-    """Tests for science_mask interaction."""
+    """``science_mask`` excludes retune samples: 30 s of science per 35 s cadence."""
 
     def test_science_mask_excludes_retune(self):
-        """science_mask should be False for all retune-flagged samples."""
         traj = _make_trajectory(duration=120.0, timestep=0.1)
         result = inject_retune(
             traj, retune_interval=30.0, retune_duration=5.0, prefer_turnarounds=False
@@ -277,22 +271,21 @@ class TestInjectRetuneScienceMask:
         assert not np.any(science & retune)
 
     def test_efficiency_calculation(self):
-        """30s interval / 5s duration should give ~83.3% science fraction."""
+        """30s interval / 5s duration should give ~85.7% science fraction."""
         traj = _make_trajectory(duration=300.0, timestep=0.1)
         result = inject_retune(
             traj, retune_interval=30.0, retune_duration=5.0, prefer_turnarounds=False
         )
 
         science_fraction = result.science_mask.sum() / len(result.times)
-        # ~83.3% (25/30), allow some tolerance for edge effects
+        # ~85.7% (30/35); edge effects lift a 300 s trajectory to ~86.7%.
         assert 0.80 < science_fraction < 0.87
 
 
 class TestInjectRetuneEdgeCases:
-    """Edge case tests."""
+    """Short trajectories, absent flags, and purity: no retune, no crash, no mutation."""
 
     def test_interval_longer_than_trajectory(self):
-        """No retune should be placed if interval exceeds trajectory duration."""
         traj = _make_trajectory(duration=20.0, timestep=0.1)
         result = inject_retune(traj, retune_interval=30.0, retune_duration=5.0)
 
@@ -317,7 +310,6 @@ class TestInjectRetuneEdgeCases:
         assert not (result.scan_flag == SCAN_FLAG_RETUNE).any()
 
     def test_only_science_flags_overwritten(self):
-        """Turnaround flags should never be changed to retune."""
         traj = _make_trajectory(
             duration=120.0,
             timestep=0.1,
@@ -360,7 +352,7 @@ class TestInjectRetuneEdgeCases:
 
 
 class TestInjectRetuneStaggered:
-    """Tests for per-module staggered retune scheduling.
+    """Staggering offsets each module's retunes by ``retune_interval / n_modules``.
 
     Per-module retune independence is UNCONFIRMED by the FYST instrument
     team. These tests verify the staggering mechanism works correctly if
@@ -426,9 +418,9 @@ class TestInjectRetuneStaggered:
             all_retuning &= ~mask
         combined_fraction = 1.0 - all_retuning.sum() / len(traj.times)
 
-        # Combined coverage should be much better than single-module
-        # Single module: ~83.3% (5/30 lost). Staggered: >97% since retune
-        # windows don't overlap when interval/n_modules > duration.
+        # Single module: ~86.7% (a 5 s gap every 35 s). Staggered: the seven
+        # offsets are spread across the interval, so at most two modules retune
+        # at once and some module is always observing.
         assert combined_fraction > single_fraction
         assert combined_fraction > 0.97
 
@@ -463,6 +455,26 @@ class TestInjectRetuneStaggered:
 
         with pytest.raises(ValueError, match="n_modules"):
             inject_retune(traj, n_modules=0)
+
+    @pytest.mark.parametrize("duration", [30.0, 45.0], ids=["equal", "longer"])
+    def test_gap_not_shorter_than_interval_raises(self, duration):
+        """A gap at least as long as its cadence would flag every science sample."""
+        traj = _make_trajectory(duration=120.0, timestep=0.1)
+
+        with pytest.raises(ValueError, match="shorter than retune_interval"):
+            inject_retune(traj, retune_interval=30.0, retune_duration=duration)
+
+    def test_gap_guard_is_uniform_mode_only(self):
+        """Event-list mode ignores the scalar knobs, so the guard must not fire there."""
+        traj = _make_trajectory(duration=120.0, timestep=0.1)
+        events = [RetuneEvent(t_start=30.0, duration=5.0)]
+
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore", PointingWarning)
+            result = inject_retune(
+                traj, retune_events=events, retune_interval=30.0, retune_duration=45.0
+            )
+        assert result.retune_events == tuple(events)
 
 
 class TestPerPatternEfficiency:
@@ -500,11 +512,11 @@ class TestPerPatternEfficiency:
         assert retune_count > 0
 
     def test_pong_scan_efficiency(self, site, start_time):
-        """Pong scan with 30s/5s retune should have ~80-87% science fraction.
+        """Pong scan with 30s/5s retune should have ~76% science fraction.
 
-        Pong scans have no turnaround flags (scan_flag is None),
-        so inject_retune treats all samples as science and places
-        retunes purely by time.
+        The planned pong carries turnaround flags (~13% of samples), which
+        inject_retune never overwrites, so its science fraction sits below the
+        30/35 steady state of a flag-free trajectory.
         """
         field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
         block = plan_pong_scan(
@@ -520,8 +532,6 @@ class TestPerPatternEfficiency:
         result = inject_retune(traj, retune_interval=30.0, retune_duration=5.0)
 
         science_frac = result.science_mask.sum() / len(result.times)
-        # With scan_flag turnaround flagging + retune injection, science
-        # fraction is lower than for patterns without turnaround flags.
         assert 0.65 <= science_frac <= 0.90, (
             f"Pong science fraction {science_frac:.3f} outside expected range [0.65, 0.90]"
         )
@@ -529,8 +539,8 @@ class TestPerPatternEfficiency:
     def test_daisy_scan_efficiency(self, site, start_time):
         """Daisy scan with 30s/5s retune should have ~80-87% science fraction.
 
-        Daisy scans are continuous (no turnarounds), so retune events
-        always consume science time.
+        Daisy scans are nearly continuous (a handful of turnaround samples), so
+        retune events consume science time almost everywhere.
         """
         block = plan_daisy_scan(
             ra=180.0,
@@ -556,7 +566,8 @@ class TestPerPatternEfficiency:
     def test_retune_flags_at_correct_intervals(self, site, start_time):
         """Retune events should appear at approximately the configured interval.
 
-        Uses a daisy scan (no turnarounds) for clean interval verification.
+        Uses a daisy scan (only a handful of turnaround samples) for clean
+        interval verification.
         """
         block = plan_daisy_scan(
             ra=180.0,
@@ -643,21 +654,28 @@ class TestTurnaroundOverlap:
 class TestTheoreticalEfficiency:
     """Verify inject_retune efficiency matches theoretical predictions.
 
-    Theoretical formula: efficiency = (interval - duration) / interval
-    This assumes long trajectories where edge effects are negligible.
+    The next retune is due one interval after the previous one ends, so the
+    repeat period is ``interval + duration`` and the steady-state efficiency is
+    ``interval / (interval + duration)``. This assumes long trajectories where
+    edge effects are negligible.
     """
 
     @pytest.mark.parametrize(
         "interval, duration, expected",
         [
-            (30.0, 5.0, 0.833),  # 25/30 = 83.3%
-            (60.0, 5.0, 0.917),  # 55/60 = 91.7%
-            (30.0, 2.0, 0.933),  # 28/30 = 93.3%
+            (30.0, 5.0, 0.857),  # 30/35 = 85.7%
+            (60.0, 5.0, 0.923),  # 60/65 = 92.3%
+            (30.0, 2.0, 0.938),  # 30/32 = 93.8%
         ],
         ids=["30s/5s", "60s/5s", "30s/2s"],
     )
     def test_efficiency_matches_theory(self, interval, duration, expected):
-        """Long trajectory efficiency should match theoretical value within 3%."""
+        """Long trajectory efficiency should match theoretical value within 0.5%.
+
+        The band is tight enough to reject the repeat period the steady state
+        would have if the next retune were due one interval after the previous
+        one STARTED rather than ended.
+        """
         traj = _make_trajectory(duration=600.0, timestep=0.1)
         result = inject_retune(
             traj,
@@ -667,18 +685,18 @@ class TestTheoreticalEfficiency:
         )
 
         science_frac = result.science_mask.sum() / len(result.times)
-        assert abs(science_frac - expected) < 0.03, (
+        assert abs(science_frac - expected) < 0.005, (
             f"Science fraction {science_frac:.4f} deviates from "
-            f"theoretical {expected:.4f} by more than 3%"
+            f"theoretical {expected:.4f} by more than 0.5%"
         )
 
     def test_longer_trajectory_closer_to_theory(self):
         """Longer trajectories should have smaller edge effects.
 
-        A 1200s trajectory should be closer to 83.3% than a 120s one
+        A 1200s trajectory should be closer to 85.7% than a 120s one
         with 30s/5s retune.
         """
-        expected = 0.833
+        expected = 30.0 / 35.0
 
         short = _make_trajectory(duration=120.0, timestep=0.1)
         long = _make_trajectory(duration=1200.0, timestep=0.1)
@@ -711,10 +729,10 @@ class TestZeroVelocityGuard:
     The turnaround-snapping path in ``inject_retune`` scans for
     ``SCAN_FLAG_TURNAROUND`` samples in the input trajectory, but it
     still relies on the assumption that the velocity profile is
-    meaningful.  The PrimeCam wrapper historically supplies
-    identically-zero velocities, which would silently collapse all
-    turnaround detection and produce wrong results.  The guard warns
-    and falls back to time-based placement so callers notice.
+    meaningful.  A caller that supplies identically-zero velocities would
+    silently collapse all turnaround detection and produce wrong results.
+    The guard warns and falls back to time-based placement so callers
+    notice.
     """
 
     def test_warns_on_zero_velocities_with_turnaround_snap(self):
@@ -828,7 +846,7 @@ def test_event_clipped_to_end_flags_final_sample():
         el_vel=np.zeros(n),
     )
     # Event starts at t=8 and outlasts the trajectory, so it clips to t_end=10;
-    # the sample at exactly t_end must still be flagged (was an off-by-one).
+    # the sample at exactly t_end must still be flagged (an off-by-one drops it).
     result = inject_retune(traj, retune_events=[RetuneEvent(t_start=8.0, duration=10.0)])
     assert result.scan_flag[-1] == SCAN_FLAG_RETUNE
     flagged = result.scan_flag[times >= 8.0]
@@ -867,7 +885,7 @@ class TestRetuneEventDataclass:
 
 
 class TestInjectRetuneEventList:
-    """Event-list mode (``retune_events=...``) for inject_retune."""
+    """Event-list mode: placement, clipping, overlap refusal, and sorting of the request."""
 
     def test_event_list_roundtrip(self):
         """Three explicit events each land on the timeline; retune_events field preserves them."""
@@ -1089,7 +1107,7 @@ class TestInjectRetuneEventListMutualExclusion:
 
 
 class TestSampleRetuneEvents:
-    """Unit tests for the ``sample_retune_events`` helper."""
+    """Seeded sampling is reproducible, non-overlapping, and feeds ``inject_retune``."""
 
     def test_sample_retune_events_seeded_reproducible(self):
         """Same seed -> identical event list across two calls."""
@@ -1172,10 +1190,9 @@ class TestSampleRetuneEvents:
 class TestInjectRetuneMetadataPreservation:
     """Regression: ``inject_retune`` must not mutate ``metadata``.
 
-    An earlier implementation stashed ``retune_events`` inside
-    ``trajectory.metadata`` as a dict key, which silently broke
-    ``Trajectory.pattern_type`` / ``.center_ra`` / ``.pattern_params``
-    accessors. The new design promotes ``retune_events`` to a first-class
+    Stashing ``retune_events`` inside ``trajectory.metadata`` as a dict key
+    would silently break the ``Trajectory.pattern_type`` / ``.center_ra`` /
+    ``.pattern_params`` accessors. ``retune_events`` is instead a first-class
     field on :class:`Trajectory`; ``metadata`` stays untouched.
     """
 
@@ -1216,7 +1233,7 @@ class TestInjectRetuneMetadataPreservation:
         # Metadata is the exact same object, we don't mutate it.
         assert result.metadata is traj.metadata
 
-        # The new first-class field carries the sorted event tuple.
+        # The first-class field carries the sorted event tuple.
         assert result.retune_events == tuple(events)
 
 
@@ -1334,9 +1351,8 @@ class TestUniformPathPopulatesRetuneEvents:
 
     def test_uniform_path_retune_events_populated(self):
         """Calling uniform-cadence inject_retune sets retune_events symmetrically."""
-        # 300 s / 60 s interval = 5 retunes at approximately t=60, 125, 190, 255, ... but
-        # the anchor advances by max(retune_end, due_time), so cadence is
-        # interval + duration = 65. Expected events: 5 (60, 125, 190, 255, ...).
+        # 300 s at a 60 s interval + 5 s gap = a 65 s cadence: four events, at
+        # t = 60, 125, 190, 255.
         duration = 300.0
         interval = 60.0
         dur = 5.0
@@ -1362,3 +1378,58 @@ class TestUniformPathPopulatesRetuneEvents:
         expected_min = int((duration - interval) / (interval + dur))
         expected_max = expected_min + 2
         assert expected_min <= len(result.retune_events) <= expected_max
+
+
+class TestEventListElementTypes:
+    """Event-list mode says what it wanted when given something else.
+
+    The sort runs first, so an unchecked tuple or dict dies as an
+    ``AttributeError`` from inside the sort key, naming ``t_start`` and no
+    argument.
+    """
+
+    @pytest.mark.parametrize("bad", [(10.0, 5.0), {"t_start": 10.0, "duration": 5.0}, 10.0, None])
+    def test_non_event_element_is_refused(self, bad):
+        """A non-``RetuneEvent`` element raises a TypeError naming its index."""
+        traj = _make_trajectory(duration=120.0)
+        events = [RetuneEvent(t_start=10.0, duration=5.0), bad]
+        with pytest.raises(TypeError, match=r"retune_events\[1\] is a"):
+            inject_retune(traj, retune_events=events)
+
+
+class TestSnappingCannotSilentlyMergeEvents:
+    """Overlap is re-checked against the placements, not only the request.
+
+    Checking overlap before ``prefer_turnarounds`` snapping lets two events
+    that do not overlap as asked be pulled onto the same turnaround: the
+    second then paints samples the first already owns and disappears, with
+    the caller told nothing.
+    """
+
+    def test_two_events_snapped_onto_one_turnaround_raise(self):
+        """Both events land on the same turnaround and the merge is refused."""
+        traj = _make_trajectory(duration=120.0, turnaround_intervals=[(30.0, 31.0), (60.0, 61.0)])
+        # 28 s and 33 s both snap to the turnaround starting at 30 s within a
+        # 10 s window, and a 5 s gap at 30 s runs into a second one placed there.
+        events = [RetuneEvent(t_start=28.0, duration=5.0), RetuneEvent(t_start=33.0, duration=5.0)]
+        with pytest.raises(ValueError, match="overlap after snapping to turnarounds"):
+            inject_retune(
+                traj, retune_events=events, prefer_turnarounds=True, turnaround_window=10.0
+            )
+
+    def test_events_snapping_to_different_turnarounds_are_fine(self):
+        """Well-separated events still snap and apply."""
+        traj = _make_trajectory(duration=120.0, turnaround_intervals=[(30.0, 31.0), (60.0, 61.0)])
+        events = [RetuneEvent(t_start=28.0, duration=5.0), RetuneEvent(t_start=62.0, duration=5.0)]
+        result = inject_retune(
+            traj, retune_events=events, prefer_turnarounds=True, turnaround_window=10.0
+        )
+        assert np.count_nonzero(result.scan_flag == SCAN_FLAG_RETUNE) > 0
+        assert result.retune_events == tuple(events)
+
+    def test_without_snapping_the_same_events_apply(self):
+        """The snapping check is snapping-specific; the request itself does not overlap."""
+        traj = _make_trajectory(duration=120.0, turnaround_intervals=[(30.0, 31.0), (60.0, 61.0)])
+        events = [RetuneEvent(t_start=28.0, duration=5.0), RetuneEvent(t_start=33.0, duration=5.0)]
+        result = inject_retune(traj, retune_events=events)
+        assert result.retune_events == tuple(events)

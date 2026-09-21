@@ -1,20 +1,29 @@
 """Tests for timeline simulation pipeline."""
 
+import inspect
+
+import numpy as np
 import pytest
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.overhead import (
+    BlockNotReconstructableError,
     ObservingPatch,
+    ScanParamsSchemaError,
+    SourceCESScanParams,
     TimelineBlock,
     compute_budget,
     generate_timeline,
     validate_scan_params,
 )
+from fyst_trajectories.overhead import simulation as sim
 from fyst_trajectories.overhead.simulation import (
     _generate_trajectory_for_block,
     _slice_to_block_window,
 )
+from fyst_trajectories.planning import plan_source_ces
+from fyst_trajectories.planning.footprints import resolve_footprint
 
 
 @pytest.fixture(scope="module")
@@ -41,7 +50,7 @@ def one_night_timeline():
 
 
 class TestComputeBudget:
-    """Tests for compute_budget."""
+    """The budget's key set, its totals, and the per-patch and per-cal breakdowns."""
 
     def test_returns_expected_keys(self, one_night_timeline):
         stats = compute_budget(one_night_timeline)
@@ -68,19 +77,19 @@ class TestComputeBudget:
 
     def test_per_patch_breakdown(self, one_night_timeline):
         stats = compute_budget(one_night_timeline)
-        if one_night_timeline.n_science_scans > 0:
-            assert "test_field" in stats["per_patch"]
-            patch_stats = stats["per_patch"]["test_field"]
-            assert patch_stats["science_time"] > 0
-            assert patch_stats["n_scans"] > 0
+        assert one_night_timeline.n_science_scans > 0
+        assert "test_field" in stats["per_patch"]
+        patch_stats = stats["per_patch"]["test_field"]
+        assert patch_stats["science_time"] > 0
+        assert patch_stats["n_scans"] > 0
 
     def test_calibration_breakdown(self, one_night_timeline):
         stats = compute_budget(one_night_timeline)
-        if one_night_timeline.calibration_blocks:
-            assert len(stats["calibration_breakdown"]) > 0
-            for cal_type, cal_info in stats["calibration_breakdown"].items():
-                assert cal_info["count"] > 0
-                assert cal_info["total_time"] > 0
+        assert one_night_timeline.calibration_blocks
+        assert len(stats["calibration_breakdown"]) > 0
+        for cal_type, cal_info in stats["calibration_breakdown"].items():
+            assert cal_info["count"] > 0
+            assert cal_info["total_time"] > 0
 
     def test_efficiency_matches_timeline(self, one_night_timeline):
         stats = compute_budget(one_night_timeline)
@@ -109,10 +118,9 @@ class TestComputeBudget:
 
 
 class TestGenerateTrajectoryForBlock:
-    """Defensive tests for the simulation bridge."""
+    """Rebuilding a block: full metadata succeeds, missing geometry and typos refuse."""
 
     def test_raises_on_missing_metadata(self):
-        """Missing geometry keys should raise ValueError loudly."""
         site = get_fyst_site()
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         block = TimelineBlock(
@@ -127,11 +135,10 @@ class TestGenerateTrajectoryForBlock:
             scan_type="pong",
             metadata={},  # intentionally empty
         )
-        with pytest.raises(ValueError, match="missing required keys"):
+        with pytest.raises(ScanParamsSchemaError, match="missing required keys"):
             _generate_trajectory_for_block(block, site)
 
     def test_raises_lists_missing_keys(self):
-        """The error message should list all missing keys."""
         site = get_fyst_site()
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         block = TimelineBlock(
@@ -150,7 +157,6 @@ class TestGenerateTrajectoryForBlock:
             _generate_trajectory_for_block(block, site)
 
     def test_succeeds_with_full_metadata(self):
-        """With all required keys, generation should succeed."""
         site = get_fyst_site()
         t0 = Time("2026-06-15T05:00:00", scale="utc")
         block = TimelineBlock(
@@ -205,7 +211,7 @@ class TestGenerateTrajectoryForBlock:
 
 
 class TestValidateScanParams:
-    """Unit tests for the ``scan_params`` consumer-side validator."""
+    """An empty dict always passes; unknown keys and scan types are refused."""
 
     def test_accepts_empty_dict(self):
         # Every scan-params TypedDict is total=False, so {} is always valid.
@@ -288,7 +294,7 @@ class TestSliceToBlockWindow:
         sb = _generate_trajectory_for_block(self._pong_block(t0, 120.0), site)
 
         late = self._pong_block(t0 + TimeDelta(1e6, format="sec"), 120.0)
-        with pytest.raises(ValueError, match="no longer overlaps"):
+        with pytest.raises(BlockNotReconstructableError, match="no longer overlaps"):
             _slice_to_block_window(sb, late)
 
     def test_daisy_rebuild_already_inside_window_unchanged(self):
@@ -321,3 +327,162 @@ class TestSliceToBlockWindow:
         assert sb.trajectory.times[0] == 0.0
         assert sb.trajectory.times[-1] == pytest.approx(120.0 - 0.1)
         assert sb.trajectory.start_time.unix == pytest.approx(t0.unix)
+
+
+class TestSourceCESRebuildForwardsRecordedKeys:
+    """Every recorded source-CES key reaches the rebuild, by kwarg or by transform.
+
+    The expected set is derived from ``SourceCESScanParams`` itself, so a key
+    added to the schema without a matching forward in
+    ``_generate_source_ces_trajectory`` fails here instead of being dropped
+    silently on rebuild.
+    """
+
+    # Sequence bookkeeping only. No geometry, so the rebuild never reads them.
+    PROVENANCE_ONLY = frozenset({"pass_index", "n_passes"})
+    # Consumed through a transform rather than forwarded verbatim: the base
+    # module tag is resolved, inflated by footprint_margin and shifted by
+    # eta_offset_deg, and the recorded window is widened by the re-solve buffer.
+    TRANSFORMED = frozenset({"footprint", "footprint_margin", "eta_offset_deg", "window"})
+
+    @staticmethod
+    def _full_params() -> dict:
+        return {
+            "body": "jupiter",
+            "footprint": "c",
+            "el_bore": 35.0,
+            "mode": "rising",
+            "window": ["2026-03-15T22:00:00.000", "2026-03-15T22:10:00.000"],
+            "boresight_rot": 0.0,
+            "timestep": 0.1,
+            "eta_offset_deg": 0.4,
+            "az_accel": 1.5,
+            "az_padding": 0.25,
+            "v_az": 0.012,
+            "az_speed": 1.5,
+            "az_throw": 2.44,
+            "dwell": 300.0,
+            "footprint_margin": 0.4,
+            "pass_index": 1,
+            "n_passes": 3,
+        }
+
+    @staticmethod
+    def _spy_kernel(monkeypatch) -> tuple[dict, object]:
+        seen: dict = {}
+        sentinel = object()
+
+        def fake_plan_source_ces(**kwargs):
+            seen.update(kwargs)
+            return sentinel
+
+        monkeypatch.setattr(sim, "plan_source_ces", fake_plan_source_ces)
+        return seen, sentinel
+
+    def test_fixture_covers_the_whole_schema(self):
+        """Extend ``_full_params`` whenever ``SourceCESScanParams`` gains a key."""
+        assert set(self._full_params()) == set(SourceCESScanParams.__optional_keys__)
+
+    def test_schema_partitions_into_forwarded_transformed_and_provenance(self, monkeypatch, site):
+        params = self._full_params()
+        seen, sentinel = self._spy_kernel(monkeypatch)
+        meta = {"cal_type": "planet_cal", "target": "jupiter", "scan_params": params}
+
+        assert sim._generate_source_ces_trajectory(meta, site) is sentinel
+
+        kwarg_keys = set(seen) - {"site"}
+        consumed = kwarg_keys | self.TRANSFORMED
+        expected = set(SourceCESScanParams.__optional_keys__) - self.PROVENANCE_ONLY
+        assert consumed == expected, (
+            f"rebuild consumes {sorted(consumed)} but the schema minus provenance is "
+            f"{sorted(expected)}; forward the missing key or classify it explicitly"
+        )
+        assert not (kwarg_keys & self.PROVENANCE_ONLY)
+
+        # Verbatim keys arrive unchanged (the kernel overrides included).
+        for key in kwarg_keys - self.TRANSFORMED:
+            assert seen[key] == params[key], key
+
+        # The transforms: the inflated then shifted footprint and the widened window.
+        base = resolve_footprint("c")
+        fp = seen["footprint"]
+        assert fp.center_eta_deg == pytest.approx(base.center_eta_deg + 0.4)
+        assert fp.center_xi_deg == pytest.approx(base.center_xi_deg)
+        radius = np.hypot(fp.cover_xi_deg - fp.center_xi_deg, fp.cover_eta_deg - fp.center_eta_deg)
+        base_radius = np.hypot(
+            base.cover_xi_deg - base.center_xi_deg, base.cover_eta_deg - base.center_eta_deg
+        )
+        np.testing.assert_allclose(radius, base_radius + 0.4)
+        w0, w1 = seen["window"]
+        assert (Time(params["window"][0], scale="utc") - w0).to_value("s") == pytest.approx(
+            sim._SOURCE_CES_WINDOW_BUFFER_SEC
+        )
+        assert (w1 - Time(params["window"][1], scale="utc")).to_value("s") == pytest.approx(
+            sim._SOURCE_CES_WINDOW_BUFFER_SEC
+        )
+
+    def test_forwarded_override_keys_are_kernel_parameters(self):
+        """A spy accepts any kwarg; the real kernel must accept each forwarded key."""
+        accepted = set(inspect.signature(plan_source_ces).parameters)
+        assert set(sim._SOURCE_CES_OVERRIDE_KEYS) <= accepted
+
+    def test_absent_overrides_leave_the_kernel_defaults_in_force(self, monkeypatch, site):
+        """Passes recorded without overrides rebuild on the kernel's own defaults."""
+        params = {
+            key: value
+            for key, value in self._full_params().items()
+            if key not in sim._SOURCE_CES_OVERRIDE_KEYS
+        }
+        seen, _ = self._spy_kernel(monkeypatch)
+        meta = {"cal_type": "planet_cal", "target": "jupiter", "scan_params": params}
+
+        sim._generate_source_ces_trajectory(meta, site)
+
+        assert not (set(seen) & set(sim._SOURCE_CES_OVERRIDE_KEYS))
+
+
+class TestSimulatorErrorTaxonomy:
+    """The rebuild path's own refusals are typed, and stay ``ValueError``.
+
+    The two types live in ``overhead/`` (simulator tier) and subclass
+    ``PointingError``, so a library-tier consumer never imports a
+    simulator-only concept and an existing ``except ValueError`` is
+    unaffected.
+    """
+
+    def test_both_types_are_pointing_errors(self):
+        from fyst_trajectories.exceptions import PointingError
+
+        for cls in (ScanParamsSchemaError, BlockNotReconstructableError):
+            assert issubclass(cls, PointingError)
+            assert issubclass(cls, ValueError)
+
+    def test_unbuildable_scan_type_is_a_schema_error(self):
+        """A science block naming a scan type the rebuild cannot dispatch.
+
+        ``source_ces`` is a valid scan-parameter schema but is only rebuilt on
+        the calibration route, so a science block carrying it falls through
+        the dispatch chain.
+        """
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        block = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(300, format="sec"),
+            block_type="science",
+            patch_name="p",
+            az_start=170.0,
+            az_end=190.0,
+            elevation=50.0,
+            scan_index=0,
+            scan_type="source_ces",
+            metadata={
+                "ra_center": 24.0,
+                "dec_center": -32.0,
+                "width": 5.0,
+                "height": 5.0,
+                "velocity": 0.5,
+            },
+        )
+        with pytest.raises(ScanParamsSchemaError, match="Unknown scan type"):
+            _generate_trajectory_for_block(block, site)

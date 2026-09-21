@@ -17,13 +17,13 @@ choose the sun-safe azimuth-wrap / encoder ``(az, el)`` to slew to for a scan's
 first sample::
 
     from astropy.time import Time
-    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories import get_fyst_site, rewrap_trajectory_azimuth
     from fyst_trajectories.dispatch import choose_encoder_solution
 
     site = get_fyst_site()
     obstime = Time("2026-03-15T18:00:00", scale="utc")
 
-    enc_az, enc_el = choose_encoder_solution(
+    solution = choose_encoder_solution(
         current_az=120.0,   # from the live ACU position broadcast
         current_el=45.0,
         goal_az=200.0,      # first sample of the scan trajectory
@@ -31,7 +31,9 @@ first sample::
         obstime=obstime,
         site=site,
     )
-    # command the slew to (enc_az, enc_el), then POST the trajectory.
+    # Shift the whole trajectory onto the chosen wrap, then command the
+    # slew to (solution.az, solution.el) and POST the shifted trajectory.
+    commanded = rewrap_trajectory_azimuth(trajectory, solution.az_shift)
 
 The Sun test is injectable at two levels: ``sun_safe`` judges the goal point
 (default: the site's scalar exclusion radius; a position exactly at the

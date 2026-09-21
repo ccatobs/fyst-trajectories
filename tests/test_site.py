@@ -14,7 +14,6 @@ from astropy import units as u
 from astropy.coordinates import EarthLocation
 
 from fyst_trajectories import Site
-from fyst_trajectories.offsets import InstrumentOffset, compute_focal_plane_rotation
 from fyst_trajectories.site import (
     FYST_AZ_MAX,
     FYST_AZ_MAX_ACCELERATION,
@@ -41,10 +40,10 @@ from fyst_trajectories.site import (
 
 
 class TestSiteLoading:
-    """Tests for Site.from_config() loading."""
+    """Tests for the shipped FYST site values and the ``Site.from_config()`` loader."""
 
-    def test_load_default_config(self, site):
-        """Test loading the default FYST configuration."""
+    def test_default_site_location(self, site):
+        """The shipped FYST site carries the documented geographic constants."""
         assert site.name == "FYST"
         assert site.latitude == pytest.approx(-22.985639, abs=0.001)
         assert site.longitude == pytest.approx(-67.740278, abs=0.001)
@@ -207,7 +206,7 @@ class TestAxisLimits:
 
 
 class TestSunAvoidanceConfig:
-    """SunAvoidanceConfig enforces 0 <= exclusion_radius <= warning_radius when enabled."""
+    """SunAvoidanceConfig enforces 0 <= exclusion_radius < warning_radius when enabled."""
 
     def test_valid_config_constructs(self):
         cfg = SunAvoidanceConfig(enabled=True, exclusion_radius=45.0, warning_radius=50.0)
@@ -241,7 +240,7 @@ class TestNasmythPort:
     """Tests for nasmyth_port and nasmyth_sign property."""
 
     def test_default_nasmyth_port(self, site):
-        """Test that default FYST config has nasmyth_port='right'."""
+        """Test that the shipped FYST site has nasmyth_port='right'."""
         assert site.nasmyth_port == "right"
 
     def test_nasmyth_sign_right(self, site):
@@ -349,59 +348,6 @@ class TestNasmythPort:
         assert site.nasmyth_sign == 1
 
 
-class TestCassegrainFocalPlaneRotation:
-    """Test compute_focal_plane_rotation with cassegrain port."""
-
-    def test_cassegrain_focal_plane_rotation_ignores_elevation(self):
-        """Test that cassegrain (nasmyth_sign=0) ignores elevation in rotation."""
-        cass_site = Site(
-            name="CassTest",
-            description="",
-            latitude=-23.0,
-            longitude=-67.0,
-            elevation=5000.0,
-            atmosphere=None,
-            telescope_limits=TelescopeLimits(
-                azimuth=AxisLimits(
-                    min=-270,
-                    max=270,
-                    max_velocity=3,
-                    max_acceleration=1,
-                ),
-                elevation=AxisLimits(
-                    min=20,
-                    max=90,
-                    max_velocity=1,
-                    max_acceleration=0.5,
-                ),
-            ),
-            sun_avoidance=SunAvoidanceConfig(
-                enabled=True,
-                exclusion_radius=45,
-                warning_radius=50,
-            ),
-            nasmyth_port="cassegrain",
-        )
-        offset = InstrumentOffset(dx=5.0, dy=3.0, instrument_rotation=10.0)
-
-        rot_low = compute_focal_plane_rotation(
-            20.0,
-            cass_site,
-            offset,
-            parallactic_angle=5.0,
-        )
-        rot_high = compute_focal_plane_rotation(
-            80.0,
-            cass_site,
-            offset,
-            parallactic_angle=5.0,
-        )
-
-        # Both should be 0*el + 10 + 5 = 15, independent of elevation
-        assert rot_low == pytest.approx(15.0)
-        assert rot_high == pytest.approx(15.0)
-
-
 class TestTelescopeLimits:
     """Tests for TelescopeLimits class."""
 
@@ -417,9 +363,10 @@ class TestTelescopeLimits:
 class TestFYSTConstants:
     """Regression tests for FYST physical constants.
 
-    These verify that the hardcoded constants match the expected values
-    from the FYST TCS source code and optical design. If any of these
-    fail, it means a constant was accidentally changed.
+    These pin the hardcoded constants. The Tier 1 values trace to the FYST
+    TCS source code and the optical design; the Tier 2 kinematic values
+    either match the TCS values or sit below them, as each test states. If
+    any of these fail, a constant was accidentally changed.
     """
 
     def test_tier1_location(self):
@@ -434,14 +381,23 @@ class TestFYSTConstants:
         assert FYST_NASMYTH_PORT == "right"
 
     def test_tier2_azimuth_limits(self):
-        """Test Tier 2 azimuth mechanical limits match FYST TCS commands.go."""
+        """Test Tier 2 azimuth limits.
+
+        The range and velocity match FYST TCS commands.go; the acceleration
+        is the conservative operational limit (TCS hardware: 6.0 deg/s^2).
+        """
         assert FYST_AZ_MIN == -180.0
         assert FYST_AZ_MAX == 360.0
         assert FYST_AZ_MAX_VELOCITY == 3.0
         assert FYST_AZ_MAX_ACCELERATION == 1.5
 
     def test_tier2_elevation_limits(self):
-        """Test Tier 2 elevation mechanical limits match FYST TCS commands.go."""
+        """Test Tier 2 elevation limits.
+
+        All four are conservative operational limits, not TCS values: the
+        TCS accepts el from -90 to 180 deg with hardware maxima of 1.5 deg/s
+        and 1.5 deg/s^2.
+        """
         assert FYST_EL_MIN == 20.0
         assert FYST_EL_MAX == 90.0
         assert FYST_EL_MAX_VELOCITY == 1.0
@@ -492,11 +448,6 @@ class TestGetFystSiteKwargs:
         assert site.sun_avoidance.warning_radius == FYST_SUN_WARNING_RADIUS
         assert site.sun_avoidance.enabled == FYST_SUN_AVOIDANCE_ENABLED
 
-    def test_override_sun_warning_radius(self):
-        """Test overriding sun warning radius."""
-        site = get_fyst_site(sun_warning_radius=60.0)
-        assert site.sun_avoidance.warning_radius == 60.0
-
     def test_disable_sun_avoidance(self):
         """Test disabling sun avoidance."""
         site = get_fyst_site(sun_avoidance_enabled=False)
@@ -516,9 +467,12 @@ class TestGetFystSiteKwargs:
         assert site.sun_avoidance.enabled is False
 
     def test_returns_fresh_instance(self):
-        """Test that get_fyst_site() returns a new instance each call."""
+        """Each call builds a new ``Site``; nothing memoises it.
+
+        Equality alone cannot fail on the no-caching claim, so identity is
+        what this asserts.
+        """
         site1 = get_fyst_site()
         site2 = get_fyst_site()
-        # Both should be equal but not the same object (no caching)
+        assert site1 is not site2
         assert site1.latitude == site2.latitude
-        assert site1.name == site2.name

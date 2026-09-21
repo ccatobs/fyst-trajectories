@@ -3,11 +3,15 @@
 import numpy as np
 import pytest
 
-from fyst_trajectories.patterns.turnarounds import quintic_turnaround
+from fyst_trajectories.patterns.turnarounds import (
+    quintic_turnaround,
+    turnaround_duration_sec,
+)
+from fyst_trajectories.planning._ce_geometry import _quantize_ce_duration
 
 
 class TestQuinticTurnaround:
-    """Tests for the quintic polynomial turnaround."""
+    """Boundary conditions, symmetry, and the 5*v*T/16 peak displacement of the quintic."""
 
     @pytest.fixture
     def params(self):
@@ -92,3 +96,35 @@ class TestQuinticTurnaround:
         accel = np.diff(vel) / dt
         a_avg = 2.0 * v / T
         np.testing.assert_allclose(np.max(np.abs(accel)), 1.5 * a_avg, rtol=1e-3)
+
+
+class TestTurnaroundDurationIsShared:
+    """One definition of ``T = 2 * v / a``, used by the generator and the quantiser."""
+
+    @pytest.mark.parametrize(
+        "az_speed,az_accel",
+        [(1.5, 1.0), (1.0, 0.75), (3.0, 1.5), (0.25, 1.0)],
+    )
+    def test_the_quantiser_counts_the_same_turnaround_the_generator_emits(self, az_speed, az_accel):
+        """A leg count derived from a different turnaround overruns its window.
+
+        The quantiser's leg arithmetic and the generated trajectory have to
+        price a reversal identically; deriving the count from the cruise time
+        alone quantises a 300 s window to 848 s for a 2.44 deg leg at
+        1.5 deg/s and 1.0 deg/s^2.
+        """
+        expected = turnaround_duration_sec(az_speed, az_accel)
+        assert expected == pytest.approx(2.0 * az_speed / az_accel)
+
+        # One leg plus one turnaround, exactly: the quantiser must return two
+        # legs and a duration built from the same turnaround.
+        az_throw = 10.0
+        t_cruise = az_throw / az_speed
+        n_scans, actual = _quantize_ce_duration(
+            az_throw=az_throw,
+            velocity=az_speed,
+            duration=2.0 * t_cruise + expected,
+            az_accel=az_accel,
+        )
+        assert n_scans == 2
+        assert actual == pytest.approx(2.0 * t_cruise + expected)

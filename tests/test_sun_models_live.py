@@ -28,7 +28,6 @@ from fyst_trajectories import (  # noqa: E402
     get_fyst_site,
     sun_models,
 )
-from fyst_trajectories.dispatch import SunSafePredicate  # noqa: E402
 from fyst_trajectories.exceptions import PointingWarning  # noqa: E402
 from fyst_trajectories.sun_models import load_avoidance_data, make_sun_safe  # noqa: E402
 
@@ -94,8 +93,9 @@ def test_no_drift_against_fixture():
 
 
 def test_satisfies_sun_safe_predicate_contract():
+    # SunSafePredicate is a callable Protocol: isinstance() accepts any
+    # callable, so the contract is asserted by calling, not by checking.
     for predicate in _model_set().values():
-        assert isinstance(predicate, SunSafePredicate)
         verdict = predicate(180.0, 45.0, T_REF)
         assert isinstance(verdict, bool)
     # The scalar-call contract is one point; arrays must go through batch().

@@ -86,8 +86,10 @@ dynamics::
     # Check only dynamics (emits warning if limits exceeded)
     validate_trajectory_dynamics(site, az_array, el_array, times_array)
 
-Sun avoidance is advisory: it warns but never raises, so telescope control
-systems must enforce their own hard sun-avoidance limits independently::
+Sun avoidance is advisory: it warns but never raises, and it is subsampled at
+roughly 60 s, so a fast scan can cross the exclusion zone between samples
+without a warning. Telescope control systems must enforce their own hard
+sun-avoidance limits independently::
 
     from fyst_trajectories import get_fyst_site, validate_sun_avoidance
     from fyst_trajectories.trajectory_utils import get_absolute_times

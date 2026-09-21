@@ -46,9 +46,12 @@ def plan_daisy_altaz_scan(
     ``start_acceleration`` are tangent-plane (on-sky) quantities, identical
     in meaning to the :func:`plan_daisy_scan` arguments of the same name.
     The azimuth coordinate is stretched by ``1 / cos(el_center)``: the
-    azimuth-coordinate extent is ``2 * radius / cos(el_center)`` and the
-    azimuth-coordinate speed exceeds the on-sky ``velocity`` by the same
-    factor.
+    azimuth-coordinate extent is about
+    ``2 * r_max / cos(el_center)``, where the petal's reach
+    ``r_max = sqrt(radius**2 + turn_radius**2) + turn_radius`` exceeds
+    ``radius`` because the petal only starts to turn once it is ``radius``
+    from the center, and the azimuth-coordinate speed exceeds the on-sky
+    speed by the same ``1 / cos(el_center)`` factor.
 
     Parameters
     ----------
@@ -72,7 +75,7 @@ def plan_daisy_altaz_scan(
     start_time : str or Time
         Observation start time. Accepts an ISO string or
         ``astropy.time.Time``. Used to anchor the trajectory timestamp and
-        to convert the center to RA/Dec for the sun-safety pre-flight check.
+        to place the Sun for the center's sun-safety pre-flight check.
     timestep : float
         Time between trajectory points in seconds. Must be positive.
     duration : float

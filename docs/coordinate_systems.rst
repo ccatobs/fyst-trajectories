@@ -30,6 +30,11 @@ Only spherical RA/Dec frames (``J2000``/``FK5``/``B1950``) are usable with
 :meth:`~fyst_trajectories.coordinates.Coordinates.altaz_to_radec`.
 ``GALACTIC`` and ``ECLIPTIC`` are intentionally not aliased: those frames use
 ``l``/``b`` and ``lon``/``lat`` and would raise in the transform methods.
+For a star whose proper motion has moved it by more than the beam since
+the catalogue epoch, use
+:meth:`~fyst_trajectories.coordinates.Coordinates.radec_to_altaz_with_pm`,
+which propagates the catalogue position to the observation time first;
+:doc:`quickstart` runs it on Barnard's Star.
 
 .. [#j2k] ``J2000`` is a label of convenience: this library maps it to
    ``icrs``, but ICRS and FK5(J2000) differ at the tens-of-mas level: the
@@ -56,8 +61,9 @@ Trajectory Coordinate Fields
 Pattern-generated trajectories track coordinate provenance:
 
 - ``trajectory.coordsys``: Always ``"altaz"`` (output is Az/El)
-- ``trajectory.metadata.input_frame``: ``"icrs"`` for celestial patterns,
-  ``None`` for AltAz patterns (no other value is produced)
+- ``trajectory.metadata.input_frame``: ``"icrs"`` for the RA/Dec patterns
+  (pong, daisy, sidereal), ``None`` for every AltAz-frame pattern, which
+  includes planet and satellite tracking (no other value is produced)
 
 ::
 
@@ -84,59 +90,24 @@ Pattern-generated trajectories track coordinate provenance:
     print(trajectory.coordsys)            # "altaz"
     print(trajectory.metadata.input_frame) # "icrs"
 
-Proper Motion
--------------
-
-``radec_to_altaz_with_pm()`` propagates a catalogue position from its
-reference epoch to the observation time before transforming to Az/El. Use it
-for stars whose proper motion has moved them by more than the beam since the
-catalogue epoch::
-
-    from astropy.time import Time
-
-    from fyst_trajectories import Coordinates, get_fyst_site
-
-    coords = Coordinates(get_fyst_site())
-
-    # Barnard's Star (moves ~10 arcsec/year); J2000 catalogue position
-    az, el = coords.radec_to_altaz_with_pm(
-        ra=269.452, dec=4.693,
-        pm_ra=-798.58, pm_dec=10328.12,  # mas/yr (pm_ra includes cos(dec))
-        ref_epoch=Time("J2000.0"),
-        obstime=Time("2026-06-15T04:00:00", scale="utc"),
-        distance=1.8,  # parsecs, optional
-    )
-
 Field Rotation vs. Focal Plane Rotation
 ----------------------------------------
 
 ``Coordinates.get_field_rotation()`` returns the **celestial-frame**
 orientation of the focal plane
-(``nasmyth_sign * elevation + parallactic_angle``) with no instrument
-rotation, the quantity needed for sky-map orientation, image rotation, and
-polarization angles. The Nasmyth sign is determined by ``site.nasmyth_port``
-(+1 for Right, -1 for Left, 0 for Cassegrain).
-
-The az/el projections (``apply_detector_offset``, ``boresight_to_detector``,
-``detector_to_boresight``) use the mechanical (horizon-frame) rotation,
-``nasmyth_sign * elevation + instrument_rotation``.
-``compute_focal_plane_rotation()`` computes either frame
-(``parallactic_angle`` defaults to 0.0, the mechanical value).
-
-See :doc:`instrument_offsets` for details on the frame distinction and usage.
+(``nasmyth_sign * elevation + parallactic_angle``, no instrument
+rotation), the quantity needed for sky-map orientation, image rotation and
+polarization angles. The az/el projections use the mechanical
+(horizon-frame) rotation instead,
+``nasmyth_sign * elevation + instrument_rotation``, and
+``compute_focal_plane_rotation()`` computes either frame. See
+:doc:`instrument_offsets` for the distinction and its usage.
 
 .. note::
 
    Sources whose declination is close to the site latitude
-   (``|dec − lat| < 5°``) transit very near the zenith, where the
-   parallactic-angle *rate* diverges. FYST's lat = −22.99° puts sources
-   with dec ≈ −18° to −28° in this regime. How fast the swing runs
-   depends on how close the transit passes to the zenith: the time for a
-   180° swing scales with the transit zenith distance at roughly 820 s
-   per degree, so it is a few seconds only within a few hundredths of a
-   degree of the zenith-crossing declination, about a quarter of an hour
-   one degree away, and over an hour at the edges of the 5° band. Treat
-   the whole band as carrying the discontinuity, but expect the fast
-   swing only very close to the zenith-crossing declination. See
+   (``|dec - lat| < 5°``) transit very near the zenith, where the
+   parallactic-angle *rate* diverges. FYST's lat = -22.99° puts dec
+   -18° to -28° in that band. See
    :meth:`~fyst_trajectories.coordinates.Coordinates.get_parallactic_angle` Notes
-   for the full discussion.
+   for how fast the angle swings across that band.

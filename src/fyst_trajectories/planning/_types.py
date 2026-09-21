@@ -96,9 +96,14 @@ class ConstantElComputedParams(TypedDict):
     start_time_iso : str
         ISO-format UTC start time of the observation.
     end_time_iso : str
-        ISO-format UTC end time of the observation.
+        ISO-format UTC time at which the solved pass window closes (the
+        elevation crossing, or the LSA window when one was given).
     duration : float
-        Total observation duration in seconds.
+        Trajectory duration in seconds: that window rounded to a whole number
+        of azimuth legs, so it differs from ``end_time_iso - start_time_iso``
+        in either direction by up to half of one leg-plus-turnaround, and by
+        more when the window is shorter than the single leg that is always
+        built. Book a slot on this value.
     """
 
     az_start: float
@@ -152,7 +157,12 @@ class SourceCESComputedParams(TypedDict):
         Lower azimuth bound of the scan in degrees (after padding and
         ``az_branch`` re-wrapping).
     az_throw : float
-        Total azimuth throw in degrees.
+        Total azimuth throw in degrees (the solved footprint crossing plus
+        padding, or the explicit ``az_throw`` when one was given).
+    az_speed : float
+        Per-leg azimuth speed in deg/s the sweep was planned with: the
+        explicit ``az_speed`` when one was given, otherwise the derived
+        slow-drag speed. A mount-frame azimuth coordinate rate.
     v_az : float
         Solved (or user-supplied) azimuth drift rate in deg/s. A
         mount-frame azimuth *coordinate* rate, not an on-sky speed.
@@ -161,13 +171,24 @@ class SourceCESComputedParams(TypedDict):
     boresight_rot : float
         Mechanical boresight rotation in degrees (0.0 when not supplied).
     t0_iso : str
-        ISO UTC time at which the source enters the footprint.
+        ISO UTC time at which the scanned window opens: when the source
+        enters the footprint, or later by half the cut when a ``dwell``
+        narrowed the pass.
     t1_iso : str
-        ISO UTC time at which the source exits the footprint.
+        ISO UTC time at which the scanned window closes: when the source
+        exits the footprint, or earlier by half the cut when a ``dwell``
+        narrowed the pass.
     duration : float
-        Actual trajectory duration in seconds (may differ slightly from
-        ``t1 - t0`` because of leg/turnaround quantisation in the
-        underlying ConstantEl pattern).
+        Actual trajectory duration in seconds. Leg/turnaround
+        quantisation in the underlying ConstantEl pattern rounds the
+        window to whole legs, so this differs from ``t1 - t0`` by up to
+        half a leg plus turnaround in either direction: a few seconds at
+        a fast drag, about 26 s on the slow-drag default. Book a slot on
+        this value, not on the window.
+    crossing_seconds : float
+        Duration in seconds of the full footprint crossing, before any
+        ``dwell`` narrowing. Equals ``t1 - t0`` unless a ``dwell`` was
+        given.
     mode : str
         Either ``"rising"`` or ``"setting"``.
     n_scans : int
@@ -176,12 +197,14 @@ class SourceCESComputedParams(TypedDict):
 
     az_start: float
     az_throw: float
+    az_speed: float
     v_az: float
     el_bore: float
     boresight_rot: float
     t0_iso: str
     t1_iso: str
     duration: float
+    crossing_seconds: float
     mode: str
     n_scans: int
 
@@ -189,12 +212,8 @@ class SourceCESComputedParams(TypedDict):
 # Umbrella alias used by :attr:`ScanBlock.computed_params`. The concrete
 # dict shape depends on which ``plan_*`` function produced the block.
 #
-# Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
-# section in docs/overhead_integration.rst). This union has 6 members and
-# INCLUDES ``SourceCESComputedParams``. Its mirror-inverted partner is the
-# overhead-side ``ScanParamsDict`` union (overhead/models.py), which has 3
-# members and EXCLUDES the source-CES schema. Each union tracks a TypedDict
-# attribute annotation; the inversion is by design and must not be equalized.
+# Deliberately INCLUDES ``SourceCESComputedParams``: the planner returns it.
+# Do not equalize with the overhead-side scan-type vocabularies.
 ComputedParams = (
     PongComputedParams
     | PongAltAzComputedParams
@@ -358,13 +377,18 @@ class ArrayFootprint:
         units : {'rad', 'deg'}, optional
             Angular units of the input. Default ``'rad'`` matches SO's
             convention; pass ``'deg'`` if your data is already in
-            degrees.
+            degrees. Any other value is rejected.
 
         Returns
         -------
         ArrayFootprint
             Equivalent fyst-trajectories footprint, with all internal
             arrays in degrees.
+
+        Raises
+        ------
+        ValueError
+            If ``units`` is neither ``'rad'`` nor ``'deg'``.
 
         Examples
         --------
@@ -380,6 +404,8 @@ class ArrayFootprint:
         ... }
         >>> fp = ArrayFootprint.from_array_info(array_info)  # radians by default
         """
+        if units not in ("rad", "deg"):
+            raise ValueError(f"units must be 'rad' or 'deg', got {units!r}")
         scale = float(np.rad2deg(1.0)) if units == "rad" else 1.0
         center = array_info["center"]
         cover = array_info["cover"]
@@ -439,32 +465,11 @@ class ScanBlock:
 # ``__required_keys__`` so the table cannot drift from the declared
 # schemas (each TypedDict is ``total=True`` with no ``NotRequired``).
 #
-# NOTE: ``source_ces`` is intentionally NOT registered here.
-# :class:`SourceCESComputedParams` exists as a static-type schema for
-# :func:`~fyst_trajectories.planning.plan_source_ces` returns, and the planner
-# self-checks its return value directly against
-# :attr:`SourceCESComputedParams.__required_keys__`, so this table is
-# never consulted for source-CES. ``ObservingPatch`` still rejects
-# ``"source_ces"`` as a science scan type. The
-# :mod:`fyst_trajectories.overhead` simulator does now consume
-# source-CES, but through calibration-block ``scan_params``
-# (planet-cal passes emitted by ``CalibrationPolicy.planet_cal_scan``
-# and rebuilt by ``schedule_to_trajectories(science_only=False)``),
-# which validate against the overhead-side registry
-# ``overhead/models.py:_SCAN_TYPE_TO_SCAN_PARAM_KEYS``
-# (``SourceCESScanParams``) rather than this computed-params table.
-# If a future use case wants source-CES *science* blocks in
-# :func:`~fyst_trajectories.overhead.generate_timeline`, add the
-# entry here AND wire it through
-# ``overhead/simulation.py:_generate_trajectory_for_block`` AND
-# ``overhead/models.py:ObservingPatch``.
-#
-# Scan-type vocabulary (one of six; see the "Scan-type vocabularies"
-# section in docs/overhead_integration.rst). This table has 5 keys and
-# EXCLUDES ``source_ces``. Its mirror-inverted partner is the overhead-side
-# ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS`` (overhead/models.py), which has 4 keys
-# and INCLUDES ``source_ces``. Each table tracks a runtime validator's call
-# sites; the inversion is by design and must not be equalized.
+# Deliberately EXCLUDES ``source_ces``: the planner self-checks its return
+# against :attr:`SourceCESComputedParams.__required_keys__`, so this table is
+# never consulted for it, and the simulator reaches source-CES only through
+# calibration-block ``scan_params``, validated by the overhead-side
+# ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``. Do not equalize the two.
 _SCAN_TYPE_TO_KEYS: dict[str, frozenset[str]] = {
     "pong": PongComputedParams.__required_keys__,
     "pong_altaz": PongAltAzComputedParams.__required_keys__,
@@ -498,6 +503,11 @@ def validate_computed_params(params: Mapping[str, object], scan_type: str) -> No
     KeyError
         If ``scan_type`` is unknown or ``params`` is missing any key
         required by that scan type.
+
+    Warns
+    -----
+    PointingWarning
+        If ``params`` carries keys the scan type does not declare.
     """
     if scan_type == "source_ces":
         raise KeyError(

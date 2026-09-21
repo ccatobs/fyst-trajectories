@@ -42,7 +42,7 @@ TITAN_BELOW_TIME = Time("2026-06-15T00:00:00", scale="utc")
 
 
 class TestSatelliteTrackPattern:
-    """Tests for Titan point-tracking."""
+    """Titan point-tracking: resolver parity, azimuth wrap, bounds, and kernel sourcing."""
 
     def test_titan_track_follows_titan(self, site):
         """Every sample equals get_body_altaz('titan', t_i) exactly.
@@ -232,7 +232,7 @@ class TestSatelliteTrackPattern:
 
 
 class TestSatelliteTrackConfig:
-    """Tests for SatelliteTrackConfig validation."""
+    """Only known satellite names are accepted, case-insensitively."""
 
     @pytest.mark.parametrize("body", ["mars", "jupiter", "pluto"])
     def test_satellite_config_rejects_non_satellite(self, body):
@@ -247,7 +247,7 @@ class TestSatelliteTrackConfig:
 
 
 class TestSatelliteTrackBuilder:
-    """Tests for builder integration."""
+    """The builder infers the satellite pattern from its config and carries the target."""
 
     def test_builder_satellite_round_trip(self, site):
         """TrajectoryBuilder infers SatelliteTrackPattern from the config."""
@@ -268,10 +268,10 @@ class TestSatelliteTrackBuilder:
 
 
 class TestSatelliteTrackPublicAPI:
-    """Tests that the new symbols are additively exported."""
+    """The satellite symbols are exported from the top level and listed in ``__all__``."""
 
     def test_new_symbols_importable_and_in_all(self):
-        """The three new public symbols import from the top level and are in __all__."""
+        """All three satellite symbols import from the top level and appear in __all__."""
         import fyst_trajectories as ft
 
         for name in ("SatelliteTrackConfig", "SatelliteTrackPattern", "SATELLITE_BODIES"):
@@ -289,7 +289,7 @@ def test_no_pointing_warning_on_apply_detector_offset(site):
     """Detector offset on a Titan track must not warn.
 
     Parity with the planet pattern: apply_detector_offset is a horizon-frame
-    projection using the mechanical rotation only (pa-in-horizon-frame fix),
+    projection using the mechanical rotation only, not the parallactic angle,
     so it needs no celestial metadata and must never emit a PointingWarning.
     """
     from fyst_trajectories.exceptions import PointingWarning

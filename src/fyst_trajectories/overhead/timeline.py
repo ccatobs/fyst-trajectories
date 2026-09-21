@@ -65,19 +65,26 @@ def generate_timeline(
         Injected sun-safety model
         (:class:`~fyst_trajectories.dispatch.SunSafePredicate`, e.g. from
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) driving the
-        default Sun constraint, the mid-scan sun-drift duration clips, and
-        the scan-mode planet-calibration planner
-        (``plan_source_ces_passes``). Default ``None`` keeps the site's
-        scalar exclusion radius.
+        default Sun constraint, the mid-scan sun-drift duration clips, the
+        slew gate and the escape move, and the scan-mode
+        planet-calibration planner (``plan_source_ces_passes``). Default
+        ``None`` keeps the site's scalar exclusion radius.
         Only consulted while the site has Sun avoidance enabled. When an
-        explicit ``constraints`` list is supplied it is used as-is;
-        ``sun_safe`` then affects the duration clips only.
+        explicit ``constraints`` list is supplied it is used as-is, so
+        ``sun_safe`` no longer sets the patch-selection constraint; it
+        still drives everything else listed here.
 
     Returns
     -------
     ObservingTimeline
         Complete observing timeline with science, calibration,
         slew, and idle blocks.
+
+    See Also
+    --------
+    fyst_trajectories.overhead.plan_calibration_night : one night of
+        solar-system calibration passes planned back to back over a body
+        queue; shares this simulator's block model and outputs.
     """
     if isinstance(start_time, str):
         start_time = Time(start_time, scale="utc")

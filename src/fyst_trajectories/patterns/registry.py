@@ -38,24 +38,26 @@ List available patterns:
  'pong_altaz', 'satellite', 'sidereal']
 """
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from ..exceptions import PointingError
 
 if TYPE_CHECKING:
     from .base import ScanPattern
     from .configs import ScanConfig
 
-# Scan-type vocabulary (one of six; see the "Scan-type vocabularies" section
-# in docs/overhead_integration.rst). Surfaced by ``list_patterns``, this is the
-# widest scan-name vocabulary: the 9 buildable scan patterns. ``source_ces`` is
-# planner-only (``plan_source_ces``), NOT a registered pattern, so it never
-# appears here; the narrower planning-side (``ComputedParams`` /
-# ``_SCAN_TYPE_TO_KEYS``) and overhead-side (``ScanParamsDict`` /
-# ``_SCAN_TYPE_TO_SCAN_PARAM_KEYS``) vocabularies are differently scoped.
+# The buildable scan patterns, surfaced by ``list_patterns``. Deliberately
+# excludes ``source_ces``, which is planner-only (``plan_source_ces``) and
+# never a registered pattern. Do not equalize with the planning-side or
+# overhead-side scan-type vocabularies: each is scoped to its own question.
 _PATTERN_REGISTRY: dict[str, type["ScanPattern"]] = {}
 _CONFIG_TO_PATTERN_NAME: dict[type, str] = {}
 
 
-def register_pattern(name: str, *, config: type["ScanConfig"] | None = None):
+def register_pattern(
+    name: str, *, config: type["ScanConfig"] | None = None
+) -> Callable[[type["ScanPattern"]], type["ScanPattern"]]:
     """Register a pattern class via decorator.
 
     Parameters
@@ -76,9 +78,11 @@ def register_pattern(name: str, *, config: type["ScanConfig"] | None = None):
 
     Raises
     ------
-    ValueError
-        If a pattern with the same name is already registered, or if
-        the config class is already mapped to another pattern.
+    PointingError
+        If ``name`` is not a non-blank string, if a pattern with the same
+        name is already registered, or if the config class is already
+        mapped to another pattern. A subclass of ``ValueError``, so an
+        existing ``except ValueError`` still catches it.
 
     Examples
     --------
@@ -86,17 +90,26 @@ def register_pattern(name: str, *, config: type["ScanConfig"] | None = None):
     ... class MyPattern(CelestialPattern):
     ...     pass
     """
+    # Checked before the decorator is even handed back: a name that is not
+    # a usable key poisons ``list_patterns``, which sorts the keys, for the
+    # rest of the process.
+    if not isinstance(name, str) or not name.strip():
+        raise PointingError(f"Pattern name must be a non-blank string, got {name!r}")
 
     def decorator(cls: type["ScanPattern"]) -> type["ScanPattern"]:
+        # Both checks run before either map is written, so a refused
+        # registration leaves the registry exactly as it found it. Writing the
+        # name first would leave a half-registered pattern behind whenever the
+        # config mapping is the half that clashes.
         if name in _PATTERN_REGISTRY:
-            raise ValueError(
+            raise PointingError(
                 f"Pattern '{name}' already registered by {_PATTERN_REGISTRY[name].__name__}"
             )
+        if config is not None and config in _CONFIG_TO_PATTERN_NAME:
+            existing = _CONFIG_TO_PATTERN_NAME[config]
+            raise PointingError(f"Config {config.__name__} already mapped to pattern '{existing}'")
         _PATTERN_REGISTRY[name] = cls
         if config is not None:
-            if config in _CONFIG_TO_PATTERN_NAME:
-                existing = _CONFIG_TO_PATTERN_NAME[config]
-                raise ValueError(f"Config {config.__name__} already mapped to pattern '{existing}'")
             _CONFIG_TO_PATTERN_NAME[config] = name
         return cls
 

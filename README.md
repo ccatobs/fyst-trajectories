@@ -4,17 +4,17 @@
 
 Trajectory generation library for the Fred Young Submillimeter Telescope (FYST).
 Wraps astropy with FYST-specific site coordinates, telescope limits, scan
-pattern generators, focal-plane offsets, sun-avoidance policies, and an
-offline observing-night overhead simulator.
+pattern generators, focal-plane offsets, sun-avoidance policies, an offline
+observing-night overhead simulator, and a calibration-night planner.
 
 **Documentation:** [fyst-trajectories.readthedocs.io](https://fyst-trajectories.readthedocs.io/en/latest/)
 
 ## Installation
 
-Pin a release tag (`v0.8.0` is the latest).
+Pin a release tag (`v0.9.0` is the latest).
 
 ```bash
-pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.8.0"
+pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.9.0"
 ```
 
 ## Development

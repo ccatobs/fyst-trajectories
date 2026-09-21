@@ -2,7 +2,9 @@
 
 from typing import TYPE_CHECKING
 
-from astropy.time import Time
+import numpy as np
+from astropy import units as u
+from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
 from ..patterns.configs import ConstantElScanConfig
@@ -14,7 +16,12 @@ from ._ce_geometry import (
     _quantize_ce_duration,
 )
 from ._helpers import _build_altaz_trajectory, _coerce_start_time
-from ._sun_safety import _check_field_sun_safety
+from ._sun_safety import (
+    _SUN_SAFETY_ARC_N_SAMPLES,
+    _check_arc_sun_safety,
+    _check_field_sun_safety,
+    _swept_arc_samples,
+)
 from ._types import ConstantElComputedParams, FieldRegion, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
@@ -28,7 +35,7 @@ def plan_constant_el_scan(
     velocity: float,
     site: Site,
     start_time: str | Time,
-    rising: bool = True,
+    rising: bool | None = None,
     angle: float = 0.0,
     az_accel: float = 1.0,
     timestep: float = 0.1,
@@ -64,17 +71,20 @@ def plan_constant_el_scan(
     velocity : float
         Azimuth scan speed in azimuth coordinate degrees/second
         (not on-sky). The on-sky speed is
-        ``velocity * cos(elevation)``. This is the value sent
-        directly to the Vertex ACU. Must be positive.
+        ``velocity * cos(elevation)``; this is the mount-frame rate the
+        telescope executes. Must be positive.
     site : Site
         Telescope site configuration.
     start_time : str or Time
         Approximate start time for the search window. The function
         searches up to ``max_search_hours`` forward from this time to
         find when the field edges cross the target elevation.
-    rising : bool, optional
-        If True (default), use the rising crossing; if False, the
-        setting crossing.
+    rising : bool or None, optional
+        Which elevation crossing to observe: ``True`` the rising one,
+        ``False`` the setting one. Default ``None`` selects the rising
+        crossing. Not accepted together with ``lsa_window``, which derives
+        the timing from sidereal angle instead and has no crossing to
+        choose.
     angle : float, optional
         Rotation angle of the field region in degrees. Default is 0.0.
     az_accel : float, optional
@@ -102,14 +112,16 @@ def plan_constant_el_scan(
         rather than from RA-edge elevation crossings: the planner finds
         the first time at or after ``start_time`` at which Local
         Sidereal Time (in degrees) increases through ``min_lsa``, and
-        the scan runs for ``(max_lsa - min_lsa) mod 360 / 15`` hours.
+        the scan spans ``(max_lsa - min_lsa) mod 360 / 15`` hours of
+        UTC, about 0.3 percent longer than the sidereal window it names.
+        ``ScanBlock.duration`` is that span quantised to whole azimuth
+        legs, so it is a little shorter again.
         Wrap-around windows where ``max_lsa < min_lsa`` are supported
         (e.g. ``(310.0, 10.0)`` is a 60°/15 = 4 hour scan crossing the
         LSA = 0/360 boundary). Both endpoints must lie in ``[0, 360)``
-        and must not be equal. ``rising`` is still honored - it
-        controls the azimuth-range computation (rising/setting half of
-        the field's transit) but does NOT affect the LSA-derived
-        ``obs_start`` / ``obs_end``. ``max_search_hours`` and
+        and must not be equal. The window fixes both the timing and the
+        azimuth range, so ``rising`` has nothing left to choose and
+        passing it alongside is rejected. ``max_search_hours`` and
         ``step_seconds`` still bound the search horizon. Use this for
         operator-driven LSA-windowed scheduling (e.g. ACT/Deep56-style
         constant-elevation patches). Default is ``None``, which
@@ -123,8 +135,9 @@ def plan_constant_el_scan(
         sun-avoidance model (see
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
         end-to-end.
-        Applied at both pre-flight checks when ``lsa_window`` is supplied
-        (search anchor and resolved ``obs_start``). Warn-only.
+        Applied at every sun check the planner runs: the field-center
+        pre-flight(s) and the swept-pass check described in the Notes.
+        Warn-only.
 
     Returns
     -------
@@ -137,7 +150,8 @@ def plan_constant_el_scan(
     ------
     ValueError
         If ``velocity`` is not positive, if the elevation crossings
-        cannot be found within the search window, or if ``lsa_window``
+        cannot be found within the search window, if ``rising`` and
+        ``lsa_window`` are supplied together, or if ``lsa_window``
         is supplied with equal endpoints or values outside ``[0, 360)``.
     PointingError
         If ``lsa_window`` is supplied and LST never increases through
@@ -149,15 +163,16 @@ def plan_constant_el_scan(
 
     Notes
     -----
-    Sun-safety pre-flight runs twice when ``lsa_window`` is supplied:
-    once at ``start_time`` (the search anchor) and once at the
-    resolved ``obs_start``. The LSA branch can delay the observation
-    by several hours relative to ``start_time``, during which the
-    Sun moves ~15°/hour - a field that is safely far from the Sun
-    at ``start_time`` may not be safe by the time the LSA window
-    opens. The elevation-crossing path runs the check only at
-    ``start_time``; the resolved ``obs_start`` can fall tens of minutes
-    (occasionally hours) later, so this pre-flight is anchor-time only.
+    Sun safety is screened in two stages. The field-center pre-flight is
+    a cheap instant check that runs before the search, at ``start_time``,
+    and again at the resolved ``obs_start`` when ``lsa_window`` delays the
+    observation (the LSA branch can push it hours later, during which the
+    Sun moves ~15°/hour). Once the pass is resolved, the planner then
+    sweeps it: the commanded azimuth envelope (the swept window widened by
+    the turnaround overshoot on each side) is sampled at the fixed
+    ``elevation`` across the whole run, so a multi-hour block that starts
+    clear of the Sun and ends inside the exclusion zone is caught. Both
+    stages warn and never block.
 
     Examples
     --------
@@ -187,12 +202,17 @@ def plan_constant_el_scan(
     ...     velocity=0.5,
     ...     site=site,
     ...     start_time=Time("2026-09-15T00:00:00", scale="utc"),
-    ...     rising=True,
     ...     lsa_window=(310.0, 10.0),
     ... )
     """
     if velocity <= 0:
         raise ValueError(f"velocity must be positive, got {velocity}")
+    if lsa_window is not None and rising is not None:
+        raise ValueError(
+            "rising is not accepted with lsa_window: the sidereal window fixes both "
+            "the timing and the azimuth range, so there is no crossing half to choose. "
+            "Drop rising, or drop lsa_window to plan an elevation crossing."
+        )
 
     start_time = _coerce_start_time(start_time)
 
@@ -223,7 +243,7 @@ def plan_constant_el_scan(
             elevation,
             coords_obj,
             start_time,
-            rising,
+            True if rising is None else rising,
             max_search_hours=max_search_hours,
             step_seconds=step_seconds,
         )
@@ -239,6 +259,34 @@ def plan_constant_el_scan(
         velocity=velocity,
         duration=duration,
         az_accel=az_accel,
+    )
+
+    # Sweep the resolved pass, not just its opening instant: a block can run
+    # for hours while the Sun closes at ~15 deg/hour, so a pass that is clear
+    # at ``obs_start`` can end deep inside the exclusion zone. The screened
+    # span covers both the quantised trajectory length and ``obs_end``,
+    # whichever runs longer, at the commanded azimuth envelope.
+    swept_seconds = max(actual_duration, (obs_end - obs_start).sec)
+    sweep_times = obs_start + TimeDelta(
+        np.linspace(0.0, swept_seconds, _SUN_SAFETY_ARC_N_SAMPLES) * u.s
+    )
+    sweep_az, sweep_el, sweep_times = _swept_arc_samples(
+        az_min=np.full(_SUN_SAFETY_ARC_N_SAMPLES, az_min),
+        az_throw=az_throw,
+        el_deg=elevation,
+        times=sweep_times,
+        az_speed=velocity,
+        az_accel=az_accel,
+    )
+    _check_arc_sun_safety(
+        coords_obj,
+        site,
+        sweep_az,
+        sweep_el,
+        sweep_times,
+        f"constant-elevation scan at RA={field.ra_center:.3f}, Dec={field.dec_center:.3f}",
+        sun_safe=sun_safe,
+        stacklevel=3,
     )
 
     config = ConstantElScanConfig(
@@ -270,6 +318,14 @@ def plan_constant_el_scan(
     }
     validate_computed_params(computed_params, "constant_el")
 
+    # Name the pass by what actually chose it: the crossing half on the
+    # elevation-crossing path, the sidereal window on the LSA path (where
+    # no half is chosen and claiming one would be a false report).
+    if lsa_window is not None:
+        pass_label = "LSA-window pass"
+    else:
+        pass_label = "Rising pass" if rising is None or rising else "Setting pass"
+
     summary = (
         f"Constant-El scan: {field.width:.2f} x {field.height:.2f} deg field "
         f"at RA={field.ra_center:.3f}, Dec={field.dec_center:.3f}\n"
@@ -277,7 +333,7 @@ def plan_constant_el_scan(
         f"Az range: [{az_min:.2f}, {az_max:.2f}] deg "
         f"(throw: {az_throw:.2f} deg)\n"
         f"  Velocity: {velocity:.3f} deg/s, Acceleration: {az_accel:.3f} deg/s^2\n"
-        f"  {'Rising' if rising else 'Setting'} pass: "
+        f"  {pass_label}: "
         f"{obs_start.iso[:19]} to {obs_end.iso[:19]}\n"
         f"  Scans: {n_scans}, Duration: {actual_duration:.1f}s "
         f"({actual_duration / 60:.1f}min), "

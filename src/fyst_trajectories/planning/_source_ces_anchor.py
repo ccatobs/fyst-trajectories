@@ -26,6 +26,7 @@ from ..site import AtmosphericConditions, Site
 from . import source_ces
 from ._helpers import _coerce_start_time
 from ._types import ArrayFootprint
+from .footprints import resolve_footprint
 
 # --- Approximate-start-time ("anchor") resolution constants ---------------
 # These support the ``start_time`` keyword on the source-CES entry points,
@@ -204,7 +205,11 @@ def _derive_anchored_el_bore(
     ``el_bore`` so that crossing lands on the anchor. A small
     :data:`_ANCHOR_START_LEAD_DEG` lead is added in the drift direction so the
     resolved start settles just after the anchor, clear of the search-window
-    boundary. One probe, no iteration.
+    boundary. One probe, no iteration. The anchor places the full footprint
+    crossing; a ``dwell`` narrows the pass about that crossing's midpoint
+    afterwards, so a dwell-limited pass starts half the cut after the anchor
+    (placing the narrowed start on the anchor would open the crossing before
+    the search window and trip the cover-vs-arc guard).
 
     Raises :class:`TargetNotObservableError` (anchor-relative message) when
     the probe or the derived ``el_bore`` falls outside the telescope
@@ -436,7 +441,7 @@ def _resolve_start_time_anchor(
             el_at_anchor=el_at_anchor,
             mode=resolved_mode,
             coords=coords,
-            fp=source_ces._resolve_footprint(footprint),
+            fp=resolve_footprint(footprint),
             body=body,
             ra=ra,
             dec=dec,

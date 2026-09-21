@@ -12,8 +12,9 @@ dataclass, telescope limits, and atmospheric conditions.
 Overriding Defaults
 -------------------
 
-Only the sun-avoidance parameters are overridable; location, optics, and
-mechanical limits are fixed constants::
+``get_fyst_site()`` overrides only the sun-avoidance parameters; its
+location, optics, and mechanical limits are fixed constants. A non-FYST
+site goes through ``Site`` or ``Site.from_config()`` instead::
 
     from fyst_trajectories import get_fyst_site
 

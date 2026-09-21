@@ -1,12 +1,16 @@
 """Tests for the custom exception hierarchy.
 
 Verifies:
-- Exception inheritance (PointingError -> ValueError backward compat)
+- Exception inheritance (every error is catchable as ValueError)
 - Structured data on all exception types
 - Pattern-level error wrapping (TargetNotObservableError)
 - AltAz pattern direct bounds errors
 - validate_trajectory() bounds errors
+- pickle / copy round trips (the errors cross process boundaries)
 """
+
+import copy
+import pickle
 
 import numpy as np
 import pytest
@@ -16,6 +20,8 @@ from fyst_trajectories.exceptions import (
     AccelerationLimitWarning,
     AzimuthBoundsError,
     ElevationBoundsError,
+    EncoderSolutionError,
+    OffsetInversionError,
     PointingError,
     PointingWarning,
     TargetNotObservableError,
@@ -125,9 +131,9 @@ class TestExceptionStructuredData:
 
 
 class TestLimitWarningHierarchy:
-    """Lock the backward-compat contract for the structured limit warnings.
+    """Lock the category contract for the structured limit warnings.
 
-    The PCS dispatch-time escalation filters on ``VelocityLimitWarning`` by
+    A dispatch-time escalation filters on ``VelocityLimitWarning`` by
     *category* (``issubclass``), so these must remain ``PointingWarning``
     subclasses or every existing ``except PointingWarning`` /
     ``issubclass(.., PointingWarning)`` handler would silently stop catching
@@ -169,7 +175,7 @@ class TestPongRaisesTargetNotObservable:
         assert isinstance(exc.bounds_error, TrajectoryBoundsError)
 
     def test_pong_unobservable_is_catchable_as_valueerror(self, site):
-        """Test backward compatibility: TargetNotObservableError caught as ValueError."""
+        """A TargetNotObservableError is catchable as a plain ValueError."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = PongScanConfig(
             timestep=0.1,
@@ -423,3 +429,58 @@ class TestExceptionChaining:
         assert exc.__suppress_context__ is True
         # The original bounds error is still available via the attribute
         assert isinstance(exc.bounds_error, TrajectoryBoundsError)
+
+
+def _structured_errors():
+    """One instance of every structured exception, with distinctive fields."""
+    bounds = AzimuthBoundsError(-190.0, 370.0, -180.0, 360.0)
+    return [
+        TrajectoryBoundsError("elevation", 10.0, 95.0, 20.0, 90.0),
+        bounds,
+        ElevationBoundsError(10.0, 95.0, 20.0, 90.0),
+        TargetNotObservableError("mars", "2026-06-15T04:00:00", bounds),
+        EncoderSolutionError(
+            "sun_blocked",
+            "every wrap is blocked",
+            goal_az=200.0,
+            goal_el=45.0,
+            current_az=10.0,
+            current_el=30.0,
+            candidates=[-160.0, 200.0],
+            time_iso="2026-06-15T04:00:00",
+        ),
+        OffsetInversionError("degenerate at the pole", indices=[2, 7]),
+    ]
+
+
+def _assert_same_error(restored, original):
+    """Assert two exception instances carry the same type, message and fields."""
+    assert type(restored) is type(original)
+    assert str(restored) == str(original)
+    for name, value in vars(original).items():
+        got = getattr(restored, name)
+        if isinstance(value, BaseException):
+            # Exceptions have no value equality; compare type and message.
+            assert type(got) is type(value)
+            assert str(got) == str(value)
+        else:
+            assert got == value, name
+
+
+@pytest.mark.parametrize("error", _structured_errors(), ids=lambda e: type(e).__name__)
+def test_structured_errors_survive_pickle(error):
+    """Every structured exception reconstructs through ``pickle``.
+
+    ``BaseException`` reconstructs by calling the class with ``self.args``,
+    which for these is just the composed message; the extra constructor
+    arguments made that a ``TypeError`` on unpickle. Each class defines
+    ``__reduce__`` instead. This matters wherever an error crosses a process
+    boundary, which is what a control system marshalling a task failure does.
+    """
+    _assert_same_error(pickle.loads(pickle.dumps(error)), error)
+
+
+@pytest.mark.parametrize("error", _structured_errors(), ids=lambda e: type(e).__name__)
+def test_structured_errors_survive_deepcopy(error):
+    """The same reconstruction path serves ``copy.deepcopy``."""
+    _assert_same_error(copy.deepcopy(error), error)

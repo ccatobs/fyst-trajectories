@@ -140,6 +140,25 @@ def test_gantt_auto_title_neutral():
     assert fig2.axes[0].get_title() == "Custom title"
 
 
+def test_gantt_auto_title_for_a_calibration_night():
+    """No science and at least one pass: the title counts passes and time on source."""
+    start = Time("2026-09-11T06:30:00", scale="utc")
+    blocks = [
+        _block(start, 1, "slew"),
+        _block(start + 1 * u.min, 5, "calibration", scan_type="retune"),
+        _block(start + 6 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
+        _block(start + 18 * u.min, 5, "calibration", scan_type="retune"),
+        _block(start + 23 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
+        _block(start + 35 * u.min, 25, "idle"),
+    ]
+    fig = plot_timeline_gantt(_make_timeline(blocks, start_iso=start.isot, hours=1.0), show=False)
+    title = fig.axes[0].get_title()
+    assert "calibration night" in title
+    assert "2 passes" in title and "2 detector operations" in title
+    assert "on source 40.0%" in title
+    assert "science" not in title and "efficiency" not in title
+
+
 def test_gantt_empty_timeline_raises():
     with pytest.raises(ValueError, match="no blocks"):
         plot_timeline_gantt(_make_timeline(blocks=[]), show=False)

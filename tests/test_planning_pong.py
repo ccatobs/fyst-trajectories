@@ -28,7 +28,7 @@ def small_field():
 
 
 class TestPlanPongScan:
-    """Tests for plan_pong_scan."""
+    """Hand-derived Lissajous parameters, duration scaling, bounds, and refusals."""
 
     def test_basic_plan(self, site, start_time, small_field):
         """plan_pong_scan returns a ScanBlock with pong config and metadata."""
@@ -60,7 +60,6 @@ class TestPlanPongScan:
         assert block.duration == pytest.approx(57.6)
 
     def test_duration_equals_period(self, site, start_time, small_field):
-        """Test that default duration is one full period."""
         block = plan_pong_scan(
             field=small_field,
             velocity=0.5,
@@ -100,7 +99,6 @@ class TestPlanPongScan:
         assert block2.duration == pytest.approx(block1.duration * 2)
 
     def test_invalid_n_cycles_raises(self, site, start_time, small_field):
-        """Test that n_cycles < 1 raises ValueError."""
         with pytest.raises(ValueError, match="n_cycles must be at least 1"):
             plan_pong_scan(
                 field=small_field,
@@ -114,7 +112,6 @@ class TestPlanPongScan:
             )
 
     def test_config_matches_field(self, site, start_time, small_field):
-        """Test that the generated config uses field width/height."""
         block = plan_pong_scan(
             field=small_field,
             velocity=0.5,
@@ -129,7 +126,6 @@ class TestPlanPongScan:
         assert block.config.height == small_field.height
 
     def test_trajectory_has_valid_bounds(self, site, start_time, small_field):
-        """Test that trajectory stays within telescope limits."""
         block = plan_pong_scan(
             field=small_field,
             velocity=0.5,
@@ -148,7 +144,6 @@ class TestPlanPongScan:
         assert traj.az.max() <= limits.azimuth.max
 
     def test_unobservable_target_raises(self, site, start_time):
-        """Test that an unobservable target raises TargetNotObservableError."""
         # Dec = +80 is never visible from FYST (latitude ~ -23)
         field = FieldRegion(ra_center=180.0, dec_center=80.0, width=1.0, height=1.0)
         with pytest.raises(TargetNotObservableError):
@@ -206,7 +201,7 @@ class TestPlanPongScan:
 
 
 class TestPlanPongRotationSequence:
-    """Tests for the multi-rotation Pong helper."""
+    """The rotation ladder: 180/n spacing, field passthrough, and the n < 1 refusal."""
 
     @pytest.fixture
     def base_config(self):
@@ -250,7 +245,11 @@ class TestPlanPongRotationSequence:
             plan_pong_rotation_sequence(base_config, n_rotations=0)
 
     def test_jcmt_typical_eleven_rotations(self, base_config):
-        """JCMT/SCUBA-2 uses ~11 rotations spaced ~16 deg."""
+        """JCMT/SCUBA-2 rotates its 15-arcmin pong 11 times.
+
+        This sequence spreads the same 11 rotations over 180 deg
+        (16.4 deg apart) rather than JCMT's ~90 deg.
+        """
         configs = plan_pong_rotation_sequence(base_config, n_rotations=11)
         angles = [c.angle for c in configs]
         # Last angle should be 10 * 180/11 ~ 163.6

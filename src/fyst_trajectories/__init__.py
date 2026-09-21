@@ -51,7 +51,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -60,11 +60,18 @@ from .coordinates import (
     Coordinates,
     normalize_frame,
 )
-from .dispatch import SlewSafePredicate, SunSafePredicate, choose_encoder_solution
+from .dispatch import (
+    EncoderSolution,
+    SlewSafePredicate,
+    SunSafePredicate,
+    choose_encoder_solution,
+)
 from .exceptions import (
     AccelerationLimitWarning,
     AzimuthBoundsError,
     ElevationBoundsError,
+    EncoderSolutionError,
+    OffsetInversionError,
     PointingError,
     PointingWarning,
     TargetNotObservableError,
@@ -96,6 +103,7 @@ from .offsets import (
     boresight_to_detector,
     compute_focal_plane_rotation,
     detector_to_boresight,
+    sky_to_focal_plane,
 )
 from .patterns import (
     AltAzPattern,
@@ -127,6 +135,7 @@ from .patterns import (
     get_pattern_for_config,
     list_patterns,
     register_pattern,
+    rewrap_trajectory_azimuth,
 )
 from .planning import (
     ArrayFootprint,
@@ -148,9 +157,11 @@ from .planning import (
     plan_pong_scan,
     plan_source_ces,
     plan_source_ces_passes,
+    source_ces_focal_plane_track,
     validate_computed_params,
 )
 from .primecam import (
+    INNER_RING_RADIUS_MM,
     MODULE_FOV_RADIUS_DEG,
     PRIMECAM_CENTER,
     PRIMECAM_I1,
@@ -227,6 +238,8 @@ __all__ = [
     "AzimuthBoundsError",
     "ElevationBoundsError",
     "TargetNotObservableError",
+    "EncoderSolutionError",
+    "OffsetInversionError",
     # Site configuration
     "Site",
     "AtmosphericConditions",
@@ -260,6 +273,8 @@ __all__ = [
     "normalize_frame",
     # Dispatch-time helpers (execution layer)
     "choose_encoder_solution",
+    "EncoderSolution",
+    "rewrap_trajectory_azimuth",
     "SunSafePredicate",
     "SlewSafePredicate",
     # Observability (OBSERVE / EXCLUDE primitives)
@@ -353,18 +368,21 @@ __all__ = [
     "plan_daisy_altaz_scan",
     "plan_source_ces",
     "plan_source_ces_passes",
+    "source_ces_focal_plane_track",
     "compute_source_ces_params",
     "validate_computed_params",
     # Instrument offsets
     "InstrumentOffset",
     "boresight_to_detector",
     "detector_to_boresight",
+    "sky_to_focal_plane",
     "apply_detector_offset",
     "compute_focal_plane_rotation",
     "get_primecam_offset",
     "primecam_geometry_dict",
     "resolve_module_tag",
     "resolve_offset",
+    "INNER_RING_RADIUS_MM",
     "MODULE_FOV_RADIUS_DEG",
     "PRIMECAM_CENTER",
     "PRIMECAM_I1",

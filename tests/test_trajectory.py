@@ -30,10 +30,9 @@ from fyst_trajectories.trajectory_utils import (
 
 
 class TestTrajectory:
-    """Tests for Trajectory container class."""
+    """Construction, metadata access, the export formats, and the validators."""
 
     def test_trajectory_creation(self):
-        """Test creating a Trajectory object."""
         times = np.array([0, 1, 2, 3, 4], dtype=float)
         az = np.array([100, 101, 102, 101, 100], dtype=float)
         el = np.full(5, 45.0)
@@ -52,7 +51,6 @@ class TestTrajectory:
         assert traj.duration == 4.0
 
     def test_trajectory_with_metadata(self):
-        """Test creating a Trajectory with metadata and accessing via properties."""
         times = np.array([0, 1, 2], dtype=float)
         metadata = TrajectoryMetadata(
             pattern_type="test_pattern",
@@ -76,7 +74,6 @@ class TestTrajectory:
         assert traj.center_dec == -30.0
 
     def test_absolute_times_with_start(self):
-        """Test computing absolute timestamps."""
         times = np.array([0, 1, 2], dtype=float)
         start = Time("2026-03-15T04:00:00", scale="utc")
 
@@ -94,7 +91,6 @@ class TestTrajectory:
         assert abs_times[0] == start
 
     def test_absolute_times_without_start_raises(self):
-        """Test that get_absolute_times raises without start_time."""
         traj = Trajectory(
             times=np.array([0, 1, 2], dtype=float),
             az=np.zeros(3),
@@ -107,7 +103,7 @@ class TestTrajectory:
             get_absolute_times(traj)
 
     def test_to_arrays(self):
-        """Test exporting trajectory to arrays returns copies."""
+        """Exported arrays are copies: mutating one leaves the trajectory unchanged."""
         times = np.array([0.0, 1.0, 2.0])
         az = np.array([100.0, 110.0, 120.0])
         el = np.array([45.0, 46.0, 47.0])
@@ -130,7 +126,6 @@ class TestTrajectory:
         assert traj.times[0] == 0.0
 
     def test_to_path_format(self):
-        """Test converting trajectory to path format for OCS."""
         times = np.array([0.0, 1.0])
         az = np.array([100.0, 110.0])
         el = np.array([45.0, 46.0])
@@ -183,7 +178,6 @@ class TestTrajectory:
         return Trajectory(**kwargs)
 
     def test_to_path_payload(self):
-        """Test the full /path payload dict (start_time, coordsys, points)."""
         traj = self._payload_traj()
 
         payload = to_path_payload(traj)
@@ -194,17 +188,15 @@ class TestTrajectory:
         assert payload["points"] == to_path_format(traj)
 
     def test_to_path_payload_rejects_unknown_coordsys(self):
-        """Test that an unsupported coordsys raises ValueError."""
         with pytest.raises(ValueError, match="coordsys must be"):
             to_path_payload(self._payload_traj(), coordsys="galactic")
 
     def test_to_path_payload_requires_start_time(self):
-        """Test that a missing start_time raises ValueError."""
         with pytest.raises(ValueError, match="start_time not set"):
             to_path_payload(self._payload_traj(with_start_time=False))
 
     def test_to_path_payload_warns_on_icrs(self):
-        """Test coordsys='ICRS' warns (Go TCS ICRS /path velocities unimplemented)."""
+        """coordsys='ICRS' warns: Go TCS ICRS /path velocities are unimplemented."""
         with pytest.warns(PointingWarning, match="ICRS"):
             payload = to_path_payload(self._payload_traj(), coordsys="ICRS")
         assert payload["coordsys"] == "ICRS"
@@ -256,7 +248,11 @@ class TestTrajectory:
 
     def test_to_trackpoint_format_flags_and_timestamps(self):
         """az_flag/group_flag follow the SO ACU convention; timestamps are absolute Unix."""
-        # A 5-point science leg, a turnaround, then a 2-point science leg.
+        # A 5-point science leg, a turnaround, a 2-point science leg (shorter
+        # than TRACKPOINT_NEW_LEG_GROUP_SIZE), then two more turnaround points.
+        # The short leg is deliberately NOT last: with a trailing sample the
+        # group countdown has somewhere to leak to, so the "clear at the leg
+        # end" rule is actually exercised.
         sf = [
             SCAN_FLAG_SCIENCE,
             SCAN_FLAG_SCIENCE,
@@ -266,11 +262,13 @@ class TestTrajectory:
             SCAN_FLAG_TURNAROUND,
             SCAN_FLAG_SCIENCE,
             SCAN_FLAG_SCIENCE,
+            SCAN_FLAG_TURNAROUND,
+            SCAN_FLAG_TURNAROUND,
         ]
         traj = self._flagged_traj(sf)
         rows = to_trackpoint_format(traj)
 
-        assert len(rows) == 8
+        assert len(rows) == 10
         assert set(rows[0]) == {
             "timestamp",
             "az",
@@ -282,9 +280,10 @@ class TestTrajectory:
             "group_flag",
         }
         # az_flag: interior science=1, final point of a science leg=2, non-science=0.
-        assert [r["az_flag"] for r in rows] == [1, 1, 1, 1, 2, 0, 1, 2]
-        # group_flag: the first TRACKPOINT_NEW_LEG_GROUP_SIZE (4) points of each science leg.
-        assert [r["group_flag"] for r in rows] == [1, 1, 1, 1, 0, 0, 1, 1]
+        assert [r["az_flag"] for r in rows] == [1, 1, 1, 1, 2, 0, 1, 2, 0, 0]
+        # group_flag: the first TRACKPOINT_NEW_LEG_GROUP_SIZE (4) points of each
+        # science leg, and nothing outside a science leg.
+        assert [r["group_flag"] for r in rows] == [1, 1, 1, 1, 0, 0, 1, 1, 0, 0]
         assert all(r["el_flag"] == 0 for r in rows)
         # Absolute Unix timestamps = start_time.unix + relative trajectory times.
         t0 = traj.start_time.unix
@@ -312,7 +311,6 @@ class TestTrajectory:
             to_trackpoint_format(traj)
 
     def test_to_trackpoint_format_unflagged_all_zero(self):
-        """A trajectory with no scan_flag yields az_flag/group_flag all zero."""
         traj = Trajectory(
             times=np.array([0.0, 1.0, 2.0]),
             az=np.array([100.0, 101.0, 102.0]),
@@ -341,7 +339,6 @@ class TestTrajectory:
         assert float((abs_times[-1] - t0).sec) == pytest.approx(2.0, abs=1e-6)
 
     def test_array_length_mismatch_raises(self):
-        """Test that mismatched array lengths raise ValueError."""
         with pytest.raises(ValueError, match="Array length mismatch"):
             Trajectory(
                 times=np.array([0.0, 1.0, 2.0]),
@@ -352,7 +349,6 @@ class TestTrajectory:
             )
 
     def test_validate_within_limits(self):
-        """Test that validate passes for trajectory within limits."""
         site = get_fyst_site()
         traj = Trajectory(
             times=np.array([0.0, 1.0, 2.0, 3.0]),
@@ -364,7 +360,6 @@ class TestTrajectory:
         validate_trajectory(traj, site)
 
     def test_validate_out_of_bounds_raises(self):
-        """Test that validate raises for trajectory outside limits."""
         site = get_fyst_site()
         traj = Trajectory(
             times=np.array([0.0, 1.0, 2.0]),
@@ -377,7 +372,6 @@ class TestTrajectory:
             validate_trajectory(traj, site)
 
     def test_validate_warns_on_high_velocity(self):
-        """Test that validate warns for excessive velocity."""
         site = get_fyst_site()
         traj = Trajectory(
             times=np.linspace(0, 10, 100),
@@ -421,7 +415,7 @@ class TestTrajectory:
 
 
 class TestAccelerationJerkProperties:
-    """Tests for the computed acceleration and jerk properties."""
+    """Shapes, and the accelerations and jerks recovered from known velocity profiles."""
 
     def _make_constant_velocity_trajectory(self):
         """Create a trajectory with constant velocity (zero acceleration)."""
@@ -443,43 +437,36 @@ class TestAccelerationJerkProperties:
         return Trajectory(times=times, az=az, el=el, az_vel=az_vel, el_vel=el_vel)
 
     def test_accel_returns_correct_shape(self):
-        """Test that acceleration properties return arrays matching trajectory length."""
         traj = self._make_constant_velocity_trajectory()
         assert traj.az_accel.shape == traj.times.shape
         assert traj.el_accel.shape == traj.times.shape
 
     def test_jerk_returns_correct_shape(self):
-        """Test that jerk properties return arrays matching trajectory length."""
         traj = self._make_constant_velocity_trajectory()
         assert traj.az_jerk.shape == traj.times.shape
         assert traj.el_jerk.shape == traj.times.shape
 
     def test_constant_velocity_has_zero_acceleration(self):
-        """Test that a constant-velocity trajectory has approximately zero acceleration."""
         traj = self._make_constant_velocity_trajectory()
         np.testing.assert_allclose(traj.az_accel, 0.0, atol=1e-10)
         np.testing.assert_allclose(traj.el_accel, 0.0, atol=1e-10)
 
     def test_constant_velocity_has_zero_jerk(self):
-        """Test that a constant-velocity trajectory has approximately zero jerk."""
         traj = self._make_constant_velocity_trajectory()
         np.testing.assert_allclose(traj.az_jerk, 0.0, atol=1e-10)
         np.testing.assert_allclose(traj.el_jerk, 0.0, atol=1e-10)
 
     def test_constant_acceleration_value(self):
-        """Test that constant acceleration is recovered correctly."""
         traj = self._make_accelerating_trajectory()
         np.testing.assert_allclose(traj.az_accel, 0.2, atol=1e-10)
         np.testing.assert_allclose(traj.el_accel, 0.1, atol=1e-10)
 
     def test_constant_acceleration_has_zero_jerk(self):
-        """Test that constant acceleration produces approximately zero jerk."""
         traj = self._make_accelerating_trajectory()
         np.testing.assert_allclose(traj.az_jerk, 0.0, atol=1e-10)
         np.testing.assert_allclose(traj.el_jerk, 0.0, atol=1e-10)
 
     def test_jerk_is_derivative_of_acceleration(self):
-        """Test that jerk equals the numerical derivative of acceleration."""
         # Use a trajectory where acceleration varies (quadratic velocity)
         times = np.linspace(0, 5, 501)
         az_vel = 0.1 * times**2  # accel = 0.2*t, jerk = 0.2
@@ -497,7 +484,7 @@ class TestAccelerationJerkProperties:
 
 
 class TestFormatTrajectory:
-    """Tests for _format_trajectory and print_trajectory."""
+    """Table rendering: headers, the head/tail ellipsis, the UTC column, file output."""
 
     def _make_trajectory(self, n_points=20, start_time=None):
         """Create a test trajectory."""
@@ -516,7 +503,6 @@ class TestFormatTrajectory:
         )
 
     def test_basic_formatting(self):
-        """Test basic formatting of a small trajectory."""
         traj = self._make_trajectory(5)
         output = _format_trajectory(traj, head=5, tail=5)
 
@@ -526,13 +512,11 @@ class TestFormatTrajectory:
         assert "..." not in output
 
     def test_ellipsis_for_long_trajectory(self):
-        """Test that long trajectories show ellipsis."""
         traj = self._make_trajectory(100)
         output = _format_trajectory(traj, head=3, tail=3)
         assert "..." in output
 
     def test_head_tail_combinations(self):
-        """Test various head/tail combinations."""
         traj = self._make_trajectory(20)
 
         output = _format_trajectory(traj, head=3, tail=None)
@@ -549,7 +533,6 @@ class TestFormatTrajectory:
         assert "..." not in output
 
     def test_with_absolute_times(self):
-        """Test formatting with absolute times."""
         start = Time("2026-03-15T04:00:00", scale="utc")
         traj = self._make_trajectory(5, start_time=start)
         output = _format_trajectory(traj, head=5, tail=5)
@@ -558,7 +541,6 @@ class TestFormatTrajectory:
         assert "UTC" in output
 
     def test_print_trajectory_writes_to_file(self):
-        """Test print_trajectory writes to a file object."""
         traj = self._make_trajectory(5)
         buf = io.StringIO()
         print_trajectory(traj, head=3, tail=2, file=buf)
@@ -569,10 +551,9 @@ class TestFormatTrajectory:
 
 
 class TestScanFlagValidation:
-    """Tests for scan_flag field on Trajectory."""
+    """scan_flag length checking, and what ``science_mask`` counts as science."""
 
     def test_scan_flag_length_mismatch_raises(self):
-        """scan_flag must match times length if provided."""
         times = np.array([0, 1, 2], dtype=float)
         with pytest.raises(ValueError, match="scan_flag"):
             Trajectory(
@@ -585,7 +566,6 @@ class TestScanFlagValidation:
             )
 
     def test_science_mask_default_all_true(self):
-        """science_mask should be all True when scan_flag is None."""
         traj = Trajectory(
             times=np.array([0, 1, 2], dtype=float),
             az=np.zeros(3),
@@ -599,7 +579,6 @@ class TestScanFlagValidation:
         assert np.all(mask)
 
     def test_science_mask_with_flags(self):
-        """science_mask should reflect scan_flag values."""
         flags = np.array(
             [SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, SCAN_FLAG_SCIENCE],
             dtype=np.int8,
@@ -616,7 +595,6 @@ class TestScanFlagValidation:
         np.testing.assert_array_equal(traj.science_mask, expected)
 
     def test_science_mask_excludes_unclassified(self):
-        """Unclassified samples are NOT treated as science."""
         flags = np.array([SCAN_FLAG_UNCLASSIFIED, SCAN_FLAG_SCIENCE], dtype=np.int8)
         traj = Trajectory(
             times=np.array([0, 1], dtype=float),
@@ -654,3 +632,45 @@ class TestNonFiniteRejection:
         kwargs["el"] = np.array([45.0, np.inf])
         with pytest.raises(ValueError, match="Non-finite"):
             Trajectory(**kwargs)
+
+
+class TestMonotonicTimes:
+    """Trajectory times must be strictly increasing.
+
+    Every derived quantity divides by a time step: the acceleration and jerk
+    properties and the dynamics validator. A repeated sample would make those
+    silently ``inf``/``nan`` (the constructor's finiteness check looks at the
+    stored arrays, not at their differences), and only
+    ``validate_trajectory_dynamics`` would notice, and only if it were called.
+    """
+
+    @staticmethod
+    def _kwargs(times):
+        n = len(times)
+        return {
+            "times": np.asarray(times, dtype=float),
+            "az": np.linspace(10.0, 11.0, n),
+            "el": np.full(n, 45.0),
+            "az_vel": np.zeros(n),
+            "el_vel": np.zeros(n),
+        }
+
+    def test_repeated_timestamp_raises(self):
+        with pytest.raises(ValueError, match="strictly increasing") as excinfo:
+            Trajectory(**self._kwargs([0.0, 1.0, 1.0, 2.0]))
+        # The message names the offending pair, not just the rule.
+        assert "times[2]" in str(excinfo.value)
+
+    def test_decreasing_timestamp_raises(self):
+        with pytest.raises(ValueError, match="strictly increasing"):
+            Trajectory(**self._kwargs([0.0, 2.0, 1.0]))
+
+    def test_single_sample_is_accepted(self):
+        """A one-sample trajectory has no step to check."""
+        assert Trajectory(**self._kwargs([0.0])).n_points == 1
+
+    def test_increasing_times_still_construct(self):
+        traj = Trajectory(**self._kwargs([0.0, 0.1, 0.2, 0.3]))
+        assert traj.n_points == 4
+        assert np.all(np.isfinite(traj.az_accel))
+        assert np.all(np.isfinite(traj.az_jerk))

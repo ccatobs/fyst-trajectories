@@ -3,16 +3,19 @@
 import pytest
 from astropy.time import Time
 
+from fyst_trajectories.coordinates import Coordinates
 from fyst_trajectories.overhead.utils import (
+    compute_nasmyth_rotation,
     estimate_slew_time,
     get_max_elevation,
     get_observable_windows,
     get_transit_time,
 )
+from fyst_trajectories.sun_models import _axis_slew_duration
 
 
 class TestEstimateSlewTime:
-    """Tests for slew time estimation."""
+    """Trapezoidal and triangular slew profiles, and the shared kinematic kernel."""
 
     def test_zero_distance(self, site):
         t = estimate_slew_time(180.0, 50.0, 180.0, 50.0, site)
@@ -47,9 +50,61 @@ class TestEstimateSlewTime:
         t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site)
         assert t == pytest.approx(2.309, abs=0.01)
 
+    @pytest.mark.parametrize(
+        "d_az,d_el",
+        [(10.0, 0.0), (0.0, 10.0), (0.5, 0.0), (180.0, 40.0), (3.0, 1.5)],
+    )
+    def test_the_estimate_is_the_shared_profile(self, site, d_az, d_el):
+        """The estimator and the Sun sweep price a slew with one profile.
+
+        A second copy of the trapezoid here would let the duration a scan is
+        priced with drift from the duration its path is sampled over.
+        """
+        az_limits = site.telescope_limits.azimuth
+        el_limits = site.telescope_limits.elevation
+        expected = max(
+            _axis_slew_duration(d_az, az_limits.max_velocity, az_limits.max_acceleration),
+            _axis_slew_duration(d_el, el_limits.max_velocity, el_limits.max_acceleration),
+        )
+        assert estimate_slew_time(0.0, 45.0, d_az, 45.0 + d_el, site) == pytest.approx(expected)
+
+    def test_an_axis_that_cannot_move_costs_no_time(self, site):
+        """A non-positive limit describes an immobile axis, on both sides of the seam."""
+        import dataclasses
+
+        frozen_az = dataclasses.replace(site.telescope_limits.azimuth, max_velocity=0.0)
+        immobile = dataclasses.replace(
+            site,
+            telescope_limits=dataclasses.replace(site.telescope_limits, azimuth=frozen_az),
+        )
+        assert _axis_slew_duration(30.0, 0.0, 1.5) == 0.0
+        assert estimate_slew_time(0.0, 45.0, 30.0, 45.0, immobile) == 0.0
+
+
+class TestNasmythRotationSharesOneKernel:
+    """One quantity, two entry points: RA/Dec and an already-transformed pose."""
+
+    @pytest.mark.parametrize(
+        "ra,dec",
+        [(83.633, 22.014), (24.0, -32.0), (150.0, 2.2), (269.452, 4.693)],
+    )
+    def test_it_agrees_with_the_radec_entry_point(self, site, ra, dec):
+        """Both add the Nasmyth term to the same parallactic angle, so they must match.
+
+        Two copies of the formula would let the boresight angle a timeline
+        block records drift from the field rotation the same pose reports.
+        """
+        coords = Coordinates(site)
+        obstime = Time("2026-03-15T04:00:00", scale="utc")
+        az, el = coords.radec_to_altaz(ra, dec, obstime)
+
+        assert compute_nasmyth_rotation(az, el, site) == pytest.approx(
+            coords.get_field_rotation(ra, dec, obstime), abs=1e-9
+        )
+
 
 class TestGetMaxElevation:
-    """Tests for maximum elevation computation."""
+    """Transit elevation is 90 deg at the site latitude and falls with dec distance."""
 
     def test_overhead_source(self, site):
         max_el = get_max_elevation(0.0, site.latitude, site)
@@ -65,7 +120,7 @@ class TestGetMaxElevation:
 
 
 class TestGetTransitTime:
-    """Tests for transit time computation."""
+    """The search returns a meridian crossing, or None if the window brackets none."""
 
     def test_finds_transit(self, site, start_time):
         """Verify transit is found and HA is near zero at that time."""
@@ -86,7 +141,7 @@ class TestGetTransitTime:
 
 
 class TestGetObservableWindows:
-    """Tests for observable window computation."""
+    """Windows lie inside the search range: several, none, or one when circumpolar."""
 
     def test_finds_windows(self, site, start_time, end_time):
         windows = get_observable_windows(

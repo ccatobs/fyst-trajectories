@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .exceptions import OffsetInversionError
 from .site import Site
 from .trajectory import Trajectory
 
@@ -246,7 +247,7 @@ _INVERSE_EARLY_EXIT_THRESHOLD: float = 1e-12
 """Iterative refinement convergence threshold in degrees (~3.6 nanoarcsec)."""
 
 _INVERSE_FAILURE_THRESHOLD: float = 1e-6
-"""Degrees (~3.6 milliarcsec) above which _offset_inverse raises RuntimeError."""
+"""Degrees (~3.6 milliarcsec) above which _offset_inverse refuses to converge."""
 
 _INVERSE_MAX_ITERATIONS: int = 20
 """Maximum refinement iterations in _offset_inverse."""
@@ -295,12 +296,13 @@ def _offset_inverse(
 
     Raises
     ------
-    RuntimeError
+    OffsetInversionError
         If the detector or boresight elevation is within
         :data:`_POLE_GUARD_DEG` of the pole (+/-90 deg), where azimuth is
         degenerate and the residual check cannot validate it; or if the
         iterative refinement residual exceeds
-        :data:`_INVERSE_FAILURE_THRESHOLD` after all iterations.
+        :data:`_INVERSE_FAILURE_THRESHOLD` after all iterations. The pole
+        case carries the offending sample indices on ``.indices``.
 
     Notes
     -----
@@ -327,14 +329,21 @@ def _offset_inverse(
         np.abs(np.abs(bore_el) - 90.0) < _POLE_GUARD_DEG
     )
     if np.any(near_pole):
-        raise RuntimeError(
+        # Report which samples are degenerate: an array call that trips the
+        # guard on a handful of samples is a caller-diagnosable geometry
+        # problem, and the whole call still refuses (a partially-inverted
+        # trajectory would be silently wrong at the bad samples).
+        bad = np.flatnonzero(np.atleast_1d(near_pole))
+        where = "" if near_pole.ndim == 0 else f" Offending sample indices: {bad.tolist()}."
+        raise OffsetInversionError(
             "_offset_inverse cannot resolve azimuth at the pole: detector or "
             "boresight elevation is within "
             f"{_POLE_GUARD_DEG:g} deg of +/-90 deg, where azimuth is degenerate "
             "(every boresight azimuth maps to the same pole position, so the "
             "residual check cannot validate it). This requires an extreme offset "
             "placing the detector at the zenith and is far outside any realistic "
-            "PrimeCam pointing envelope."
+            f"PrimeCam pointing envelope.{where}",
+            indices=bad.tolist() if near_pole.ndim else (),
         )
 
     # Track the worst residual ever seen so the diagnostic on failure can
@@ -361,7 +370,7 @@ def _offset_inverse(
     else:
         last_err = max(float(np.max(np.abs(d_az))), float(np.max(np.abs(d_el))))
         if last_err > _INVERSE_FAILURE_THRESHOLD:
-            raise RuntimeError(
+            raise OffsetInversionError(
                 f"_offset_inverse iterative refinement failed to converge after "
                 f"{_INVERSE_MAX_ITERATIONS} iterations "
                 f"(last residual: {last_err:.2e} deg, worst residual: {worst_err:.2e} deg). "
@@ -489,10 +498,10 @@ def detector_to_boresight(
 
     Raises
     ------
-    RuntimeError
-        If the requested detector position cannot be produced by any
-        boresight (offset larger than the pole distance) or the
-        iterative refinement fails to converge.
+    OffsetInversionError
+        If the detector or the resulting boresight elevation lies within
+        1e-6 deg of the pole (+/-90 deg), where azimuth is degenerate, or
+        if the iterative refinement fails to converge.
 
     Examples
     --------
@@ -513,6 +522,98 @@ def detector_to_boresight(
     if np.isscalar(det_az) and np.isscalar(det_el) and np.isscalar(field_rotation):
         return float(bore_az), float(bore_el)
     return bore_az, bore_el
+
+
+def sky_to_focal_plane(
+    bore_az: float | np.ndarray,
+    bore_el: float | np.ndarray,
+    sky_az: float | np.ndarray,
+    sky_el: float | np.ndarray,
+    field_rotation: float | np.ndarray,
+) -> tuple[float | np.ndarray, float | np.ndarray]:
+    r"""Locate a sky position in the focal plane of a boresight pointing.
+
+    The inverse projection of :func:`boresight_to_detector`: given where the
+    boresight points and where a source is on the sky, return the focal-plane
+    offset ``(xi, eta)`` at which that source appears, in degrees. Feeding the
+    result back as an :class:`InstrumentOffset` reproduces ``(sky_az, sky_el)``
+    from the boresight, after converting to the arcminutes that constructor
+    takes (the example below multiplies by 60). All inputs broadcast, so a
+    whole trajectory can be traced in one call.
+
+    Parameters
+    ----------
+    bore_az, bore_el : float or array
+        Boresight azimuth and elevation in degrees.
+    sky_az, sky_el : float or array
+        Azimuth and elevation of the sky position in degrees.
+    field_rotation : float or array
+        Orientation of the focal plane relative to the horizon axes in
+        degrees, the same angle :func:`boresight_to_detector` takes
+        (``nasmyth_sign * elevation + instrument_rotation`` plus any
+        commanded rotator angle).
+
+    Returns
+    -------
+    xi_deg : float or array
+        Cross-elevation focal-plane coordinate in degrees (the
+        ``InstrumentOffset.dx_deg`` axis).
+    eta_deg : float or array
+        Elevation focal-plane coordinate in degrees (the
+        ``InstrumentOffset.dy_deg`` axis).
+
+    Notes
+    -----
+    The great-circle separation ``rho`` and the position angle ``phi``
+    of the sky position about the boresight (from the elevation direction
+    toward increasing azimuth) come from the spherical triangle with the
+    zenith:
+
+    .. math::
+
+        \sin\rho \sin\phi = \cos(El_1) \sin\Delta Az
+
+        \sin\rho \cos\phi = \sin(El_1) \cos(El_0) - \cos(El_1) \sin(El_0) \cos\Delta Az
+
+        \cos\rho = \sin(El_0) \sin(El_1) + \cos(El_0) \cos(El_1) \cos\Delta Az
+
+    The horizon-frame offset ``(rho sin phi, rho cos phi)`` is then rotated
+    back by ``field_rotation`` into the focal plane. At a boresight
+    elevation of exactly 90 degrees the azimuth direction is undefined and
+    ``phi`` is measured from an arbitrary meridian.
+
+    Examples
+    --------
+    >>> offset = InstrumentOffset(dx=5.0, dy=3.0)
+    >>> det_az, det_el = boresight_to_detector(180.0, 45.0, offset, field_rotation=30.0)
+    >>> xi, eta = sky_to_focal_plane(180.0, 45.0, det_az, det_el, field_rotation=30.0)
+    >>> print(f"{xi * 60:.6f} {eta * 60:.6f}")
+    5.000000 3.000000
+    """
+    el0 = np.deg2rad(bore_el)
+    el1 = np.deg2rad(sky_el)
+    daz = np.deg2rad(np.asarray(sky_az, dtype=float) - np.asarray(bore_az, dtype=float))
+    sin_el0, cos_el0 = np.sin(el0), np.cos(el0)
+    sin_el1, cos_el1 = np.sin(el1), np.cos(el1)
+
+    x = cos_el1 * np.sin(daz)
+    y = sin_el1 * cos_el0 - cos_el1 * sin_el0 * np.cos(daz)
+    cos_rho = sin_el0 * sin_el1 + cos_el0 * cos_el1 * np.cos(daz)
+    rho = np.arctan2(np.hypot(x, y), cos_rho)
+    phi = np.arctan2(x, y)
+
+    dx_rot = np.rad2deg(rho * np.sin(phi))
+    dy_rot = np.rad2deg(rho * np.cos(phi))
+
+    rot = np.deg2rad(field_rotation)
+    cos_rot, sin_rot = np.cos(rot), np.sin(rot)
+    xi = dx_rot * cos_rot + dy_rot * sin_rot
+    eta = -dx_rot * sin_rot + dy_rot * cos_rot
+
+    scalar = all(np.isscalar(v) for v in (bore_az, bore_el, sky_az, sky_el, field_rotation))
+    if scalar:
+        return float(xi), float(eta)
+    return xi, eta
 
 
 def compute_focal_plane_rotation(
@@ -610,9 +711,9 @@ def apply_detector_offset(
         If ``validate=True`` and the adjusted trajectory exceeds azimuth limits.
     ElevationBoundsError
         If ``validate=True`` and the adjusted trajectory exceeds elevation limits.
-    RuntimeError
-        If the offset inversion cannot reach the requested detector
-        position or fails to converge (see :func:`detector_to_boresight`).
+    OffsetInversionError
+        If the inversion hits the near-pole azimuth degeneracy or fails to
+        converge (see :func:`detector_to_boresight`).
 
     Notes
     -----
@@ -635,6 +736,13 @@ def apply_detector_offset(
     (up to the offset radius), so a consumer that re-derives the field rotation
     from the *boresight* elevation will get a slightly different value; use the
     input (detector) elevation to reproduce it.
+
+    The returned trajectory shares some arrays with the input: ``metadata``,
+    ``scan_flag`` and ``retune_events`` are the same objects, and a
+    zero offset (no shift and no instrument rotation) returns a copy that
+    shares every array, since there is nothing to recompute. ``Trajectory``
+    is frozen but its arrays are not read-only, so mutate one only when
+    you mean to reach the other.
 
     Examples
     --------
@@ -687,8 +795,8 @@ def apply_detector_offset(
 
     if len(trajectory.times) < 2:
         # np.gradient needs >=2 samples; boresight velocities are undefined for
-        # a single sample. Sibling np.gradient sites (daisy.py, trajectory_utils)
-        # guard the same way, and the builder tolerates <2-point trajectories.
+        # a single sample, and the builder tolerates <2-point trajectories, so
+        # zero them rather than fail.
         az_vel = np.zeros_like(bore_az)
         el_vel = np.zeros_like(bore_el)
     else:

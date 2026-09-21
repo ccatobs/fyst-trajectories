@@ -8,7 +8,7 @@ from fyst_trajectories.overhead.models import CalibrationPolicy, OverheadModel
 
 
 class TestCalibrationState:
-    """Tests for CalibrationState."""
+    """What is due when, in priority order, plus immutable updates and planet picks."""
 
     def test_all_due_initially(self):
         state = CalibrationState()

@@ -14,14 +14,9 @@ the *entire* footprint at fixed boresight elevation. The output is a
 ``ScanBlock`` whose ``trajectory`` is a constant-elevation scan with
 the solved drift baked into the azimuth track.
 
-``plan_source_ces`` is consumed at dispatch time by the
-PCS ``source_scan`` task and offline by the
-``fyst_trajectories.overhead`` simulator, whose planet-calibration
-path both emits source-CES pass sequences
-(``CalibrationPolicy.planet_cal_scan``) and rebuilds them from recorded
-parameters (``schedule_to_trajectories(science_only=False)``). The
-params-only sibling :func:`compute_source_ces_params` is the emit-time
-entry point for a scheduler.
+``plan_source_ces`` builds the trajectory a control system dispatches;
+the params-only sibling :func:`compute_source_ces_params` is the
+emit-time entry point for a scheduler that only needs the numbers.
 """
 
 from __future__ import annotations
@@ -51,12 +46,17 @@ from ..offsets import (
     boresight_to_detector,
     compute_focal_plane_rotation,
     detector_to_boresight,
+    sky_to_focal_plane,
 )
 from ..patterns.base import TrajectoryMetadata
-from ..patterns.configs import ConstantElScanConfig
-from ..primecam import MODULE_FOV_RADIUS_DEG, get_primecam_offset
+from ..patterns.configs import ConstantElScanConfig, _require_positive
+from ..patterns.turnarounds import swept_az_envelope
 from ..site import AtmosphericConditions, AxisLimits, Site
-from ..trajectory_utils import validate_trajectory_bounds
+from ..trajectory_utils import (
+    get_absolute_times,
+    validate_trajectory_bounds,
+    validate_trajectory_dynamics,
+)
 from ._ce_geometry import _quantize_ce_duration
 from ._helpers import _build_altaz_trajectory
 from ._source_ces_anchor import (
@@ -64,11 +64,17 @@ from ._source_ces_anchor import (
     _resolve_anchor_prefix,
     _resolve_start_time_anchor,
 )
+from ._sun_safety import (
+    _SUN_SAFETY_ARC_N_SAMPLES,
+    _check_arc_sun_safety,
+    _swept_arc_samples,
+)
 from ._types import (
     ArrayFootprint,
     ScanBlock,
     SourceCESComputedParams,
 )
+from .footprints import offset_footprint_eta, resolve_footprint
 
 if TYPE_CHECKING:
     # Annotation-only import to avoid an import cycle: ``dispatch`` imports
@@ -77,12 +83,6 @@ if TYPE_CHECKING:
     from ..dispatch import SunSafePredicate
 
 __all__ = ["compute_source_ces_params", "plan_source_ces", "plan_source_ces_passes"]
-
-
-# Number of polygon vertices used when constructing a circular cover
-# from a single InstrumentOffset or list of offsets. SO's
-# ``make_circular_cover`` uses the same value.
-_CIRCULAR_COVER_N_VERTICES = 50
 
 # Default search-window horizon when only ``night`` is supplied. 24 h
 # covers a full diurnal rotation; sources reachable from FYST always
@@ -97,11 +97,11 @@ _DEFAULT_SEARCH_HORIZON_HOURS = 24.0
 # quantisation well-conditioned without affecting the solved drift.
 _MIN_PER_LEG_VELOCITY_DEG_S = 0.05
 
-# Number of samples drawn along the planned arc for the sun-safety
-# sweep (see ``_check_arc_sun_safety``). 60 samples over a typical 10-minute arc gives ~10 s
-# resolution, finer than the sun's apparent motion (~15"/s) and the
-# array's footprint extent.
-_SUN_SAFETY_ARC_N_SAMPLES = 60
+# Default azimuth padding added to each side of the solved footprint
+# crossing. Named so the planners can tell an explicit padding from the
+# default: an explicit ``az_throw`` replaces the padded throw outright,
+# and combining it with an explicit padding is rejected.
+_DEFAULT_AZ_PADDING_DEG = 0.5
 
 
 @dataclass(frozen=True)
@@ -127,68 +127,6 @@ class _SourceCESCore:
     # Source coords at ``t_at_el_bore`` for the trajectory metadata.
     src_ra_at_el_bore: float
     src_dec_at_el_bore: float
-
-
-def _resolve_footprint(
-    footprint: InstrumentOffset | str | Sequence[InstrumentOffset] | ArrayFootprint,
-) -> ArrayFootprint:
-    """Normalise a user-supplied footprint into an :class:`ArrayFootprint`.
-
-    Accepts:
-
-    * ``ArrayFootprint``: returned unchanged.
-    * ``InstrumentOffset``: built as a ``_CIRCULAR_COVER_N_VERTICES``-vertex
-      circle of radius :data:`MODULE_FOV_RADIUS_DEG` around the offset.
-    * ``str``: resolved via :func:`get_primecam_offset` then treated as
-      the single-``InstrumentOffset`` case.
-    * Sequence of ``InstrumentOffset``: each treated as a circle, the
-      cover is the concatenation of per-module vertex lists, and the
-      aggregate center is the arithmetic mean of per-module ``(dx, dy)``.
-    """
-    if isinstance(footprint, ArrayFootprint):
-        return footprint
-
-    if isinstance(footprint, str):
-        footprint = get_primecam_offset(footprint)
-
-    if isinstance(footprint, InstrumentOffset):
-        return _module_circular_cover(footprint)
-
-    if isinstance(footprint, Sequence):
-        offsets = list(footprint)
-        if not offsets:
-            raise ValueError("footprint sequence cannot be empty")
-        if not all(isinstance(o, InstrumentOffset) for o in offsets):
-            raise TypeError("footprint sequence must contain only InstrumentOffset instances")
-        per_module = [_module_circular_cover(o) for o in offsets]
-        cover_xi = np.concatenate([f.cover_xi_deg for f in per_module])
-        cover_eta = np.concatenate([f.cover_eta_deg for f in per_module])
-        center_xi = float(np.mean([f.center_xi_deg for f in per_module]))
-        center_eta = float(np.mean([f.center_eta_deg for f in per_module]))
-        return ArrayFootprint(
-            center_xi_deg=center_xi,
-            center_eta_deg=center_eta,
-            cover_xi_deg=cover_xi,
-            cover_eta_deg=cover_eta,
-        )
-
-    raise TypeError(
-        f"footprint must be InstrumentOffset, str, sequence of InstrumentOffset, "
-        f"or ArrayFootprint; got {type(footprint).__name__}"
-    )
-
-
-def _module_circular_cover(offset: InstrumentOffset) -> ArrayFootprint:
-    """Build a circular cover polygon for a single module offset."""
-    theta = np.linspace(0.0, 2.0 * np.pi, _CIRCULAR_COVER_N_VERTICES, endpoint=False)
-    cover_xi = offset.dx_deg + MODULE_FOV_RADIUS_DEG * np.cos(theta)
-    cover_eta = offset.dy_deg + MODULE_FOV_RADIUS_DEG * np.sin(theta)
-    return ArrayFootprint(
-        center_xi_deg=offset.dx_deg,
-        center_eta_deg=offset.dy_deg,
-        cover_xi_deg=cover_xi,
-        cover_eta_deg=cover_eta,
-    )
 
 
 def _enumerate_monotonic_arcs(el_src: np.ndarray) -> list[tuple[int, int]]:
@@ -329,88 +267,6 @@ def _project_cover_to_altaz(
         az_cover[i] = az_v
         el_cover[i] = el_v
     return az_cover, el_cover
-
-
-def _check_arc_sun_safety(
-    coords: Coordinates,
-    site: Site,
-    az_arr: np.ndarray,
-    el_arr: np.ndarray,
-    times: Time,
-    source_label: str,
-    sun_safe: SunSafePredicate | None = None,
-) -> None:
-    """Coarse sun-safety check along an arc; warns only.
-
-    Computes sun separation at every sample and emits a single warning
-    naming the closest approach if any point falls inside the exclusion
-    radius. The caller chooses the sampling: the source-CES planner
-    passes each time three times, at the low edge, midpoint, and high
-    edge of the azimuth sweep, so the check covers the swept envelope,
-    not just the boresight track. Boresight-level within each sample
-    (no focal-plane extent), which is appropriate while the footprint
-    is small relative to the exclusion radius.
-
-    When ``sun_safe`` is ``None`` (default) the built-in vectorised
-    scalar-radius check runs unchanged. When a predicate is injected it
-    is consulted per-sample ``(az_i, el_i, time_i)`` instead, so the
-    directional sun-avoidance model
-    (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored;
-    the warn-only semantics are preserved either way.
-    """
-    if not site.sun_avoidance.enabled:
-        return
-
-    if sun_safe is None:
-        sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
-        # Vectorised haversine on the sphere (in degrees) so we don't have
-        # to call angular_separation in a loop of 60.
-        az_rad = np.deg2rad(az_arr)
-        el_rad = np.deg2rad(el_arr)
-        sun_az_rad = np.deg2rad(np.asarray(sun_az_arr, dtype=float))
-        sun_el_rad = np.deg2rad(np.asarray(sun_el_arr, dtype=float))
-        cos_sep = np.sin(el_rad) * np.sin(sun_el_rad) + np.cos(el_rad) * np.cos(
-            sun_el_rad
-        ) * np.cos(az_rad - sun_az_rad)
-        seps_deg = np.rad2deg(np.arccos(np.clip(cos_sep, -1.0, 1.0)))
-
-        excl = site.sun_avoidance.exclusion_radius
-        inside = seps_deg <= excl
-        if not np.any(inside):
-            return
-        closest = int(np.argmin(seps_deg))
-        # ``Time.__getitem__`` returns ``Time``; pyright's stubs sometimes
-        # narrow it to ``Time | None`` because the dunder is generic. Coerce
-        # via ``str()`` and silence the spurious optional-access warning.
-        closest_iso = str(times[closest].iso)  # type: ignore[union-attr]
-        warnings.warn(
-            f"EXCLUSION ZONE: planned source-CES on {source_label} passes "
-            f"{seps_deg[closest]:.1f} deg from the Sun at "
-            f"{closest_iso} (exclusion radius {excl} deg).",
-            PointingWarning,
-            stacklevel=4,
-        )
-        return
-
-    # Injected directional model: consult it per-sample. ``False`` marks an
-    # unsafe (inside-the-zone) sample. Warn once, naming the first unsafe
-    # sample, mirroring the scalar branch's single-warning semantics.
-    unsafe_idx = [
-        i
-        for i in range(len(az_arr))
-        if not sun_safe(float(az_arr[i]), float(el_arr[i]), times[i])  # type: ignore[index]
-    ]
-    if not unsafe_idx:
-        return
-    first = unsafe_idx[0]
-    first_iso = str(times[first].iso)  # type: ignore[union-attr]
-    warnings.warn(
-        f"EXCLUSION ZONE: planned source-CES on {source_label} enters the Sun "
-        f"avoidance zone at (az={float(az_arr[first]):.1f} deg, "
-        f"el={float(el_arr[first]):.1f} deg) at {first_iso}.",
-        PointingWarning,
-        stacklevel=4,
-    )
 
 
 def _select_source_arc(
@@ -555,25 +411,49 @@ def _compute_source_ces_core(
     # --- Algorithm ---
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = 0.5,
+    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
     sun_safe: SunSafePredicate | None = None,
+    # --- Scan-geometry overrides ---
+    az_speed: float | None = None,
+    az_throw: float | None = None,
+    dwell: float | None = None,
 ) -> _SourceCESCore:
     """Run the params-only phase of source-CES planning, returning scalars + builder state.
 
     Shared compute kernel for :func:`plan_source_ces` and
     :func:`compute_source_ces_params`. Validates inputs, resolves the
     footprint, samples the source arc, picks the monotonic slice, recovers
-    ``az_bore``, projects the cover, derives ``(t0, t1)``, solves ``v_az``,
-    runs the sun-safety arc check, and computes the peak-velocity sanity
-    warning. Does NOT build the per-sample trajectory.
+    ``az_bore``, projects the cover, derives ``(t0, t1)`` (narrowed to
+    ``dwell`` when given), solves ``v_az``, applies the ``az_throw``
+    override, runs the sun-safety arc check, and computes the
+    peak-velocity sanity warning from ``az_speed`` or the derived leg
+    speed. Does NOT build the per-sample trajectory.
     """
-    if sampling_step_seconds <= 0:
-        raise ValueError(f"sampling_step_seconds must be positive, got {sampling_step_seconds}")
-    if az_accel <= 0:
-        raise ValueError(f"az_accel must be positive, got {az_accel}")
+    _require_positive(sampling_step_seconds, "sampling_step_seconds")
+    _require_positive(az_accel, "az_accel")
+    if az_speed is not None:
+        _require_positive(az_speed, "az_speed")
+    if az_throw is not None:
+        _require_positive(az_throw, "az_throw")
+        if az_padding != _DEFAULT_AZ_PADDING_DEG:
+            raise ValueError(
+                "az_throw replaces the padded throw, so it cannot be combined with an "
+                f"explicit az_padding (got az_throw={az_throw}, az_padding={az_padding})"
+            )
+    if dwell is not None:
+        _require_positive(dwell, "dwell")
+        if dwell < sampling_step_seconds:
+            # The window the dwell narrows is resampled on the
+            # ``sampling_step_seconds`` grid, so a shorter dwell cannot be
+            # honoured; refuse rather than silently widen it.
+            raise ValueError(
+                f"dwell must be at least sampling_step_seconds: got dwell={dwell} s with "
+                f"sampling_step_seconds={sampling_step_seconds} s (lower "
+                "sampling_step_seconds to plan a shorter pass)"
+            )
 
     has_body = body is not None
     has_radec = ra is not None or dec is not None
@@ -598,6 +478,25 @@ def _compute_source_ces_core(
         raise ValueError("'mode' is required when using 'night'")
     if mode is not None and mode not in ("rising", "setting"):
         raise ValueError(f"mode must be 'rising' or 'setting', got {mode!r}")
+    # Each of these names one instant. An array-valued Time would fail far
+    # downstream, either as a numpy broadcast error or, worse, as a
+    # target-visibility refusal naming a whole grid of times.
+    if has_night and not night.isscalar:  # type: ignore[union-attr]
+        raise ValueError(f"night must be a single instant, got a Time of shape {night.shape}")  # type: ignore[union-attr]
+    if has_window:
+        for label, edge in zip(("window start", "window end"), window):  # type: ignore[arg-type]
+            if not edge.isscalar:
+                raise ValueError(
+                    f"{label} must be a single instant, got a Time of shape {edge.shape}"
+                )
+        # A reversed or empty window makes the search grid below empty, and
+        # the first reduction over it raised numpy's zero-size message from
+        # inside an error constructor, naming neither argument.
+        if (window[1] - window[0]).sec <= 0.0:  # type: ignore[index]
+            raise ValueError(
+                f"window end ({window[1].iso}) must be later than window start "  # type: ignore[index]
+                f"({window[0].iso})."  # type: ignore[index]
+            )
 
     el_limits = site.telescope_limits.elevation
     if not (el_limits.min <= el_bore <= el_limits.max):
@@ -611,7 +510,7 @@ def _compute_source_ces_core(
     boresight_rot_deg = 0.0 if boresight_rot is None else float(boresight_rot)
     source_label = _describe_source(body, ra, dec)
 
-    fp = _resolve_footprint(footprint)
+    fp = resolve_footprint(footprint)
     coords = Coordinates(site, atmosphere=atmosphere)
 
     if has_window:
@@ -736,24 +635,13 @@ def _compute_source_ces_core(
             )
             + boresight_rot_deg
         )
-        try:
-            az_bore_f, _ = detector_to_boresight(
-                det_az=src_az_at_el_bore,
-                det_el=el_bore,
-                offset=center_offset,
-                field_rotation=fp_rot_at_bore,
-            )
-            az_bore = float(az_bore_f)
-        except RuntimeError as exc:
-            # Fall back to az = source az if the inverse fails (zenith
-            # singularity); warn so the caller knows.
-            warnings.warn(
-                f"detector_to_boresight failed for off-centre footprint "
-                f"({exc}); falling back to source azimuth as boresight.",
-                PointingWarning,
-                stacklevel=3,
-            )
-            az_bore = src_az_at_el_bore
+        az_bore_f, _ = detector_to_boresight(
+            det_az=src_az_at_el_bore,
+            det_el=el_bore,
+            offset=center_offset,
+            field_rotation=fp_rot_at_bore,
+        )
+        az_bore = float(az_bore_f)
 
     # Mechanical field rotation for the cover projection (horizon-frame,
     # as in the az_bore recovery above). Uses a zero-offset
@@ -807,6 +695,33 @@ def _compute_source_ces_core(
         t1_sec = float(t_of_el(el_lo))
     if t1_sec < t0_sec:
         t0_sec, t1_sec = t1_sec, t0_sec
+    # The full footprint crossing, before any dwell narrowing; reported as
+    # ``crossing_seconds`` so a narrowed pass still records what it cut from.
+    crossing_seconds = t1_sec - t0_sec
+    if dwell is not None:
+        # The one site where the dwell acts: narrow the window symmetrically
+        # about the crossing midpoint. Everything downstream (drift anchor,
+        # arc Sun check, leg speed, quantisation, t0_iso/t1_iso) then
+        # describes the narrowed window, i.e. what is actually scanned.
+        if dwell > crossing_seconds:
+            raise ValueError(
+                f"dwell must not exceed the solved footprint crossing: got dwell={dwell:.1f} s "
+                f"but {source_label} crosses the footprint at el_bore={el_bore:.2f} deg in "
+                f"{crossing_seconds:.1f} s (every extra second has the source outside the "
+                "footprint; use more passes or a larger footprint margin for more time on "
+                "source)"
+            )
+        if dwell < crossing_seconds:
+            warnings.warn(
+                f"dwell={dwell:.1f} s is shorter than the {crossing_seconds:.1f} s footprint "
+                f"crossing of {source_label} at el_bore={el_bore:.2f} deg; planning a partial "
+                "pass centred on the crossing midpoint.",
+                PointingWarning,
+                stacklevel=3,
+            )
+        t_mid_sec = 0.5 * (t0_sec + t1_sec)
+        t0_sec = t_mid_sec - 0.5 * dwell
+        t1_sec = t_mid_sec + 0.5 * dwell
     t0 = t_search_start + TimeDelta(t0_sec * u.s)
     t1 = t_search_start + TimeDelta(t1_sec * u.s)
 
@@ -861,10 +776,26 @@ def _compute_source_ces_core(
     else:
         v_az_solved = float(v_az)
 
-    az_start, az_throw = _throw_objective(v_az_solved)
+    az_start, crossing_throw = _throw_objective(v_az_solved)
     az_start -= az_padding
-    az_throw += 2 * az_padding
-    az_stop = az_start + az_throw
+    throw = crossing_throw + 2 * az_padding
+    if az_throw is not None:
+        # Replace the padded throw, keeping the solved window's centre so
+        # the source still crosses the middle of the sweep.
+        if az_throw < crossing_throw:
+            warnings.warn(
+                f"az_throw={az_throw:.3f} deg is narrower than the {crossing_throw:.3f} deg "
+                f"footprint crossing of {source_label} at el_bore={el_bore:.2f} deg; the "
+                "source leaves the swept window during the pass.",
+                PointingWarning,
+                stacklevel=3,
+            )
+        centre = az_start + 0.5 * throw
+        throw = float(az_throw)
+        az_start = centre - 0.5 * throw
+    az_stop = az_start + throw
+    # Invariant: every override of the swept window sits above this line, so
+    # the arc Sun check below sees the final swept envelope.
 
     if az_branch is not None:
         # Re-express az_start in the requested wrap branch. The shift is a
@@ -873,34 +804,50 @@ def _compute_source_ces_core(
         # az_branch that pushes the swept window past the ACU az limits
         # surfaces downstream as an AzimuthBoundsError, not as silent loss.
         az_start = (az_start - (az_branch - 180.0)) % 360.0 + (az_branch - 180.0)
-        az_stop = az_start + az_throw
+        az_stop = az_start + throw
 
-    # Probe three azimuth positions per time sample (the low edge, the
-    # midpoint, and the high edge of the sweep) so that a scan whose
-    # midpoint clears the exclusion radius but whose +/-throw/2 edges do
-    # not is still caught. Sun motion within a single sweep is
-    # negligible (~15"/s << az_throw), so reusing the same time at all
-    # three az positions is sound.
-    arc_n = _SUN_SAFETY_ARC_N_SAMPLES
-    arc_times_sec_base = np.linspace(t0_sec, t1_sec, arc_n)
+    # Per-leg required speed comes from the underlying ConstantEl
+    # pattern; the additional drift adds a small constant offset. Derived
+    # here rather than below the arc block because the Sun sweep needs it
+    # to widen the science window into the commanded envelope; the
+    # peak-speed advisory that consumes it stays below the sweep so the
+    # Sun warning is still the first one a caller sees.
+    duration_window = max(t1_sec - t0_sec, sampling_step_seconds)
+    if az_speed is not None:
+        nominal_velocity = float(az_speed)
+    else:
+        # Tentatively choose the per-leg velocity so the source-coverage
+        # window fits exactly one leg. The CE pattern below
+        # may adjust n_scans, but the per-leg velocity stays the same.
+        nominal_velocity = max(throw / duration_window, _MIN_PER_LEG_VELOCITY_DEG_S)
+
+    # Sweep the commanded azimuth envelope, not the science window: the
+    # turnarounds overshoot each science edge, so the mount goes further
+    # than [az_start, az_stop] on both sides. A one- or two-leg pass has
+    # fewer than two turnarounds and is therefore screened slightly wider
+    # than it is driven; over-warning is the safe direction for a
+    # warn-only check.
+    arc_times_sec_base = np.linspace(t0_sec, t1_sec, _SUN_SAFETY_ARC_N_SAMPLES)
     drift = v_az_solved * (arc_times_sec_base - t0_sec)
-    arc_az_lo = az_start + drift
-    arc_az_mid = arc_az_lo + az_throw / 2.0
-    arc_az_hi = arc_az_lo + az_throw
-    arc_az = np.concatenate([arc_az_lo, arc_az_mid, arc_az_hi])
-    arc_el = np.full(arc_n * 3, el_bore)
-    arc_times_sec = np.tile(arc_times_sec_base, 3)
-    arc_times = t_search_start + TimeDelta(arc_times_sec * u.s)
-    _check_arc_sun_safety(coords, site, arc_az, arc_el, arc_times, source_label, sun_safe=sun_safe)
+    arc_az, arc_el, arc_times = _swept_arc_samples(
+        az_min=az_start + drift,
+        az_throw=throw,
+        el_deg=el_bore,
+        times=t_search_start + TimeDelta(arc_times_sec_base * u.s),
+        az_speed=nominal_velocity,
+        az_accel=az_accel,
+    )
+    _check_arc_sun_safety(
+        coords,
+        site,
+        arc_az,
+        arc_el,
+        arc_times,
+        f"source-CES on {source_label}",
+        sun_safe=sun_safe,
+    )
 
     az_vel_limit = site.telescope_limits.azimuth.max_velocity
-    # Per-leg required speed comes from the underlying ConstantEl
-    # pattern; the additional drift adds a small constant offset.
-    duration_window = max(t1_sec - t0_sec, sampling_step_seconds)
-    # Tentatively choose the per-leg velocity so the source-coverage
-    # window fits one full cycle (down + up). The CE pattern below
-    # may adjust n_scans, but the per-leg velocity stays the same.
-    nominal_velocity = max(az_throw / duration_window, _MIN_PER_LEG_VELOCITY_DEG_S)
     peak_required = nominal_velocity + abs(v_az_solved)
     if peak_required > az_vel_limit:
         warnings.warn(
@@ -916,7 +863,7 @@ def _compute_source_ces_core(
     # produce. Mirrors the n_scans/duration quantisation in plan_constant_el_scan.
     velocity = nominal_velocity
     n_scans, actual_duration = _quantize_ce_duration(
-        az_throw=az_throw,
+        az_throw=throw,
         velocity=velocity,
         duration=duration_window,
         az_accel=az_accel,
@@ -924,13 +871,18 @@ def _compute_source_ces_core(
 
     computed: SourceCESComputedParams = {
         "az_start": float(az_start),
-        "az_throw": float(az_throw),
+        "az_throw": float(throw),
+        "az_speed": float(velocity),
         "v_az": float(v_az_solved),
         "el_bore": float(el_bore),
         "boresight_rot": float(boresight_rot_deg),
-        "t0_iso": str(t0.iso),
-        "t1_iso": str(t1.iso),
+        # ``.utc`` before ``.iso``: the recorded strings carry no scale, and
+        # every reader parses them as UTC (which the TypedDict documents), so
+        # the conversion has to happen here rather than at the reader.
+        "t0_iso": str(t0.utc.iso),
+        "t1_iso": str(t1.utc.iso),
         "duration": float(actual_duration),
+        "crossing_seconds": float(crossing_seconds),
         "mode": mode,
         "n_scans": int(n_scans),
     }
@@ -983,18 +935,21 @@ def compute_source_ces_params(
     # --- Algorithm ---
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = 0.5,
+    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
     sun_safe: SunSafePredicate | None = None,
+    # --- Scan-geometry overrides ---
+    az_speed: float | None = None,
+    az_throw: float | None = None,
+    dwell: float | None = None,
 ) -> SourceCESComputedParams:
     """Compute source-CES scalar parameters without building the trajectory.
 
     Params-only sibling of :func:`plan_source_ces`. Returns just the
-    :class:`SourceCESComputedParams` dict (az_start, az_throw, v_az,
-    el_bore, boresight_rot, t0_iso, t1_iso, duration, mode, n_scans),
-    skipping the per-sample trajectory generation. This is the emit-time
+    :class:`SourceCESComputedParams` dict, skipping the per-sample
+    trajectory generation. This is the emit-time
     entry point: a scheduler can price many candidate scans cheaply
     (feasibility, duration, azimuth throw) from the scalars alone and
     discard the trajectory, which the execution layer generates once at
@@ -1060,6 +1015,36 @@ def compute_source_ces_params(
         instead, so the directional sun-avoidance model
         (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored.
         Warn-only either way.
+    az_speed : float, optional
+        Per-leg azimuth speed of the sweep in deg/s. ``None`` (default)
+        derives it so a single azimuth leg spans the scanned window,
+        floored at a slow drag; an explicit value makes the
+        sweep a fast drag at that speed. Distinct from ``v_az``: ``v_az``
+        is the slow drift that keeps the window on the source, ``az_speed``
+        is how fast the telescope crosses the window within it. Recorded
+        as ``computed_params["az_speed"]`` either way.
+    az_throw : float, optional
+        Width of the swept azimuth window in degrees. ``None`` (default)
+        uses the solved footprint crossing plus ``az_padding`` on each
+        side; an explicit value replaces that padded throw, re-centred on
+        the solved window, and cannot be combined with an explicit
+        ``az_padding``. A value narrower than the footprint crossing warns
+        (the source leaves the window during the pass).
+    dwell : float, optional
+        Time on source in seconds. ``None`` (default) scans the whole
+        footprint crossing; an explicit value narrows the solved pass
+        symmetrically about the crossing midpoint, so ``t0_iso`` and
+        ``t1_iso`` report the narrowed source window and
+        ``computed_params["crossing_seconds"]`` keeps the full crossing.
+        ``duration`` is that window quantised to whole azimuth legs, so
+        it agrees with ``t1_iso - t0_iso`` only to within half a leg plus
+        turnaround (about 26 s on the slow-drag default, a few seconds at
+        a fast drag). A value longer than the crossing is rejected (every
+        extra second has the source outside the footprint), one shorter
+        than ``sampling_step_seconds`` is rejected as unresolvable, and a
+        shorter one in between warns as a partial pass. With
+        ``start_time`` anchoring the anchor places the full crossing, so
+        the narrowed pass starts half the cut later.
 
     Returns
     -------
@@ -1074,20 +1059,27 @@ def compute_source_ces_params(
     TargetNotObservableError
         When the source never reaches ``el_bore`` in the search window.
     AzimuthBoundsError
-        When the envelope ``[az_start - az_padding, az_start + az_throw
-        + az_padding]`` extended by the drift across ``(t1 - t0)``
-        exceeds ``site.telescope_limits.azimuth``. This is a cheap
-        pre-build check; :func:`plan_source_ces` runs a stricter
-        per-sample check via ``validate_trajectory_bounds``.
+        When the commanded envelope exceeds ``site.telescope_limits.azimuth``.
+        That envelope is the returned ``[az_start, az_start + az_throw]`` (the
+        solved window, with any padding already applied) widened on each side
+        by the turnaround overshoot
+        (:func:`~fyst_trajectories.patterns.turnarounds.swept_az_envelope`)
+        and extended by ``v_az * duration`` on the side the drift runs to.
+        This is a cheap pre-build check; :func:`plan_source_ces` runs a
+        stricter per-sample check via ``validate_trajectory_bounds``.
     PointingError
         When the Nelder-Mead optimisation fails and no fallback ``v_az``
         can be derived from the source's median az speed.
+    OffsetInversionError
+        When the boresight inverse for an off-centre footprint cannot be
+        solved at ``el_bore``. A :class:`PointingError` subclass.
 
     Warns
     -----
     PointingWarning
         Same warnings as :func:`plan_source_ces` (sun-avoidance,
-        peak-velocity sanity).
+        peak-velocity sanity, and a ``v_az`` optimisation that did not
+        converge and fell back to a median source azimuth speed).
 
     Notes
     -----
@@ -1164,19 +1156,28 @@ def compute_source_ces_params(
         allow_partial=allow_partial,
         v_az=v_az,
         sun_safe=sun_safe,
+        az_speed=az_speed,
+        az_throw=az_throw,
+        dwell=dwell,
     )
 
-    # Envelope-only az bounds check. The padded sweep [az_start, az_stop]
-    # plus the linear drift across the source pass duration gives the
-    # extreme az values the executed trajectory will hit, without
-    # building per-sample arrays. ``plan_source_ces`` runs the stricter
-    # per-sample check via ``validate_trajectory_bounds`` after building.
+    # Envelope-only az bounds check. The commanded sweep (the padded
+    # window [az_start, az_stop] widened by the turnaround overshoot on
+    # each side) plus the linear drift across the source pass duration
+    # gives the extreme az values the executed trajectory will hit,
+    # without building per-sample arrays. ``plan_source_ces`` runs the
+    # stricter per-sample check via ``validate_trajectory_bounds`` after
+    # building, so the two entry points agree on what fits.
     az_limits = site.telescope_limits.azimuth
     cp = core.computed
     pass_duration = max(core.actual_duration, 0.0)
     drift_total = cp["v_az"] * pass_duration
-    env_lo = min(cp["az_start"], cp["az_start"] + cp["az_throw"])
-    env_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"])
+    env_lo, env_hi = swept_az_envelope(
+        min(cp["az_start"], cp["az_start"] + cp["az_throw"]),
+        max(cp["az_start"], cp["az_start"] + cp["az_throw"]),
+        cp["az_speed"],
+        az_accel,
+    )
     # The executed trajectory applies ``az + v_az*times`` (see
     # ``plan_source_ces``), so the linear drift shifts the track in a
     # single direction (the sign of ``v_az``): later samples move toward
@@ -1221,11 +1222,15 @@ def plan_source_ces(
     timestep: float = 0.1,
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = 0.5,
+    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
     sun_safe: SunSafePredicate | None = None,
+    # --- Scan-geometry overrides ---
+    az_speed: float | None = None,
+    az_throw: float | None = None,
+    dwell: float | None = None,
 ) -> ScanBlock:
     """Plan a constant-elevation scan that drags a moving source across an array footprint.
 
@@ -1361,6 +1366,36 @@ def plan_source_ces(
         sun-avoidance model (see :func:`~fyst_trajectories.sun_models.make_sun_safe`)
         is honored end-to-end. Warn-only either way. See
         :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
+    az_speed : float, optional
+        Per-leg azimuth speed of the sweep in deg/s. ``None`` (default)
+        derives it so a single azimuth leg spans the scanned window,
+        floored at a slow drag; an explicit value makes the
+        sweep a fast drag at that speed. Distinct from ``v_az``: ``v_az``
+        is the slow drift that keeps the window on the source, ``az_speed``
+        is how fast the telescope crosses the window within it. Recorded
+        as ``computed_params["az_speed"]`` either way.
+    az_throw : float, optional
+        Width of the swept azimuth window in degrees. ``None`` (default)
+        uses the solved footprint crossing plus ``az_padding`` on each
+        side; an explicit value replaces that padded throw, re-centred on
+        the solved window, and cannot be combined with an explicit
+        ``az_padding``. A value narrower than the footprint crossing warns
+        (the source leaves the window during the pass).
+    dwell : float, optional
+        Time on source in seconds. ``None`` (default) scans the whole
+        footprint crossing; an explicit value narrows the solved pass
+        symmetrically about the crossing midpoint, so ``t0_iso`` and
+        ``t1_iso`` report the narrowed source window and
+        ``computed_params["crossing_seconds"]`` keeps the full crossing.
+        ``duration`` is that window quantised to whole azimuth legs, so
+        it agrees with ``t1_iso - t0_iso`` only to within half a leg plus
+        turnaround (about 26 s on the slow-drag default, a few seconds at
+        a fast drag). A value longer than the crossing is rejected (every
+        extra second has the source outside the footprint), one shorter
+        than ``sampling_step_seconds`` is rejected as unresolvable, and a
+        shorter one in between warns as a partial pass. With
+        ``start_time`` anchoring the anchor places the full crossing, so
+        the narrowed pass starts half the cut later.
 
     Returns
     -------
@@ -1385,15 +1420,28 @@ def plan_source_ces(
         When the built trajectory leaves the telescope envelope (the
         post-build ``validate_trajectory_bounds``, or ``el_bore``
         outside the elevation limits).
+    OffsetInversionError
+        When the boresight inverse for an off-centre footprint cannot be
+        solved at ``el_bore``. A :class:`PointingError` subclass.
 
     Warns
     -----
     PointingWarning
-        - Source passes within the site sun-avoidance exclusion radius
-          at any sample along the planned arc.
+        - The planned arc passes within the site sun-avoidance exclusion
+          radius at any sample. The screened arc is the commanded azimuth
+          envelope, so it includes the turnaround overshoot beyond each
+          science edge.
         - Required azimuth speed exceeds the site's azimuth velocity
           limit (the scan may still execute if the per-sample speed
           comes in under the limit after padding).
+        - The ``v_az`` optimisation did not converge and a median source
+          azimuth speed was used instead.
+    VelocityLimitWarning, AccelerationLimitWarning
+        The drifted trajectory exceeds an axis velocity or acceleration
+        limit (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`
+        on the returned trajectory; the quintic turnaround peaks at 1.5
+        times ``az_accel``, so an ``az_accel`` above two thirds of the
+        site's azimuth acceleration limit puts that peak over the limit).
 
     Notes
     -----
@@ -1413,11 +1461,10 @@ def plan_source_ces(
     ``site.telescope_limits.azimuth``, the post-build
     :func:`~fyst_trajectories.trajectory_utils.validate_trajectory_bounds`
     raises :class:`~fyst_trajectories.exceptions.AzimuthBoundsError`. For FYST
-    (limits −180° to 360°), ``az_branch`` values near −180° can
+    (limits -180° to 360°), ``az_branch`` values near -180° can
     produce out-of-range scans even when geometrically valid.
 
-    The planner's consumers are described in the module docstring; see
-    :doc:`/planning` ("Source CES") for the wider conventions
+    See :doc:`/planning` ("Source CES") for the wider conventions
     discussion.
 
     Examples
@@ -1493,6 +1540,9 @@ def plan_source_ces(
         allow_partial=allow_partial,
         v_az=v_az,
         sun_safe=sun_safe,
+        az_speed=az_speed,
+        az_throw=az_throw,
+        dwell=dwell,
     )
 
     computed = core.computed
@@ -1518,6 +1568,8 @@ def plan_source_ces(
         az_accel=az_accel,
     )
 
+    # The dynamics check runs below on the drifted trajectory, the one
+    # actually returned, rather than on this undrifted base.
     base_traj = _build_altaz_trajectory(
         site=site,
         config=config,
@@ -1525,6 +1577,7 @@ def plan_source_ces(
         start_time=t0,
         atmosphere=atmosphere,
         detector_offset=None,
+        validate_dynamics=False,
     )
 
     drifted_az = base_traj.az + v_az_solved * base_traj.times
@@ -1553,6 +1606,9 @@ def plan_source_ces(
     # Post-drift bounds check. validate_trajectory_bounds raises
     # AzimuthBoundsError / ElevationBoundsError on violation.
     validate_trajectory_bounds(site, trajectory.az, trajectory.el)
+    # Post-drift dynamics check (advisory): the drift adds v_az to every
+    # leg velocity, so the limits are judged on the returned trajectory.
+    validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
 
     summary = (
         f"Source-CES on {source_label} ({mode_resolved}) at el_bore={el_bore:.2f} deg\n"
@@ -1579,33 +1635,81 @@ def plan_source_ces(
     )
 
 
-def _offset_footprint_eta(fp: ArrayFootprint, d_eta_deg: float) -> ArrayFootprint:
-    """Return a copy of ``fp`` shifted by ``d_eta_deg`` along the eta axis.
+def source_ces_focal_plane_track(
+    block: ScanBlock,
+    *,
+    site: Site,
+    atmosphere: AtmosphericConditions | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trace the source through the focal plane over a planned source-CES pass.
 
-    The eta (elevation-direction) shift moves both the footprint center
-    and every cover vertex, so the whole array footprint slides along the
-    focal-plane elevation axis while keeping its cross-elevation (xi)
-    geometry unchanged.
+    For every sample of the pass trajectory, place the source relative to
+    the boresight in the focal-plane frame the pass was planned in: the
+    mechanical rotation at the pass elevation plus the recorded boresight
+    rotation, the same angle the planner projected the footprint with. The
+    result is what a plot of the pass shows and what a per-module coverage
+    calculation integrates.
 
     Parameters
     ----------
-    fp : ArrayFootprint
-        Base footprint to shift.
-    d_eta_deg : float
-        Eta offset in degrees (positive = toward increasing elevation).
+    block : ScanBlock
+        A block returned by :func:`plan_source_ces` or
+        :func:`plan_source_ces_passes`.
+    site : Site
+        Telescope site (Nasmyth sign and location).
+    atmosphere : AtmosphericConditions, optional
+        Refraction model for the source ephemeris. Default ``None``, the
+        vacuum frame the pass was planned in.
 
     Returns
     -------
-    ArrayFootprint
-        A new footprint with ``center_eta_deg`` and ``cover_eta_deg``
-        shifted by ``d_eta_deg``.
+    xi_deg : np.ndarray
+        Cross-elevation focal-plane coordinate of the source in degrees,
+        one per trajectory sample.
+    eta_deg : np.ndarray
+        Elevation focal-plane coordinate of the source in degrees.
+
+    Raises
+    ------
+    ValueError
+        If ``block`` was not produced by the source-CES planner.
+
+    Notes
+    -----
+    A body is placed with the site ephemeris at each sample time. A fixed
+    source is placed at the RA/Dec recorded on the block, which is the
+    catalogue position the pass was planned from: the whole epoch
+    propagation is neglected, not just the drift during the pass. The block
+    records no proper motion or reference epoch to propagate with, so a
+    caller that needs the propagated position has to supply it. The error is
+    the accumulated proper motion between the catalogue epoch and the
+    observation, which for a fast mover (10 arcsec/yr, 26 years) reaches
+    about 4.3 arcmin, a ninth of the 0.65 deg module field radius; for an
+    ordinary calibrator it is negligible.
     """
-    return ArrayFootprint(
-        center_xi_deg=fp.center_xi_deg,
-        center_eta_deg=fp.center_eta_deg + d_eta_deg,
-        cover_xi_deg=fp.cover_xi_deg.copy(),
-        cover_eta_deg=fp.cover_eta_deg + d_eta_deg,
+    metadata = block.trajectory.metadata
+    if metadata is None or metadata.pattern_type != "source_ces":
+        raise ValueError("block must come from plan_source_ces or plan_source_ces_passes")
+    params = metadata.pattern_params
+    trajectory = block.trajectory
+    times = get_absolute_times(trajectory)
+    coords = Coordinates(site, atmosphere=atmosphere)
+
+    label = metadata.target_name or ""
+    if label.startswith("RA="):
+        src_az, src_el = coords.radec_to_altaz(metadata.center_ra, metadata.center_dec, times)
+    else:
+        src_az, src_el = coords.get_body_altaz(label.lower(), times)
+
+    rotation = compute_focal_plane_rotation(
+        el=trajectory.el,
+        site=site,
+        offset=InstrumentOffset(dx=0.0, dy=0.0),
+    ) + float(params["boresight_rot"])
+    xi, eta = sky_to_focal_plane(
+        trajectory.az, trajectory.el, np.asarray(src_az), np.asarray(src_el), rotation
     )
+    return np.asarray(xi, dtype=float), np.asarray(eta, dtype=float)
 
 
 def _tag_pass_block(
@@ -1726,11 +1830,15 @@ def plan_source_ces_passes(
     timestep: float = 0.1,
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = 0.5,
+    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
     sun_safe: SunSafePredicate | None = None,
+    # --- Scan-geometry overrides ---
+    az_speed: float | None = None,
+    az_throw: float | None = None,
+    dwell: float | None = None,
 ) -> list[ScanBlock]:
     """Plan a sequence of source-CES passes for full focal-plane coverage.
 
@@ -1847,6 +1955,16 @@ def plan_source_ces_passes(
         Override the solved azimuth drift rate for every pass (deg/s).
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate forwarded to each pass.
+    az_speed : float, optional
+        Per-leg azimuth speed in deg/s, forwarded to each pass (see
+        :func:`plan_source_ces`).
+    az_throw : float, optional
+        Swept azimuth window in degrees, forwarded to each pass (see
+        :func:`plan_source_ces`).
+    dwell : float, optional
+        Time on source in seconds, forwarded to the pass (see
+        :func:`plan_source_ces`). Accepted only for a single pass: a
+        multi-pass sequence with a narrowed window is rejected.
 
     Returns
     -------
@@ -1870,6 +1988,9 @@ def plan_source_ces_passes(
     ElevationBoundsError
         If a stepped ``el_bore`` falls outside the telescope elevation
         limits.
+    AzimuthBoundsError, PointingError
+        Propagated unchanged from the per-pass :func:`plan_source_ces`
+        calls.
 
     Warns
     -----
@@ -1901,7 +2022,7 @@ def plan_source_ces_passes(
     >>> [b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks]
     [-0.432..., 0.0, 0.432...]
     """
-    base_fp = _resolve_footprint(footprint)
+    base_fp = resolve_footprint(footprint)
     eta_extent = float(base_fp.cover_eta_deg.max() - base_fp.cover_eta_deg.min())
 
     offsets = _resolve_pass_offsets(
@@ -1911,6 +2032,11 @@ def plan_source_ces_passes(
         footprint_eta_extent=eta_extent,
     )
     n = len(offsets)
+    if dwell is not None and n > 1:
+        raise ValueError(
+            "dwell narrows one pass about its crossing midpoint and is accepted only for a "
+            f"single pass; got dwell={dwell} with {n} passes"
+        )
 
     if el_step is None:
         el_step_val = eta_extent
@@ -1947,7 +2073,7 @@ def plan_source_ces_passes(
             # (offsets[-1]); derive that pass's el_bore, then step out to the
             # central value.
             first_eta = offsets[0] if resolved_mode == "rising" else offsets[-1]
-            first_fp = _offset_footprint_eta(base_fp, first_eta)
+            first_fp = offset_footprint_eta(base_fp, first_eta)
             first_el_bore = _derive_anchored_el_bore(
                 anchor=anchor,
                 el_at_anchor=el_at_anchor,
@@ -1998,6 +2124,9 @@ def plan_source_ces_passes(
         allow_partial=allow_partial,
         v_az=v_az,
         sun_safe=sun_safe,
+        az_speed=az_speed,
+        az_throw=az_throw,
+        dwell=dwell,
     )
 
     # Pair the lowest coverage row with the lowest boresight elevation so
@@ -2008,13 +2137,16 @@ def plan_source_ces_passes(
     planned: list[ScanBlock] = []
     for k, eta in enumerate(offsets):
         el_bore_k = el_bore + el_step_val * (k - (n - 1) / 2.0)
-        fp_k = _offset_footprint_eta(base_fp, eta)
+        fp_k = offset_footprint_eta(base_fp, eta)
         block = plan_source_ces(footprint=fp_k, el_bore=el_bore_k, **common)
         planned.append(block)
 
     # Order the blocks by start time (setting sources cross higher
     # elevations first, so coverage order and time order are reversed).
-    order = sorted(range(n), key=lambda i: Time(planned[i].computed_params["t0_iso"]).unix)
+    order = sorted(
+        range(n),
+        key=lambda i: Time(planned[i].computed_params["t0_iso"], scale="utc").unix,
+    )
     tagged: list[ScanBlock] = []
     for pass_index, i in enumerate(order):
         block = planned[i]
@@ -2034,7 +2166,8 @@ def plan_source_ces_passes(
     n_overlaps = sum(
         1
         for a, b in zip(tagged, tagged[1:])
-        if Time(b.computed_params["t0_iso"]).unix < Time(a.computed_params["t1_iso"]).unix
+        if Time(b.computed_params["t0_iso"], scale="utc").unix
+        < Time(a.computed_params["t1_iso"], scale="utc").unix
     )
     if n_overlaps:
         warnings.warn(

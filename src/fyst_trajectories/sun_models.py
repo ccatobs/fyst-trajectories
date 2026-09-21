@@ -178,7 +178,10 @@ def load_avoidance_data(model: str = "cad", *, radius: float | None = None) -> A
     # Argument validation precedes the optional import so a bad call raises the
     # same ValueError whether or not the shared library is installed.
     if model not in ("cad", "cone"):
-        raise ValueError(f"Unknown avoidance model {model!r}; expected 'cad' or 'cone'.")
+        # ``make_sun_safe`` handles "scalar" itself and delegates the rest
+        # here, so name all three: a caller who reaches this message got here
+        # through that entry point and needs its full vocabulary.
+        raise ValueError(f"Unknown avoidance model {model!r}; expected 'scalar', 'cad' or 'cone'.")
     if model == "cad" and radius is not None:
         raise ValueError("radius applies to model='cone' only; the CAD zone is fixed.")
     if model == "cone" and (radius is None or not np.isfinite(radius) or not 0 < radius <= 180.0):
@@ -230,7 +233,7 @@ class _BaseSunModel:
         return bool(verdict[0])
 
     def _broadcast_with_sun(
-        self, az_deg, el_deg, times: Time
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Validate and broadcast (az, el) with the Sun's position over ``times``.
 
@@ -284,7 +287,9 @@ class _BaseSunModel:
             )
         return az, el
 
-    def _result_shape(self, az_deg, el_deg, times: Time) -> tuple[int, ...]:
+    def _result_shape(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> tuple[int, ...]:
         """Broadcast result shape without computing the Sun (disabled path).
 
         Runs the same input guards as the compute path, so a disabled site
@@ -314,7 +319,9 @@ class _ScalarSunModel(_BaseSunModel):
             else "scalar (disabled)"
         )
 
-    def batch(self, az_deg, el_deg, times: Time) -> np.ndarray:
+    def batch(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> np.ndarray:
         """Vectorized verdicts; True = clear of the Sun."""
         if not self._enabled:
             return np.ones(self._result_shape(az_deg, el_deg, times), dtype=bool)
@@ -322,7 +329,9 @@ class _ScalarSunModel(_BaseSunModel):
         sep = np.atleast_1d(self._coords.angular_separation(az, el, sun_az, sun_el))
         return sep > self._site.sun_avoidance.exclusion_radius
 
-    def threshold(self, az_deg, el_deg, times: Time) -> np.ndarray:
+    def threshold(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> np.ndarray:
         """Minimum safe Sun separation (deg) per sample; constant for this model."""
         shape = self._result_shape(az_deg, el_deg, times)
         if not self._enabled:
@@ -364,14 +373,18 @@ class _LibrarySunModel(_BaseSunModel):
         )
         self.describe = zone if self._enabled else f"{zone} (disabled)"
 
-    def batch(self, az_deg, el_deg, times: Time) -> np.ndarray:
+    def batch(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> np.ndarray:
         """Vectorized verdicts; True = clear of the Sun."""
         if not self._enabled:
             return np.ones(self._result_shape(az_deg, el_deg, times), dtype=bool)
         mask, _ = self._evaluate(az_deg, el_deg, times)
         return mask
 
-    def threshold(self, az_deg, el_deg, times: Time) -> np.ndarray:
+    def threshold(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> np.ndarray:
         """Minimum safe geometric Sun separation (deg) per sample.
 
         The library's directional table threshold at each sample's clock
@@ -390,16 +403,13 @@ class _LibrarySunModel(_BaseSunModel):
         _, threshold = self._evaluate(az_deg, el_deg, times)
         return threshold
 
-    def _evaluate(self, az_deg, el_deg, times: Time) -> tuple[np.ndarray, np.ndarray]:
+    def _evaluate(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Shared verdict + geometric-units threshold computation."""
         az, el, sun_az, sun_el = self._broadcast_with_sun(az_deg, el_deg, times)
-        # Deviation 3: evaluate near-zenith elevations at 89.999. At exactly
-        # 90 the library's clock-angle branch does not fire (threshold
-        # collapses to the table floor), and in the final float ULPs below 90
-        # its bearing computation is numerically degenerate (gamma quantises
-        # to multiples of 90), so a real working margin is required. The
-        # 0.001 deg position change is negligible against 50-90 deg
-        # thresholds.
+        # Deviation 3 of the module docstring: near-zenith elevations are
+        # evaluated at the clamp, not at 90.
         el = np.minimum(el, _EL_ZENITH_CLAMP)
 
         delta, gamma = self._calc_sun_distance(
@@ -483,9 +493,10 @@ def make_sun_safe(
     tracking_module : str, optional
         Module name for the shared library's boresight-to-module padding
         (``"<instrument>_<module>"``). Default ``"center"`` (no padding).
-        The pinned library recognises only ``primecam_f280`` / ``f350`` /
-        ``eorspec`` (1.78 deg); any other name silently resolves to zero
-        padding upstream, so passing one emits a
+        The pinned library recognises only ``primecam_f280``,
+        ``primecam_f350`` and ``primecam_eorspec``, each padded by
+        1.78 deg; any other name silently resolves to zero padding
+        upstream, so passing one emits a
         :class:`~fyst_trajectories.exceptions.PointingWarning` here.
         Ignored for ``model="scalar"``.
 
@@ -559,12 +570,16 @@ def make_sun_safe(
 def _axis_slew_duration(distance: float, vmax: float, amax: float) -> float:
     """Trapezoidal-profile travel time (s) for one axis over ``distance`` deg.
 
-    Same profile as ``overhead.utils._axis_slew_time`` (deliberate
-    duplication: the overhead subpackage sits above this module in the
-    import graph); agreement is locked by
-    ``tests/test_slew_safety.py::test_axis_profile_endpoints_and_duration``.
+    The axis accelerates at ``amax`` to at most ``vmax``, cruises, and
+    decelerates symmetrically. A non-positive limit describes an axis that
+    cannot move, so the profile is a zero-duration hold.
+
+    This is the package's single definition of the profile: the offline
+    simulator's slew estimator calls it rather than carrying a second copy,
+    so the duration a scan is priced with and the duration its Sun sweep is
+    sampled over cannot drift apart.
     """
-    if distance <= 0.0:
+    if distance <= 0.0 or vmax <= 0.0 or amax <= 0.0:
         return 0.0
     t_accel = vmax / amax
     d_accel = vmax * t_accel  # accelerate + decelerate distance
@@ -617,7 +632,7 @@ class _SlewSafeModel:
 
     def __init__(
         self,
-        point_model,
+        point_model: SunSafePredicate,
         *,
         az_speed: float,
         az_accel: float,
@@ -693,7 +708,7 @@ class _SlewSafeModel:
 
 
 def make_slew_safe(
-    model="cad",
+    model: str | SunSafePredicate = "cad",
     *,
     radius: float | None = None,
     site: Site | None = None,
@@ -846,7 +861,10 @@ def find_sun_safe_detour(
         :func:`~fyst_trajectories.site.get_fyst_site`.
     el_min, el_max : float, optional
         Intermediate-elevation bounds in degrees. Default: the site's
-        telescope elevation limits.
+        telescope elevation limits. Supplied bounds may only narrow that
+        range; a bound outside the mount's limits is rejected rather than
+        honoured, so the commandability guarantee above holds for every
+        call.
     coarse_step, fine_step : float, optional
         Elevation search steps in degrees. Defaults 10.0 and 2.0.
 
@@ -859,8 +877,9 @@ def find_sun_safe_detour(
     Raises
     ------
     ValueError
-        On invalid steps/bounds, a non-scalar ``time``, or a ``slew_safe``
-        without ``evaluate``.
+        On invalid steps, on ``el_min``/``el_max`` reversed or outside the
+        site's telescope elevation limits, on a non-scalar ``time``, or on
+        a ``slew_safe`` without ``evaluate``.
     """
     if not time.isscalar:
         raise ValueError("find_sun_safe_detour takes a scalar start time")
@@ -885,6 +904,17 @@ def find_sun_safe_detour(
     hi = el_limits.max if el_max is None else el_max
     if lo > hi:
         raise ValueError(f"el_min ({lo}) must be <= el_max ({hi})")
+    # The returned intermediate is commanded as-is, so bounds wider than the
+    # mount's own range cannot be honoured: refuse rather than hand back an
+    # uncommandable pose, and rather than silently narrowing what the caller
+    # explicitly asked for. Finiteness is checked in the same test because a
+    # NaN bound fails every comparison and would otherwise reach the elevation
+    # grid, several frames from the caller.
+    if not (np.isfinite(lo) and np.isfinite(hi)) or lo < el_limits.min or hi > el_limits.max:
+        raise ValueError(
+            f"el_min/el_max must lie inside the telescope elevation limits "
+            f"[{el_limits.min}, {el_limits.max}], got [{lo}, {hi}]"
+        )
 
     az_mid = (float(current_az) + float(goal_az)) / 2.0
     el_direct_mid = (float(current_el) + float(goal_el)) / 2.0

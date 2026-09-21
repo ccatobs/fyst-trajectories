@@ -4,6 +4,8 @@ Shared helper functions used by multiple pattern implementations.
 Trajectory validation functions live in :mod:`fyst_trajectories.trajectory_utils`.
 """
 
+import dataclasses
+import math
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -24,11 +26,13 @@ from ..site import Site
 
 if TYPE_CHECKING:
     from ..coordinates import Coordinates
+    from ..trajectory import Trajectory
 
 __all__ = [
     "compute_velocities",
     "generate_time_array",
     "normalize_azimuth",
+    "rewrap_trajectory_azimuth",
     "sky_offsets_to_altaz",
     "validate_sample_count",
     "wrap_bounds_error",
@@ -164,7 +168,8 @@ def normalize_azimuth(
     -----
     PointingWarning
         If the trajectory's azimuth span exceeds the telescope's
-        azimuth range, meaning no shift can make it fit.
+        azimuth range, meaning no shift can make it fit, or if the
+        shifted azimuth range still leaves the telescope limits.
     """
     limits = site.telescope_limits
 
@@ -203,6 +208,64 @@ def normalize_azimuth(
     return shifted
 
 
+def rewrap_trajectory_azimuth(trajectory: "Trajectory", az_shift: float) -> "Trajectory":
+    """Move a whole trajectory onto another azimuth wrap.
+
+    ``normalize_azimuth`` fixes a trajectory's cable-wrap frame when the
+    pattern is built, and the encoder choice made just before the slew
+    (:func:`~fyst_trajectories.dispatch.choose_encoder_solution`) may land on a
+    different one. This applies that decision to the trajectory: the azimuth
+    samples move by ``az_shift`` and everything else, velocities included, is
+    unchanged, because a rigid shift by whole turns is the same sky path.
+
+    Parameters
+    ----------
+    trajectory : Trajectory
+        The commanded trajectory, in the azimuth frame the encoder choice was
+        made against.
+    az_shift : float
+        Azimuth shift in degrees, a whole multiple of 360. Take it from
+        :attr:`~fyst_trajectories.dispatch.EncoderSolution.az_shift`.
+
+    Returns
+    -------
+    Trajectory
+        A copy whose azimuth is ``trajectory.az + az_shift``. The input is
+        returned unchanged when the shift is zero.
+
+    Raises
+    ------
+    PointingError
+        If ``az_shift`` is not a whole multiple of 360 degrees. Any other
+        shift would move the trajectory to a different patch of sky, which is
+        never what a wrap change means.
+
+    Notes
+    -----
+    Telescope limits are not re-checked here: the wrap the shift comes from
+    was chosen against the trajectory's own azimuth span, so the shifted path
+    is in range by construction. Call
+    :func:`~fyst_trajectories.trajectory_utils.validate_trajectory_bounds` if
+    the shift came from somewhere else.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from fyst_trajectories import rewrap_trajectory_azimuth
+    >>> shifted = rewrap_trajectory_azimuth(trajectory, -360.0)
+    >>> bool(np.allclose(shifted.az, trajectory.az - 360.0))
+    True
+    """
+    if not math.isfinite(az_shift) or abs(az_shift - round(az_shift / 360.0) * 360.0) > 1e-9:
+        raise PointingError(
+            f"az_shift must be a whole multiple of 360 degrees, got {az_shift}; "
+            "an azimuth wrap change moves the trajectory by whole turns only."
+        )
+    if az_shift == 0.0:
+        return trajectory
+    return dataclasses.replace(trajectory, az=trajectory.az + az_shift)
+
+
 def compute_velocities(
     positions: np.ndarray,
     times: np.ndarray,
@@ -234,6 +297,7 @@ def compute_velocities(
 
     Examples
     --------
+    >>> import numpy as np
     >>> times = np.array([0, 1, 2, 3, 4])
     >>> az = np.array([100, 101, 102, 103, 104])
     >>> az_vel = compute_velocities(az, times, is_angular=False)

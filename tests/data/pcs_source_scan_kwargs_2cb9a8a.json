@@ -1,0 +1,27 @@
+{
+  "repository": "ccatobs/pcs",
+  "commit": "2cb9a8a",
+  "path": "pcs/agents/acu_interface/trajectory.py",
+  "function": "build_source_payload",
+  "description": "scan_params keys the execution layer reads when it re-plans a source_scan task through plan_source_ces; any other key in a dispatched scan_params dict is dropped without a message at this revision",
+  "forwarded_keys": [
+    "allow_partial",
+    "az_accel",
+    "az_branch",
+    "az_padding",
+    "body",
+    "boresight_rot",
+    "dec",
+    "el_bore",
+    "footprint",
+    "mode",
+    "pm_dec",
+    "pm_ra",
+    "ra",
+    "ref_epoch",
+    "sampling_step_seconds",
+    "timestep",
+    "v_az",
+    "window"
+  ]
+}

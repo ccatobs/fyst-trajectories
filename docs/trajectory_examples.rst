@@ -8,34 +8,21 @@ ProgramTrack ``TrackPoint`` rows.
 The ``Trajectory`` Object
 -------------------------
 
-Pattern generation returns a ``Trajectory`` containing:
+Pattern generation returns a ``Trajectory``: the sampled ``times``, ``az``
+and ``el`` with their velocities, an absolute ``start_time``, a per-sample
+``scan_flag``, and the pattern metadata. :doc:`api/trajectory` documents
+every field, ``science_mask`` and the derived properties.
 
-- ``times`` - Seconds from start (numpy array)
-- ``az``, ``el`` - Positions in degrees (numpy arrays)
-- ``az_vel``, ``el_vel`` - Velocities in deg/s (numpy arrays)
-- ``start_time`` - Absolute start (astropy Time)
-- ``scan_flag`` - Per-sample flags: 0=unclassified, 1=science, 2=turnaround, 3=retune
-- ``retune_events`` - Tuple of ``RetuneEvent`` populated by ``inject_retune``
-  (see :doc:`retune_events`)
-- ``science_mask`` - Boolean property: True for science-quality samples
-- ``pattern_type``, ``pattern_params`` - Metadata (from ``TrajectoryMetadata``)
-- ``duration``, ``n_points`` - Computed properties
+**Export and inspect** (the rest of the export and validation surface is
+in :doc:`api/trajectory_utils`)::
 
-**Export for Go TCS**::
-
-    from fyst_trajectories.trajectory_utils import to_path_payload
+    from fyst_trajectories.trajectory_utils import print_trajectory, to_path_payload
 
     # {"start_time": <abs Unix s>, "coordsys": "Horizon",
     #  "points": [[t, az, el, az_vel, el_vel], ...]}
     payload = to_path_payload(trajectory)
 
-**Print formatted summary**::
-
-    from fyst_trajectories.trajectory_utils import print_trajectory
-
     print_trajectory(trajectory)              # First 5 and last 5 points
-    print_trajectory(trajectory, head=10)     # First 10 and last 5 points
-    print_trajectory(trajectory, tail=None)   # Only first 5 points
 
 Sidereal Track
 --------------
@@ -104,28 +91,12 @@ are listed in :data:`~fyst_trajectories.coordinates.SATELLITE_BODIES`.
 Constant Elevation Scan
 -----------------------
 
-For field-based observations, :func:`~fyst_trajectories.planning.plan_constant_el_scan`
-is the recommended approach. It auto-computes the azimuth range, observation
-duration, and number of scans from the field geometry::
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
-
-    site = get_fyst_site()
-
-    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=6.0)
-    block = plan_constant_el_scan(
-        field=field,
-        elevation=45.0,         # Fixed elevation (deg)
-        velocity=0.5,           # Az scan speed (deg/s)
-        site=site,
-        start_time="2026-09-15T00:00:00",
-        rising=True,            # Use rising crossing
-    )
-    trajectory = block.trajectory
-
-For manual control (engineering tests, known azimuth ranges),
-``ConstantElScanConfig`` + ``TrajectoryBuilder`` can be used directly::
+For field-based observations prefer
+:func:`~fyst_trajectories.planning.plan_constant_el_scan`, which
+auto-computes the azimuth range, the duration and the number of scans from
+the field geometry; :doc:`planning` works it through. For manual control
+(engineering tests, known azimuth ranges), drive
+``ConstantElScanConfig`` + ``TrajectoryBuilder`` directly::
 
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
@@ -151,7 +122,8 @@ For manual control (engineering tests, known azimuth ranges),
 Pong Scan
 ---------
 
-::
+A curvy-box raster that fills a rectangular field around a tracked
+RA/Dec centre::
 
     from astropy.time import Time
 
@@ -183,7 +155,8 @@ Pong Scan
 Daisy Scan
 ----------
 
-::
+A rosette of petals through a single tracked position, for a compact
+source rather than a field::
 
     from astropy.time import Time
 
@@ -249,42 +222,13 @@ due to Earth's rotation.
    :func:`~fyst_trajectories.planning.plan_source_ces` solves the
    crossing geometry, drift rate, and timing for you (and
    ``plan_source_ces_passes`` steps it across the focal plane); see
-   :doc:`planning`. The examples below build the same thing by hand to
-   show the underlying mechanics.
+   :doc:`planning`. To chain such passes over a whole commissioning
+   night, see :doc:`overhead_calibration_night`. The example below
+   builds the same thing by hand to show the underlying mechanics.
 
-**Simple constant-el scan centered on planet position**::
-
-    from astropy.time import Time
-
-    from fyst_trajectories import Coordinates, get_fyst_site
-    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
-
-    site = get_fyst_site()
-    coords = Coordinates(site)
-    observation_time = Time("2026-03-15T00:00:00", scale="utc")
-
-    # Get Jupiter's position at observation time
-    jupiter_az, jupiter_el = coords.get_body_altaz("jupiter", observation_time)
-
-    # Simple constant-el scan centered on planet position
-    config = ConstantElScanConfig(
-        timestep=0.1,
-        az_start=jupiter_az - 5.0,  # scan +/-5 deg around Jupiter
-        az_stop=jupiter_az + 5.0,
-        elevation=jupiter_el,
-        az_speed=0.5,
-        az_accel=0.3,
-    )
-
-    trajectory = (
-        TrajectoryBuilder(site)
-        .with_config(config)
-        .duration(600.0)
-        .starting_at(observation_time)
-        .build()
-    )
-
-**Have planet drift through a specific detector (e.g., I1)**::
+Aim the scan so the planet drifts through one detector module rather
+than through the boresight. Drop the offset step to centre it on the
+planet itself::
 
     from astropy.time import Time
 
@@ -332,8 +276,7 @@ due to Earth's rotation.
 Advanced: Pattern Discovery
 ---------------------------
 
-For interactive exploration or dynamic scenarios where the pattern name is
-determined at runtime, you can use the registry functions::
+When the pattern name is chosen at runtime, go through the registry::
 
     from astropy.time import Time
 
@@ -362,13 +305,10 @@ determined at runtime, you can use the registry functions::
 Dispatching to the Telescope
 ----------------------------
 
-In production the PCS ACU agent exposes one typed scan Process per scan
-type (``pong_scan``, ``daisy_scan``, ``constant_el_scan``,
-``source_scan``). Each receives its scan parameters from the scheduling
-layer (an OCS client orchestrator), calls fyst-trajectories at dispatch
-time to build the trajectory, and POSTs it to the Go TCS::
+At the observatory a typed scan task calls a planner at dispatch time,
+so the ephemeris is fresh, and POSTs the result to the Go TCS::
 
-    scheduling layer --[scan_params]--> PCS scan Process (e.g. pong_scan)
+    scheduling layer --[scan_params]--> typed scan task (e.g. pong_scan)
                                             |
                                             v
                                     fyst-trajectories
@@ -380,27 +320,13 @@ time to build the trajectory, and POSTs it to the Go TCS::
                                             v
                                     Go TCS --> ACU hardware
 
-fyst-trajectories is a library dependency of the PCS agent, not an OCS
-agent itself. The scans run as OCS **Processes** rather than tasks so a
-running scan can be aborted mid-flight. The agent-side builder does
-more than plan-and-post: it floors a late scheduled start to the Go TCS
-minimum lead (see the Notes on
-:func:`~fyst_trajectories.trajectory_utils.to_path_payload`), plans the
-trajectory at dispatch time so the ephemeris is fresh, chooses a
-sun-safe azimuth wrap for the slew with
-:func:`~fyst_trajectories.dispatch.choose_encoder_solution`, validates
-mount bounds and dynamics with
-:func:`~fyst_trajectories.trajectory_utils.validate_trajectory`, and
-uploads the body built by
-:func:`~fyst_trajectories.trajectory_utils.to_path_payload`. The exact
-builder lives in the PCS repository, not here: the dispatch-time API it
-consumes is documented in :doc:`api/dispatch` and
+The dispatch-time API is :doc:`api/dispatch` and
 :doc:`api/trajectory_utils`.
 
-For local testing without the PCS agent, POST the payload directly.
-Re-anchor the trajectory first: the pages above build trajectories with
-fixed past start times, and the Go TCS rejects any start time that does not
-lead by about 10 seconds::
+For local testing, POST the payload directly. Re-anchor the trajectory
+first: the pages above build trajectories with fixed past start times,
+and the Go TCS rejects any start time that does not lead by about 10
+seconds::
 
     import dataclasses
 
@@ -414,7 +340,3 @@ lead by about 10 seconds::
     response = requests.post(
         "http://localhost:5600/path", json=to_path_payload(live)
     )
-
-The planning and simulation pipelines import the same library, so
-trajectories used for coverage analysis match what the telescope executes
-at runtime.

@@ -43,15 +43,19 @@ Usage Examples
     lst = coords.get_lst(obstime)
     ha = coords.get_hour_angle(ra=180.0, obstime=obstime)
     pa = coords.get_parallactic_angle(ra=180.0, dec=-30.0, obstime=obstime)
-    # Simplified field rotation (nasmyth_sign * el + pa, no instrument rotation)
+    # Celestial-frame field rotation (nasmyth_sign * el + pa, no instrument rotation)
     fr = coords.get_field_rotation(ra=180.0, dec=-30.0, obstime=obstime)
 
 .. note::
 
-   ``get_field_rotation()`` uses the Nasmyth port from the site
-   configuration. For the full focal-plane rotation (including
-   instrument rotation), use ``compute_focal_plane_rotation()`` from
-   :doc:`offsets`.
+   ``get_field_rotation()`` returns the *celestial-frame* orientation,
+   ``nasmyth_sign * elevation + parallactic angle``, using the Nasmyth port
+   from the site configuration: map orientation, image rotation and
+   polarization angles. The rotation the az/el projections use is the
+   *mechanical* one, ``nasmyth_sign * elevation + instrument_rotation``,
+   returned by ``compute_focal_plane_rotation()`` from :doc:`offsets` (its
+   ``parallactic_angle`` argument defaults to 0). The parallactic angle does
+   not belong in an az/el projection.
 
 **Solar system bodies**::
 
@@ -59,15 +63,6 @@ Usage Examples
     az, el = coords.get_body_altaz("mars", obstime)
     ra, dec = coords.get_body_radec("jupiter", obstime)
     sun_az, sun_el = coords.get_sun_altaz(obstime)
-
-.. note::
-
-   The list of supported solar system bodies is available as
-   ``SOLAR_SYSTEM_BODIES``::
-
-       from fyst_trajectories import SOLAR_SYSTEM_BODIES
-       print(SOLAR_SYSTEM_BODIES)
-       # ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', ...]
 
 .. note::
 
@@ -83,12 +78,5 @@ Usage Examples
     observable, reason = coords.is_position_observable(az=180, el=45, obstime=obstime)
     is_safe = coords.is_sun_safe(az=180, el=45, obstime=obstime)
 
-**Proper motion** (for high PM stars)::
-
-    az, el = coords.radec_to_altaz_with_pm(
-        ra=269.452, dec=4.693,  # J2000 catalogue position
-        pm_ra=-798.58, pm_dec=10328.12,  # mas/yr
-        ref_epoch=Time("J2000.0"),
-        obstime=Time("2025-06-15T04:00:00", scale="utc"),
-        distance=1.8,  # parsecs
-    )
+``radec_to_altaz_with_pm`` propagates a catalogue position by its proper
+motion first; :doc:`../quickstart` runs it on a high-proper-motion star.

@@ -57,7 +57,7 @@ Listing available patterns:
  'pong_altaz', 'satellite', 'sidereal']
 """
 
-# Import patterns to trigger registration (order matters)
+# Import every pattern module so each one registers itself
 from . import constant_el as constant_el  # noqa: F401  # pylint: disable=useless-import-alias
 from . import daisy as daisy  # noqa: F401  # pylint: disable=useless-import-alias
 from . import daisy_altaz as daisy_altaz  # noqa: F401  # pylint: disable=useless-import-alias
@@ -96,6 +96,7 @@ from .registry import (
 )
 from .satellite import SatelliteTrackPattern
 from .sidereal import SiderealTrackPattern
+from .utils import rewrap_trajectory_azimuth
 
 __all__ = [
     # Registry
@@ -133,4 +134,5 @@ __all__ = [
     "TrajectoryBuilder",
     # Helpers
     "compute_pong_period",
+    "rewrap_trajectory_azimuth",
 ]

@@ -2,12 +2,8 @@ Patterns Package
 ================
 
 Scan pattern implementations for telescope trajectory generation.
-
-Overview
---------
-
-``TrajectoryBuilder`` generates trajectories from config objects.
-The pattern type is automatically inferred from the config class::
+``TrajectoryBuilder`` builds a trajectory from a config object, inferring
+the pattern type from the config class::
 
     from astropy.time import Time
 
@@ -15,20 +11,19 @@ The pattern type is automatically inferred from the config class::
     from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
 
     start_time = Time("2026-03-15T01:00:00", scale="utc")
+    config = PongScanConfig(
+        timestep=0.1, width=2.0, height=2.0, spacing=0.1,
+        velocity=0.4, num_terms=4, angle=0.0,
+    )
 
     trajectory = (
         TrajectoryBuilder(get_fyst_site())
         .at(ra=180.0, dec=-30.0)
-        .with_config(PongScanConfig(
-            timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-            velocity=0.4, num_terms=4, angle=0.0,
-        ))
+        .with_config(config)
         .duration(300.0)
         .starting_at(start_time)
         .build()
     )
-
-Available patterns: ``constant_el``, ``daisy``, ``daisy_altaz``, ``linear``, ``planet``, ``pong``, ``pong_altaz``, ``satellite``, ``sidereal``.
 
 TrajectoryBuilder
 -----------------
@@ -37,24 +32,15 @@ TrajectoryBuilder
    :members:
    :undoc-members:
 
-**Detector offset support**::
+**Detector offset support** - the same builder, with the boresight
+offset so module ``i1`` tracks the target::
 
-    from astropy.time import Time
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.patterns import PongScanConfig, TrajectoryBuilder
     from fyst_trajectories.primecam import get_primecam_offset
 
-    site = get_fyst_site()
-    start_time = Time("2026-03-15T01:00:00", scale="utc")
-
     trajectory = (
-        TrajectoryBuilder(site)
+        TrajectoryBuilder(get_fyst_site())
         .at(ra=180.0, dec=-30.0)
-        .with_config(PongScanConfig(
-            timestep=0.1, width=2.0, height=2.0, spacing=0.1,
-            velocity=0.4, num_terms=4, angle=0.0,
-        ))
+        .with_config(config)
         .for_detector(get_primecam_offset("i1"))
         .duration(60.0)
         .starting_at(start_time)
@@ -97,10 +83,9 @@ Configuration Classes
 
 .. tip::
 
-   For field-based observations, use
-   :func:`~fyst_trajectories.planning.plan_constant_el_scan` instead of manually
-   constructing ``ConstantElScanConfig``. It auto-computes the azimuth range,
-   duration, and number of scans from a ``FieldRegion``.
+   For field-based observations, prefer
+   :func:`~fyst_trajectories.planning.plan_constant_el_scan` over building a
+   ``ConstantElScanConfig`` by hand; see :doc:`../planning`.
 
 .. autoclass:: fyst_trajectories.patterns.PongScanConfig
    :members:
@@ -176,60 +161,44 @@ Pattern Classes
 Pattern Selection
 -----------------
 
+Each pattern is selected by its config class:
+
 .. list-table::
    :header-rows: 1
-   :widths: 16 30 54
+   :widths: 30 70
 
    * - Pattern
-     - Base Class
-     - Key Config Params
+     - Config class
    * - ``sidereal``
-     - CelestialPattern
-     - ``timestep`` only; the center comes from
-       ``TrajectoryBuilder.at(ra, dec)``
+     - ``SiderealTrackConfig``
    * - ``planet``
-     - AltAzPattern
-     - ``body``
+     - ``PlanetTrackConfig``
    * - ``satellite``
-     - AltAzPattern (via ``PlanetTrackPattern``)
-     - ``body``, ``satellite_kernel``
+     - ``SatelliteTrackConfig``
    * - ``pong``
-     - CelestialPattern
-     - ``width``, ``height``, ``spacing``, ``velocity``, ``num_terms``
+     - ``PongScanConfig``
    * - ``pong_altaz``
-     - AltAzPattern
-     - ``az_center``, ``el_center``, plus the pong geometry fields
+     - ``PongAltAzScanConfig``
    * - ``daisy``
-     - CelestialPattern
-     - ``radius``, ``velocity``, ``turn_radius``
+     - ``DaisyScanConfig``
    * - ``daisy_altaz``
-     - AltAzPattern
-     - ``az_center``, ``el_center``, plus the daisy fields
+     - ``DaisyAltAzScanConfig``
    * - ``constant_el``
-     - AltAzPattern
-     - ``az_start``, ``az_stop``, ``elevation``, ``az_speed``,
-       ``az_accel``
+     - ``ConstantElScanConfig``
    * - ``linear``
-     - AltAzPattern
-     - ``az_start``, ``el_start``, ``az_velocity``, ``el_velocity``
+     - ``LinearMotionConfig``
 
-Registry Functions (Advanced)
------------------------------
+Registry and Helpers
+--------------------
 
-For interactive discovery or dynamic scenarios where pattern names are
-determined at runtime::
+For interactive discovery or config-driven selection at runtime
+(:doc:`../trajectory_examples` builds a trajectory this way)::
 
-    from fyst_trajectories import get_pattern, list_patterns
+    from fyst_trajectories import get_pattern
     from fyst_trajectories.patterns import PongScanConfig, get_pattern_for_config
 
-    # List available patterns
-    print(list_patterns())
-
-    # Get pattern class by name (useful for plugins or config-driven selection)
-    PatternClass = get_pattern("pong")
-
-    # Get the pattern NAME from a config class (used by TrajectoryBuilder)
-    pattern_name = get_pattern_for_config(PongScanConfig)   # "pong"
+    PatternClass = get_pattern("pong")                      # name -> class
+    pattern_name = get_pattern_for_config(PongScanConfig)   # config -> name
 
 .. autofunction:: fyst_trajectories.patterns.list_patterns
 
@@ -239,19 +208,12 @@ determined at runtime::
 
 .. autofunction:: fyst_trajectories.patterns.register_pattern
 
-Geometry Helpers
-----------------
-
 .. autofunction:: fyst_trajectories.patterns.compute_pong_period
 
-Boundary-Error Handling
------------------------
+.. autofunction:: fyst_trajectories.patterns.rewrap_trajectory_azimuth
 
-When a trajectory exceeds telescope limits, a
-:class:`~fyst_trajectories.exceptions.TargetNotObservableError` is raised
-identifying the target and start time. Custom pattern authors should wrap
-their bounds check for consistent error messages::
-
-    from fyst_trajectories.patterns.utils import wrap_bounds_error
+A trajectory that exceeds the telescope limits raises
+:class:`~fyst_trajectories.exceptions.TargetNotObservableError`; pattern
+authors get that message by wrapping their own bounds check.
 
 .. autofunction:: fyst_trajectories.patterns.utils.wrap_bounds_error

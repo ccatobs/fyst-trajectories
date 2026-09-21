@@ -1,6 +1,7 @@
 """Tests for plan_pong_altaz_scan."""
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -34,7 +35,7 @@ def start_time():
 
 
 class TestPlanPongAltAzScan:
-    """Tests for plan_pong_altaz_scan."""
+    """Block shape, the computed-params schema, the period, and the input guards."""
 
     def test_basic_plan(self, site, start_time):
         """Returns a ScanBlock with a pong_altaz config and trajectory."""
@@ -57,7 +58,6 @@ class TestPlanPongAltAzScan:
         assert "AltAz Pong scan" in block.summary
 
     def test_computed_params_schema_validates(self, site, start_time):
-        """The returned computed_params matches the PongAltAz schema."""
         block = plan_pong_altaz_scan(
             az_center=120.0,
             el_center=60.0,
@@ -82,9 +82,11 @@ class TestPlanPongAltAzScan:
     def test_known_square_field_period(self, site, start_time):
         """A 2x2 deg, 0.1 deg-spacing pong has the hand-derived period.
 
-        Same geometry as the celestial Pong period test: x_numvert=15,
-        y_numvert=16, period = 4*15*16*0.1/0.5 = 192.0 s. The AltAz mapping
-        does not change the period (it is an on-sky-geometry quantity).
+        Same geometry as
+        ``tests/patterns/test_pong.py::TestComputePongPeriod::test_known_square_field_period``:
+        x_numvert=15, y_numvert=16, period = 4*15*16*0.1/0.5 = 192.0 s. The
+        AltAz mapping does not change the period (it is an on-sky-geometry
+        quantity).
         """
         block = plan_pong_altaz_scan(
             az_center=120.0,
@@ -102,7 +104,6 @@ class TestPlanPongAltAzScan:
         assert block.duration == pytest.approx(192.0)
 
     def test_duration_scales_with_n_cycles(self, site, start_time):
-        """Duration equals n_cycles times the period."""
         block1 = plan_pong_altaz_scan(
             az_center=120.0,
             el_center=60.0,
@@ -129,7 +130,6 @@ class TestPlanPongAltAzScan:
         assert block3.computed_params["period"] == pytest.approx(block1.computed_params["period"])
 
     def test_invalid_n_cycles_raises(self, site, start_time):
-        """n_cycles < 1 raises ValueError."""
         with pytest.raises(ValueError, match="n_cycles must be at least 1"):
             plan_pong_altaz_scan(
                 az_center=120.0,
@@ -192,7 +192,6 @@ class TestPlanPongAltAzScan:
             )
 
     def test_detector_offset_changes_trajectory(self, site, start_time):
-        """A detector offset shifts the trajectory (smoke)."""
         block_no_offset = plan_pong_altaz_scan(
             az_center=120.0,
             el_center=60.0,
@@ -266,6 +265,82 @@ class TestPlanPongAltAzSunSafety:
             )
         assert block.trajectory.n_points > 0
 
+    def test_injected_predicate_drives_the_verdict(self, site):
+        """An injected predicate replaces the scalar radius, in both directions.
+
+        The seam is what lets the directional sun-avoidance model reach the
+        AltAz planners; without a test on each planner a refactor could drop
+        the keyword silently.
+        """
+        obstime = Time("2026-03-15T02:00:00", scale="utc")
+        kwargs = dict(
+            az_center=90.0,
+            el_center=45.0,
+            width=1.0,
+            height=1.0,
+            spacing=0.1,
+            velocity=0.5,
+            site=site,
+            start_time=obstime,
+        )
+
+        # Precondition: the scalar default is silent for this night-time centre.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            plan_pong_altaz_scan(**kwargs)
+        assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            plan_pong_altaz_scan(**kwargs, sun_safe=lambda az, el, t: False)
+
+    def test_injected_predicate_receives_the_converted_center(self, site):
+        """The predicate is consulted at the pattern centre's own (az, el, time)."""
+        obstime = Time("2026-03-15T02:00:00", scale="utc")
+        seen: list[tuple[float, float]] = []
+
+        def spy(az, el, t):
+            seen.append((float(az), float(el)))
+            return True
+
+        plan_pong_altaz_scan(
+            az_center=90.0,
+            el_center=45.0,
+            width=1.0,
+            height=1.0,
+            spacing=0.1,
+            velocity=0.5,
+            site=site,
+            start_time=obstime,
+            sun_safe=spy,
+        )
+        assert seen, "sun_safe predicate was never consulted"
+        # The planner round-trips the centre through RA/Dec, so allow the
+        # transform's own round-off rather than pinning an exact equality.
+        assert seen[0][0] == pytest.approx(90.0, abs=1e-6)
+        assert seen[0][1] == pytest.approx(45.0, abs=1e-6)
+
+    def test_permissive_predicate_overrides_the_scalar_radius(self, site, coordinates):
+        """A permissive predicate suppresses the warning a sun-adjacent centre earns."""
+        obstime = Time("2026-03-15T17:00:00", scale="utc")
+        sun_az, sun_alt = coordinates.get_sun_altaz(obstime)
+        if not 20.0 < sun_alt < 80.0:
+            pytest.skip(f"Sun elevation {sun_alt:.1f} not in a convenient test band")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            plan_pong_altaz_scan(
+                az_center=float(sun_az),
+                el_center=float(sun_alt),
+                width=1.0,
+                height=1.0,
+                spacing=0.1,
+                velocity=0.5,
+                site=site,
+                start_time=obstime,
+                sun_safe=lambda az, el, t: True,
+            )
+        assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
+
 
 @pytest.mark.slow
 @pytest.mark.skipif(not HAS_SCANNING, reason="requires the scanning (scan_patterns) package")
@@ -279,7 +354,6 @@ class TestLegacyMappingParity:
     """
 
     def test_trajectory_matches_legacy_mapping(self, site):
-        """plan_pong_altaz_scan az/el equals the inline legacy mapping."""
         from scanning import Pong
 
         az_center = 130.0
@@ -307,8 +381,8 @@ class TestLegacyMappingParity:
         )
         traj = block.trajectory
 
-        # Build scanning.Pong with matching parameters and apply the legacy
-        # horizon-frame mapping inline, exactly as the sims repo did:
+        # Build scanning.Pong with matching parameters and apply the
+        # horizon-frame mapping inline:
         #   coscorr = cos(radians(el_center))
         #   az = x/coscorr + az_center ; el = y + el_center
         pong = Pong(

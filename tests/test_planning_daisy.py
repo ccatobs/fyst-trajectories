@@ -17,7 +17,7 @@ def start_time():
 
 
 class TestPlanDaisyScan:
-    """Tests for plan_daisy_scan."""
+    """Block shape, the rosette's two-axis spread, axis bounds, and the refusal."""
 
     def test_basic_plan(self, site, start_time):
         """plan_daisy_scan returns a ScanBlock with daisy config."""
@@ -54,7 +54,6 @@ class TestPlanDaisyScan:
         assert np.ptp(dy) > 0.5
 
     def test_trajectory_has_valid_bounds(self, site, start_time):
-        """Generated trajectory must stay within telescope elevation limits."""
         block = plan_daisy_scan(
             ra=180.0,
             dec=-30.0,
@@ -77,7 +76,6 @@ class TestPlanDaisyScan:
         assert traj.az.max() <= limits.azimuth.max
 
     def test_unobservable_target_raises(self, site, start_time):
-        """Test that an unobservable target raises TargetNotObservableError."""
         with pytest.raises(TargetNotObservableError):
             plan_daisy_scan(
                 ra=180.0,

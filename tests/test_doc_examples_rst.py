@@ -45,6 +45,8 @@ import warnings
 from pathlib import Path
 
 import pytest
+from _sun_stubs import HAVE_SUN_AVOIDANCE, needs_sun_avoidance
+from _tiers import imported_names, is_simulator_tier
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import get_fyst_site
@@ -146,31 +148,14 @@ def _visualization_symbols(text):
 _SKIP = {
     "planning.rst": [
         (
-            "block = plan_pong_scan(...)",
-            "abbreviated `...` placeholder; the full call is shown in Quick Start",
-        ),
-        (
             "az = x_offset / cos(radians(el_center)) + az_center",
             "illustrative horizon-frame mapping formula, not runnable Python",
-        ),
-    ],
-    "retune_events.rst": [
-        (
-            "t_start_s,duration_s,module_index",
-            "literal CSV schema; compiles as a bare tuple expression but is not Python",
         ),
     ],
     "trajectory_examples.rst": [
         ("import dataclasses", "live HTTP POST to a local TCS server"),
     ],
-    "api/exceptions.rst": [
-        (
-            "import warnings",
-            "abbreviated plan_constant_el_scan(...) placeholder; illustrates the "
-            "PointingWarning-catch pattern",
-        ),
-    ],
-    "api/visualization.rst": [
+    "api/overhead_io.rst": [
         (
             "from fyst_trajectories.overhead import read_timeline",
             "loads a user-provided ECSV timeline and renders it; illustrative I/O + plotting",
@@ -186,6 +171,7 @@ _NON_PYTHON = {
         ("pip install", "shell: install commands"),
         ("git clone", "shell: source checkout"),
         ("pytest tests/", "shell: test invocation"),
+        ('pytest -m "not offline"', "shell: per-tier test invocation"),
         ("ruff check", "shell: lint invocation"),
     ],
     "overhead_integration.rst": [
@@ -205,10 +191,23 @@ _NON_PYTHON = {
 # Library warnings each block is EXPECTED to emit, as a set of
 # PointingWarning-subclass names, keyed by page and matched on the block's first
 # non-blank line. Blocks not listed must emit no PointingWarning-family warning at
-# all. Currently empty: every published example runs advisory-clean, and new
-# examples should stay that way (shrink the example rather than declaring the
-# advisory, so pending limit decisions cannot silently change the docs' meaning).
-_EXPECT_WARNINGS: dict = {}
+# all. Keep this registry to blocks whose page states the advisory in prose; a
+# new example should otherwise stay advisory-clean (shrink the example rather
+# than declaring the advisory, so pending limit decisions cannot silently change
+# the docs' meaning).
+_EXPECT_WARNINGS: dict = {
+    # Rebuilding the passes re-runs the kernel at the 1.5 deg/s^2 policy default
+    # (a 2.25 deg/s^2 turnaround peak, over the 1.5 advisory
+    # ceiling) at a high elevation (the on-sky azimuth speed advisory); the
+    # page states both. The planner itself records the advisories instead of
+    # raising them, so only this rebuild block trips them.
+    "overhead_calibration_night.rst": [
+        (
+            "from fyst_trajectories.overhead import schedule_to_trajectories",
+            ["AccelerationLimitWarning", "PointingWarning"],
+        ),
+    ],
+}
 
 
 def _expected_warnings_for(key, first_line):
@@ -353,23 +352,91 @@ def _doc_seed_trajectory():
         )
 
 
-def _seed_namespace(tmp_path, trajectory, site):
+class _DocNamespace(dict):
+    """Execution namespace that builds the seeded timeline only when a block uses it.
+
+    Seeding a timeline eagerly imports the simulator tier, which put it in the
+    library-tier job on every page whatever the markers said. It is built on
+    first lookup instead, and a page that reaches for it must be one the
+    marker rule classifies simulator tier, or that job split would be a
+    fiction again.
+    """
+
+    def __init__(self, seed, *, page, simulator_page):
+        super().__init__(seed)
+        self._page = page
+        self._simulator_page = simulator_page
+
+    def __missing__(self, key):
+        if key != "timeline":
+            raise KeyError(key)
+        if not self._simulator_page:
+            pytest.fail(
+                f"{self._page} uses the seeded timeline, but no block it runs imports the "
+                "simulator tier, so the page is classified library tier and the library-tier "
+                "job would load the simulator to run it. Build the timeline in the block that "
+                "uses it, or import the simulator there."
+            )
+        self[key] = _minimal_timeline(self["site"])
+        return self[key]
+
+
+def _seed_namespace(tmp_path, trajectory, site, *, page, simulator_page):
     """Objects/files the docs assume the reader already has, in the temp cwd."""
     (tmp_path / "retunes.csv").write_text(
         "t_start_s,duration_s,module_index\n30.0,5.0,0\n300.0,5.0,0\n600.0,8.0,0\n"
     )
-    return {
-        "site": site,
-        "trajectory": trajectory,
-        "traj": trajectory,
-        "timeline": _minimal_timeline(site),
-    }
+    seed = {"site": site, "trajectory": trajectory, "traj": trajectory}
+    return _DocNamespace(seed, page=page, simulator_page=simulator_page)
 
 
-_RST_PAGES = sorted(DOCS.glob("*.rst")) + sorted((DOCS / "api").glob("*.rst"))
+def _runnable_blocks(text, key):
+    """Yield the ``(lineno, kind, code)`` Python blocks on a page that this guard runs."""
+    skips = _SKIP.get(key, [])
+    for lineno, kind, code in _extract_blocks(text):
+        if not code.strip() or not _is_python(code):
+            continue
+        first = next((ln for ln in code.splitlines() if ln.strip()), "")
+        if any(sub in first for sub, _reason in skips):
+            continue
+        yield lineno, kind, code
 
 
-@pytest.mark.parametrize("rst", _RST_PAGES, ids=lambda p: p.relative_to(DOCS).as_posix())
+def _runs_simulator_tier(rst: Path, key: str, *, include_skipped: bool = False) -> bool:
+    """Report whether the page's blocks import the simulator tier.
+
+    Pages are classified by what they import, the same rule the ``offline``
+    marker applies to test modules (``_tiers``). By default only the blocks
+    this guard executes count, so a page whose one simulator-tier block sits
+    in :data:`_SKIP` belongs to the library tier along with the examples it
+    does run. ``include_skipped`` is for the bind check, which resolves the
+    imports of the skipped blocks and therefore does load what they name.
+    """
+    text = rst.read_text(encoding="utf-8")
+    blocks = _extract_blocks(text) if include_skipped else _runnable_blocks(text, key)
+    return any(
+        any(is_simulator_tier(name) for name in imported_names(code))
+        for _lineno, _kind, code in blocks
+        if code.strip() and _is_python(code)
+    )
+
+
+def _page_param(rst: Path, *, include_skipped: bool = False):
+    """Parametrize a page, marking the simulator-tier pages ``offline``."""
+    name = rst.relative_to(DOCS).as_posix()
+    simulator = _runs_simulator_tier(rst, name, include_skipped=include_skipped)
+    return pytest.param(rst, id=name, marks=[pytest.mark.offline] if simulator else [])
+
+
+_RST_PAGES = [
+    _page_param(p) for p in sorted(DOCS.glob("*.rst")) + sorted((DOCS / "api").glob("*.rst"))
+]
+
+# Only the pages that have skipped blocks, classified by those blocks too.
+_SKIP_PAGES = [_page_param(DOCS / key, include_skipped=True) for key in sorted(_SKIP)]
+
+
+@pytest.mark.parametrize("rst", _RST_PAGES)
 def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory):
     """Every Python code block on the page executes cleanly, with checked output.
 
@@ -383,15 +450,12 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
     monkeypatch.chdir(tmp_path)
     text = rst.read_text(encoding="utf-8")
     key = rst.relative_to(DOCS).as_posix()
-    # Without the shared sun-avoidance library, only the blocks that name
-    # the library-backed "cad" model are skipped; every doc page keeps its
-    # library-dependent blocks self-contained so no whole-page skip exists.
-    try:
-        import sun_avoidance  # noqa: F401
-
-        have_sun_avoidance = True
-    except ImportError:
-        have_sun_avoidance = False
+    # Without the shared sun-avoidance library, only the blocks that select a
+    # library-backed model ("cad" or "cone") are skipped; every doc page keeps
+    # its library-dependent blocks self-contained so no whole-page skip exists.
+    # The condition is shared with the docstring guard so the two cannot
+    # diverge.
+    have_sun_avoidance = HAVE_SUN_AVOIDANCE
     # matplotlib gates only the plotting blocks. Without the ``plotting`` extra we skip
     # blocks that touch matplotlib or the plot functions per block, so the page's other
     # blocks still run.
@@ -403,7 +467,13 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
     except ImportError:
         have_matplotlib = False
     visualization_symbols = _visualization_symbols(text)
-    ns = _seed_namespace(tmp_path, _doc_seed_trajectory, get_fyst_site())
+    ns = _seed_namespace(
+        tmp_path,
+        _doc_seed_trajectory,
+        get_fyst_site(),
+        page=key,
+        simulator_page=_runs_simulator_tier(rst, key),
+    )
     skips = _SKIP.get(key, [])
     non_python = _NON_PYTHON.get(key, [])
     for lineno, kind, code in _extract_blocks(text):
@@ -425,7 +495,7 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
             or any(re.search(rf"\b{re.escape(name)}\b", code) for name in visualization_symbols)
         ):
             continue
-        if not have_sun_avoidance and ('"cad"' in code or "'cad'" in code):
+        if not have_sun_avoidance and needs_sun_avoidance(code):
             continue
         buf = io.StringIO()
         try:
@@ -461,9 +531,11 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
                 )
 
 
-def _iter_registry_blocks(registry):
+def _iter_registry_blocks(registry, only=None):
     """Yield (key, sub, reason, matching blocks) for every registry entry."""
     for key, entries in registry.items():
+        if only is not None and key != only:
+            continue
         text = (DOCS / key).read_text(encoding="utf-8")
         blocks = _extract_blocks(text)
         for sub, reason in entries:
@@ -496,6 +568,48 @@ def test_registries_match_blocks():
             ), f"_EXPECT_WARNINGS entry {sub!r} matches no block on {key}"
 
 
+# Blocks that print without their page stating what they print, per page.
+# Guard mechanism 2 checks a print only where a ``#`` comment states its
+# output, so these blocks run but are unverified: 25 of the 43 blocks that
+# print. Filling a gap is a documentation edit, one ``# expected output``
+# comment per print; the counts here are upper bounds, so adding a comment
+# (or removing a print) is free and adding an unchecked print is not.
+_UNCHECKED_PRINT_BLOCKS = {
+    "api/exceptions.rst": 1,
+    "api/observability.rst": 2,
+    "instrument_offsets.rst": 3,
+    "overhead_quickstart.rst": 3,
+    "overhead_timeline.rst": 4,
+    "planning.rst": 9,
+    "quickstart.rst": 2,
+    "sun_avoidance.rst": 1,
+}
+
+
+def test_print_blocks_without_a_stated_output_do_not_grow():
+    """No page gains a print whose output nothing checks.
+
+    Mechanism 2 is only as good as the pages' output comments, and the
+    measurement above is the size of that gap. This ratchets it: a new
+    ``print`` on a page needs an expected-output comment, or the page's entry
+    here has to be raised deliberately.
+    """
+    for rst in sorted(DOCS.glob("*.rst")) + sorted((DOCS / "api").glob("*.rst")):
+        key = rst.relative_to(DOCS).as_posix()
+        unchecked = [
+            lineno
+            for lineno, _kind, code in _runnable_blocks(rst.read_text(encoding="utf-8"), key)
+            if any(_PRINT_LINE_RE.match(line) for line in code.splitlines())
+            and not _stdout_expectations(code)
+        ]
+        allowed = _UNCHECKED_PRINT_BLOCKS.get(key, 0)
+        assert len(unchecked) <= allowed, (
+            f"{key} has {len(unchecked)} print-bearing blocks with no expected-output "
+            f"comment (allowed {allowed}), at lines {unchecked}. State the output in a "
+            f"comment next to the print, or raise the entry in _UNCHECKED_PRINT_BLOCKS."
+        )
+
+
 def _fyst_imports(tree):
     """Map local name -> object for ``fyst_trajectories`` imports in ``tree``.
 
@@ -521,16 +635,20 @@ def _fyst_imports(tree):
     return resolved
 
 
-def test_skip_blocks_still_parse_and_bind():
+@pytest.mark.parametrize("rst", _SKIP_PAGES)
+def test_skip_blocks_still_parse_and_bind(rst):
     """Skipped blocks must parse, resolve their library imports, and bind their calls.
 
     _SKIP blocks never execute, so this is the check that keeps them from rotting:
     every ``from fyst_trajectories... import name`` must resolve, and every call to
     one of those names must bind against its real signature (a removed or newly
     required parameter fails here). Calls abbreviated with a literal ``...``
-    argument are resolution-checked only.
+    argument are resolution-checked only. It runs per page because resolving
+    those imports loads the modules they name, which is a simulator-tier act
+    on a page whose skipped block reaches into the simulator.
     """
-    for key, sub, _reason, matches in _iter_registry_blocks(_SKIP):
+    page = rst.relative_to(DOCS).as_posix()
+    for key, sub, _reason, matches in _iter_registry_blocks(_SKIP, only=page):
         assert matches, f"_SKIP entry {sub!r} matches no block on {key}"
         for lineno, code in matches:
             tree = ast.parse(code)

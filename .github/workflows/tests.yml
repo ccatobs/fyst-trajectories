@@ -26,6 +26,19 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+  # The fast suite is split in two by the ``offline`` marker (registered in
+  # pyproject.toml). A test module carries it when the module, or a conftest
+  # above it, imports the simulator tier; the doc guards classify their pages
+  # and modules the same way at the parametrization site. The one boundary
+  # definition lives in tests/_tiers.py and the tier guard reads it too.
+  # ``fast-tests`` is the library tier the live consumers depend on;
+  # ``offline-tests`` is the simulator tier (overhead, its timeline figures,
+  # the calibration-night planner). Both upload coverage under a flag so
+  # Codecov merges them into one report per commit.
+  #
+  # Neither job installs the shared sun-avoidance library, so both skip its
+  # surface; the oracle job below is where that gap is measured and, with a
+  # token configured, closed.
   fast-tests:
     needs: lint
     runs-on: ubuntu-latest
@@ -46,19 +59,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run fast tests
-        run: pytest --cov=fyst_trajectories --cov-report=xml
+      - name: Run library-tier tests
+        run: pytest -m "not offline" --cov=fyst_trajectories --cov-report=xml
 
       - name: Upload coverage
         uses: codecov/codecov-action@v6
         if: matrix.python-version == '3.11'
         with:
           files: coverage.xml
+          flags: library
+          fail_ci_if_error: false
+
+  offline-tests:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run simulator-tier tests
+        run: pytest -m offline --cov=fyst_trajectories --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v6
+        if: matrix.python-version == '3.11'
+        with:
+          files: coverage.xml
+          flags: offline
           fail_ci_if_error: false
 
   slow-tests:
     runs-on: ubuntu-latest
-    needs: fast-tests
+    needs: [fast-tests, offline-tests]
 
     steps:
       - uses: actions/checkout@v5
@@ -90,12 +135,17 @@ jobs:
       # (importorskip; so3g has no Windows wheels) - a documented skip that
       # stays skipped everywhere.
       - name: Run slow tests
-        run: pytest -m slow --run-slow -v
+        run: pytest -m slow --run-slow
         timeout-minutes: 15
 
   oracle-tests:
     runs-on: ubuntu-latest
-    needs: fast-tests
+    needs: [fast-tests, offline-tests]
+
+    # Secrets cannot be read from an ``if:`` expression, so the token is
+    # exposed here and the steps below test the env var instead.
+    env:
+      SUN_AVOIDANCE_DEPLOY_TOKEN: ${{ secrets.SUN_AVOIDANCE_DEPLOY_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
@@ -129,9 +179,49 @@ jobs:
         run: |
           python -c "import scanning, fyst_trajectories as f; assert 'site-packages' not in f.__file__, f.__file__; print('oracle env OK', f.__version__)"
 
-      # Runs the two scan_patterns AltAz parity tests now that ``scanning`` is
-      # installed. test_cross_validate_so_make_source_ces still skips here (it
-      # needs so3g + schedlib.policies.fyst); expect 2 passed, 1 skipped.
+      # Runs the three scan_patterns parity tests now that ``scanning`` is
+      # installed: the two AltAz ones plus the projection-parity test in
+      # test_offsets.py, the only cross-package check of the absolute
+      # field-rotation sign (a flip of it shipped undetected once), which ran
+      # in no job before. test_cross_validate_so_make_source_ces still skips
+      # here (it needs so3g + schedlib.policies.fyst); expect 2 passed,
+      # 1 skipped, 1 xfailed, and one warning from the oracle, which the
+      # projection test deliberately drives outside its declared 30-75 deg
+      # validity band. The xfail is the projection-parity test: the pinned
+      # oracle revision still carries the sign flip (the fix lives in the
+      # oracle's working copy, unpushed), and the test reports that state as
+      # expected rather than as a new disagreement. Bump the pin past the
+      # fix and delete the gate in the test; it then reads 3 passed.
       - name: Run oracle tests
-        run: pytest -m slow --run-slow tests/test_planning_pong_altaz.py tests/test_planning_daisy_altaz.py tests/test_planning_source_ces.py
+        run: pytest -m slow --run-slow tests/test_planning_pong_altaz.py tests/test_planning_daisy_altaz.py tests/test_planning_source_ces.py tests/test_offsets.py
         timeout-minutes: 10
+
+      # The second out-of-index oracle: the shared sun-avoidance library that
+      # backs the "cone" and "cad" models. It is a private CCAT repository, so
+      # it installs only where a read-only deploy token is configured as the
+      # SUN_AVOIDANCE_DEPLOY_TOKEN repository secret. The pin is the revision
+      # the adapter and the parity fixtures are built against
+      # (sun_models.SUN_AVOIDANCE_PINNED_SHA); bump both together. If the
+      # token route is refused, the fallback is a wheel vendored into the
+      # repository and installed here instead; it has not been built.
+      - name: Install sun-avoidance oracle
+        if: env.SUN_AVOIDANCE_DEPLOY_TOKEN != ''
+        run: pip install "git+https://x-access-token:${SUN_AVOIDANCE_DEPLOY_TOKEN}@github.com/ccatobs/sun-avoidance@e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
+
+      # Without the library this surface skips green and says nothing: the 17
+      # record-replay tests that detect behaviour drift at the pinned
+      # revision, 9 of the 133 executable documentation blocks (including
+      # four of the six on the sun-avoidance page) and 2 doctests. The doc
+      # guards drop their gated blocks with a silent ``continue``, so their
+      # pass counts are identical either way; this step is the only place the
+      # gap is stated. The offline half of the parity fixture, which pins both
+      # SHAs, runs in the fast job regardless.
+      - name: Run sun-avoidance oracle tests
+        run: |
+          if [ -z "$SUN_AVOIDANCE_DEPLOY_TOKEN" ]; then
+            echo "::warning title=sun-avoidance not installed::No SUN_AVOIDANCE_DEPLOY_TOKEN secret: skipping 17 record-replay tests, 9 documentation blocks and 2 doctests that need the shared library. Only the scalar sun model is covered by this run."
+            exit 0
+          fi
+          python -c "import sun_avoidance; import fyst_trajectories.sun_models as m; print('sun-avoidance oracle OK, pinned', m.SUN_AVOIDANCE_PINNED_SHA)"
+          pytest tests/test_sun_models_live.py tests/test_doc_examples_rst.py tests/test_docstring_examples.py
+        timeout-minutes: 15

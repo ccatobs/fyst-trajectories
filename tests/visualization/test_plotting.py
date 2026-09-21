@@ -64,10 +64,9 @@ def _make_simple_trajectory(with_start_time: bool = False) -> Trajectory:
 
 
 class TestPlotHitMap:
-    """Smoke tests for the public ``plot_hit_map`` function."""
+    """One panel per module, the start_time requirement, and refusals before a figure opens."""
 
     def test_returns_figure_with_single_offset(self):
-        """plot_hit_map runs end-to-end on a short trajectory with one offset."""
         site = get_fyst_site()
         trajectory = _make_simple_trajectory(with_start_time=True)
         offsets = [(InstrumentOffset(dx=0.0, dy=0.0, name="boresight"), "boresight")]
@@ -93,7 +92,6 @@ class TestPlotHitMap:
         assert len(fig.axes) >= 2
 
     def test_without_start_time_raises(self):
-        """plot_hit_map should raise ValueError if trajectory has no start_time."""
         site = get_fyst_site()
         trajectory = _make_simple_trajectory(with_start_time=False)
         offsets = [(InstrumentOffset(dx=0.0, dy=0.0, name="boresight"), "boresight")]
@@ -101,9 +99,29 @@ class TestPlotHitMap:
         with pytest.raises(ValueError, match="start_time"):
             plot_hit_map(trajectory, offsets, site, show=False)
 
+    def test_bad_inputs_raise_before_a_figure_exists(self):
+        """An empty offset list and a non-positive bin size are refused.
+
+        Both are checked before ``plt.subplots``: an empty list asks for a
+        zero-column figure, and a zero bin size for an empty histogram grid.
+        Either way the call would otherwise fail with an open figure left
+        behind, so a loop over many plots would leak one per failure.
+        """
+        import matplotlib.pyplot as plt
+
+        site = get_fyst_site()
+        trajectory = _make_simple_trajectory(with_start_time=True)
+        offsets = [(InstrumentOffset(dx=0.0, dy=0.0, name="boresight"), "boresight")]
+
+        plt.close("all")
+        with pytest.raises(ValueError, match="at least one module"):
+            plot_hit_map(trajectory, [], site, show=False)
+        with pytest.raises(ValueError, match="bin_size must be positive"):
+            plot_hit_map(trajectory, offsets, site, bin_size=0.0, show=False)
+        assert plt.get_fignums() == []
+
     def test_module_fov_coverage_mode(self):
-        """plot_hit_map in coverage mode (module_fov set) runs without errors."""
-        scipy = pytest.importorskip("scipy")  # noqa: F841
+        pytest.importorskip("scipy")
         site = get_fyst_site()
         trajectory = _make_simple_trajectory(with_start_time=True)
         offsets = [(InstrumentOffset(dx=0.0, dy=0.0, name="boresight"), "boresight")]
@@ -120,7 +138,7 @@ class TestPlotHitMap:
 
     def test_smooth_sigma(self):
         """plot_hit_map with Gaussian smoothing runs without errors."""
-        scipy = pytest.importorskip("scipy")  # noqa: F841
+        pytest.importorskip("scipy")
         site = get_fyst_site()
         trajectory = _make_simple_trajectory(with_start_time=True)
         offsets = [(InstrumentOffset(dx=0.0, dy=0.0, name="boresight"), "boresight")]
@@ -140,10 +158,9 @@ class TestPlotHitMap:
 
 
 class TestPlotTrajectory:
-    """Smoke tests for the public ``plot_trajectory`` function."""
+    """The three-panel figure builds with or without a ``start_time``."""
 
     def test_returns_figure_for_simple_trajectory(self):
-        """plot_trajectory runs end-to-end on a minimal synthetic trajectory."""
         trajectory = _make_simple_trajectory(with_start_time=False)
 
         fig = plot_trajectory(trajectory, show=False)
@@ -153,7 +170,7 @@ class TestPlotTrajectory:
         assert len(fig.axes) == 3
 
     def test_returns_figure_with_start_time(self):
-        """plot_trajectory ignores start_time and still returns a Figure."""
+        """plot_trajectory ignores ``start_time`` and returns a Figure."""
         trajectory = _make_simple_trajectory(with_start_time=True)
 
         fig = plot_trajectory(trajectory, show=False)
@@ -165,12 +182,7 @@ class TestPlotTrajectory:
 
 
 class TestMakeDiskKernel:
-    """Tests for the internal disk-kernel helper."""
-
-    def test_returns_2d_array(self):
-        kernel = _make_disk_kernel(radius_bins=3.0)
-        assert isinstance(kernel, np.ndarray)
-        assert kernel.ndim == 2
+    """The disk kernel is a normalized, symmetric (2*ceil(r)+1)-square array."""
 
     def test_shape_matches_radius(self):
         """The kernel is (2*ceil(r)+1) x (2*ceil(r)+1) bins."""
@@ -183,7 +195,6 @@ class TestMakeDiskKernel:
         assert kernel.shape == (7, 7)  # 2*ceil(2.5) + 1 = 7
 
     def test_normalized_to_unit_sum(self):
-        """The kernel should be normalized so its elements sum to 1."""
         kernel = _make_disk_kernel(radius_bins=5.0)
         assert kernel.sum() == pytest.approx(1.0)
 
@@ -208,7 +219,7 @@ class TestMakeDiskKernel:
 
 
 class TestFormatRaHm:
-    """Tests for the RA -> hour-angle label formatter."""
+    """Degrees render as hours and minutes, wrapping at 360."""
 
     def test_format_returns_string(self):
         result = _format_ra_hm(0.0, None)
@@ -243,7 +254,7 @@ class TestFormatRaHm:
 
 
 class TestFormatDecDeg:
-    """Tests for the Dec -> degree label formatter."""
+    """Dec renders as integer degrees with a LaTeX degree marker and a sign."""
 
     def test_format_returns_string(self):
         result = _format_dec_deg(0.0, None)

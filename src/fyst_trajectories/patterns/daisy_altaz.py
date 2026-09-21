@@ -9,6 +9,7 @@ projection. See "CV Daisy - JCMT small area scanning pattern" (P. Friberg,
 Joint Astronomy Centre, JCMT TCS/UN/005, 2012) for the underlying algorithm.
 """
 
+import functools
 import math
 
 import numpy as np
@@ -78,6 +79,29 @@ class DaisyAltAzScanPattern(AltAzPattern):
     def name(self) -> str:
         return "daisy_altaz"
 
+    @functools.cached_property
+    def _delegate_config(self) -> DaisyScanConfig:
+        """Build the equivalent celestial Daisy configuration, once.
+
+        Cached because constructing it re-runs the config's own validation
+        and so re-emits any advisory warning it carries; a caller that builds
+        and then inspects should hear an advisory once, not once per call.
+
+        Returns
+        -------
+        DaisyScanConfig
+            The celestial Daisy configuration matching this AltAz one.
+        """
+        return DaisyScanConfig(
+            timestep=self.config.timestep,
+            radius=self.config.radius,
+            velocity=self.config.velocity,
+            turn_radius=self.config.turn_radius,
+            avoidance_radius=self.config.avoidance_radius,
+            start_acceleration=self.config.start_acceleration,
+            y_offset=self.config.y_offset,
+        )
+
     def _offset_pattern(self) -> DaisyScanPattern:
         """Build the celestial Daisy that owns the on-sky offset generation.
 
@@ -88,16 +112,7 @@ class DaisyAltAzScanPattern(AltAzPattern):
             tangent-plane offsets this pattern maps into AltAz. Built
             at ``ra=dec=0``: only the tangent-plane offsets are used.
         """
-        daisy_config = DaisyScanConfig(
-            timestep=self.config.timestep,
-            radius=self.config.radius,
-            velocity=self.config.velocity,
-            turn_radius=self.config.turn_radius,
-            avoidance_radius=self.config.avoidance_radius,
-            start_acceleration=self.config.start_acceleration,
-            y_offset=self.config.y_offset,
-        )
-        return DaisyScanPattern(ra=0.0, dec=0.0, config=daisy_config)
+        return DaisyScanPattern(ra=0.0, dec=0.0, config=self._delegate_config)
 
     def generate(
         self,

@@ -1,4 +1,4 @@
-"""Observability reporting for solar-system targets (OBSERVE / EXCLUDE primitives).
+"""Observability reporting for solar-system targets (OBSERVE / AVOID primitives).
 
 This module answers "which of these targets can we observe now (or over the
 next *N* hours), and why not?" for a list of solar-system flux calibrators. It
@@ -14,11 +14,11 @@ target list.
 
 It is intentionally importable in isolation: it depends only on
 :mod:`fyst_trajectories.coordinates` and :mod:`fyst_trajectories.site` (astropy +
-numpy underneath) and does **not** import the offline ``overhead`` simulator.
+numpy underneath).
 
 Two physically distinct kinds of avoidance are kept structurally separate:
 
-* **Sun**: always-on thermal/hardware safety, read from
+* **Sun**: an always-on check, read from
   ``site.sun_avoidance`` (a 45 deg exclusion radius by default: the Prime-Cam
   observing-policy baseline. FYST's directional CAD-derived zone is stricter,
   requiring 50-90 deg with the Sun's direction in the mount frame; pass
@@ -277,7 +277,7 @@ class AvoidZone:
     ------
     ValueError
         If ``zone_deg`` is negative, or if ``body`` is ``"sun"`` (the Sun is
-        always-on hardware safety, never an AVOID zone).
+        an always-on check, never an AVOID zone).
     """
 
     body: str
@@ -287,7 +287,7 @@ class AvoidZone:
         object.__setattr__(self, "body", self.body.lower())
         if self.body == "sun":
             raise ValueError(
-                "the Sun is always-on hardware safety, not an AvoidZone; the report "
+                "the Sun check is always on and is not an AvoidZone; the report "
                 "carries it in the sun_clear / sun_separation_deg fields."
             )
         # Finite check first: ``nan < 0`` is False, so a non-finite zone would
@@ -573,7 +573,7 @@ def check_observability(
     or invalid arguments (inconsistent elevation bounds, a non-positive
     ``window_step_minutes``, a mis-shaped ``sun_safe.batch`` result).
 
-    The Sun check is always-on (thermal/hardware safety, independent of
+    The Sun check is always-on (independent of
     ``avoid``); the ``avoid`` list is exclusively for caller-specified
     bright-source contamination zones, each carrying its own radius. A target
     is never excluded by its own glare (self-exclusion: an :class:`AvoidZone`
@@ -634,9 +634,10 @@ def check_observability(
     ------
     ValueError
         If a target name is unknown, an AVOID body cannot be resolved,
-        ``el_min`` exceeds ``el_max``, ``window_step_minutes`` is not
-        positive with a horizon requested, or an injected
-        ``sun_safe.batch`` returns the wrong shape for the horizon grid.
+        ``el_min`` exceeds ``el_max``, ``horizon_hours`` is not finite,
+        ``window_step_minutes`` is not finite or not positive with a horizon
+        requested, or an injected ``sun_safe.batch`` returns the wrong shape
+        for the horizon grid.
     """
     site = get_fyst_site() if site is None else site
     coords = Coordinates(site, atmosphere=atmosphere)
@@ -647,8 +648,17 @@ def check_observability(
     el_max = el_limits.max if el_max is None else el_max
     if el_min > el_max:
         raise ValueError(f"el_min ({el_min}) must be <= el_max ({el_max})")
-    if horizon_hours and horizon_hours > 0 and window_step_minutes <= 0:
-        raise ValueError(f"window_step_minutes must be > 0, got {window_step_minutes}")
+    # Finiteness first, as ``sun_events`` does: NaN slips past every bare
+    # comparison below, so a NaN horizon would silently fall back to
+    # instant-only mode and return a report with no windows rather than
+    # saying why.
+    if horizon_hours is not None and not np.isfinite(horizon_hours):
+        raise ValueError(f"horizon_hours must be a finite value, got {horizon_hours}")
+    if horizon_hours and horizon_hours > 0:
+        if not np.isfinite(window_step_minutes) or window_step_minutes <= 0:
+            raise ValueError(
+                f"window_step_minutes must be a finite value > 0, got {window_step_minutes}"
+            )
 
     grid = _build_time_grid(time, horizon_hours, window_step_minutes)
     n = len(grid)
@@ -696,7 +706,7 @@ def check_observability(
         if not sun_enabled:
             sun_ok_grid = np.ones(n, dtype=bool)
         elif sun_safe is None:
-            # Strict `>`: conservative thermal/hardware stance, matching is_sun_safe
+            # Strict `>`: conservative stance, matching is_sun_safe
             # (a target exactly at the exclusion radius is NOT clear).
             sun_ok_grid = sun_sep_grid > sun_radius
         elif hasattr(sun_safe, "batch"):
@@ -790,7 +800,7 @@ is compared against are geometric (vacuum), so refraction must not be applied
 twice.
 
 Horizon dip is deliberately excluded (the sea-level convention): at FYST's
-5611.8 m the dip to a sea-level horizon is ~2 deg, so the Sun remains visible
+5611.8 m the dip to a sea-level horizon is ~2.4 deg, so the Sun remains visible
 from the summit for ~10 minutes after the reported sunset (and before the
 reported sunrise). These events are the standard twilight-scheduling almanac
 times, not "when direct sunlight stops hitting the dish".

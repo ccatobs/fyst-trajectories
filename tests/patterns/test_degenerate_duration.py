@@ -2,13 +2,16 @@
 
 Every pattern samples on ``n_points = round(duration / timestep) + 1``. A
 duration that is zero, negative, or shorter than ``timestep`` collapses to a
-single sample, which historically either failed opaquely in ``np.gradient``
+single sample. Unguarded, that either fails opaquely in ``np.gradient``
 (an unhelpful ``IndexError``) or, for the AltAz patterns that set
-velocities directly (linear, constant_el), *silently* returned a wrong
-1-point trajectory. These tests pin the new contract: such durations raise a
+velocities directly (linear, constant_el), *silently* returns a wrong
+1-point trajectory. These tests pin the contract: such durations raise a
 clear ``PointingError`` (a ``ValueError`` subclass), via both the public
 ``TrajectoryBuilder`` path and the direct ``.generate()`` /
-``.generate_offsets()`` path, while a normal duration still works.
+``.generate_offsets()`` path, while a normal duration generates.
+
+Six of the nine registered patterns are driven below. The AltAz Pong and Daisy
+patterns raise the same error on the same durations and are not repeated here.
 """
 
 import pytest
@@ -33,7 +36,7 @@ from fyst_trajectories.patterns import (
 
 _START = Time("2026-06-15T04:00:00", scale="utc")
 # A time/body where Jupiter is well above the FYST horizon, for the
-# "normal duration still works" sanity checks on the planet pattern.
+# normal-duration sanity checks on the planet pattern.
 _JUPITER_UP = Time("2026-06-15T17:30:00", scale="utc")
 _TIMESTEP = 0.1
 # Observable (RA, Dec) from FYST at _START for celestial sanity checks
@@ -107,15 +110,15 @@ def _planet(body="jupiter"):
     return PlanetTrackPattern(PlanetTrackConfig(timestep=_TIMESTEP, body=body))
 
 
-# (pattern factory, config, needs start_time, sets velocities directly,
+# (pattern factory, config, needs start_time,
 #  observable start time for the "normal works" checks).
 _PATTERNS = [
-    pytest.param(_pong, _pong().config, True, False, _START, id="pong"),
-    pytest.param(_daisy, _daisy().config, True, False, _START, id="daisy"),
-    pytest.param(_linear, _linear().config, False, True, None, id="linear"),
-    pytest.param(_constant_el, _constant_el().config, False, True, None, id="constant_el"),
-    pytest.param(_sidereal, _sidereal().config, True, False, _START, id="sidereal"),
-    pytest.param(_planet, _planet().config, True, False, _JUPITER_UP, id="planet"),
+    pytest.param(_pong, _pong().config, True, _START, id="pong"),
+    pytest.param(_daisy, _daisy().config, True, _START, id="daisy"),
+    pytest.param(_linear, _linear().config, False, None, id="linear"),
+    pytest.param(_constant_el, _constant_el().config, False, None, id="constant_el"),
+    pytest.param(_sidereal, _sidereal().config, True, _START, id="sidereal"),
+    pytest.param(_planet, _planet().config, True, _JUPITER_UP, id="planet"),
 ]
 
 
@@ -127,28 +130,28 @@ def _generate(pattern, site, duration, needs_start_time, start=_START):
 class TestDegenerateDurationDirect:
     """Degenerate durations raise via the direct ``.generate()`` path."""
 
-    @pytest.mark.parametrize("pattern_factory, config, needs_start, sets_vel, obs_start", _PATTERNS)
+    @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     @pytest.mark.parametrize("duration", [0.0, -1.0])
     def test_nonpositive_duration_raises(
-        self, pattern_factory, config, needs_start, sets_vel, obs_start, duration, site
+        self, pattern_factory, config, needs_start, obs_start, duration, site
     ):
         """Zero or negative duration raises a clear PointingError, not IndexError."""
         pattern = pattern_factory()
         with pytest.raises(PointingError, match="fewer than 2 samples"):
             _generate(pattern, site, duration, needs_start)
 
-    @pytest.mark.parametrize("pattern_factory, config, needs_start, sets_vel, obs_start", _PATTERNS)
+    @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     def test_sub_timestep_duration_raises(
-        self, pattern_factory, config, needs_start, sets_vel, obs_start, site
+        self, pattern_factory, config, needs_start, obs_start, site
     ):
         """A sub-timestep duration raises a clear PointingError, not IndexError."""
         pattern = pattern_factory()
         with pytest.raises(PointingError, match="fewer than 2 samples"):
             _generate(pattern, site, config.timestep / 2.0, needs_start)
 
-    @pytest.mark.parametrize("pattern_factory, config, needs_start, sets_vel, obs_start", _PATTERNS)
+    @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     def test_normal_duration_still_works(
-        self, pattern_factory, config, needs_start, sets_vel, obs_start, site
+        self, pattern_factory, config, needs_start, obs_start, site
     ):
         """A normal multi-sample duration generates a >= 2-point trajectory."""
         pattern = pattern_factory()
@@ -159,9 +162,9 @@ class TestDegenerateDurationDirect:
 class TestDegenerateDurationBuilder:
     """Degenerate durations are rejected at the public builder entry point."""
 
-    @pytest.mark.parametrize("pattern_factory, config, needs_start, sets_vel, obs_start", _PATTERNS)
+    @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     def test_sub_timestep_duration_raises(
-        self, pattern_factory, config, needs_start, sets_vel, obs_start, site
+        self, pattern_factory, config, needs_start, obs_start, site
     ):
         """The builder rejects a sub-timestep duration with its >= 2-sample message."""
         builder = TrajectoryBuilder(site).with_config(config).duration(config.timestep / 2.0)
@@ -176,9 +179,9 @@ class TestDegenerateDurationBuilder:
         with pytest.raises(ValueError, match="fewer than 2 samples"):
             builder.build()
 
-    @pytest.mark.parametrize("pattern_factory, config, needs_start, sets_vel, obs_start", _PATTERNS)
+    @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     def test_normal_duration_still_works(
-        self, pattern_factory, config, needs_start, sets_vel, obs_start, site
+        self, pattern_factory, config, needs_start, obs_start, site
     ):
         """A normal duration builds a >= 2-point trajectory through the builder."""
         builder = TrajectoryBuilder(site).with_config(config).duration(30.0)
@@ -195,9 +198,9 @@ class TestDaisyEqualsTimestepRaises:
 
     On the nominal grid ``duration == timestep`` yields exactly 2 samples
     (valid for pong/linear/constant_el), but daisy's ``[::sample_every]``
-    downsampling drops the final partial step, collapsing to 1 sample. This
-    is the case that previously fell through daisy's half-guard into
-    ``np.gradient``. It must now raise a clear PointingError.
+    downsampling drops the final partial step, collapsing to 1 sample. That
+    is the case daisy's half-guard lets through into ``np.gradient``, so it
+    must raise a clear PointingError.
     """
 
     def test_daisy_generate_offsets_equals_timestep_raises(self):
@@ -214,9 +217,9 @@ class TestDaisyEqualsTimestepRaises:
 class TestAltAzNoSilentOnePoint:
     """linear and constant_el must not silently return a 1-point trajectory.
 
-    These two patterns set velocities directly (no ``np.gradient``), so a
-    degenerate duration historically produced a wrong 1-point Trajectory with
-    no error, the worst failure mode. They must now raise instead.
+    These two patterns set velocities directly (no ``np.gradient``), so an
+    unguarded degenerate duration produces a wrong 1-point Trajectory with no
+    error, the worst failure mode. They must raise instead.
     """
 
     @pytest.mark.parametrize(

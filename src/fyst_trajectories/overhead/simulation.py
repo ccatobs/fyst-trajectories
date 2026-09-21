@@ -6,7 +6,7 @@ functions to generate actual trajectories and accumulate coverage maps.
 
 import dataclasses
 import logging
-from typing import cast
+from typing import TypedDict, cast
 
 import numpy as np
 from astropy import units as u
@@ -21,8 +21,9 @@ from ..planning import (
     plan_pong_scan,
     plan_source_ces,
 )
-from ..planning.source_ces import _offset_footprint_eta, _resolve_footprint
+from ..planning.footprints import inflate_footprint, offset_footprint_eta, resolve_footprint
 from ..site import Site
+from .exceptions import BlockNotReconstructableError, ScanParamsSchemaError
 from .models import (
     BlockType,
     CEScanParams,
@@ -35,6 +36,9 @@ from .models import (
 )
 
 __all__ = [
+    "BudgetStats",
+    "CalibrationBudget",
+    "PatchBudget",
     "accumulate_hitmaps",
     "compute_budget",
     "schedule_to_trajectories",
@@ -49,6 +53,14 @@ logger = logging.getLogger(__name__)
 # those edges while still landing on the same crossing (the rebuilt t0/t1
 # match the recorded window to within a coarse sampling step).
 _SOURCE_CES_WINDOW_BUFFER_SEC = 300.0
+
+# Kernel-override keys of SourceCESScanParams. Each is forwarded to
+# plan_source_ces verbatim when the recorded params carry it and omitted
+# otherwise, so the kernel's own defaults stay authoritative for passes
+# planned without overrides. The rebuild test derives the expected set from
+# the TypedDict, so a key added there without being forwarded here fails
+# that test rather than being dropped silently.
+_SOURCE_CES_OVERRIDE_KEYS = ("az_accel", "az_padding", "v_az", "az_speed", "az_throw", "dwell")
 
 
 def schedule_to_trajectories(
@@ -89,19 +101,24 @@ def schedule_to_trajectories(
         ``[t_start, t_stop)`` window: the subscans of one
         constant-elevation visit are consecutive slices of a single
         crossing solve (anchored at the shared ``metadata["t0_scan"]``),
-        not one full pass each, so summing samples over the pairs no
-        longer multiply-counts a visit. ``ScanBlock.duration`` is the
+        not one full pass each, so summing samples over the pairs counts
+        each visit once. ``ScanBlock.duration`` is the
         slice; ``computed_params`` and ``summary`` still describe the
         full solved pass. Calibration passes are one block per pass
         and are returned whole.
 
     Notes
     -----
-    Blocks that attempt reconstruction but fail (a ``ValueError``,
-    ``KeyError``, or ``TypeError`` from the planner, e.g. a source no longer
-    reachable at the recorded geometry, or a block whose window no longer
-    overlaps the re-solved scan) are logged at ``WARNING`` and
-    skipped so one bad block does not abort the whole timeline.
+    Blocks that attempt reconstruction but fail are logged at ``WARNING``
+    and skipped, so one bad block does not abort the whole timeline. This
+    subpackage's own refusals are
+    :class:`~fyst_trajectories.overhead.ScanParamsSchemaError` (recorded
+    metadata that does not match the rebuild's schema) and
+    :class:`~fyst_trajectories.overhead.BlockNotReconstructableError` (a
+    block whose window no longer overlaps the re-solved scan); a plain
+    ``ValueError``, ``KeyError`` or ``TypeError`` from the planner, for
+    example a source no longer reachable at the recorded geometry, is
+    caught the same way.
     """
     site = timeline.site
     blocks = timeline.science_blocks if science_only else timeline.blocks
@@ -126,6 +143,14 @@ def schedule_to_trajectories(
             scan_block = _generate_trajectory_for_block(sblock, site)
             results.append((sblock, scan_block))
         except (ValueError, KeyError, TypeError) as exc:
+            # ``ScanParamsSchemaError`` and ``BlockNotReconstructableError``
+            # are this subpackage's own refusals and are both ``ValueError``
+            # subclasses. The rest of the tuple is the net for metadata that
+            # is malformed rather than merely incomplete: a recorded
+            # velocity of zero surfaces as a plain ``ValueError`` from config
+            # validation, and a truncated dict as ``KeyError``/``TypeError``
+            # from astropy. A rebuild is best-effort, so every one of those
+            # skips the block with a log line instead of failing the batch.
             logger.warning(
                 "Failed to generate trajectory for block '%s' at %s: %s",
                 sblock.patch_name,
@@ -161,11 +186,12 @@ def _generate_trajectory_for_block(
 
     Raises
     ------
-    ValueError
+    ScanParamsSchemaError
         If ``sblock.metadata`` is missing any of the required geometry
         keys (``ra_center``, ``dec_center``, ``width``, ``height``,
-        ``velocity``), or if the re-solved scan no longer overlaps the
-        block's time window.
+        ``velocity``), or names a scan type that cannot be rebuilt.
+    BlockNotReconstructableError
+        If the re-solved scan no longer overlaps the block's time window.
     KeyError
         If ``scan_params`` contains keys not allowed for
         ``sblock.scan_type`` (see
@@ -180,12 +206,17 @@ def _generate_trajectory_for_block(
     meta = sblock.metadata
 
     if sblock.block_type == BlockType.CALIBRATION:
-        return _generate_source_ces_trajectory(meta, site)
+        # A pass recorded without an absolute window (a relative dispatch
+        # dict) re-solves inside its own block bounds, anchored at t0_scan.
+        pass_start = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
+        return _generate_source_ces_trajectory(
+            meta, site, fallback_window=(pass_start, sblock.t_stop)
+        )
 
     required = ("ra_center", "dec_center", "width", "height", "velocity")
     missing = [k for k in required if k not in meta]
     if missing:
-        raise ValueError(
+        raise ScanParamsSchemaError(
             f"TimelineBlock metadata missing required keys {missing}. "
             f"Ensure the timeline was generated with per-block scan geometry, "
             f"or provide the metadata explicitly."
@@ -221,17 +252,22 @@ def _generate_trajectory_for_block(
         # recorded) fall back to t_start and reconstruct only when that
         # anchor happens to precede the pass opening.
         anchor = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
+        # A sidereal window fixes the timing and the azimuth range on its
+        # own, so the planner refuses ``rising`` beside it; the block still
+        # records a rising flag (every science block does) and it is simply
+        # not what placed this pass.
+        lsa_window = ce_params.get("lsa_window")
         scan_block = plan_constant_el_scan(
             field=field,
             elevation=sblock.elevation,
             velocity=velocity,
             site=site,
             start_time=anchor,
-            rising=sblock.rising,
+            rising=None if lsa_window is not None else sblock.rising,
             az_accel=ce_params.get("az_accel", 1.0),
             timestep=ce_params.get("timestep", 0.1),
             az_padding=ce_params.get("az_padding", 2.0),
-            lsa_window=ce_params.get("lsa_window"),
+            lsa_window=lsa_window,
         )
     elif sblock.scan_type == "pong":
         pong_params = cast(PongScanParams, scan_params)
@@ -262,7 +298,7 @@ def _generate_trajectory_for_block(
             duration=sblock.duration,
         )
     else:
-        raise ValueError(f"Unknown scan type: {sblock.scan_type}")
+        raise ScanParamsSchemaError(f"Unknown scan type: {sblock.scan_type}")
 
     return _slice_to_block_window(scan_block, sblock)
 
@@ -291,7 +327,7 @@ def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> Scan
 
     Raises
     ------
-    ValueError
+    BlockNotReconstructableError
         If fewer than two trajectory samples fall inside the block
         window (the re-solved scan no longer overlaps this block).
         ``schedule_to_trajectories`` logs and skips such blocks like
@@ -308,7 +344,7 @@ def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> Scan
         return scan_block
     idx = np.nonzero(mask)[0]
     if idx.size < 2:
-        raise ValueError(
+        raise BlockNotReconstructableError(
             f"block window [{sblock.t_start.isot}, {sblock.t_stop.isot}) contains "
             f"{idx.size} trajectory sample(s); the re-solved scan "
             f"[{traj.start_time.isot} + {float(t[0]):.1f}s .. {float(t[-1]):.1f}s] "
@@ -335,6 +371,8 @@ def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> Scan
 def _generate_source_ces_trajectory(
     meta: TimelineBlockMetadata,
     site: Site,
+    *,
+    fallback_window: tuple[Time, Time] | None = None,
 ) -> ScanBlock:
     """Rebuild a source-CES planet-calibration pass from its recorded params.
 
@@ -352,6 +390,10 @@ def _generate_source_ces_trajectory(
         Calibration-block metadata carrying ``scan_params``.
     site : Site
         Observatory site.
+    fallback_window : tuple of Time, optional
+        The pass bounds to re-solve inside when ``scan_params`` carries no
+        ``window`` (a relative dispatch dict): normally the block's
+        ``t0_scan`` and ``t_stop``.
 
     Returns
     -------
@@ -364,6 +406,9 @@ def _generate_source_ces_trajectory(
         If ``scan_params`` is absent or carries keys not allowed for
         ``source_ces`` (see
         :func:`~fyst_trajectories.overhead.validate_scan_params`).
+    BlockNotReconstructableError
+        If ``scan_params`` carries no ``window`` and no
+        ``fallback_window`` was given.
     ValueError, TypeError
         Propagated from :func:`~fyst_trajectories.planning.plan_source_ces` when the
         recorded geometry can no longer be solved.
@@ -371,16 +416,29 @@ def _generate_source_ces_trajectory(
     params = meta["scan_params"]
     validate_scan_params(params, "source_ces")
 
-    t0 = Time(params["window"][0], scale="utc")
-    t1 = Time(params["window"][1], scale="utc")
+    if "window" in params:
+        t0 = Time(params["window"][0], scale="utc")
+        t1 = Time(params["window"][1], scale="utc")
+    elif fallback_window is not None:
+        t0, t1 = fallback_window
+    else:
+        raise BlockNotReconstructableError(
+            "source_ces scan_params carry no window and no fallback_window was given"
+        )
     buffer = TimeDelta(_SOURCE_CES_WINDOW_BUFFER_SEC, format="sec")
 
-    # The eta offset is load-bearing geometry, not provenance: each pass drags
-    # the source through a different focal-plane row, so the rebuilt pass must
-    # use the base footprint shifted by the recorded offset. Resolve the base
-    # tag then shift it, exactly as plan_source_ces_passes does.
-    base_footprint = _resolve_footprint(params["footprint"])
-    pass_footprint = _offset_footprint_eta(base_footprint, params["eta_offset_deg"])
+    # The margin and the eta offset are load-bearing geometry, not
+    # provenance: the margin widens the crossing the pass was solved on, and
+    # each pass drags the source through a different focal-plane row, so the
+    # rebuilt pass must use the base footprint inflated then shifted exactly
+    # as it was planned. Resolve the base tag, inflate, then shift.
+    base_footprint = resolve_footprint(params["footprint"])
+    base_footprint = inflate_footprint(base_footprint, params.get("footprint_margin", 0.0))
+    pass_footprint = offset_footprint_eta(base_footprint, params["eta_offset_deg"])
+
+    # Kernel overrides ride along only when they were recorded; see
+    # _SOURCE_CES_OVERRIDE_KEYS.
+    overrides = {key: params[key] for key in _SOURCE_CES_OVERRIDE_KEYS if key in params}
 
     # Widen the window before re-solving; see _SOURCE_CES_WINDOW_BUFFER_SEC.
     return plan_source_ces(
@@ -392,6 +450,7 @@ def _generate_source_ces_trajectory(
         window=(t0 - buffer, t1 + buffer),
         mode=params["mode"],
         site=site,
+        **overrides,
     )
 
 
@@ -430,6 +489,16 @@ def accumulate_hitmaps(
     ------
     ImportError
         If ``healpy`` is not installed.
+
+    Notes
+    -----
+    The az/el to RA/Dec inverse is taken in vacuum, whatever atmosphere
+    the trajectory was generated under. A trajectory built with
+    ``AtmosphericConditions.for_fyst()`` therefore bins slightly off:
+    arcseconds near the zenith, about 1.4 arcmin at the 20 degree
+    elevation floor, more below 10 degrees. That is sub-pixel down to
+    the floor at ``nside=512`` (7 arcmin pixels); a low-elevation,
+    high-resolution map is where it shows.
     """
     try:
         import healpy as hp
@@ -440,20 +509,9 @@ def accumulate_hitmaps(
 
     npix = hp.nside2npix(nside)
     hitmap = np.zeros(npix, dtype=np.float64)
-    # Vacuum az/el -> RA/Dec is correct *only when the trajectory was
-    # itself generated with vacuum coordinates*. Pattern generators
-    # (patterns/{daisy,pong,sidereal,planet}) accept a user-supplied
-    # ``atmosphere=`` and forward it to ``Coordinates``; if the
-    # trajectory was built with ``AtmosphericConditions.for_fyst()`` the
-    # az/el samples here are refracted and inverting them with vacuum
-    # introduces a small systematic (~arcseconds near zenith, about 1.4'
-    # at the 20 deg elevation floor, and several arcmin below 10 deg).
-    # For a healpix nside=512 hitmap (7' pixels) the error stays
-    # sub-pixel down to the elevation floor, so the practical impact is
-    # bounded; the asymmetry remains for low-elevation, high-nside maps.
-    # TODO: thread the trajectory's atmospheric conditions through
-    # ``Trajectory`` metadata so the inverse uses the same refraction
-    # model.
+    # Vacuum inverse; see Notes for the bias this leaves on a trajectory
+    # built with refraction. Closing it would need the trajectory's own
+    # atmosphere, which Trajectory does not carry.
     coords = Coordinates(site)
 
     for sblock, scan_block in trajectory_pairs:
@@ -485,7 +543,74 @@ def accumulate_hitmaps(
     return hitmap
 
 
-def compute_budget(timeline: ObservingTimeline) -> dict:
+class PatchBudget(TypedDict):
+    """One patch's share of a timeline's science time.
+
+    Attributes
+    ----------
+    science_time : float
+        Seconds of science on this patch.
+    n_scans : int
+        Science blocks emitted for it, counting every subscan.
+    n_unique_scans : int
+        Distinct ``scan_index`` values among those blocks, so a visit cut
+        into subscans counts once.
+    """
+
+    science_time: float
+    n_scans: int
+    n_unique_scans: int
+
+
+class CalibrationBudget(TypedDict):
+    """One calibration type's share of a timeline.
+
+    Attributes
+    ----------
+    count : int
+        Blocks of this calibration type.
+    total_time : float
+        Seconds spent on them.
+    """
+
+    count: int
+    total_time: float
+
+
+class BudgetStats(TypedDict):
+    """The summary :func:`compute_budget` returns.
+
+    Attributes
+    ----------
+    total_time : float
+        Seconds the timeline spans.
+    science_time, calibration_time, slew_time, idle_time : float
+        Seconds in each block type; they tile ``total_time``.
+    efficiency : float
+        ``science_time / total_time``.
+    n_science_scans : int
+        Science blocks in the timeline.
+    n_calibration_blocks : int
+        Calibration blocks in the timeline.
+    per_patch : dict of str to PatchBudget
+        Science time and block counts, keyed by patch name.
+    calibration_breakdown : dict of str to CalibrationBudget
+        Block counts and time, keyed by calibration type.
+    """
+
+    total_time: float
+    science_time: float
+    calibration_time: float
+    slew_time: float
+    idle_time: float
+    efficiency: float
+    n_science_scans: int
+    n_calibration_blocks: int
+    per_patch: dict[str, PatchBudget]
+    calibration_breakdown: dict[str, CalibrationBudget]
+
+
+def compute_budget(timeline: ObservingTimeline) -> BudgetStats:
     """Compute summary statistics for a timeline.
 
     Parameters
@@ -495,16 +620,12 @@ def compute_budget(timeline: ObservingTimeline) -> dict:
 
     Returns
     -------
-    dict
-        ``total_time``, ``science_time``, ``calibration_time``,
-        ``slew_time``, ``idle_time`` (all seconds), ``efficiency``
-        (science fraction of total), ``n_science_scans``,
-        ``n_calibration_blocks``, ``per_patch`` (per patch:
-        ``science_time``, ``n_scans``, ``n_unique_scans``), and
-        ``calibration_breakdown`` (per calibration type: ``count``,
-        ``total_time``).
+    BudgetStats
+        Timeline totals, efficiency, per-patch science time and the
+        calibration breakdown; see :class:`BudgetStats` for the field
+        contract.
     """
-    stats = {
+    stats: dict = {
         "total_time": timeline.total_time,
         "science_time": timeline.total_science_time,
         "calibration_time": timeline.total_calibration_time,
@@ -544,4 +665,4 @@ def compute_budget(timeline: ObservingTimeline) -> dict:
 
     stats["calibration_breakdown"] = cal_stats
 
-    return stats
+    return cast(BudgetStats, stats)

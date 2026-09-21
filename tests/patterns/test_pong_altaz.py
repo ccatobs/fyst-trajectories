@@ -33,27 +33,28 @@ def _base_config(**overrides):
 class TestPongAltAzScanConfig:
     """Validation and defaults for PongAltAzScanConfig."""
 
-    def test_defaults_match_celestial_pong(self):
-        """num_terms, angle, timestep default to the celestial Pong values."""
+    def test_documented_defaults(self):
+        """num_terms, angle and timestep carry the documented defaults.
+
+        The celestial ``PongScanConfig`` has no defaults of its own; these
+        are the values it is conventionally built with.
+        """
         config = _base_config()
         assert config.num_terms == 4
         assert config.angle == 0.0
         assert config.timestep == 0.1
 
     def test_frozen(self):
-        """Config is immutable after creation."""
         config = _base_config()
         with pytest.raises((AttributeError, TypeError)):
             config.az_center = 200.0
 
     @pytest.mark.parametrize("field", ["width", "height", "spacing", "velocity"])
     def test_nonpositive_geometry_raises(self, field):
-        """Non-positive width/height/spacing/velocity raises ValueError."""
         with pytest.raises(ValueError, match=f"{field} must be positive"):
             _base_config(**{field: 0.0})
 
     def test_num_terms_below_one_raises(self):
-        """num_terms < 1 raises ValueError."""
         with pytest.raises(ValueError, match="num_terms must be at least 1"):
             _base_config(num_terms=0)
 
@@ -69,7 +70,6 @@ class TestPongAltAzScanConfig:
             _base_config(el_center=el_center)
 
     def test_large_width_warns(self):
-        """An unusually large width emits a PointingWarning."""
         with pytest.warns(PointingWarning, match="Scan width"):
             _base_config(width=40.0)
 
@@ -100,7 +100,6 @@ class TestPongAltAzScanPattern:
         assert np.all(np.isfinite(trajectory.el))
 
     def test_start_time_not_required(self, site):
-        """AltAz pattern builds without a start_time."""
         pattern = PongAltAzScanPattern(_base_config())
         trajectory = pattern.generate(site, duration=60.0, start_time=None)
         assert trajectory.start_time is None
@@ -220,7 +219,6 @@ class TestPongAltAzScanPattern:
         assert "y_numvert" in params
 
     def test_angle_changes_trajectory(self, site):
-        """A non-zero rotation angle changes the trajectory."""
         traj_no_rot = PongAltAzScanPattern(_base_config(angle=0.0)).generate(site, duration=60.0)
         traj_rot = PongAltAzScanPattern(_base_config(angle=45.0)).generate(site, duration=60.0)
         assert not np.allclose(traj_no_rot.az, traj_rot.az)
@@ -230,7 +228,6 @@ class TestRegistryAndBuilderIntegration:
     """The pattern is discoverable via the registry and the builder."""
 
     def test_registered_under_name(self):
-        """get_pattern('pong_altaz') returns the pattern class."""
         assert get_pattern("pong_altaz") is PongAltAzScanPattern
 
     def test_builder_infers_pattern_from_config(self, site):
@@ -238,3 +235,33 @@ class TestRegistryAndBuilderIntegration:
         trajectory = TrajectoryBuilder(site).with_config(_base_config()).duration(60.0).build()
         assert trajectory.pattern_type == "pong_altaz"
         assert trajectory.coordsys == "altaz"
+
+
+class TestDelegateConfigIsBuiltOnce:
+    """The equivalent celestial config is built once per pattern instance.
+
+    Constructing one re-runs the celestial config's validation, so a separate
+    copy in ``_offset_pattern`` and in ``get_metadata`` would emit an advisory
+    it carries twice for a single ``generate`` call.
+    """
+
+    def test_advisory_is_emitted_once_per_pattern(self, site, recwarn):
+        config = _base_config(velocity=12.0)
+        recwarn.clear()
+        pattern = PongAltAzScanPattern(config)
+        pattern.generate(site, duration=20.0)
+        pattern.generate(site, duration=20.0)
+        pattern.get_metadata()
+        advisories = [
+            w
+            for w in recwarn.list
+            if issubclass(w.category, PointingWarning) and "unusually large" in str(w.message)
+        ]
+        assert len(advisories) == 1, [str(w.message) for w in advisories]
+
+    def test_the_same_object_is_reused(self):
+        """Both consumers see one delegate config."""
+        pattern = PongAltAzScanPattern(_base_config())
+        first = pattern._offset_pattern().config
+        assert first is pattern._delegate_config
+        assert pattern._offset_pattern().config is first

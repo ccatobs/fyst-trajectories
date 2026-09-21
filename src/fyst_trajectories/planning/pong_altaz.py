@@ -47,8 +47,13 @@ def plan_pong_altaz_scan(
     tangent-plane (on-sky) quantities, identical in meaning to the
     :func:`plan_pong_scan` arguments of the same name. The azimuth
     coordinate is stretched by ``1 / cos(el_center)``: the azimuth-coordinate
-    extent is ``width / cos(el_center)`` and the azimuth-coordinate speed
-    exceeds the on-sky ``velocity`` by the same factor. By default the
+    extent is ``width / cos(el_center)`` up to the vertex quantisation: the
+    box is rounded up to a whole number of ``sqrt(2) * spacing`` steps, and
+    further to make the two vertex counts coprime, so the realised extent
+    runs from a few percent narrower at fine ``spacing`` to tens of percent
+    wider once ``spacing`` is a large fraction of ``width``; the
+    azimuth-coordinate speed exceeds the on-sky speed by the same
+    ``1 / cos(el_center)`` factor. By default the
     duration completes ``n_cycles`` full periods of the Pong pattern.
 
     Parameters
@@ -73,7 +78,7 @@ def plan_pong_altaz_scan(
     start_time : str or Time
         Observation start time. Accepts an ISO string or
         ``astropy.time.Time``. Used to anchor the trajectory timestamp and
-        to convert the center to RA/Dec for the sun-safety pre-flight check.
+        to place the Sun for the center's sun-safety pre-flight check.
     num_terms : int, optional
         Number of Fourier terms for smooth turnarounds. Default is 4.
         Must be >= 1.

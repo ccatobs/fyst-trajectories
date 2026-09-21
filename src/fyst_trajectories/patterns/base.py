@@ -39,8 +39,8 @@ class TrajectoryMetadata:
         Name of the target (e.g., "M42", "mars").
     input_frame : str, optional
         The input coordinate frame used for the pattern center:
-        ``"icrs"`` for celestial patterns, ``None`` for AltAz patterns
-        (no other value is currently produced). Default is None.
+        ``"icrs"`` for celestial patterns, ``None`` for AltAz patterns.
+        Default is None.
     epoch : str, optional
         The epoch/equinox if relevant (e.g., "J2000"). Primarily
         used when the input coordinates have an associated epoch.

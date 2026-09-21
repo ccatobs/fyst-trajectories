@@ -40,10 +40,9 @@ _PLANET_CONFIG = PlanetTrackConfig(timestep=0.1, body="mars")
 
 
 class TestTrajectoryBuilder:
-    """Tests for TrajectoryBuilder fluent API."""
+    """The fluent chain per pattern type, and the refusals when a required step is missing."""
 
     def test_builder_basic_pong(self, site):
-        """Test building a basic Pong trajectory."""
         # Use a fixed start time and position that will be well above horizon
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         trajectory = (
@@ -61,7 +60,6 @@ class TestTrajectoryBuilder:
         assert trajectory.center_dec == -30.0
 
     def test_builder_with_start_time(self, site):
-        """Test building trajectory with explicit start time."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
 
         trajectory = (
@@ -76,7 +74,6 @@ class TestTrajectoryBuilder:
         assert trajectory.start_time == start_time
 
     def test_builder_with_string_start_time(self, site):
-        """Test building trajectory with ISO string start time."""
         trajectory = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
@@ -89,22 +86,18 @@ class TestTrajectoryBuilder:
         assert trajectory.start_time is not None
 
     def test_builder_missing_config_raises(self, site):
-        """Test that build raises if config not set."""
         builder = TrajectoryBuilder(site).duration(60.0)
 
         with pytest.raises(ValueError, match="Pattern not set"):
             builder.build()
 
     def test_builder_missing_duration_raises(self, site):
-        """Test that build raises if duration not set."""
         builder = TrajectoryBuilder(site).at(ra=180.0, dec=-30.0).with_config(_PONG_CONFIG)
 
         with pytest.raises(ValueError, match="Duration not set"):
             builder.build()
 
     def test_builder_invalid_config_raises(self, site):
-        """Test that invalid config type raises."""
-
         # Create a custom config class not in CONFIG_TO_PATTERN
         class UnknownConfig(ScanConfig):
             pass
@@ -113,17 +106,14 @@ class TestTrajectoryBuilder:
             TrajectoryBuilder(site).with_config(UnknownConfig(timestep=0.1))
 
     def test_builder_negative_duration_raises(self, site):
-        """Test that negative duration raises."""
         with pytest.raises(ValueError, match="Duration must be positive"):
             TrajectoryBuilder(site).duration(-10.0)
 
     def test_builder_zero_duration_raises(self, site):
-        """Test that zero duration raises."""
         with pytest.raises(ValueError, match="Duration must be positive"):
             TrajectoryBuilder(site).duration(0.0)
 
     def test_builder_daisy(self, site):
-        """Test building a Daisy scan."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         trajectory = (
             TrajectoryBuilder(site)
@@ -138,7 +128,6 @@ class TestTrajectoryBuilder:
         assert trajectory.pattern_type == "daisy"
 
     def test_builder_sidereal(self, site):
-        """Test building a Sidereal track with config."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         trajectory = (
             TrajectoryBuilder(site)
@@ -153,7 +142,7 @@ class TestTrajectoryBuilder:
         assert trajectory.pattern_type == "sidereal"
 
     def test_builder_planet(self, site):
-        """Test building a planet track via the builder (no ra/dec needed)."""
+        """A planet track builds with no ra/dec supplied."""
         start_time = Time("2026-03-15T12:00:00", scale="utc")
         trajectory = (
             TrajectoryBuilder(site)
@@ -167,7 +156,7 @@ class TestTrajectoryBuilder:
         assert trajectory.pattern_type == "planet"
 
     def test_builder_planet_ignores_at(self, site):
-        """Test that .at() coordinates emit a warning for planet tracking."""
+        """``.at()`` coordinates warn and are ignored for planet tracking."""
         start_time = Time("2026-03-15T12:00:00", scale="utc")
         with pytest.warns(UserWarning, match="ra/dec values are ignored"):
             trajectory = (
@@ -183,14 +172,12 @@ class TestTrajectoryBuilder:
         assert trajectory.pattern_type == "planet"
 
     def test_builder_missing_at_for_celestial_raises(self, site):
-        """Test that build raises if .at() not called for celestial pattern."""
         builder = TrajectoryBuilder(site).with_config(_PONG_CONFIG).duration(60.0)
 
         with pytest.raises(ValueError, match="requires sky coordinates"):
             builder.build()
 
     def test_builder_missing_starting_at_for_celestial_raises(self, site):
-        """Test that build raises if .starting_at() not called for celestial pattern."""
         builder = (
             TrajectoryBuilder(site).at(ra=180.0, dec=-30.0).with_config(_PONG_CONFIG).duration(60.0)
         )
@@ -199,7 +186,6 @@ class TestTrajectoryBuilder:
             builder.build()
 
     def test_builder_missing_starting_at_for_daisy_raises(self, site):
-        """Test that build raises if .starting_at() not called for Daisy pattern."""
         builder = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
@@ -211,7 +197,6 @@ class TestTrajectoryBuilder:
             builder.build()
 
     def test_builder_missing_starting_at_for_sidereal_raises(self, site):
-        """Test that build raises if .starting_at() not called for Sidereal pattern."""
         builder = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
@@ -223,14 +208,13 @@ class TestTrajectoryBuilder:
             builder.build()
 
     def test_builder_missing_starting_at_for_planet_raises(self, site):
-        """Test that build raises if .starting_at() not called for Planet pattern."""
         builder = TrajectoryBuilder(site).with_config(_PLANET_CONFIG).duration(60.0)
 
         with pytest.raises(ValueError, match="requires a start time"):
             builder.build()
 
     def test_builder_constant_el_without_starting_at(self, site):
-        """Test that ConstantEl builds without .starting_at() (AltAz pattern)."""
+        """ConstantEl is an AltAz pattern, so it builds without ``.starting_at()``."""
         trajectory = TrajectoryBuilder(site).with_config(_CONST_EL_CONFIG).duration(30.0).build()
 
         assert trajectory.n_points > 0
@@ -294,9 +278,62 @@ class TestBuilderBoundsValidation:
             builder.build()
 
     def test_build_succeeds_for_in_bounds_trajectory(self, site):
-        """Valid in-bounds configs must still build without raising."""
-        # Sanity check: the new bounds re-validation must not regress the
-        # happy path. Uses the reusable in-bounds config from the top of
-        # this module.
+        """Valid in-bounds configs build without raising."""
+        # Sanity check: the bounds re-validation must not refuse the happy
+        # path. Uses the reusable in-bounds config from the top of this
+        # module.
         trajectory = TrajectoryBuilder(site).with_config(_CONST_EL_CONFIG).duration(30.0).build()
         assert trajectory.n_points > 0
+
+
+class TestBuildValidateDynamicsOptOut:
+    """``build(validate_dynamics=False)`` skips only the dynamics advisory."""
+
+    # az_accel 1.5 makes the quintic turnaround peak at 2.25 deg/s^2, over
+    # the 1.5 deg/s^2 site limit, so the default build warns.
+    _HOT_CONFIG = ConstantElScanConfig(
+        timestep=0.1,
+        az_start=100.0,
+        az_stop=102.0,
+        elevation=45.0,
+        az_speed=1.5,
+        az_accel=1.5,
+    )
+
+    def test_default_build_warns_on_the_turnaround_peak(self, site):
+        from fyst_trajectories.exceptions import AccelerationLimitWarning
+
+        with pytest.warns(AccelerationLimitWarning):
+            TrajectoryBuilder(site).with_config(self._HOT_CONFIG).duration(30.0).build()
+
+    def test_opt_out_is_silent(self, site):
+        import warnings
+
+        from fyst_trajectories.exceptions import PointingWarning
+
+        builder = TrajectoryBuilder(site).with_config(self._HOT_CONFIG).duration(30.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PointingWarning)
+            trajectory = builder.build(validate_dynamics=False)
+        assert trajectory.n_points > 0
+
+    def test_opt_out_keeps_the_bounds_check(self, site, monkeypatch):
+        """The position-bounds check is not part of the opt-out."""
+        # Same construction as test_build_raises_when_azimuth_exceeds_limits:
+        # neutralise the pattern's own bounds check so only the builder's
+        # defence-in-depth call can refuse the out-of-range trajectory.
+        from fyst_trajectories.patterns import constant_el as ce_module
+
+        monkeypatch.setattr(ce_module, "validate_trajectory_bounds", lambda *a, **k: None)
+        bad_config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=355.0,
+            az_stop=400.0,
+            elevation=45.0,
+            az_speed=1.0,
+            az_accel=0.5,
+        )
+        builder = TrajectoryBuilder(site).with_config(bad_config).duration(30.0)
+
+        with pytest.raises(AzimuthBoundsError):
+            builder.build(validate_dynamics=False)

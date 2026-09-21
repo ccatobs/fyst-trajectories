@@ -4,15 +4,19 @@ This runnable example demonstrates the OFFLINE observing-night simulator
 path at library scope: it reads a small source-list CSV, builds
 :class:`~fyst_trajectories.overhead.ObservingPatch` objects, generates a
 complete timeline with :func:`~fyst_trajectories.overhead.generate_timeline`,
-round-trips it through TOAST-compatible ECSV, and prints a short summary.
-
-The timeline produced here is a planning artifact for survey-design and
-efficiency studies, not a schedule that drives a live observing night.
+round-trips it through TOAST-compatible ECSV, and prints a short summary. The
+timeline it produces is a survey-design artifact, not a schedule that drives a
+live observing night.
 
 The CSV schema is ``name,RA,DEC,width,height,priority,velocity,scan_type``,
 with ``RA`` in sexagesimal hour-angle and ``DEC`` in sexagesimal degrees
 (parsed with :class:`astropy.coordinates.SkyCoord`), ``width`` / ``height``
 in degrees, and ``scan_type`` one of ``constant_el``, ``pong``, or ``daisy``.
+``priority`` is the scheduler's tie-breaker, lower is more urgent: the
+sample's constant-elevation row carries 0.5 so it wins the telescope in the
+minutes before its elevation crossing opens, the only time the scheduler can
+place a constant-elevation pass (it has no lookahead, so a row left at the
+same priority as the tracking patches around it schedules nothing).
 
 Run it from the repository root::
 
@@ -25,6 +29,7 @@ from __future__ import annotations
 import csv
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 import astropy.units as u
@@ -42,9 +47,10 @@ from fyst_trajectories.overhead import (
 )
 
 # 8-hour southern-sky window; the bundled sample places several patches
-# near the meridian during this span.
-START_TIME = "2026-06-15T02:00:00"
-END_TIME = "2026-06-15T10:00:00"
+# near the meridian during this span, and the constant-elevation row
+# (the Galactic-centre field) makes its setting crossing of 50 deg inside it.
+START_TIME = "2026-06-15T01:00:00"
+END_TIME = "2026-06-15T09:00:00"
 
 # Default elevation (degrees) for constant-elevation patches, which require
 # a fixed elevation the CSV schema does not carry.
@@ -114,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     # Fully specify the overhead model and calibration policy so this example
     # is invariant to future changes in the library defaults.
     overhead_model = OverheadModel(
-        retune_duration=5.0,
+        retune_duration=300.0,
         pointing_cal_duration=180.0,
         focus_duration=300.0,
         skydip_duration=300.0,
@@ -157,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{stats['n_science_scans']} science scans, "
         f"efficiency {stats['efficiency']:.1%}"
     )
+    per_patch = Counter(block.patch_name for block in loaded.science_blocks)
+    print("Science scans per patch: " + ", ".join(f"{p.name} {per_patch[p.name]}" for p in patches))
     return 0
 
 

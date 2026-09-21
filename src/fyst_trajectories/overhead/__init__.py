@@ -1,8 +1,8 @@
 """Overhead modeling and observing timeline generation for FYST/Prime-Cam.
 
 This subpackage provides overhead budget modeling, calibration cadence tracking,
-and timeline generation for the FYST telescope. It builds on fyst-trajectories
-for coordinate transforms, site configuration, and trajectory generation.
+and timeline generation for the FYST telescope, on top of the library's
+coordinate transforms, site configuration, and trajectory generation.
 
 The key entry point is :func:`generate_timeline`, which takes a list of
 observing patches and produces a complete timeline with calibration injection.
@@ -12,11 +12,13 @@ observing patches and produces a complete timeline with calibration injection.
    The retune events emitted by :class:`CalibrationPolicy` (between
    subscans / iterations) are independent of the in-scan retune samples
    that :func:`fyst_trajectories.trajectory_utils.inject_retune` injects on a single
-   :class:`~fyst_trajectories.trajectory.Trajectory`. The two layers own
-   different retune timing knobs (operations team vs instrument team, see
-   :doc:`overhead_integration`); a workflow that applies
-   :func:`~fyst_trajectories.trajectory_utils.inject_retune` and then schedules the result
-   through this subpackage will see retune flags from both systems.
+   :class:`~fyst_trajectories.trajectory.Trajectory`. Both sets of retune
+   knobs belong to the instrument team (see :doc:`/overhead_integration`),
+   but they time different operations and are not kept in sync. Nothing in
+   this subpackage calls
+   :func:`~fyst_trajectories.trajectory_utils.inject_retune`: a block rebuilt by
+   :func:`~fyst_trajectories.overhead.schedule_to_trajectories` carries no
+   retune samples.
 
 Examples
 --------
@@ -25,9 +27,8 @@ Generate a one-night timeline:
 >>> from fyst_trajectories import get_fyst_site
 >>> from fyst_trajectories.overhead import (
 ...     ObservingPatch,
-...     generate_timeline,
-...     write_timeline,
 ...     compute_budget,
+...     generate_timeline,
 ... )
 >>> site = get_fyst_site()
 >>> patches = [
@@ -50,10 +51,39 @@ Generate a one-night timeline:
 ... )
 >>> stats = compute_budget(timeline)
 >>> print(f"Efficiency: {stats['efficiency']:.1%}")
-Efficiency: 26.5%
->>> write_timeline(timeline, "timeline.ecsv")
+Efficiency: 23.7%
 """
 
+from .calibration_night import (
+    BOOTSTRAP_POSE,
+    DEFAULT_SCAN_TABLES,
+    BodySummary,
+    CalibrationNightMetadata,
+    CalibrationNightPolicy,
+    Candidate,
+    ElevationBin,
+    NightContext,
+    NightState,
+    NightSummary,
+    ScanOverrides,
+    ScanParameterTable,
+    ScriptedSelection,
+    SelectionRule,
+    TuningPolicy,
+    VisitPlan,
+    VisitPlanner,
+    advance_idle,
+    commit_visit,
+    dispatch_sheet,
+    list_candidates,
+    load_scan_tables,
+    plan_calibration_night,
+    plan_visit,
+    read_calibration_night_metadata,
+    select_priority,
+    summarize_calibration_night,
+)
+from .calibration_state import CalibrationState
 from .constraints import (
     Constraint,
     ElevationConstraint,
@@ -61,6 +91,7 @@ from .constraints import (
     MoonAvoidanceConstraint,
     SunAvoidanceConstraint,
 )
+from .exceptions import BlockNotReconstructableError, ScanParamsSchemaError
 from .io import read_timeline, write_timeline
 from .models import (
     BlockType,
@@ -75,20 +106,25 @@ from .models import (
     ObservingTimeline,
     OverheadModel,
     PongScanParams,
+    ScanGeometryRecord,
     ScanParamsDict,
     ScienceBlockMetadata,
     SourceCESScanParams,
     TimelineBlock,
     TimelineBlockMetadata,
+    TransitionRecord,
     validate_scan_params,
 )
-from .overhead import CalibrationState
 from .simulation import (
+    BudgetStats,
+    CalibrationBudget,
+    PatchBudget,
     accumulate_hitmaps,
     compute_budget,
     schedule_to_trajectories,
 )
 from .timeline import generate_timeline
+from .transitions import DeferralReason, Transition, plan_escape, plan_transition
 from .utils import (
     compute_nasmyth_rotation,
     estimate_slew_time,
@@ -98,39 +134,77 @@ from .utils import (
 )
 
 __all__ = [
+    "BOOTSTRAP_POSE",
+    "BlockNotReconstructableError",
     "BlockType",
+    "BodySummary",
+    "BudgetStats",
     "CEScanParams",
     "CalibrationBlockMetadata",
+    "CalibrationBudget",
+    "CalibrationNightMetadata",
+    "CalibrationNightPolicy",
     "CalibrationPolicy",
-    "CalibrationState",
     "CalibrationSpec",
+    "CalibrationState",
     "CalibrationType",
+    "Candidate",
     "Constraint",
+    "DEFAULT_SCAN_TABLES",
     "DaisyScanParams",
+    "DeferralReason",
+    "ElevationBin",
     "ElevationConstraint",
     "EmptyBlockMetadata",
     "MinDurationConstraint",
     "MoonAvoidanceConstraint",
+    "NightContext",
+    "NightState",
+    "NightSummary",
     "ObservingPatch",
     "ObservingTimeline",
     "OverheadModel",
+    "PatchBudget",
     "PongScanParams",
+    "ScanGeometryRecord",
+    "ScanOverrides",
+    "ScanParameterTable",
     "ScanParamsDict",
+    "ScanParamsSchemaError",
     "ScienceBlockMetadata",
+    "ScriptedSelection",
+    "SelectionRule",
     "SourceCESScanParams",
     "SunAvoidanceConstraint",
     "TimelineBlock",
     "TimelineBlockMetadata",
+    "Transition",
+    "TransitionRecord",
+    "TuningPolicy",
+    "VisitPlan",
+    "VisitPlanner",
     "accumulate_hitmaps",
+    "advance_idle",
+    "commit_visit",
     "compute_budget",
     "compute_nasmyth_rotation",
+    "dispatch_sheet",
     "estimate_slew_time",
     "generate_timeline",
     "get_max_elevation",
     "get_observable_windows",
     "get_transit_time",
+    "list_candidates",
+    "load_scan_tables",
+    "plan_calibration_night",
+    "plan_escape",
+    "plan_transition",
+    "plan_visit",
+    "read_calibration_night_metadata",
     "read_timeline",
     "schedule_to_trajectories",
+    "select_priority",
+    "summarize_calibration_night",
     "validate_scan_params",
     "write_timeline",
 ]

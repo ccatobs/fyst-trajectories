@@ -26,10 +26,22 @@ def _coerce_start_time(start_time: str | Time) -> Time:
 
     The ``plan_*_scan`` entry points accept ``start_time`` as either an ISO
     string or a :class:`~astropy.time.Time`. A bare string is parsed in the
-    UTC scale; an existing ``Time`` is returned unchanged.
+    UTC scale; an existing scalar ``Time`` is returned unchanged.
+
+    Raises
+    ------
+    ValueError
+        If ``start_time`` is an array-valued ``Time``. A time grid passed
+        where one instant belongs otherwise fails much later and in
+        misleading ways, either as a numpy broadcast error or as a
+        target-visibility refusal naming an array of times.
     """
     if isinstance(start_time, str):
         return Time(start_time, scale="utc")
+    if isinstance(start_time, Time) and not start_time.isscalar:
+        raise ValueError(
+            f"start_time must be a single instant, got a Time of shape {start_time.shape}"
+        )
     return start_time
 
 
@@ -38,6 +50,7 @@ def _build_trajectory_with_options(
     builder: TrajectoryBuilder,
     atmosphere: AtmosphericConditions | None,
     detector_offset: InstrumentOffset | None,
+    validate_dynamics: bool = True,
 ) -> Trajectory:
     """Finish configuring a :class:`TrajectoryBuilder` and call ``.build()``.
 
@@ -61,6 +74,10 @@ def _build_trajectory_with_options(
         If not ``None``, attached via
         :meth:`TrajectoryBuilder.for_detector` so the offset detector
         tracks the target instead of the boresight.
+    validate_dynamics : bool, optional
+        Forwarded to :meth:`TrajectoryBuilder.build`. A planner that
+        post-processes the built trajectory passes ``False`` and runs the
+        dynamics check on its final result.
 
     Returns
     -------
@@ -71,7 +88,7 @@ def _build_trajectory_with_options(
         builder = builder.with_atmosphere(atmosphere)
     if detector_offset is not None:
         builder = builder.for_detector(detector_offset)
-    return builder.build()
+    return builder.build(validate_dynamics=validate_dynamics)
 
 
 def _build_celestial_trajectory(
@@ -133,6 +150,7 @@ def _build_altaz_trajectory(
     start_time: Time,
     atmosphere: AtmosphericConditions | None,
     detector_offset: InstrumentOffset | None,
+    validate_dynamics: bool = True,
 ) -> Trajectory:
     """Build a trajectory from an AltAz-pattern config.
 
@@ -153,7 +171,7 @@ def _build_altaz_trajectory(
         Trajectory duration in seconds.
     start_time : Time
         Observation start time.
-    atmosphere, detector_offset
+    atmosphere, detector_offset, validate_dynamics
         See :func:`_build_trajectory_with_options`.
 
     Returns
@@ -166,4 +184,5 @@ def _build_altaz_trajectory(
         builder=builder,
         atmosphere=atmosphere,
         detector_offset=detector_offset,
+        validate_dynamics=validate_dynamics,
     )

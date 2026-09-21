@@ -1,5 +1,7 @@
 """Tests for plan_constant_el_scan."""
 
+import warnings
+
 import numpy as np
 import pytest
 from astropy import units as u
@@ -17,7 +19,7 @@ from fyst_trajectories.planning._ce_geometry import (
 
 
 class TestPlanConstantElScan:
-    """Tests for plan_constant_el_scan."""
+    """Block shape, the held elevation, the rising/setting split, and the refusals."""
 
     @pytest.fixture
     def ecdfs_field(self):
@@ -57,7 +59,6 @@ class TestPlanConstantElScan:
         assert "Constant-El scan" in block.summary
 
     def test_elevation_in_trajectory(self, site, ecdfs_field, search_time):
-        """Trajectory should be at the requested elevation."""
         block = plan_constant_el_scan(
             field=ecdfs_field,
             elevation=50.0,
@@ -71,7 +72,6 @@ class TestPlanConstantElScan:
         assert np.allclose(block.trajectory.el, 50.0)
 
     def test_rising_vs_setting_different_times(self, site, ecdfs_field, search_time):
-        """Rising and setting passes should have different start times."""
         rising = plan_constant_el_scan(
             field=ecdfs_field,
             elevation=50.0,
@@ -94,7 +94,6 @@ class TestPlanConstantElScan:
         assert rising.computed_params["start_time_iso"] != setting.computed_params["start_time_iso"]
 
     def test_string_start_time(self, site, ecdfs_field):
-        """start_time as a string should work."""
         block = plan_constant_el_scan(
             field=ecdfs_field,
             elevation=50.0,
@@ -108,7 +107,6 @@ class TestPlanConstantElScan:
         assert block.duration > 0
 
     def test_azimuth_throw_positive(self, site, ecdfs_field, search_time):
-        """Computed azimuth throw should be positive."""
         block = plan_constant_el_scan(
             field=ecdfs_field,
             elevation=50.0,
@@ -122,7 +120,6 @@ class TestPlanConstantElScan:
         assert block.computed_params["az_throw"] > 0
 
     def test_unreachable_field_raises(self, site):
-        """A field that never reaches the target elevation should raise."""
         # Dec = +70 is never reachable at el=50 from FYST
         field = FieldRegion(ra_center=180.0, dec_center=70.0, width=1.0, height=1.0)
         with pytest.raises(ValueError, match="Could not find elevation crossing"):
@@ -136,7 +133,6 @@ class TestPlanConstantElScan:
             )
 
     def test_science_mask_excludes_turnarounds(self, site, ecdfs_field, search_time):
-        """CE scan trajectory should have turnaround samples excluded by science_mask."""
         block = plan_constant_el_scan(
             field=ecdfs_field,
             elevation=50.0,
@@ -159,9 +155,12 @@ class TestPlanConstantElScan:
 class TestCEGeometryWrapHandling:
     """Regression tests for the RA = 0 / az = 0/360 wrap handling.
 
-    Both bugs were documented in ``_ce_geometry.py`` as known edge cases.
-    The azimuth-wrap case is plausible at FYST's -23 deg latitude for
-    sources that transit through north (dec >= +20 deg).
+    Both cases are documented in ``_ce_geometry.py`` as known edge cases.
+    The azimuth-wrap case is plausible at FYST's -23 deg latitude for any
+    source that transits north of the zenith, that is any declination between
+    the site latitude (-22.99 deg) and the +67 deg above which nothing rises;
+    the azimuth-wrap regressions below use dec = +25 and +35, whose transits
+    are low enough for a constant-elevation pass to straddle the discontinuity.
     """
 
     def test_az_range_handles_north_transit(self, site):
@@ -244,17 +243,16 @@ class TestCEGeometryWrapHandling:
             rising=True,
         )
 
-        # Without the wrap fix, ``min(ra_vals)``/``max(ra_vals)`` would be
-        # 2.5 and 359.5; the leading edge would be searched at RA = 359.5
-        # (which crosses el=40 hours later than the true RA = -0.5 edge)
-        # and the reported duration would be a few-hour overestimate.
-        # With the fix, the duration is the short interval between the
-        # two true RA edges crossing el=40.
+        # A naive ``min(ra_vals)``/``max(ra_vals)`` would be 2.5 and 359.5;
+        # the leading edge would be searched at RA = 359.5 (which crosses
+        # el=40 hours later than the true RA = -0.5 edge) and the reported
+        # duration would be a few-hour overestimate. Unwrapped, the duration
+        # is the short interval between the two true RA edges crossing
+        # el=40.
         assert duration > 0
-        assert duration < 30 * 60  # 30 min; true value ~10 min for 3 deg width
+        assert duration < 30 * 60  # 30 min; the true value is ~13 min for a 3 deg width
 
     def test_compute_ce_duration_rejects_non_positive_step(self, site):
-        """``_compute_ce_duration`` rejects a non-positive ``step_seconds``."""
         coords = Coordinates(site)
         field = FieldRegion(ra_center=1.0, dec_center=-25.0, width=3.0, height=3.0)
         base_time = Time("2026-09-15T00:00:00", scale="utc")
@@ -272,9 +270,9 @@ class TestCEGeometryWrapHandling:
     def test_north_transit_planning_succeeds(self, site):
         """End-to-end: ``plan_constant_el_scan`` works for a north-transiting source.
 
-        Without the az-wrap fix, ``_compute_ce_az_range`` returns a ~358 deg
-        throw, which overflows the configured azimuth range and either
-        crashes downstream validation or produces a nonsense scan.
+        A wrapped ``_compute_ce_az_range`` result is a ~358 deg throw, which
+        overflows the configured azimuth range and either crashes downstream
+        validation or produces a nonsense scan.
         """
         field = FieldRegion(ra_center=0.0, dec_center=35.0, width=2.0, height=2.0)
         block = plan_constant_el_scan(
@@ -396,18 +394,18 @@ class TestCEGeometryWrapHandling:
 
 
 class TestPlanConstantElLsaWindow:
-    """Tests for the ``lsa_window`` kwarg on ``plan_constant_el_scan``.
+    """``lsa_window`` places the pass by sidereal angle, not by an elevation crossing.
 
     Covers no-wrap, wrap-around, equal-endpoint validation, not-found
-    handling, the ``rising`` interaction, and backward compatibility of
-    the default ``None``.
+    handling, the refusal of ``rising`` beside the window, and backward
+    compatibility of the default ``None``.
     """
 
     @pytest.fixture
     def deep56_field(self):
         """Deep56-like field centred near RA = 0, dec ~ -2 deg.
 
-        The full Deep56 patch from sourcelist_CE.csv spans 60 deg in RA
+        A full Deep56-style patch spans 60 deg in RA
         (23:00 -> 03:00 wraps) and 14 deg in Dec, but a 60 deg physical field
         would overflow the azimuth limits. The legacy LSA pipeline
         sweeps the patch piecewise, not as a single 60-deg-wide raster.
@@ -434,7 +432,6 @@ class TestPlanConstantElLsaWindow:
             velocity=0.5,
             site=site,
             start_time=deep56_search_time,
-            rising=True,
             lsa_window=(22.0, 82.0),
         )
 
@@ -460,7 +457,6 @@ class TestPlanConstantElLsaWindow:
             velocity=0.5,
             site=site,
             start_time=deep56_search_time,
-            rising=True,
             lsa_window=(310.0, 10.0),
         )
 
@@ -477,37 +473,35 @@ class TestPlanConstantElLsaWindow:
         assert abs(diff) < 0.05  # 0.05 deg ~ 12 s of sidereal time
 
     def test_lsa_window_deep56_pattern(self, site, deep56_field, deep56_search_time):
-        """Exercise both Deep56 LSA configurations from sourcelist_CE.csv."""
-        block_rising = plan_constant_el_scan(
+        """Exercise the two elevation-50 Deep56 LSA windows, one wrap-around and one not."""
+        block_early = plan_constant_el_scan(
             field=deep56_field,
             elevation=50.0,
             velocity=0.5,
             site=site,
             start_time=deep56_search_time,
-            rising=True,
             lsa_window=(310.0, 10.0),
         )
-        block_setting = plan_constant_el_scan(
+        block_late = plan_constant_el_scan(
             field=deep56_field,
             elevation=50.0,
             velocity=0.5,
             site=site,
             start_time=deep56_search_time,
-            rising=False,
             lsa_window=(22.0, 82.0),
         )
 
         # Both windows are 4 hours wide.
-        for block in (block_rising, block_setting):
+        for block in (block_early, block_late):
             obs_start = Time(block.computed_params["start_time_iso"], scale="utc")
             obs_end = Time(block.computed_params["end_time_iso"], scale="utc")
             assert (obs_end - obs_start).to_value(u.hour) == pytest.approx(4.0, abs=1e-3)
 
-        # The 22->82 setting window starts after the 310->10 rising window
-        # (both anchored at the same start_time; 310 deg comes up first, then 22 deg).
-        t_r = Time(block_rising.computed_params["start_time_iso"], scale="utc")
-        t_s = Time(block_setting.computed_params["start_time_iso"], scale="utc")
-        assert t_r < t_s
+        # The 22->82 window starts after the 310->10 one (both anchored at
+        # the same start_time; 310 deg comes up first, then 22 deg).
+        t_early = Time(block_early.computed_params["start_time_iso"], scale="utc")
+        t_late = Time(block_late.computed_params["start_time_iso"], scale="utc")
+        assert t_early < t_late
 
     def test_lsa_window_equal_endpoints_raises(self, site, deep56_field, deep56_search_time):
         """Equal endpoints produce a zero-duration window, refused."""
@@ -566,43 +560,74 @@ class TestPlanConstantElLsaWindow:
                 max_search_hours=0.5,
             )
 
-    def test_lsa_window_independent_of_rising(self, site, deep56_field, deep56_search_time):
-        """``rising`` does not affect LSA-derived start/end.
+    @pytest.mark.parametrize("rising", [True, False])
+    def test_lsa_window_rejects_rising(self, site, deep56_field, deep56_search_time, rising):
+        """``rising`` beside ``lsa_window`` is refused, not silently ignored.
 
-        Different ``rising`` values should produce identical
-        ``obs_start`` / ``obs_end`` from the LSA branch (the flag only
-        feeds the azimuth-range computation, which is allowed to
-        change).
+        Accepting the pair would let the flag do nothing: the LSA branch
+        derives ``obs_start`` / ``obs_end`` from the sidereal window, and
+        ``_compute_ce_az_range`` never takes a ``rising`` argument at all,
+        so both values would produce byte-identical trajectories and
+        computed params. Only the summary line would differ, printing
+        "Rising pass" or "Setting pass" over the same span, telling the
+        reader a half had been honoured. Refusing the combination is the
+        honest contract; the summary names the sidereal window instead (see
+        ``test_lsa_window_summary_names_the_window``).
         """
-        block_r = plan_constant_el_scan(
+        with pytest.raises(ValueError, match="rising is not accepted with lsa_window"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=deep56_search_time,
+                rising=rising,
+                lsa_window=(22.0, 82.0),
+            )
+
+    def test_lsa_window_summary_names_the_window(self, site, deep56_field, deep56_search_time):
+        """An LSA-windowed block's summary claims no crossing half."""
+        block = plan_constant_el_scan(
             field=deep56_field,
             elevation=50.0,
             velocity=0.5,
             site=site,
             start_time=deep56_search_time,
-            rising=True,
-            lsa_window=(22.0, 82.0),
-        )
-        block_s = plan_constant_el_scan(
-            field=deep56_field,
-            elevation=50.0,
-            velocity=0.5,
-            site=site,
-            start_time=deep56_search_time,
-            rising=False,
             lsa_window=(22.0, 82.0),
         )
 
-        assert (
-            block_r.computed_params["start_time_iso"] == block_s.computed_params["start_time_iso"]
+        assert "LSA-window pass:" in block.summary
+        assert "Rising pass" not in block.summary
+        assert "Setting pass" not in block.summary
+
+    @pytest.mark.parametrize(
+        ("rising", "label"), [(None, "Rising pass"), (True, "Rising pass"), (False, "Setting pass")]
+    )
+    def test_crossing_summary_names_the_half(self, site, rising, label):
+        """On the elevation-crossing path the summary still names the half.
+
+        ``rising=None`` is the omitted-argument default and means the
+        rising crossing, exactly as an explicit ``rising=True`` does.
+        """
+        ecdfs_field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
+        kwargs = {} if rising is None else {"rising": rising}
+        block = plan_constant_el_scan(
+            field=ecdfs_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=Time("2026-03-15T17:00:00", scale="utc"),
+            angle=170.0,
+            **kwargs,
         )
-        assert block_r.computed_params["end_time_iso"] == block_s.computed_params["end_time_iso"]
+
+        assert label in block.summary
 
     def test_lsa_window_none_preserves_legacy_behavior(self, site):
         """Default ``lsa_window=None`` is byte-identical to omitting the kwarg.
 
-        Guards against accidental coupling between the new branch and
-        the existing elevation-crossing path.
+        Guards against accidental coupling between the LSA branch and
+        the elevation-crossing path.
         """
         ecdfs_field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
         search_time = Time("2026-03-15T17:00:00", scale="utc")
@@ -642,12 +667,12 @@ class TestPlanConstantElLsaWindow:
     def test_lsa_window_at_lst_zero_crossing(self, site):
         """``min_lsa = 0`` works when LST is currently just below 360 deg.
 
-        Regression for the wrap-edge straddle-detection bug: with a
-        ``min_lsa = 0`` and consecutive samples ``(359.9, 0.1)``, the
-        legacy ``(lsa - 0) * (lsa_next - 0) < 0`` product test fails
+        Regression for the wrap-edge straddle detection: with a
+        ``min_lsa = 0`` and consecutive samples ``(359.9, 0.1)``, a plain
+        ``(lsa - 0) * (lsa_next - 0) < 0`` product test fails
         because both factors are positive (the 0/360 boundary is not a
         true sign change in the wrapped-modulo representation). The
-        unwrapped LSA-series fix locates the crossing correctly and the
+        unwrapped LSA series locates the crossing correctly and the
         planner produces a valid 4-hour scan starting at LST ~ 0 deg.
 
         The field is positioned at RA = 60 deg so the LST = 0 crossing
@@ -693,12 +718,12 @@ class TestPlanConstantElLsaWindow:
         assert abs(diff) < 0.05  # 0.05 deg ~ 12 s of sidereal time
 
     def test_lsa_window_min_just_above_zero(self, site):
-        """``min_lsa ~ 0.0001`` is in the wrap dead-zone the legacy test missed.
+        """``min_lsa ~ 0.0001`` is in the wrap dead-zone.
 
-        With the legacy straddle test ``(lsa - 0.0001) * (lsa_next - 0.0001) < 0``,
+        With a plain straddle test ``(lsa - 0.0001) * (lsa_next - 0.0001) < 0``,
         consecutive samples like ``(359.9, 0.1)`` produce a negative product
         only if both factors have opposite sign, but both are positive after
-        the ``% 360`` wrap. The unwrap fix recognises the crossing.
+        the ``% 360`` wrap. The unwrapped series recognises the crossing.
 
         Uses the helper directly to keep the test focused on the
         wrap-detection geometry (the end-to-end planner is exercised by
@@ -725,6 +750,10 @@ class TestPlanConstantElLsaWindow:
         diff = (lst_at_start - 0.0001 + 180.0) % 360.0 - 180.0
         assert abs(diff) < 0.05
 
+    # The one test in this file that runs the simulator tier's dispatcher;
+    # marking the test rather than the module keeps the planning tests in the
+    # library-tier job.
+    @pytest.mark.offline
     def test_lsa_window_json_roundtrip(self, site, deep56_field, deep56_search_time):
         """``lsa_window`` as a *list* (post-JSON shape) works through the dispatcher.
 
@@ -908,7 +937,7 @@ class TestPlanConstantElLsaWindow:
     def test_lsa_window_sun_safety_single_call_in_legacy_path(self, site, monkeypatch):
         """Without ``lsa_window``, only one sun-safety call fires.
 
-        Guards the targeted-fix property: re-checking sun safety is
+        Guards the gating property: re-checking sun safety is
         gated on the LSA branch (a regression that would also call the
         check at obs_start in the elevation-crossing path is the kind
         of surprise we want to catch early).
@@ -963,3 +992,131 @@ class TestPlanConstantElLsaWindow:
         lst_at_start = coords.get_lst(t_start)
         diff = (lst_at_start - 0.0 + 180.0) % 360.0 - 180.0
         assert abs(diff) < 0.05
+
+
+class TestConstantElSweptSunCheck:
+    """The Sun screen sweeps the whole resolved pass, not just its opening.
+
+    A constant-elevation block can run for hours while the Sun closes at
+    about 15 degrees per hour. Screening only the field centre at the search
+    anchor (and, on the LSA path, at the resolved opening) leaves the rest of
+    the pass unscreened, ``obs_end`` included. The planner samples the
+    commanded azimuth envelope across the whole run.
+    """
+
+    _FIELD = FieldRegion(ra_center=180.0, dec_center=-30.0, width=20.0, height=10.0)
+    _ANCHOR = Time("2026-12-21T00:00:00", scale="utc")
+
+    def _plan(self, site, **overrides):
+        kwargs = dict(
+            field=self._FIELD,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=self._ANCHOR,
+            rising=True,
+            angle=170.0,
+        )
+        kwargs.update(overrides)
+        return plan_constant_el_scan(**kwargs)
+
+    def test_sweep_reaches_the_end_of_the_pass(self, site):
+        """The sampled times span the block, so ``obs_end`` is screened."""
+        seen: list[Time] = []
+
+        def spy(az, el, t):
+            seen.append(t)
+            return True
+
+        block = self._plan(site, sun_safe=spy)
+        cp = block.computed_params
+        t_start = Time(cp["start_time_iso"], scale="utc")
+        t_end = Time(cp["end_time_iso"], scale="utc")
+        sweep = Time([t.jd for t in seen], format="jd", scale="utc")
+        assert sweep.min().unix <= t_start.unix + 1e-6
+        assert sweep.max().unix >= t_end.unix - 1e-6
+
+    def test_a_pass_that_ends_inside_the_zone_warns(self, site):
+        """A late Sun approach is caught even though the opening is clear.
+
+        On 2026-12-21 this field's boresight starts 87 deg from the Sun and
+        closes to 67 deg by the end of its 99-minute pass, so an exclusion
+        radius of 75 deg is clear at the opening and violated at the close.
+        """
+        from fyst_trajectories import get_fyst_site
+
+        narrow = get_fyst_site(sun_exclusion_radius=75.0, sun_warning_radius=80.0)
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            self._plan(narrow)
+
+        # The opening itself is clear, so the field-centre pre-flight alone
+        # would have been silent: this is the sweep talking, not the anchor.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            block = self._plan(narrow)
+        coords = Coordinates(narrow)
+        cp = block.computed_params
+        t_start = Time(cp["start_time_iso"], scale="utc")
+        az_mid = 0.5 * (cp["az_start"] + cp["az_stop"])
+        sun_az, sun_el = coords.get_sun_altaz(t_start)
+        assert float(coords.angular_separation(az_mid, 50.0, sun_az, sun_el)) > 75.0
+
+    def test_a_late_unsafe_verdict_from_an_injected_model_warns(self, site):
+        """An injected model that turns unsafe late in the pass is honoured.
+
+        The scalar case above depends on real geometry; this one pins the
+        mechanism directly: a predicate that answers ``True`` for the first
+        half of the run and ``False`` afterwards must still produce a
+        warning, which it cannot if only the opening is consulted.
+        """
+        clear = self._plan(site)
+        cp = clear.computed_params
+        t_start = Time(cp["start_time_iso"], scale="utc")
+        midpoint = t_start.unix + 0.5 * cp["duration"]
+
+        def late_unsafe(az, el, t):
+            return t.unix < midpoint
+
+        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
+            self._plan(site, sun_safe=late_unsafe)
+
+        # The same predicate inverted (unsafe only before the pass) is silent,
+        # so the warning above is not just "the predicate said no somewhere".
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self._plan(site, sun_safe=lambda az, el, t: True)
+        assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
+
+
+class TestLsaSearchStepValidation:
+    """The LSA crossing search validates the step it walks forward on.
+
+    Unvalidated, a zero step divides by zero building the sample grid and a
+    negative one produces an empty grid, which the search then reports as
+    "no crossing found" over a horizon it never sampled.
+    """
+
+    @pytest.fixture
+    def search_time(self):
+        """Search anchor for the step-validation calls."""
+        return Time("2026-09-15T00:00:00", scale="utc")
+
+    def test_zero_step_is_refused(self, site, search_time):
+        """A zero step raises a message naming the argument."""
+        with pytest.raises(ValueError, match="step_seconds must be positive"):
+            _compute_ce_duration_from_lsa(
+                lsa_window=(22.0, 82.0),
+                coords_obj=Coordinates(site),
+                base_search_time=search_time,
+                step_seconds=0.0,
+            )
+
+    def test_negative_step_is_refused(self, site, search_time):
+        """A negative step raises rather than silently searching nothing."""
+        with pytest.raises(ValueError, match="step_seconds must be positive"):
+            _compute_ce_duration_from_lsa(
+                lsa_window=(22.0, 82.0),
+                coords_obj=Coordinates(site),
+                base_search_time=search_time,
+                step_seconds=-30.0,
+            )

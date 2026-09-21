@@ -13,8 +13,9 @@ from astropy import units as u
 from astropy.coordinates import AltAz, SkyCoord
 from astropy.time import Time, TimeDelta
 
-from ..coordinates import Coordinates
+from ..coordinates import Coordinates, _parallactic_angle_from_altaz
 from ..site import Site
+from ..sun_models import _axis_slew_duration
 
 if TYPE_CHECKING:
     from ..dispatch import SunSafePredicate
@@ -29,6 +30,8 @@ __all__ = [
 ]
 
 
+# Deliberately outside the subpackage's re-exports: addressable as
+# ``overhead.utils.circular_mean_deg``, not ``overhead.*``.
 def circular_mean_deg(a: float, b: float) -> float:
     """Circular mean of two angles in degrees.
 
@@ -66,16 +69,12 @@ def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
     This is the sky orientation of the Nasmyth-mounted focal plane, a
     derived quantity (FYST has no instrument rotator to command).
 
-    Returns ``site.nasmyth_sign * el + parallactic_angle`` where the
-    parallactic angle is derived from azimuth, elevation, and site
-    latitude (the AltAz form of the parallactic angle). This is the
-    overhead-timeline equivalent of
-    :meth:`fyst_trajectories.coordinates.Coordinates.get_field_rotation`,
-    which needs RA/Dec.
-
-    :meth:`~fyst_trajectories.coordinates.Coordinates.get_parallactic_angle`
-    derives the parallactic angle from the same transformed (vacuum) Az/El,
-    so this function and that method return the same value to machine
+    Returns ``site.nasmyth_sign * el + parallactic_angle``. That is the
+    same quantity
+    :meth:`fyst_trajectories.coordinates.Coordinates.get_field_rotation`
+    returns; the two differ only in what they are given, RA/Dec there and
+    an already-transformed horizon position here, and both take the
+    parallactic angle from one shared kernel, so they agree to machine
     precision.
 
     Parameters
@@ -92,23 +91,8 @@ def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
     float
         Nasmyth boresight rotation in degrees.
     """
-    az_rad = math.radians(az)
-    el_rad = math.radians(el)
-    lat_rad = math.radians(site.latitude)
-
-    sin_az = math.sin(az_rad)
-    cos_az = math.cos(az_rad)
-    sin_el = math.sin(el_rad)
-    cos_el = math.cos(el_rad)
-    sin_lat = math.sin(lat_rad)
-    cos_lat = math.cos(lat_rad)
-
-    # Parallactic angle from AltAz (IAU convention).
-    numerator = -sin_az * cos_lat
-    denominator = sin_lat * cos_el - cos_lat * sin_el * cos_az
-    pa = math.degrees(math.atan2(numerator, denominator))
-
-    return site.nasmyth_sign * el + pa
+    pa = _parallactic_angle_from_altaz(math.radians(az), math.radians(el), site.latitude)
+    return float(site.nasmyth_sign * el + pa)
 
 
 def estimate_slew_time(
@@ -164,43 +148,11 @@ def estimate_slew_time(
     # already be within [az_min, az_max]; the direct distance is the
     # actual motor travel without wrapping around 360 deg.
     az_dist = abs(az2 - az1)
-    az_time = _axis_slew_time(az_dist, az_limits.max_velocity, az_limits.max_acceleration)
-    el_time = _axis_slew_time(abs(el2 - el1), el_limits.max_velocity, el_limits.max_acceleration)
+    az_time = _axis_slew_duration(az_dist, az_limits.max_velocity, az_limits.max_acceleration)
+    el_time = _axis_slew_duration(
+        abs(el2 - el1), el_limits.max_velocity, el_limits.max_acceleration
+    )
     return max(az_time, el_time)
-
-
-def _axis_slew_time(distance: float, max_vel: float, max_accel: float) -> float:
-    """Compute slew time for a single axis with trapezoidal profile.
-
-    Same profile as ``sun_models._axis_slew_duration`` (deliberate
-    duplication: this subpackage sits above ``sun_models`` in the import
-    graph).
-
-    Parameters
-    ----------
-    distance : float
-        Angular distance in degrees.
-    max_vel : float
-        Maximum velocity in deg/s.
-    max_accel : float
-        Maximum acceleration in deg/s^2.
-
-    Returns
-    -------
-    float
-        Slew time in seconds.
-    """
-    if distance <= 0 or max_vel <= 0 or max_accel <= 0:
-        return 0.0
-
-    t_accel = max_vel / max_accel
-    d_accel = max_vel * t_accel
-
-    if distance <= d_accel:
-        return 2.0 * math.sqrt(distance / max_accel)
-    else:
-        t_cruise = (distance - d_accel) / max_vel
-        return 2.0 * t_accel + t_cruise
 
 
 def get_observable_windows(
@@ -235,13 +187,17 @@ def get_observable_windows(
         Minimum elevation in degrees (default: 30). The default is an
         observing floor, deliberately above the telescope's commandable
         elevation limit: FYST's pointing and surface accuracy are
-        specified over roughly 30 to 85 degrees elevation, so windows
-        computed at the mechanical limit overstate schedulable time
-        for science that needs in-spec performance. This function
-        alone applies the observing floor; the observability and
-        planet-calibration defaults elsewhere in the package use the
-        commandable limit. Pass ``site.telescope_limits.elevation.min``
-        to plan down to the commandable bound.
+        specified (requirements document P-TSSS-RQT-0001 rev G) over
+        roughly 30 to 85 degrees elevation, so windows computed at the
+        mechanical limit overstate schedulable time for science that
+        needs in-spec performance. The calibration-night planner applies
+        a 30 degree floor of its own
+        (:class:`~fyst_trajectories.overhead.CalibrationNightPolicy`'s
+        ``el_min``);
+        the observability and planet-calibration defaults elsewhere in
+        the package use the commandable limit. Pass
+        ``site.telescope_limits.elevation.min`` to plan down to the
+        commandable bound.
     check_sun : bool
         Whether to check sun avoidance (default: True).
     sun_safe : SunSafePredicate, optional
@@ -270,7 +226,6 @@ def get_observable_windows(
     coords = Coordinates(site)
     windows = []
     search_start = start_time
-    total_hours = (end_time - start_time).sec / 3600.0
 
     while search_start.unix < end_time.unix:
         remaining_hours = (end_time - search_start).sec / 3600.0
@@ -282,7 +237,7 @@ def get_observable_windows(
             dec,
             search_start,
             horizon=min_elevation,
-            max_search_hours=min(remaining_hours, total_hours),
+            max_search_hours=remaining_hours,
             step_hours=0.1,
         )
 

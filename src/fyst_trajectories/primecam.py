@@ -15,6 +15,10 @@ are rejected until the as-built correspondence is confirmed.
 The module positions are converted from physical focal-plane coordinates (mm)
 to angular offsets (arcminutes) using ``FYST_PLATE_SCALE`` from ``site.py``.
 
+The ring radius and the plate scale used to convert it are design values
+awaiting as-built instrument confirmation; see the pending-verification list
+on the documentation index.
+
 Examples
 --------
 Get a named module offset:
@@ -66,11 +70,11 @@ The 0.65° value is the published Prime-Cam per-module field of view: each
 module has up to a 1.3° **diameter** on sky (Vavagiakis et al. 2022,
 "CCAT-prime: Design of the Mod-Cam receiver and 280 GHz MKID instrument
 module", Proc. SPIE, arXiv:2208.05468), i.e. a 0.65° **radius**. This is an
-upper bound across modules; the 850 GHz module's baseline optical design is
-1.1° (arXiv:2208.10634), so 0.65° over-covers that module by design, pending an
-as-built per-module measurement. The bare detector-wafer extent (~0.39°
-*diameter* at the FYST plate scale) is only a lower bound; the optical FOV is
-larger than the illuminated wafer, so 0.65° is the FOV figure to cover with,
+upper bound across modules; a candidate design for the 850 GHz module gives it
+a 1.1° **diameter** (Chapman et al. 2022, "CCAT-prime: The 850 GHz camera for
+Prime-Cam on FYST", Proc. SPIE, arXiv:2208.10634), so 0.65° over-covers it by
+design, pending an as-built per-module measurement. The illuminated detector wafer is smaller
+than the optical field, so 0.65° is the field-of-view figure to cover with,
 not a padded-up wafer estimate.
 
 Pass an explicit :class:`~fyst_trajectories.planning.ArrayFootprint`
@@ -187,7 +191,7 @@ def get_primecam_offset(module_name: str) -> InstrumentOffset:
 
 
 def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
-    """Resolve an SO-style module tag into a list of module offsets.
+    """Resolve a comma-separated module tag into a list of module offsets.
 
     Expands a comma-separated tag of module names into the
     ``list[InstrumentOffset]`` accepted by

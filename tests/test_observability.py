@@ -1,4 +1,4 @@
-"""Tests for the observability (OBSERVE / EXCLUDE) primitives.
+"""Tests for the observability (OBSERVE / AVOID) primitives.
 
 Cases are made deterministic without hand-computed ephemeris by constructing
 geometry from the same primitives under test: a near-zenith FIXED source is
@@ -10,15 +10,17 @@ placing a FIXED target at a body's RA/Dec, or by an oversized AVOID zone.
 chosen calendar date and within the IERS prediction window.
 """
 
-import subprocess
-import sys
-
 import numpy as np
 import pytest
+from _sun_stubs import allow_everything, block_everything
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.observability import (
+    ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG,
+    CIVIL_TWILIGHT_ALTITUDE_DEG,
+    NAUTICAL_TWILIGHT_ALTITUDE_DEG,
+    SUN_RISE_SET_ALTITUDE_DEG,
     AvoidZone,
     ReasonCode,
     SunEventKind,
@@ -135,6 +137,38 @@ def test_avoid_fail(coordinates):
     assert r.observable is False
 
 
+# 7b
+def test_avoid_zone_at_exactly_its_radius_is_clear(coordinates):
+    """A target exactly at an AvoidZone radius is CLEAR (``sep >= zone_deg``).
+
+    Deliberately the opposite convention to the Sun's ``sep <= radius`` is
+    unsafe: an AVOID zone is a caller-supplied minimum separation, so
+    standing exactly on it satisfies the request. Constructing a position at
+    an exact separation is float-fragile, so the boundary is pinned from the
+    other side: measure the separation, then set the zone radius to that
+    number.
+    """
+    t = T_NIGHT
+    jaz, jel = coordinates.get_body_altaz("jupiter", t)
+    tgt = Target("near_jup", TargetKind.FIXED, ra_deg=0.0, dec_deg=0.0)
+    az, el = coordinates.radec_to_altaz(tgt.ra_deg, tgt.dec_deg, t)
+    sep = float(coordinates.angular_separation(az, el, jaz, jel))
+
+    at_radius = check_observability(
+        [tgt], t, site=coordinates.site, avoid=[AvoidZone("jupiter", sep)]
+    )[0]
+    assert at_radius.avoid_separations[0].clear is True
+    assert ReasonCode.AVOID_TOO_CLOSE not in at_radius.reasons
+
+    # One ULP wider and the same target is inside, so the verdict really is
+    # decided at the radius.
+    wider = check_observability(
+        [tgt], t, site=coordinates.site, avoid=[AvoidZone("jupiter", np.nextafter(sep, 1e9))]
+    )[0]
+    assert wider.avoid_separations[0].clear is False
+    assert ReasonCode.AVOID_TOO_CLOSE in wider.reasons
+
+
 # 8
 def test_both_avoidance_kinds_reported_separately(coordinates):
     t = T_DAY
@@ -241,15 +275,7 @@ def test_order_and_count(coordinates):
     assert len(reports) == 3
 
 
-# 16
-def test_no_overhead_import_at_load():
-    code = (
-        "import sys; import fyst_trajectories.observability as o; "
-        "assert 'fyst_trajectories.overhead' not in sys.modules, "
-        "sorted(m for m in sys.modules if 'overhead' in m)"
-    )
-    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert res.returncode == 0, res.stderr
+# 16: the import-direction guard lives in tests/test_tier_boundary.py
 
 
 # 17 - regression: SATELLITE self-exclusion keys on the resolved position body
@@ -403,6 +429,7 @@ def test_titan_proxy_when_saturn_up(coordinates):
     assert r.az_deg == pytest.approx(sat_az, abs=0.0)
     assert r.el_deg == pytest.approx(sat_el0, abs=0.0)
     assert r.position_approximate is True
+    assert r.observable is True
 
 
 # 29 - from_pair degree-symbol and whitespace/case normalization
@@ -438,14 +465,7 @@ def test_avoid_satellite_resolves_to_parent(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE not in r.reasons
 
 
-# 32 - an unresolvable AVOID body raises a clear error up front
-def test_avoid_unresolvable_body_raises(coordinates):
-    with pytest.raises(ValueError):
-        check_observability(
-            ["mars"], T_NIGHT, site=coordinates.site, avoid=[AvoidZone("pluto", 5.0)]
-        )
-
-
+# 32 - an unresolvable AVOID body: see test_invalid_avoid_body_raises above
 # 33 - from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
 def test_from_pair_rejects_malformed():
     with pytest.raises(ValueError):
@@ -494,16 +514,6 @@ def test_grid_substep_horizon_not_degenerate():
 # ---------------------------------------------------------------------------
 
 
-def _block_everything(az, el, t):
-    """SunSafePredicate that reports every grid sample unsafe."""
-    return False
-
-
-def _allow_everything(az, el, t):
-    """SunSafePredicate that reports every grid sample clear of the Sun."""
-    return True
-
-
 # 37 - an injected False predicate flips an otherwise-clear target to
 # SUN_TOO_CLOSE while leaving the geometric sun_separation_deg untouched.
 def test_injected_predicate_flips_sun_clear(coordinates):
@@ -517,7 +527,7 @@ def test_injected_predicate_flips_sun_clear(coordinates):
     assert r_default.observable is True
     assert ReasonCode.SUN_TOO_CLOSE not in r_default.reasons
 
-    r_blocked = check_observability([tgt], t, site=coordinates.site, sun_safe=_block_everything)[0]
+    r_blocked = check_observability([tgt], t, site=coordinates.site, sun_safe=block_everything)[0]
     assert r_blocked.sun_clear is False
     assert r_blocked.observable is False
     assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
@@ -556,7 +566,7 @@ def test_injected_predicate_drives_window(coordinates):
 
     # A predicate that blocks every sample leaves no observable window.
     r_blocked = check_observability(
-        [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_block_everything
+        [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=block_everything
     )[0]
     assert r_blocked.windows == ()
     assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
@@ -576,7 +586,7 @@ def test_injected_allow_predicate_overrides_daytime(coordinates):
     assert r_default.sun_clear is False
     assert ReasonCode.SUN_TOO_CLOSE in r_default.reasons
 
-    r_allowed = check_observability([at_sun], t, site=coordinates.site, sun_safe=_allow_everything)[
+    r_allowed = check_observability([at_sun], t, site=coordinates.site, sun_safe=allow_everything)[
         0
     ]
     assert r_allowed.sun_clear is True
@@ -635,13 +645,34 @@ def test_sun_events_full_day_sequence():
     assert mjds == sorted(mjds)
     sunset = events[0]
     sunrise = events[-1]
-    # Geometric (0 deg) crossings for this date are ~22:47 set / ~09:43 rise UTC
-    # (cross-checked against get_rise_set_times); the -0.8333 deg almanac
-    # threshold shifts set ~5 min later and rise ~5 min earlier.
-    assert Time("2026-11-15T22:45:00", scale="utc") <= sunset.time
-    assert sunset.time <= Time("2026-11-15T23:00:00", scale="utc")
-    assert Time("2026-11-16T09:25:00", scale="utc") <= sunrise.time
-    assert sunrise.time <= Time("2026-11-16T09:45:00", scale="utc")
+    # Measured with the vendored IERS table: set 22:52:27, rise 09:38:41 UTC.
+    # The windows are two minutes either side, deliberately tight enough to
+    # exclude the geometric (0 deg) crossings at 22:48:35 and 09:42:33, so a
+    # revert from the almanac convention to the geometric one fails here.
+    assert Time("2026-11-15T22:50:30", scale="utc") <= sunset.time
+    assert sunset.time <= Time("2026-11-15T22:54:30", scale="utc")
+    assert Time("2026-11-16T09:36:40", scale="utc") <= sunrise.time
+    assert sunrise.time <= Time("2026-11-16T09:40:40", scale="utc")
+
+
+# 43b - the four published altitude constants hold their almanac values, and
+# the solver is wired to them. Test 44 below cannot see either: it compares
+# the Sun's altitude at an event against the threshold the solver was handed,
+# so it holds for any constants. Mutating any of the four leaves the rest of
+# the suite green.
+def test_sun_event_altitude_constants_are_the_almanac_conventions():
+    assert SUN_RISE_SET_ALTITUDE_DEG == -0.8333  # -50': refraction + solar semidiameter
+    assert CIVIL_TWILIGHT_ALTITUDE_DEG == -6.0
+    assert NAUTICAL_TWILIGHT_ALTITUDE_DEG == -12.0
+    assert ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG == -18.0
+    # Wiring, not only values: astronomical dusk on the same night is the
+    # -18 deg crossing, measured 2026-11-16 00:15:03. A threshold paired with
+    # the wrong event kind moves this without touching a constant.
+    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"))
+    dusk = next(e for e in events if e.kind is SunEventKind.ASTRONOMICAL_DUSK)
+    assert dusk.altitude_deg == ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG
+    assert Time("2026-11-16T00:13:00", scale="utc") <= dusk.time
+    assert dusk.time <= Time("2026-11-16T00:17:00", scale="utc")
 
 
 # 44 - sun_events: the Sun's geometric altitude at each event time equals the
@@ -781,3 +812,34 @@ def test_sun_events_two_days():
     mjds = [e.time.mjd for e in events]
     assert mjds == sorted(mjds)
     assert [e.rising for e in events] == [False] * 4 + [True] * 4 + [False] * 4 + [True] * 4
+
+
+class TestHorizonArgumentFiniteness:
+    """``check_observability`` refuses a non-finite horizon instead of ignoring it.
+
+    ``sun_events`` documents finiteness as necessary and checks it; without the
+    same check here a NaN ``horizon_hours`` would fail both ``bool()`` guards
+    and fall through to instant-only mode, returning a report with no windows
+    and no explanation.
+    """
+
+    TIME = Time("2026-06-15T00:00:00", scale="utc")
+
+    @pytest.mark.parametrize("horizon", [float("nan"), float("inf")])
+    def test_non_finite_horizon_is_refused(self, horizon):
+        """NaN and infinity raise, naming the argument."""
+        with pytest.raises(ValueError, match="horizon_hours must be a finite value"):
+            check_observability(["jupiter"], self.TIME, horizon_hours=horizon)
+
+    def test_non_finite_step_is_refused(self):
+        """A NaN step with a real horizon raises rather than building a bad grid."""
+        with pytest.raises(ValueError, match="window_step_minutes must be a finite value"):
+            check_observability(
+                ["jupiter"], self.TIME, horizon_hours=6.0, window_step_minutes=float("nan")
+            )
+
+    def test_instant_only_mode_still_accepts_zero_and_none(self):
+        """The documented instant-only spellings (0.0 and None) stay legal."""
+        for horizon in (0.0, None):
+            report = check_observability(["jupiter"], self.TIME, horizon_hours=horizon)[0]
+            assert report.windows is None

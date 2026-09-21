@@ -34,8 +34,8 @@ astropy raise `KeyError: (0, 3)`. The excerpt is a **lossless** cut of the full 
 ### Validation
 
 Titan apparent Az/El at FYST from this excerpt matches **JPL Horizons** (airless) to
-**0.30–0.55 arcsec** over the window, and Titan sits 1.6–2.8 arcmin from Saturn (as
-expected for the moon), far inside the Prime-Cam beam (~15–59 arcsec).
+**0.30 to 0.55 arcsec** over the window, and Titan sits 1.6 to 2.8 arcmin from Saturn (as
+expected for the moon), far inside the Prime-Cam beam (~15 to 59 arcsec).
 
 ### Regenerating (forward maintenance)
 
@@ -150,3 +150,36 @@ python tests/test_sun_models_live.py
 (the `__main__` block applies the same IERS pin as `conftest.py` and rewrites this file).
 Never regenerate to make a red drift test pass without first deciding the new library
 revision is the one to pin.
+
+## `pcs_source_scan_kwargs_2cb9a8a.json` - execution-layer forwarded-key snapshot
+
+The `scan_params` keys that the PCS ACU agent's `build_source_payload`
+(`pcs/agents/acu_interface/trajectory.py`) reads and forwards to
+`plan_source_ces` when it re-plans a `source_scan` task, at `ccatobs/pcs`
+commit `2cb9a8a` (the filename carries the pin). Eighteen keys. Any other key
+in a dispatched `scan_params` dict is dropped at that revision without a
+message, which is what the contract test guards against.
+**Not** on the runtime path.
+
+### How it is used
+- `tests/test_ac_schema_contract.py` asserts a three-way partition of
+  `SourceCESScanParams.__optional_keys__` (every key a planet-calibration block
+  can carry): forwarded by the pinned execution layer, provenance-only (sequence
+  bookkeeping that no consumer needs), or awaiting forwarding (load-bearing on
+  rebuild but not yet accepted by the execution layer; the outbound ask). A key
+  that lands in none of the three fails the test, and so does a key listed as
+  awaiting once a re-pinned snapshot starts forwarding it.
+
+### Provenance
+- **Read from:** `git show 2cb9a8a:pcs/agents/acu_interface/trajectory.py`, the
+  `plan_source_ces(...)` call inside `build_source_payload` (the `scan_params.get`
+  and `scan_params[...]` reads). `boresight_rot` is read only to refuse a
+  non-null value at that revision, but it is read.
+- **Refresh command:** re-run that `git show` at the new pin, transcribe the key
+  list in sorted order, rename the file to the new short SHA, and update the
+  filename in the contract test and here.
+
+### Regenerating (deliberate re-pin only)
+Re-cut only when the execution layer is deliberately re-pinned. Never regenerate
+to make a red partition test pass: a red test means a key changed class, and the
+classification in the test is the thing to update.

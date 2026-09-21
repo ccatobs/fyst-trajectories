@@ -41,34 +41,32 @@ is built in; the other two bind the observatory's shared
 library, the common home of FYST's Sun-zone geometry:
 
 - ``"scalar"``: the site's isotropic exclusion radius (45°, warning 50°,
-  from ``site.sun_avoidance``). The default anywhere ``sun_safe``,
-  ``sun_model``, or ``slew_safe`` is omitted. Needs nothing beyond
-  fyst-trajectories.
+  from ``site.sun_avoidance``). The default wherever ``sun_safe`` or
+  ``sun_model`` is omitted, and it needs nothing beyond fyst-trajectories.
+  Omitting ``slew_safe`` in ``plan_transition`` or ``plan_escape`` sweeps
+  the direct path with whichever point model is in play, but
+  ``choose_encoder_solution`` has no path default: without ``slew_safe``
+  it screens the goal position only.
 - ``"cone"``: the shared library's isotropic cone at any radius you name.
 - ``"cad"``: the same library's directional CAD-derived zone. The minimum
   Sun separation runs 50-90° with the Sun's direction in the mount frame,
   which is FYST's own hardware model. Opt-in today, and expected to
-  become the FYST default in a future release. Both library-backed
-  models also take padding knobs, ``maxoffset=`` (map half-extent) and
-  ``tracking_module=`` (boresight-to-module distance for an off-axis
-  module), which tighten the verdict; see :doc:`api/sun_models`.
+  become the FYST default in a future release.
 
-The shared library is an optional dependency, deliberately not bundled
-with fyst-trajectories while the scalar model is the default and the
-library has no packaged release (requesting ``"cone"`` or ``"cad"``
-without it raises with this exact command); it is expected to ship
-automatically once the directional model becomes the default. Install it
-from git at the pinned revision::
+Both library-backed models take padding knobs that tighten the verdict,
+``maxoffset=`` and ``tracking_module=``; see :doc:`api/sun_models`. The
+library itself is an optional dependency, not bundled while the scalar
+model is the default; requesting ``"cone"`` or ``"cad"`` without it
+raises, naming the pinned revision::
 
     pip install "git+https://github.com/ccatobs/sun-avoidance@e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
 
-That repository is CCAT-internal, so the command above requires
-collaboration access. The default ``"scalar"`` model requires none of
-it and is what you get if you omit ``sun_model`` entirely.
+That repository is CCAT-internal, so the command requires collaboration
+access.
 
-The scalar radius is an observing policy, not the directional zone's
-inscribed cone: at 45° it is more permissive than the CAD model in every
-direction, since that model requires 50-90°. Choose ``"cad"`` explicitly
+The scalar radius is an observing policy: at 45° it is more permissive
+than the CAD model in every direction, since that model requires
+50-90°. Choose ``"cad"`` explicitly
 when a scan needs mirror-illumination protection rather than the
 observing baseline. (Note :func:`~fyst_trajectories.sun_models.make_sun_safe`
 itself defaults to ``model="cad"``; the library-wide default when you
@@ -147,25 +145,11 @@ For the Gantt view of those windows (one bar lane per target, the
 :func:`~fyst_trajectories.visualization.plot_observability_windows` in
 :doc:`api/visualization`.
 
-The offline overhead simulator takes the same predicate; it drives both
-the patch-selection Sun constraint and the mid-scan duration clips, so a
-science scan is cut short rather than run into the zone::
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.overhead import ObservingPatch, generate_timeline
-    from fyst_trajectories.sun_models import make_sun_safe
-
-    patch = ObservingPatch(
-        name="field", ra_center=24.0, dec_center=-32.0, width=10.0,
-        height=10.0, scan_type="pong", velocity=1.0, elevation=50.0,
-    )
-    night = generate_timeline(
-        [patch], get_fyst_site(),
-        "2026-11-15T02:00:00", "2026-11-15T06:00:00",
-        sun_safe=make_sun_safe("cad"),
-    )
-
-See :doc:`overhead_quickstart` for the simulator itself.
+The offline overhead simulator takes the same predicate through
+``generate_timeline(sun_safe=)``: it drives the patch-selection Sun
+constraint, the mid-scan duration clips and the slew gate, so a science
+scan is cut short rather than run into the zone. See
+:doc:`overhead_quickstart` for the simulator itself.
 
 Gating a slew at dispatch
 -------------------------
@@ -179,20 +163,22 @@ answered by sweeping the point model along the trapezoidal slew
 
     from astropy.time import Time
 
-    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories import get_fyst_site, rewrap_trajectory_azimuth
     from fyst_trajectories.dispatch import choose_encoder_solution
     from fyst_trajectories.sun_models import make_slew_safe, make_sun_safe
 
     t = Time("2026-11-15T20:30:00", scale="utc")
-    az_cmd, el_cmd = choose_encoder_solution(
+    solution = choose_encoder_solution(
         65.0, 45.0, 100.0, 45.0, t, get_fyst_site(),
         sun_safe=make_sun_safe("cad"), slew_safe=make_slew_safe("cad"),
     )
-    # command the slew to (az_cmd, el_cmd), then POST the trajectory.
+    # Shift the whole trajectory onto the chosen wrap, then command the
+    # slew to (solution.az, solution.el) and POST the shifted trajectory.
+    commanded = rewrap_trajectory_azimuth(trajectory, solution.az_shift)
 
-When no wrap has a clear direct path, dispatch raises ``PointingError``
-rather than rerouting. A caller who wants a two-leg detour plans it
-explicitly with
+When no wrap has a clear direct path, dispatch raises
+``EncoderSolutionError`` rather than rerouting. A caller who wants a
+two-leg detour plans it explicitly with
 :func:`~fyst_trajectories.sun_models.find_sun_safe_detour`, which
 returns ``None`` more often than not under FYST's own policies (the
 zones span most of the elevation range and the azimuth axis outruns
@@ -232,13 +218,20 @@ Where the check runs
 
    * - Entry point
      - What it does
+   * - ``TrajectoryBuilder(...).build()``
+     - Nothing. The low-level pattern path runs no Sun check and will
+       point at the Sun; screen the result with
+       ``validate_sun_avoidance``, or plan through a ``plan_*_scan``.
    * - ``plan_*_scan(..., sun_safe=)``
-     - Pre-flight on the field center at the start time. Warns
+     - Pre-flight on the field (or horizon) center at the start time.
+       ``plan_constant_el_scan`` additionally sweeps the whole resolved pass
+       at the commanded azimuth envelope, and re-checks the center at the
+       resolved start when ``lsa_window`` delays it. Warns
        (``PointingWarning``), never refuses.
    * - ``plan_source_ces(...)`` and its siblings
-     - Pre-flight sweep along the resolved arc (subsampled in time; at
-       the low edge, midpoint, and high edge of the azimuth throw).
-       Warns, never refuses.
+     - Pre-flight sweep along the resolved arc (subsampled in time; at the
+       midpoint and both edges of the commanded azimuth envelope, which is
+       the throw widened by the turnaround overshoot). Warns, never refuses.
    * - ``validate_sun_avoidance(site, az, el, times)``
      - Checks the whole trajectory span (subsampled). Warns once: at or
        inside the exclusion radius, otherwise inside the warning radius.
@@ -246,10 +239,30 @@ Where the check runs
    * - ``check_observability(..., sun_safe=)``
      - Reports ``sun_clear`` and ``SUN_TOO_CLOSE``. Never raises.
    * - ``generate_timeline(..., sun_safe=)``
-     - The offline night simulator. Excludes unsafe patches and clips
-       scans that would run into the zone.
+     - The offline night simulator. Excludes unsafe patches, clips
+       scans that would run into the zone, refuses a slew whose direct
+       path crosses it (the tick idles, labelled with the refusal, and
+       the patch is retried once the Sun has moved), and moves a
+       telescope the zone has overtaken while parked out of it before
+       anything else happens there.
+   * - ``plan_transition(..., sun_safe=, slew_safe=, hold=)``
+     - Planning. Chooses the wrap and prices the slew; a refusal is a
+       typed ``cause`` on the returned transition, never raised. With
+       ``hold`` the goal must also stay clear for that long after
+       arrival, so a pose the telescope would have to abandon is refused
+       before it is commanded.
+   * - ``plan_escape(..., sun_safe=, slew_safe=)``
+     - Planning. The move out of the zone for a pose it has overtaken:
+       the path may start unsafe but never goes more than half a degree
+       deeper into the zone than it started, and ends safe; ``None`` when
+       the pose is safe, ``no_escape`` when the
+       zone holds the telescope. Depth is measured against the model's
+       own required separation when it reports one, so a directional
+       zone is not judged by raw Sun distance.
    * - ``choose_encoder_solution(..., sun_safe=, slew_safe=)``
-     - Dispatch. Raises ``PointingError`` when no azimuth wrap is clear.
+     - Dispatch. Raises ``EncoderSolutionError`` when no azimuth wrap has a
+       clear goal position. The direct slew path is screened only when
+       ``slew_safe`` is supplied; without it the path is not checked.
    * - ``get_fyst_site(sun_exclusion_radius=..., sun_warning_radius=...)``
      - Overrides the scalar radii; ``sun_avoidance_enabled=False``
        disables the check entirely (tests and engineering only).

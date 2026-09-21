@@ -121,8 +121,7 @@ ScanParamsDict
    Typos and scan-type/parameter mismatches can be caught with
    :func:`validate_scan_params`, whose accepted set is one wider than
    this union: it also validates ``"source_ces"`` params recorded on
-   planet-calibration blocks, which this union deliberately omits. See
-   :ref:`scan-type-vocabularies`.
+   planet-calibration blocks, which this union deliberately omits.
 
 EmptyBlockMetadata
 ~~~~~~~~~~~~~~~~~~
@@ -139,6 +138,20 @@ TimelineBlockMetadata
    Exhaustive union of metadata shapes a :class:`TimelineBlock` may carry.
    ``SCIENCE`` and ``CALIBRATION`` blocks have their own variants; ``SLEW``
    and ``IDLE`` blocks share :class:`EmptyBlockMetadata`.
+
+BudgetStats
+~~~~~~~~~~~
+
+The shape :func:`~fyst_trajectories.overhead.compute_budget` returns.
+
+.. autoclass:: fyst_trajectories.overhead.BudgetStats
+   :members:
+
+.. autoclass:: fyst_trajectories.overhead.PatchBudget
+   :members:
+
+.. autoclass:: fyst_trajectories.overhead.CalibrationBudget
+   :members:
 
 Validators
 ----------

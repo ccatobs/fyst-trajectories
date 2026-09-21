@@ -5,7 +5,7 @@ Focal-plane offset projection (boresight to detector and back) and the
 PrimeCam module constants.
 
 .. automodule:: fyst_trajectories.offsets
-   :members: InstrumentOffset, boresight_to_detector, detector_to_boresight, apply_detector_offset, compute_focal_plane_rotation
+   :members: InstrumentOffset, boresight_to_detector, detector_to_boresight, sky_to_focal_plane, apply_detector_offset, compute_focal_plane_rotation
    :undoc-members:
 
 .. automodule:: fyst_trajectories.primecam
@@ -38,43 +38,14 @@ PrimeCam Modules
 ----------------
 
 Module names label focal-plane positions (one on-axis, six on the inner
-ring), not the instrument modules that occupy them; see
-:doc:`../instrument_offsets` for the naming convention and its pending
-verification.
-
-.. py:data:: PRIMECAM_CENTER
-
-   Center module (0, 0).
-
-.. py:data:: PRIMECAM_I1
-
-   Inner ring module 1.
-
-.. py:data:: PRIMECAM_I2
-
-   Inner ring module 2.
-
-.. py:data:: PRIMECAM_I3
-
-   Inner ring module 3.
-
-.. py:data:: PRIMECAM_I4
-
-   Inner ring module 4.
-
-.. py:data:: PRIMECAM_I5
-
-   Inner ring module 5.
-
-.. py:data:: PRIMECAM_I6
-
-   Inner ring module 6.
+ring), not the instrument modules that occupy them. The six ring
+positions differ only in clocking: ``i1`` sits at focal-plane angle -90°
+and ``i1`` .. ``i6`` step counterclockwise in the focal-plane
+(cross-elevation, elevation) frame, the orientation
+:func:`~fyst_trajectories.visualization.plot_array_footprint` draws.
+The seven positions
+are also module constants, ``PRIMECAM_CENTER`` and ``PRIMECAM_I1`` ..
+``PRIMECAM_I6``. See :doc:`../instrument_offsets` for the offset table
+and for the naming convention, which awaits as-built confirmation.
 
 .. autodata:: fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG
-
-The six ring positions differ only in clocking: ``i1`` sits at
-focal-plane angle -90° and ``i1`` .. ``i6`` step counterclockwise on
-sky (a convention pending as-built confirmation; see the layout table
-in :doc:`../instrument_offsets`).
-
-See :doc:`../instrument_offsets` for the offset workflow and worked examples.

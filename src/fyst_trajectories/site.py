@@ -17,8 +17,8 @@ Notes
 -----
 Pointing-model corrections (collimation, gravitational sag, encoder
 offsets) and PWV/opacity modelling are intentionally out of scope.
-Pointing-model corrections are applied at execution time by the FYST
-Telescope Control System; PWV/opacity modelling lives in the
+Pointing-model corrections are applied downstream at execution time,
+nominally in the ACU; PWV/opacity modelling lives in the
 downstream calibration pipeline. This module describes the *site
 geometry and mechanical limits* used by trajectory planning, nothing
 more.
@@ -39,6 +39,7 @@ Load a custom (non-FYST) configuration from YAML:
 """
 
 import functools
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -97,7 +98,8 @@ FYST_AZ_MAX_VELOCITY: float = 3.0
 FYST_AZ_MAX_ACCELERATION: float = 1.5
 """Maximum azimuth acceleration in degrees/second^2.
 
-Conservative operational limit (TCS hardware limit: 6.0 deg/s^2).
+Conservative operational limit (the telescope control system's own bound:
+6.0 deg/s^2; requirement P-TSSS-1-1450).
 The operational value sits at the quintic scan turnaround peak
 (1.5 * az_accel, which equals 1.5 for the planner's default az_accel of
 1.0 deg/s^2), so a default constant-elevation plan does not warn about the
@@ -115,20 +117,22 @@ FYST_EL_MAX: float = 90.0
 """Maximum elevation in degrees.
 
 Conservative operational limit (planning-layer choice): Prime-Cam does not point
-over the top. The FYST telescope control system's hardware bound is 180 deg /
-el > 90.
+over the top. The FYST telescope control system accepts elevations up to
+180 deg (over the top).
 """
 
 FYST_EL_MAX_VELOCITY: float = 1.0
 """Maximum elevation velocity in degrees/second.
 
-Conservative operational limit (TCS hardware limit: 1.5 deg/s).
+Conservative operational limit (the telescope control system's own bound:
+1.5 deg/s; requirement P-TSSS-1-1500).
 """
 
 FYST_EL_MAX_ACCELERATION: float = 0.75
 """Maximum elevation acceleration in degrees/second^2.
 
-Conservative operational limit (TCS hardware limit: 1.5 deg/s^2).
+Conservative operational limit (the telescope control system's own bound:
+1.5 deg/s^2; requirement P-TSSS-1-1550).
 It clears the near-limit elevation band for aggressive pong scans, while
 genuinely over-limit plans still warn.
 """
@@ -153,7 +157,7 @@ genuinely over-limit plans still warn.
 # scan needs mirror-illumination protection rather than the baseline.
 #
 # For scale, the SO small-aperture telescopes use a 41 deg exclusion
-# radius at similar altitude and wavelengths (Guan et al. 2024, "Simons
+# radius at a comparable altitude (Guan et al. 2024, "Simons
 # Observatory: Observatory Scheduler and Automated Data Processing",
 # Proc. SPIE, arXiv:2406.10905, sec. 2.2).
 FYST_SUN_EXCLUSION_RADIUS: float = 45.0
@@ -335,7 +339,7 @@ class AtmosphericConditions:
         astropy's optical (1 µm) refraction model.
         The pressure/temperature defaults are a representative cold, dry
         winter-night profile rather than a measured value. For context,
-        Cortes, Reeves & Bustos (2016), Radio Science 51,
+        Cortés, Reeves & Bustos (2016), Radio Science 51,
         doi:10.1002/2015RS005929, sec. 2.1, give time-average surface
         conditions of 518 mbar and 268.6 K for Cerro Chajnantor; the
         defaults here are colder and drier than that annual mean. Pass
@@ -426,7 +430,7 @@ class AxisLimits:
 
     def clip(self, position: float) -> float:
         """Clip *position* (degrees) to the [min, max] range."""
-        return np.clip(position, self.min, self.max)
+        return float(np.clip(position, self.min, self.max))
 
 
 @dataclass(frozen=True)
@@ -542,18 +546,23 @@ class Site:
     nasmyth_port : str, optional
         Which Nasmyth port instruments are mounted on. Determines the sign
         of the elevation component in focal-plane rotation. One of "right"
-        (+1), "left" (-1), or "cassegrain" (0). Default is "right".
+        (+1), "left" (-1), or "cassegrain" (0), matched without regard to
+        case and stored lower-cased. Default is "right".
     plate_scale : float, optional
         Telescope plate scale in arcsec/mm. Used to convert focal-plane
-        positions (mm) to angular offsets (arcsec). Default is 0.0,
-        which maps every ``InstrumentOffset.from_focal_plane`` position
-        to a zero offset; ``get_fyst_site()`` sets the FYST value.
+        positions (mm) to angular offsets (arcsec). Default is 0.0 (a site
+        with no focal-plane geometry); pass it to
+        ``InstrumentOffset.from_focal_plane``, where 0.0 maps every
+        focal-plane position to a zero offset. ``get_fyst_site()`` sets the
+        FYST value.
 
     Raises
     ------
     ValueError
         If ``nasmyth_port`` is not one of ``"right"``, ``"left"``, or
-        ``"cassegrain"``.
+        ``"cassegrain"``, if ``latitude`` is outside ``[-90, 90]``, if
+        ``longitude`` or ``elevation`` is not finite, or if
+        ``plate_scale`` is negative or not finite.
 
     Examples
     --------
@@ -583,6 +592,27 @@ class Site:
                 f"Unknown nasmyth_port '{self.nasmyth_port}'. "
                 f"Must be one of: {', '.join(_NASMYTH_SIGNS.keys())}"
             )
+        # Frozen dataclass: store the canonical spelling so the recorded
+        # value and the validated one are the same string (the satellite
+        # config normalises its body name the same way).
+        object.__setattr__(self, "nasmyth_port", port)
+
+        # Geography is checked here rather than at ``location``, which is a
+        # cached property a caller may not touch until deep inside a
+        # transform: an out-of-range latitude then surfaces as an astropy
+        # error with no mention of the site that produced it.
+        if not (-90.0 <= self.latitude <= 90.0):
+            raise ValueError(f"latitude must lie in [-90, 90] degrees, got {self.latitude}")
+        for name, value in (
+            ("longitude", self.longitude),
+            ("elevation", self.elevation),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value}")
+        if not math.isfinite(self.plate_scale) or self.plate_scale < 0.0:
+            raise ValueError(
+                f"plate_scale must be a finite, non-negative number, got {self.plate_scale}"
+            )
 
     @property
     def nasmyth_sign(self) -> int:
@@ -590,14 +620,15 @@ class Site:
 
         Returns +1 for Right Nasmyth, -1 for Left Nasmyth, and 0 for
         Cassegrain (no Nasmyth rotation). The nasmyth_port value is
-        validated at construction time, so this property always succeeds.
+        validated and lower-cased at construction time, so this property
+        always succeeds.
 
         Returns
         -------
         int
             +1, -1, or 0 depending on the Nasmyth port.
         """
-        return _NASMYTH_SIGNS[self.nasmyth_port.lower()]
+        return _NASMYTH_SIGNS[self.nasmyth_port]
 
     @functools.cached_property
     def location(self) -> EarthLocation:
@@ -639,6 +670,21 @@ class Site:
             If the configuration file does not exist.
         ValueError
             If the configuration file is invalid.
+
+        Notes
+        -----
+        Required schema (``site.description`` and ``telescope.nasmyth_port``
+        are the only optional keys; atmosphere is never read from a file)::
+
+            site:
+              name: My Telescope
+              location: {latitude: -22.9, longitude: -67.7, elevation: 5600.0}
+            telescope:
+              plate_scale: 13.89   # arcsec/mm, must be > 0
+              nasmyth_port: right  # optional; right | left | cassegrain
+              azimuth:   {min: -180.0, max: 360.0, max_velocity: 3.0, max_acceleration: 1.5}
+              elevation: {min: 20.0, max: 90.0, max_velocity: 1.0, max_acceleration: 0.75}
+            sun_avoidance: {enabled: true, exclusion_radius: 45.0, warning_radius: 50.0}
 
         Examples
         --------
@@ -729,9 +775,17 @@ class Site:
         loc = site_config["location"]
 
         plate_scale = _get_required(telescope_config, "plate_scale", "telescope", config_name)
+        # Stricter than ``Site.__post_init__``, which allows zero because that
+        # is the constructor default for a site with no focal-plane geometry.
+        # The key is required here, so a config that supplies it has declared
+        # geometry and zero is a typo rather than an opt-out. Construct the
+        # ``Site`` directly for a site that genuinely has no plate scale.
         if plate_scale <= 0:
             raise ValueError(
-                f"Config '{config_name}': telescope.plate_scale must be positive, got {plate_scale}"
+                f"Config '{config_name}': telescope.plate_scale must be positive, got "
+                f"{plate_scale}. The key is required in a config; construct Site(...) "
+                f"directly for a site with no focal-plane geometry, where 0.0 is the "
+                f"default."
             )
 
         return cls(

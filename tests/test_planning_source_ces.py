@@ -9,10 +9,12 @@ and footprint geometry are exercised against astropy throughout.
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 
 import numpy as np
 import pytest
+from _sun_stubs import allow_everything, block_everything
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
@@ -37,6 +39,7 @@ from fyst_trajectories import (
     plan_source_ces,
     plan_source_ces_passes,
 )
+from fyst_trajectories.patterns.turnarounds import turnaround_overshoot_deg
 from fyst_trajectories.planning._types import _SCAN_TYPE_TO_KEYS
 
 # Constants used across multiple tests. These dates and elevations were
@@ -304,23 +307,13 @@ def test_sun_avoidance_warns_not_raises(site):
 # ---------------------------------------------------------------------------
 
 
-def _block_everything(az, el, t):
-    """SunSafePredicate that reports every arc sample unsafe."""
-    return False
-
-
-def _allow_everything(az, el, t):
-    """SunSafePredicate that reports every arc sample clear of the Sun."""
-    return True
-
-
 def test_plan_source_ces_honors_injected_predicate(site):
     """An injected False predicate warns on an otherwise sun-safe Jupiter arc.
 
-    The Jupiter-rising arc at ``_JUPITER_NIGHT`` clears FYST's 50 deg scalar
-    exclusion (the happy-path tests above run it silently), so an EXCLUSION
-    ZONE warning here proves the injected directional model, not the scalar
-    radius, drives the arc verdict end-to-end.
+    The Jupiter-rising arc at ``_JUPITER_NIGHT`` clears FYST's scalar Sun zone
+    (45 deg exclusion, 50 deg warning; the happy-path tests above run it
+    silently), so an EXCLUSION ZONE warning here proves the injected directional
+    model, not the scalar radius, drives the arc verdict end-to-end.
     """
     # Precondition: the default (scalar) arc check is silent for this arc.
     with warnings.catch_warnings(record=True) as caught:
@@ -331,7 +324,7 @@ def test_plan_source_ces_honors_injected_predicate(site):
         ]
 
     with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-        block = _full_primecam_block(site, sun_safe=_block_everything)
+        block = _full_primecam_block(site, sun_safe=block_everything)
     assert isinstance(block, ScanBlock)
 
 
@@ -372,7 +365,7 @@ def test_plan_source_ces_allow_predicate_overrides_sun(site):
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        plan_source_ces(**mercury_kwargs, sun_safe=_allow_everything)
+        plan_source_ces(**mercury_kwargs, sun_safe=allow_everything)
         assert not [
             w
             for w in caught
@@ -400,7 +393,7 @@ def test_compute_source_ces_params_honors_injected_predicate(site):
         ]
 
     with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-        params_blocked = compute_source_ces_params(**base_kwargs, sun_safe=_block_everything)
+        params_blocked = compute_source_ces_params(**base_kwargs, sun_safe=block_everything)
 
     # The injected predicate is advisory only: the returned scalars are
     # identical regardless of the sun verdict.
@@ -506,7 +499,6 @@ def test_invalid_footprint_type_raises(site):
 
 
 def test_empty_footprint_sequence_raises(site):
-    """An empty footprint sequence raises ValueError."""
     with pytest.raises(ValueError):
         plan_source_ces(
             body="jupiter",
@@ -520,9 +512,9 @@ def test_empty_footprint_sequence_raises(site):
 
 def test_single_module_footprint_inscribes_module_fov_radius():
     """A single-module footprint's cover vertices lie at MODULE_FOV_RADIUS_DEG."""
-    from fyst_trajectories.planning.source_ces import _resolve_footprint
+    from fyst_trajectories.planning.footprints import resolve_footprint
 
-    fp = _resolve_footprint("c")
+    fp = resolve_footprint("c")
     radii = np.hypot(
         fp.cover_xi_deg - fp.center_xi_deg,
         fp.cover_eta_deg - fp.center_eta_deg,
@@ -654,6 +646,19 @@ def test_array_footprint_from_array_info_round_trip():
     np.testing.assert_allclose(fp_rad.cover_xi_deg, cover_xi_deg)
 
 
+@pytest.mark.parametrize("bad", ["arcmin", "RAD", "Deg", "", None])
+def test_array_footprint_from_array_info_rejects_unknown_units(bad):
+    """An unrecognised ``units`` is refused, not silently treated as degrees.
+
+    The scale was chosen with ``"rad" if units == "rad" else 1.0``, so every
+    other spelling fell through to degrees. A radian-valued cover labelled
+    ``"RAD"`` was therefore read 57.3x too small, with no error anywhere.
+    """
+    info = {"center": (0.0, 0.0), "cover": (np.array([0.01]), np.array([0.0]))}
+    with pytest.raises(ValueError, match="units must be 'rad' or 'deg'"):
+        ArrayFootprint.from_array_info(info, units=bad)
+
+
 # ---------------------------------------------------------------------------
 # compute_source_ces_params (params-only sibling)
 # ---------------------------------------------------------------------------
@@ -749,9 +754,9 @@ def test_compute_params_az_envelope_directional_parity(site):
     ~40.03 on the +az side the track never visits.
 
     Limits ``[-180, 39.0]`` bracket the real trajectory but fall inside
-    the old over-wide envelope: after the fix ``compute_source_ces_params``
-    must NOT raise where ``plan_source_ces`` succeeds. Tightening the max
-    below the real trajectory (``36.0 < 37.70``) must make BOTH raise.
+    the symmetric envelope, so ``compute_source_ces_params`` must NOT raise
+    where ``plan_source_ces`` succeeds. Tightening the max below the real
+    trajectory (``36.0 < 37.70``) must make BOTH raise.
     """
     import dataclasses
 
@@ -770,7 +775,7 @@ def test_compute_params_az_envelope_directional_parity(site):
         mode="rising",
     )
 
-    # Limits bracket the real [33.37, 37.70] track but not the old
+    # Limits bracket the real [33.37, 37.70] track but not the symmetric
     # over-wide envelope (~40.03). plan_source_ces succeeds, so the
     # emit-time check must agree and NOT raise.
     site_ok = _site_with_az_max(39.0)
@@ -874,8 +879,11 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     implementation (``so3g.proj.quat`` via ``make_source_ces``) and
     fyst-trajectories' spherical-trig :func:`compute_source_ces_params`.
 
-    Requires ``so3g`` + ``schedlib`` (Linux only; ``so3g`` has no Windows
-    wheel). Skipped otherwise. Run with::
+    Requires ``so3g`` (Linux only; no Windows wheel), ``schedlib``, and a
+    ``schedlib.policies.fyst`` module registering a FYST entry in
+    ``schedlib.source.SITES`` (upstream schedlib ships SO sites only); the
+    registration itself is then asserted. Skipped when any import is missing.
+    Run with::
 
         pytest tests/test_planning_source_ces.py --run-slow -k cross_validate_so
 
@@ -902,10 +910,10 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     rotation term is reconciled by the documented bridge
     ``boresight_rot_fyst = boresight_rot_SO - nasmyth_sign*el``.
     This is a platform-physics difference (corotator vs Nasmyth), **not**
-    a bug. (Until the pa-in-horizon-frame fix the library also added the
-    parallactic angle inside this az/el projection; that term was
-    unphysical, pa describes the horizon-to-celestial rotation, and the
-    old bridge cancelled it algebraically rather than validating it.)
+    a bug. (The bridge deliberately carries no parallactic angle: pa
+    describes the horizon-to-celestial rotation, so adding it inside this
+    az/el projection is unphysical, and a bridge that absorbed it would
+    cancel it algebraically rather than validate it.)
     """
     so3g = pytest.importorskip("so3g")  # noqa: F841  Linux-only; gates the test
     schedlib_source = pytest.importorskip("schedlib.source")
@@ -1097,19 +1105,22 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
       rounded up; the source genuinely exits the cover at ``t1`` by design,
       and sampling past ``t1`` is uninformative.
 
-    This would FAIL if:
-
-    * xi/eta sign convention is wrong (swept envelope rotated 90 deg on sky);
-    * boresight_rot sign is wrong (swept envelope rotated wrong direction);
-    * the drift solve gave wrong v_az (source drifts out of the swept
-      envelope over time);
-    * az_bore recovery is wrong for off-centre cases (the swept envelope
-      misses the source entirely).
+    What this pins is end-to-end self-consistency: the trajectory the planner
+    actually built sweeps a cover that contains the source track over its own
+    ``[t0, t1]``. Conventions are NOT pinned here. The union of the ring's
+    swept covers is nearly rotation-symmetric and the azimuth envelope is
+    widened to follow the drift, so adding 90, -90 or 180 deg to the cover
+    rotation, swapping xi/eta, or planning with a wrong ``v_az`` all still
+    land a containing hull. ``test_cross_validate_so_make_source_ces``
+    resolves the xi/eta pairing and the ``boresight_rot`` sign against SO's
+    quaternion implementation; this case is centred, so ``az_bore`` is just
+    the source azimuth and the off-centre recovery is exercised by
+    ``test_off_centre_module_lands_on_source_during_pass``.
 
     For the centred full-PrimeCam case we additionally require the source
-    to sit near the swept-envelope centroid at the trajectory midpoint,
-    a tighter check that catches systematic offsets the convex-hull
-    containment test would tolerate.
+    to sit near the swept-envelope centroid at the trajectory midpoint, a
+    coarse check: it tolerates offsets up to half the swept envelope's
+    median radius, which is larger than the footprint's own radius.
     """
     from scipy.spatial import ConvexHull, Delaunay, QhullError
 
@@ -1139,17 +1150,16 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
 
     # The footprint that flowed into the planner, re-resolved here so the
     # test is self-contained.
-    from fyst_trajectories.planning.source_ces import _resolve_footprint
+    from fyst_trajectories.planning.footprints import resolve_footprint
 
-    fp = _resolve_footprint(_FULL_PRIMECAM_MODULES)
+    fp = resolve_footprint(_FULL_PRIMECAM_MODULES)
     assert fp.cover_xi_deg.size == 350  # 7 modules x 50 vertices
 
     # Buffer (degrees) added to the convex-hull containment test. The
-    # planner uses a single parallactic angle for the whole window (the
-    # PA at t_at_el_bore); over a ~30 min Jupiter pass at FYST the PA
-    # drifts by a couple of degrees, which slightly rotates the actual
-    # swept cover relative to the planner's idealisation. 0.1 deg is well
-    # below the per-leg az_padding (0.5 deg).
+    # window ``[t0, t1]`` is bounded by the source entering and leaving the
+    # cover, so the first and last samples sit ON the swept hull boundary;
+    # the buffer keeps that tangency from failing on rounding, and 0.1 deg
+    # is well below the per-leg az_padding (0.5 deg).
     HULL_BUFFER_DEG = 0.1
 
     # Pass 1: collect the swept cover (union of all projected covers).
@@ -1168,16 +1178,13 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
         bore_el = float(np.interp(t_k_sec, traj.times, traj.el))
         bore_pts.append((bore_az, bore_el))
 
-        # Field rotation at t_k. Use the source's instantaneous RA/Dec
-        # so the PA is correct for this sample.
-        src_ra_k, src_dec_k = coords.get_body_radec("jupiter", t_k)
-        pa_k = float(coords.get_parallactic_angle(src_ra_k, src_dec_k, t_k))
+        # Mechanical (horizon-frame) rotation, matching the planner's
+        # az/el projection convention (no parallactic angle).
         fp_rot_k = float(
             compute_focal_plane_rotation(
                 el=el_bore,
                 site=site,
                 offset=InstrumentOffset(dx=0.0, dy=0.0),
-                parallactic_angle=pa_k,
             )
         )  # boresight_rot defaulted to 0 for this case.
 
@@ -1221,9 +1228,8 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
 
     # Centred-case sanity: at the trajectory midpoint, the source should
     # sit near the swept-envelope centroid (within half the median cover
-    # radius). This catches systematic offsets, e.g. an xi/eta swap that
-    # still produces a containing hull but shifts the source consistently
-    # to one side.
+    # radius). This is a coarse check on systematic offsets; it does not
+    # discriminate the cover-rotation convention (see the docstring).
     mid_idx = len(source_pts) // 2
     mid_src = np.array(source_pts[mid_idx])
     median_radius = float(np.median(np.linalg.norm(swept_vertices - swept_centroid, axis=1)))
@@ -1330,14 +1336,13 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     k_best = int(np.argmin(misses_deg))
     best_miss = float(misses_deg[k_best])
 
-    # Tolerance: the closed-form spherical inverse converges to sub-udeg
-    # but the planner evaluates the mechanical rotation once at
-    # ``el_bore`` for the whole pass while the source sweeps a small
-    # elevation range across the cover, which rotates the projection and
-    # shifts the I1-vs-source miss by a few arcmin. 6 arcmin
-    # is well below the I1 module's 0.41 deg (24.6 arcmin) FOV radius,
-    # well inside the module, and an order of magnitude smaller
-    # than the dy offset (107 arcmin) a true az_bore-recovery bug
+    # Tolerance: the closed-form spherical inverse converges to sub-udeg,
+    # but the boresight is held at ``el_bore`` while the source sweeps in
+    # elevation, so the module's closest approach to the source is about
+    # an arcmin, and the 100-sample walk above resolves it only to a few
+    # arcmin. 6 arcmin is well below the module's 0.65 deg (39 arcmin)
+    # FOV radius, well inside the module, and an order of magnitude
+    # smaller than the dy offset (107 arcmin) a true az_bore-recovery bug
     # would expose (the planner would fall back to ``az_bore =
     # source_az``, missing by the full ``dy``).
     TOL_ARCMIN = 6.0
@@ -1430,9 +1435,9 @@ def test_passes_tile_footprint_extent(site):
 
     # Footprint eta extent, computed exactly as the wrapper does (the
     # 50-vertex circular cover inscribes slightly inside 2 * radius).
-    from fyst_trajectories.planning.source_ces import _resolve_footprint
+    from fyst_trajectories.planning.footprints import resolve_footprint
 
-    base_fp = _resolve_footprint("c")
+    base_fp = resolve_footprint("c")
     extent = float(base_fp.cover_eta_deg.max() - base_fp.cover_eta_deg.min())
     step = extent / n_passes  # the documented default step
 
@@ -1867,6 +1872,574 @@ class TestNumericParameterGuards:
 
     @pytest.mark.parametrize("bad", [0, -1])
     def test_non_positive_az_accel_raises(self, site, bad):
-        # az_accel=-1 previously returned a silently wrong duration instead of raising.
+        # A negative az_accel would otherwise yield a silently wrong duration.
         with pytest.raises(ValueError, match="az_accel must be positive"):
             _full_primecam_block(site, az_accel=bad)
+
+
+class TestPostDriftDynamicsCheck:
+    """The returned (drifted) trajectory is dynamics-checked exactly once."""
+
+    @staticmethod
+    def _block(site, az_accel):
+        # One module keeps the solve short; the check is on the trajectory
+        # shape, not the footprint.
+        return _full_primecam_block(site, footprint="c", az_accel=az_accel)
+
+    def test_default_acceleration_is_advisory_clean(self, site):
+        from fyst_trajectories.exceptions import AccelerationLimitWarning, VelocityLimitWarning
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", AccelerationLimitWarning)
+            warnings.simplefilter("error", VelocityLimitWarning)
+            self._block(site, az_accel=1.0)
+
+    def test_dynamics_check_runs_once_on_the_drifted_trajectory(self, site, monkeypatch):
+        """One call, on the arrays the caller receives; the builder's own check is skipped.
+
+        The drift is added after the base trajectory is built, so a check
+        inside the builder would judge the wrong azimuth profile and a
+        second check here would report every violation twice.
+        """
+        from fyst_trajectories.patterns import builder as builder_module
+
+        kernel_calls: list[tuple] = []
+        builder_calls: list[tuple] = []
+        monkeypatch.setattr(
+            _source_ces_module,
+            "validate_trajectory_dynamics",
+            lambda *args: kernel_calls.append(args),
+        )
+        monkeypatch.setattr(
+            builder_module,
+            "validate_trajectory_dynamics",
+            lambda *args: builder_calls.append(args),
+        )
+
+        block = self._block(site, az_accel=1.0)
+
+        assert builder_calls == []
+        assert len(kernel_calls) == 1
+        called_site, az, el, times = kernel_calls[0]
+        assert called_site is site
+        assert az is block.trajectory.az
+        assert el is block.trajectory.el
+        assert times is block.trajectory.times
+        # The drifted azimuth is what was checked: it is not the constant
+        # elevation pattern's undrifted profile.
+        drift = block.computed_params["v_az"] * times
+        assert np.abs(drift).max() > 0.01
+
+
+# ---------------------------------------------------------------------------
+# Scan-geometry inputs: az_speed, az_throw, dwell, and the margin transform
+# ---------------------------------------------------------------------------
+
+
+def _one_module_params(site, **overrides):
+    """compute_source_ces_params for a single-module Jupiter-rising pass."""
+    kwargs = dict(
+        body="jupiter",
+        footprint="c",
+        el_bore=35.0,
+        night=_JUPITER_NIGHT,
+        mode="rising",
+        site=site,
+    )
+    kwargs.update(overrides)
+    return compute_source_ces_params(**kwargs)
+
+
+class TestAzSpeedInput:
+    """``az_speed`` replaces the derived slow-drag leg speed."""
+
+    def test_default_records_the_derived_slow_drag_speed(self, site):
+        cp = _one_module_params(site)
+        # One module crosses in ~10 min at ~2.6 deg of throw: the derived
+        # speed sits on the slow-drag floor, and it is recorded either way.
+        assert cp["az_speed"] == pytest.approx(0.05)
+
+    def test_explicit_speed_is_used_and_recorded(self, site):
+        cp = _one_module_params(site, az_speed=1.5)
+        assert cp["az_speed"] == 1.5
+        block = _full_primecam_block(site, footprint="c", az_speed=1.5)
+        assert block.computed_params["az_speed"] == 1.5
+        assert block.config.az_speed == 1.5
+        # The legs cruise at the requested speed plus the small drift.
+        peak = float(np.abs(block.trajectory.az_vel).max())
+        assert peak == pytest.approx(1.5 + abs(block.computed_params["v_az"]), abs=0.02)
+
+    def test_speed_feeds_the_peak_speed_advisory(self, site):
+        with pytest.warns(PointingWarning, match="exceeds site limit"):
+            _one_module_params(site, az_speed=FYST_AZ_MAX_VELOCITY + 0.5)
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_non_positive_speed_raises(self, site, bad):
+        with pytest.raises(ValueError, match="az_speed must be positive"):
+            _one_module_params(site, az_speed=bad)
+
+    def test_fast_drag_at_hot_acceleration_warns_at_the_quintic_peak(self, site):
+        """1.5 deg/s at 1.5 deg/s^2: the turnaround peaks at 2.25 deg/s^2, over the limit."""
+        from fyst_trajectories.exceptions import AccelerationLimitWarning
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            block = _full_primecam_block(
+                site, footprint="c", az_speed=1.5, az_accel=1.5, az_throw=2.44
+            )
+        accel = [w for w in caught if issubclass(w.category, AccelerationLimitWarning)]
+        assert len(accel) == 1
+        traj = block.trajectory
+        az_vel = np.gradient(np.unwrap(traj.az, period=360.0), traj.times)
+        peak = float(np.abs(np.gradient(az_vel, traj.times)).max())
+        assert peak == pytest.approx(2.25, abs=0.05)
+
+
+class TestAzThrowInput:
+    """``az_throw`` replaces the padded solved throw, re-centred on the window."""
+
+    def test_explicit_throw_is_recorded_and_recentred(self, site):
+        default = _one_module_params(site)
+        cp = _one_module_params(site, az_throw=2.44)
+        assert cp["az_throw"] == 2.44
+        centre_default = default["az_start"] + 0.5 * default["az_throw"]
+        centre = cp["az_start"] + 0.5 * cp["az_throw"]
+        assert centre == pytest.approx(centre_default, abs=1e-9)
+        # Timing and drift are untouched by the throw.
+        assert cp["t0_iso"] == default["t0_iso"]
+        assert cp["v_az"] == pytest.approx(default["v_az"])
+
+    def test_throw_with_explicit_padding_raises(self, site):
+        with pytest.raises(ValueError, match="cannot be combined with an explicit az_padding"):
+            _one_module_params(site, az_throw=2.44, az_padding=0.2)
+
+    def test_narrow_throw_warns(self, site):
+        default = _one_module_params(site, az_padding=0.0)
+        crossing = default["az_throw"]
+        with pytest.warns(PointingWarning, match="narrower than the .* footprint crossing"):
+            cp = _one_module_params(site, az_throw=0.5 * crossing)
+        assert cp["az_throw"] == pytest.approx(0.5 * crossing)
+
+    @pytest.mark.parametrize("bad", [0.0, -2.0])
+    def test_non_positive_throw_raises(self, site, bad):
+        with pytest.raises(ValueError, match="az_throw must be positive"):
+            _one_module_params(site, az_throw=bad)
+
+    def test_arc_sun_check_sees_the_overridden_envelope(self, site, monkeypatch):
+        """The Sun sweep runs on the final swept window, so a narrower throw shrinks it."""
+        seen: list[np.ndarray] = []
+        real = _source_ces_module._check_arc_sun_safety
+
+        def spy(coords, site_, arc_az, arc_el, arc_times, source_label, **kw):
+            seen.append(np.asarray(arc_az))
+            return real(coords, site_, arc_az, arc_el, arc_times, source_label, **kw)
+
+        monkeypatch.setattr(_source_ces_module, "_check_arc_sun_safety", spy)
+        default = _one_module_params(site)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            narrow = _one_module_params(site, az_throw=1.0)
+        assert len(seen) == 2
+        span_default = seen[0].max() - seen[0].min()
+        span_narrow = seen[1].max() - seen[1].min()
+        assert span_default - span_narrow == pytest.approx(default["az_throw"] - narrow["az_throw"])
+
+
+class TestNonScalarTimeInputs:
+    """A time grid where one instant belongs is refused, clearly.
+
+    Unchecked, an array-valued ``Time`` fails far downstream: ``night`` as a
+    numpy broadcast error, ``window`` as "the truth value of an array is
+    ambiguous", and ``start_time`` worst of all, as a
+    ``TargetNotObservableError`` naming a whole grid of times, which reads
+    as an astronomy verdict rather than a malformed argument.
+    """
+
+    _GRID = Time(["2026-03-15T00:00:00", "2026-03-15T01:00:00"], scale="utc")
+
+    def test_array_night_raises(self, site):
+        with pytest.raises(ValueError, match="night must be a single instant"):
+            plan_source_ces(
+                body="jupiter",
+                footprint="c",
+                el_bore=35.0,
+                site=site,
+                night=self._GRID,
+                mode="rising",
+            )
+
+    def test_array_window_edge_raises(self, site):
+        with pytest.raises(ValueError, match="window start must be a single instant"):
+            plan_source_ces(
+                body="jupiter",
+                footprint="c",
+                el_bore=35.0,
+                site=site,
+                window=(self._GRID, self._GRID[0]),
+            )
+
+    def test_array_start_time_raises(self, site):
+        with pytest.raises(ValueError, match="start_time must be a single instant"):
+            plan_source_ces(body="jupiter", footprint="c", site=site, start_time=self._GRID)
+
+
+class TestSweptEnvelope:
+    """Every envelope the kernel reasons about covers the commanded motion.
+
+    A constant-elevation sweep cruises across the science window and then
+    overshoots each edge by the quintic turnaround peak
+    ``5 * az_speed**2 / (8 * az_accel)`` before coming back. Two places
+    could reason about the science window instead: the arc Sun check and the
+    emit-time azimuth-bounds check. Both widen through the shared
+    ``swept_az_envelope`` helper, so the screened range contains what the
+    builder produces rather than sitting inside it.
+    """
+
+    def _captured_arc(self, site, monkeypatch, **overrides):
+        """Plan a pass and return (arc azimuths seen by the Sun check, block)."""
+        seen: list[np.ndarray] = []
+        real = _source_ces_module._check_arc_sun_safety
+
+        def spy(coords, site_, arc_az, arc_el, arc_times, label, **kw):
+            seen.append(np.asarray(arc_az, dtype=float))
+            return real(coords, site_, arc_az, arc_el, arc_times, label, **kw)
+
+        monkeypatch.setattr(_source_ces_module, "_check_arc_sun_safety", spy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            block = _full_primecam_block(site, footprint="c", **overrides)
+        assert len(seen) == 1
+        return seen[0], block
+
+    @pytest.mark.parametrize(
+        ("az_speed", "az_accel"),
+        [(1.5, 1.0), (1.5, 1.5), (2.0, 1.0)],
+    )
+    def test_arc_sun_check_covers_the_built_trajectory(self, site, monkeypatch, az_speed, az_accel):
+        """The sampled arc contains the trajectory's own azimuth extremes.
+
+        An arc that is only the science window misses, at
+        ``az_speed=1.5, az_accel=1.0``, 1.36 deg of commanded motion on each
+        side, and a scan could then put 47 of 377 samples inside the
+        exclusion zone with no warning at all.
+        """
+        arc_az, block = self._captured_arc(site, monkeypatch, az_speed=az_speed, az_accel=az_accel)
+        assert arc_az.min() <= block.trajectory.az.min()
+        assert arc_az.max() >= block.trajectory.az.max()
+
+    def test_arc_widens_by_exactly_the_turnaround_overshoot(self, site, monkeypatch):
+        """The widening is the shared constant, not an arbitrary pad."""
+        arc_az, block = self._captured_arc(site, monkeypatch, az_speed=1.5, az_accel=1.0)
+        cp = block.computed_params
+        overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
+        assert overshoot == pytest.approx(1.40625)
+        # The arc spans the commanded window plus the drift the pass
+        # accumulates between t0 and t1: throw + 2 * overshoot + |v_az| * dt.
+        # The recorded window is an ISO string truncated to milliseconds, so
+        # reconstructing the drift from it carries about a microdegree of
+        # slack; that is far below the 1.4 deg the widening adds.
+        window_sec = (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s)
+        expected = cp["az_throw"] + 2 * overshoot + abs(cp["v_az"]) * window_sec
+        assert arc_az.max() - arc_az.min() == pytest.approx(expected, abs=1e-4)
+
+    @pytest.mark.parametrize("az_speed", [1.0, 2.0])
+    def test_emit_time_envelope_covers_the_built_trajectory(self, site, az_speed):
+        """``compute_source_ces_params`` refuses what ``plan_source_ces`` would.
+
+        An emit-time azimuth-bounds check that widened only by the drift
+        would let a scheduler emit a block whose built trajectory reaches
+        2.49 deg outside the limits that check accepted. The two entry points
+        are screened against the same envelope.
+        """
+        limits = site.telescope_limits.azimuth
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            block = _full_primecam_block(site, footprint="c", az_speed=az_speed)
+            cp = compute_source_ces_params(
+                body="jupiter",
+                footprint="c",
+                el_bore=35.0,
+                night=_JUPITER_NIGHT,
+                mode="rising",
+                site=site,
+                az_speed=az_speed,
+            )
+        overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
+        env_lo = min(cp["az_start"], cp["az_start"] + cp["az_throw"]) - overshoot
+        env_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"]) + overshoot
+        drift = cp["v_az"] * cp["duration"]
+        env_lo += min(0.0, drift)
+        env_hi += max(0.0, drift)
+        assert env_lo <= block.trajectory.az.min()
+        assert env_hi >= block.trajectory.az.max()
+        # Sanity: this geometry is comfortably inside the limits, so the
+        # widening is what is being pinned, not a bounds refusal.
+        assert limits.min < env_lo and env_hi < limits.max
+
+    def test_emit_time_envelope_refuses_a_trajectory_that_leaves_the_limits(self, site):
+        """A sweep whose overshoot crosses the limit is refused at emit time.
+
+        Built by squeezing the azimuth limits around the solved window so
+        only the turnaround overshoot pushes past them: without the widening
+        the same call returns a params dict a dispatcher would then reject.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            cp = _one_module_params(site, az_speed=1.5)
+        overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
+        drift = cp["v_az"] * cp["duration"]
+        sci_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"]) + max(0.0, drift)
+        # A limit between the science edge and the commanded edge.
+        tight = dataclasses.replace(
+            site,
+            telescope_limits=dataclasses.replace(
+                site.telescope_limits,
+                azimuth=dataclasses.replace(
+                    site.telescope_limits.azimuth, max=sci_hi + 0.5 * overshoot
+                ),
+            ),
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            with pytest.raises(AzimuthBoundsError):
+                _one_module_params(tight, az_speed=1.5)
+
+
+class TestDwellInput:
+    """``dwell`` narrows the pass about the crossing midpoint."""
+
+    def test_default_records_the_full_crossing(self, site):
+        cp = _one_module_params(site)
+        span = (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s)
+        assert cp["crossing_seconds"] == pytest.approx(span, abs=1e-3)
+
+    def test_dwell_narrows_symmetrically_and_keeps_the_crossing(self, site):
+        default = _one_module_params(site)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            cp = _one_module_params(site, dwell=300.0)
+        t0, t1 = Time(cp["t0_iso"]), Time(cp["t1_iso"])
+        assert (t1 - t0).to_value(u.s) == pytest.approx(300.0, abs=1e-3)
+        mid_default = Time(default["t0_iso"]) + 0.5 * (
+            Time(default["t1_iso"]) - Time(default["t0_iso"])
+        )
+        mid = t0 + 0.5 * (t1 - t0)
+        assert abs((mid - mid_default).to_value(u.s)) < 1e-3
+        assert cp["crossing_seconds"] == pytest.approx(default["crossing_seconds"])
+        assert cp["crossing_seconds"] > 300.0
+        # The quantised trajectory length tracks the dwell, not the crossing.
+        # The bound is derived, not picked: rounding the window to whole legs
+        # can land at most half a leg-plus-turnaround either side of it. A
+        # flat 60 s slop would be 2.3x that and would pass a floor that
+        # silently widened the pass.
+        half_cycle = 0.5 * (cp["az_throw"] / cp["az_speed"] + 2.0 * cp["az_speed"] / 1.0)
+        assert abs(cp["duration"] - 300.0) <= half_cycle
+
+    def test_partial_dwell_warns(self, site):
+        with pytest.warns(PointingWarning, match="shorter than the .* footprint crossing"):
+            _one_module_params(site, dwell=300.0)
+
+    def test_dwell_longer_than_the_crossing_raises(self, site):
+        crossing = _one_module_params(site)["crossing_seconds"]
+        with pytest.raises(ValueError, match="dwell must not exceed the solved footprint crossing"):
+            _one_module_params(site, dwell=crossing + 60.0)
+
+    @pytest.mark.parametrize("bad", [0.0, -30.0])
+    def test_non_positive_dwell_raises(self, site, bad):
+        with pytest.raises(ValueError, match="dwell must be positive"):
+            _one_module_params(site, dwell=bad)
+
+    def test_dwell_below_the_sampling_step_raises_naming_both(self, site):
+        """A dwell shorter than one sample is refused, not silently widened.
+
+        The narrowed window is resampled on the ``sampling_step_seconds``
+        grid, so a shorter dwell would be floored back up to one step: a
+        dwell of 8 s would build a 30 s scan while ``t0_iso``/``t1_iso`` still
+        reported 8 s, and changing only the sampling step would change the
+        scan duration by 3.75x. The message names both numbers so the caller
+        can see which knob to move.
+        """
+        with pytest.raises(ValueError, match=r"dwell must be at least sampling_step_seconds"):
+            _one_module_params(site, dwell=8.0)
+
+        with pytest.raises(ValueError) as excinfo:
+            _one_module_params(site, dwell=8.0, sampling_step_seconds=30.0)
+        assert "dwell=8.0" in str(excinfo.value)
+        assert "sampling_step_seconds=30.0" in str(excinfo.value)
+
+    def test_dwell_at_the_sampling_step_is_honoured_exactly(self, site):
+        """At the floor the pass is exactly the requested length, not one step wider."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            cp = _one_module_params(site, dwell=10.0, sampling_step_seconds=10.0)
+        assert (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s) == pytest.approx(
+            10.0, abs=1e-3
+        )
+
+    def test_dwell_with_multiple_passes_raises(self, site):
+        with pytest.raises(ValueError, match="accepted only for a single pass"):
+            plan_source_ces_passes(
+                body="jupiter",
+                footprint="c",
+                el_bore=35.0,
+                n_passes=2,
+                night=_JUPITER_NIGHT,
+                mode="rising",
+                site=site,
+                dwell=120.0,
+            )
+
+    def test_single_pass_sequence_accepts_dwell(self, site):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            (block,) = plan_source_ces_passes(
+                body="jupiter",
+                footprint="c",
+                el_bore=35.0,
+                n_passes=1,
+                night=_JUPITER_NIGHT,
+                mode="rising",
+                site=site,
+                dwell=300.0,
+            )
+        cp = block.computed_params
+        assert (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s) == pytest.approx(
+            300.0, abs=1e-3
+        )
+
+    def test_anchored_dwell_pass_starts_half_the_cut_after_the_anchor(self, site):
+        """The anchor places the full crossing; the dwell narrows about its midpoint."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PointingWarning)
+            full = plan_source_ces(
+                body="jupiter", footprint="c", start_time=_JUPITER_RISING_ANCHOR, site=site
+            )
+            narrowed = plan_source_ces(
+                body="jupiter",
+                footprint="c",
+                start_time=_JUPITER_RISING_ANCHOR,
+                site=site,
+                dwell=300.0,
+            )
+        assert narrowed.computed_params["el_bore"] == pytest.approx(full.computed_params["el_bore"])
+        crossing = full.computed_params["crossing_seconds"]
+        expected_delay = 0.5 * (crossing - 300.0)
+        delay = (narrowed.trajectory.start_time - full.trajectory.start_time).to_value(u.s)
+        assert delay == pytest.approx(expected_delay, abs=1.0)
+        cp = narrowed.computed_params
+        assert (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s) == pytest.approx(
+            300.0, abs=1e-3
+        )
+
+
+class TestInflateFootprint:
+    """The caller-side margin transform pushes the cover out from the centre."""
+
+    def test_single_module_circle_grows_by_the_margin(self):
+        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
+
+        base = resolve_footprint("c")
+        grown = inflate_footprint(base, 0.4)
+        r_base = np.hypot(
+            base.cover_xi_deg - base.center_xi_deg, base.cover_eta_deg - base.center_eta_deg
+        )
+        r_grown = np.hypot(
+            grown.cover_xi_deg - grown.center_xi_deg, grown.cover_eta_deg - grown.center_eta_deg
+        )
+        np.testing.assert_allclose(r_grown, r_base + 0.4)
+        assert grown.center_xi_deg == base.center_xi_deg
+        assert grown.center_eta_deg == base.center_eta_deg
+        assert r_base.max() == pytest.approx(MODULE_FOV_RADIUS_DEG)
+
+    def test_off_centre_module_keeps_its_own_centre(self):
+        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
+
+        base = resolve_footprint("i1")
+        grown = inflate_footprint(base, 0.25)
+        assert (grown.center_xi_deg, grown.center_eta_deg) == (
+            base.center_xi_deg,
+            base.center_eta_deg,
+        )
+        r = np.hypot(
+            grown.cover_xi_deg - base.center_xi_deg, grown.cover_eta_deg - base.center_eta_deg
+        )
+        np.testing.assert_allclose(r, MODULE_FOV_RADIUS_DEG + 0.25)
+
+    def test_zero_margin_is_an_equal_copy(self):
+        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
+
+        base = resolve_footprint(_FULL_PRIMECAM_MODULES)
+        same = inflate_footprint(base, 0.0)
+        np.testing.assert_allclose(same.cover_xi_deg, base.cover_xi_deg)
+        np.testing.assert_allclose(same.cover_eta_deg, base.cover_eta_deg)
+        assert same is not base
+
+    def test_negative_margin_raises(self):
+        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
+
+        with pytest.raises(ValueError, match="margin_deg must be non-negative"):
+            inflate_footprint(resolve_footprint("c"), -0.1)
+
+    def test_margin_lengthens_the_crossing(self, site):
+        """One module plus 0.4 deg per side reproduces a wider, longer pass."""
+        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
+
+        plain = _one_module_params(site, az_padding=0.0)
+        wide = _one_module_params(
+            site, footprint=inflate_footprint(resolve_footprint("c"), 0.4), az_padding=0.0
+        )
+        assert wide["crossing_seconds"] > plain["crossing_seconds"]
+        # The on-sky throw grows by twice the margin, up to the drift term.
+        grown = (wide["az_throw"] - plain["az_throw"]) * np.cos(np.radians(35.0))
+        assert grown == pytest.approx(0.8, abs=0.1)
+
+
+class TestWindowOrdering:
+    """A window that does not run forwards is refused as a bad argument.
+
+    Unchecked, a reversed or zero-length window leaves the forward search
+    grid empty, and the first numpy reduction over it raises a
+    zero-size-reduction message from inside an error constructor, naming
+    neither edge.
+    """
+
+    T0 = Time("2026-03-15T04:00:00", scale="utc")
+
+    def test_zero_length_window_is_refused(self, site):
+        """Equal edges raise a message quoting both times."""
+        with pytest.raises(ValueError, match="window end .* must be later than window start"):
+            plan_source_ces(
+                body="jupiter", window=(self.T0, self.T0), el_bore=45.0, footprint="c", site=site
+            )
+
+    def test_reversed_window_is_refused(self, site):
+        """A window given end-first raises the same message."""
+        later = self.T0 + TimeDelta(3600.0, format="sec")
+        with pytest.raises(ValueError, match="window end .* must be later than window start"):
+            plan_source_ces(
+                body="jupiter", window=(later, self.T0), el_bore=45.0, footprint="c", site=site
+            )
+
+    def test_computed_params_record_utc(self, site):
+        """``t0_iso``/``t1_iso`` are UTC, and re-parsing them as UTC round-trips.
+
+        The recorded strings carry no scale, and every reader (the pass
+        sequencer included) parses them as UTC, so the conversion has to be
+        made where they are written.
+        """
+        block = plan_source_ces(
+            body="jupiter",
+            night=Time("2026-03-15T00:00:00", scale="utc"),
+            mode="rising",
+            el_bore=40.0,
+            footprint="c",
+            site=site,
+        )
+        params = block.computed_params
+        t0 = Time(params["t0_iso"], scale="utc")
+        t1 = Time(params["t1_iso"], scale="utc")
+        assert t1 > t0
+        # The trajectory carries the same instant as a real ``Time``; reading
+        # the recorded string back as UTC has to land on it. A TAI-scaled
+        # write would sit 37 s away.
+        assert abs((t0 - block.trajectory.start_time).sec) < 1.0

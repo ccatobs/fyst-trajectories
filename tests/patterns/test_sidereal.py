@@ -8,10 +8,9 @@ from fyst_trajectories.patterns import SiderealTrackConfig, SiderealTrackPattern
 
 
 class TestSiderealTrackPattern:
-    """Tests for sidereal tracking pattern."""
+    """Fixed RA/Dec tracking: az/el drift, metadata, sample density, required start_time."""
 
     def test_basic_track(self, site):
-        """Test generating a sidereal tracking trajectory."""
         start_time = Time("2026-01-15T02:00:00", scale="utc")
         config = SiderealTrackConfig(timestep=0.1)
         pattern = SiderealTrackPattern(ra=83.633, dec=22.014, config=config)
@@ -26,7 +25,7 @@ class TestSiderealTrackPattern:
 
     @pytest.mark.slow
     def test_track_changes_with_time(self, site):
-        """Test that Az/El changes during tracking (Earth rotation)."""
+        """Az/El changes during tracking as the Earth rotates."""
         start_time = Time("2026-10-15T03:00:00", scale="utc")
         config = SiderealTrackConfig(timestep=0.1)
         pattern = SiderealTrackPattern(ra=0.0, dec=-30.0, config=config)
@@ -37,7 +36,6 @@ class TestSiderealTrackPattern:
         assert abs(az_change) > 1.0
 
     def test_metadata(self, site):
-        """Test that metadata is correctly populated."""
         config = SiderealTrackConfig(timestep=0.1)
         pattern = SiderealTrackPattern(ra=83.633, dec=22.014, config=config)
 
@@ -49,7 +47,6 @@ class TestSiderealTrackPattern:
         assert metadata.center_dec == 22.014
 
     def test_with_config(self, site):
-        """Test creating pattern with explicit config."""
         start_time = Time("2026-10-15T03:00:00", scale="utc")
         config = SiderealTrackConfig(timestep=0.5)
         pattern = SiderealTrackPattern(ra=0.0, dec=-30.0, config=config)
@@ -60,7 +57,6 @@ class TestSiderealTrackPattern:
         assert trajectory.n_points == pytest.approx(20, abs=2)
 
     def test_finite_positions(self, site):
-        """Test that positions are finite."""
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         config = SiderealTrackConfig(timestep=0.1)
         pattern = SiderealTrackPattern(ra=180.0, dec=-30.0, config=config)
@@ -73,7 +69,6 @@ class TestSiderealTrackPattern:
         assert np.all(np.isfinite(trajectory.el_vel))
 
     def test_none_start_time_raises(self, site):
-        """Test that generate raises ValueError when start_time is None."""
         config = SiderealTrackConfig(timestep=0.1)
         pattern = SiderealTrackPattern(ra=180.0, dec=-30.0, config=config)
 

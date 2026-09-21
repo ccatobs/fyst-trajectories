@@ -1,7 +1,7 @@
 """Pong (curvy box) scan pattern.
 
-See "Scan Mode Strategies for SCUBA-2" (SCUBA-2 Project SC2/ANA/S210/005,
-Scott & van Engelen 2005) for algorithm details.
+See "SCAN Mode Strategies for SCUBA-2" (SCUBA-2 Project SC2/ANA/S210/005,
+Scott & van Engelen 2005) for algorithm details (section 4.3).
 """
 
 import functools
@@ -46,10 +46,10 @@ No published cross-facility standard exists for this exact fraction, but
 speed-based turnaround detection is the common practice. SO's sotodlib
 offers both an azimuth-percentile and a scan-speed criterion in
 ``tod_ops.flags.get_turnaround_flags`` and defaults to the scan-speed one;
-JCMT's SMURF flags turnaround data by slew speed (the FLAGSLOW/FLAGFAST
-cleaning parameters, in arcsec/s). The criterion here is the same idea
-expressed as a fraction of the nominal scan velocity, tuned for
-FYST/Prime-Cam scan dynamics.
+JCMT's SMURF flags turnaround data by slew speed (the FLAGSLOW cleaning
+parameter, in arcsec/s). The criterion here is speed-based too, expressed
+as a fraction of the nominal scan velocity and tuned for FYST/Prime-Cam
+scan dynamics.
 """
 
 
@@ -119,10 +119,10 @@ def _compute_pong_vertices(
 def compute_pong_period(config: PongScanConfig) -> tuple[float, int, int]:
     """Compute the fundamental period of a Pong scan and its vertex counts.
 
-    The Pong pattern uses two Fourier-approximated triangle waves whose
-    periods are coprime, so the pattern repeats only after
-    ``x_numvert * y_numvert`` turnarounds of the faster axis. This helper
-    computes that period (and the vertex counts) without instantiating
+    The Pong pattern uses two Fourier-approximated triangle waves whose vertex
+    counts are coprime, so the pattern repeats only after the x axis has
+    completed ``y_numvert`` full cycles and the y axis ``x_numvert``. This
+    helper computes that period (and the vertex counts) without instantiating
     a :class:`PongScanPattern`.
 
     This is the canonical entry point for external code (e.g. the
