@@ -35,7 +35,8 @@ List available modules:
 ['c', 'center', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 
 import numpy as np
 
@@ -66,15 +67,15 @@ cover polygon when the caller passes a single ``InstrumentOffset``
 (or a module name) instead of an explicit
 :class:`~fyst_trajectories.planning.ArrayFootprint`.
 
-The 0.65° value is the published Prime-Cam per-module field of view: each
-module has up to a 1.3° **diameter** on sky (Vavagiakis et al. 2022,
+The 0.65 deg value is the published Prime-Cam per-module field of view: each
+module has up to a 1.3 deg **diameter** on sky (Vavagiakis et al. 2022,
 "CCAT-prime: Design of the Mod-Cam receiver and 280 GHz MKID instrument
-module", Proc. SPIE, arXiv:2208.05468), i.e. a 0.65° **radius**. This is an
+module", Proc. SPIE, arXiv:2208.05468), i.e. a 0.65 deg **radius**. This is an
 upper bound across modules; a candidate design for the 850 GHz module gives it
-a 1.1° **diameter** (Chapman et al. 2022, "CCAT-prime: The 850 GHz camera for
-Prime-Cam on FYST", Proc. SPIE, arXiv:2208.10634), so 0.65° over-covers it by
+a 1.1 deg **diameter** (Chapman et al. 2022, "CCAT-prime: The 850 GHz camera for
+Prime-Cam on FYST", Proc. SPIE, arXiv:2208.10634), so 0.65 deg over-covers it by
 design, pending an as-built per-module measurement. The illuminated detector wafer is smaller
-than the optical field, so 0.65° is the field-of-view figure to cover with,
+than the optical field, so 0.65 deg is the field-of-view figure to cover with,
 not a padded-up wafer estimate.
 
 Pass an explicit :class:`~fyst_trajectories.planning.ArrayFootprint`
@@ -129,22 +130,25 @@ PRIMECAM_I6 = InstrumentOffset.from_focal_plane(
     name="PrimeCam-I6",
 )  # theta=-150 deg
 
-PRIMECAM_MODULES: dict[str, InstrumentOffset] = {
-    "c": PRIMECAM_CENTER,
-    "center": PRIMECAM_CENTER,
-    "i1": PRIMECAM_I1,
-    "i2": PRIMECAM_I2,
-    "i3": PRIMECAM_I3,
-    "i4": PRIMECAM_I4,
-    "i5": PRIMECAM_I5,
-    "i6": PRIMECAM_I6,
-}
-"""Dict mapping module names to InstrumentOffset instances."""
+PRIMECAM_MODULES: Mapping[str, InstrumentOffset] = MappingProxyType(
+    {
+        "c": PRIMECAM_CENTER,
+        "center": PRIMECAM_CENTER,
+        "i1": PRIMECAM_I1,
+        "i2": PRIMECAM_I2,
+        "i3": PRIMECAM_I3,
+        "i4": PRIMECAM_I4,
+        "i5": PRIMECAM_I5,
+        "i6": PRIMECAM_I6,
+    }
+)
+"""Read-only mapping of module names to InstrumentOffset instances."""
 
 # The instrument team designates the same focal-plane positions IM0 .. IM6
-# (Keller et al. 2026, arXiv:2608.05121). Only the on-axis entry is aliased
-# here: the ring correspondence is NOT index-for-index (the two schemes
-# number the ring in opposite senses on sky) and awaits as-built
+# (Keller et al. 2026, "CCAT: Design and Characterization of the 350 GHz
+# Instrument Module", arXiv:2608.05121, Fig. 1). Only the on-axis entry is
+# aliased here: the ring correspondence is NOT index-for-index (the two
+# schemes number the ring in opposite senses on sky) and awaits as-built
 # confirmation, so IM1 .. IM6 are deliberately rejected until it lands.
 # When it does, the ring entries are added here and nowhere else.
 _IM_TO_POSITION: dict[str, str] = {

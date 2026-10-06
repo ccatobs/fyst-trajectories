@@ -1,0 +1,2608 @@
+{
+ "cases": {
+  "err_dwell_long": {
+   "error": {
+    "message": "dwell must not exceed the solved footprint crossing: got dwell=3000.0 s but Saturn crosses the footprint at el_bore=32.50 deg in 358.0 s (every extra second has the source outside the footprint; use more passes or a larger footprint margin for more time on source)",
+    "type": "DwellExceedsCrossingError"
+   },
+   "warnings": []
+  },
+  "err_near_transit": {
+   "error": {
+    "message": "Jupiter is too near transit at 2026-03-15 23:55:00.000 to derive el_bore from start_time: the source elevation drift rate is 1.48e-04 deg/s, below the 8.3e-04 deg/s minimum. Anchor away from transit, or pass el_bore explicitly.",
+    "type": "TargetNotObservableError"
+   },
+   "warnings": []
+  },
+  "err_not_reached": {
+   "error": {
+    "message": "Jupiter is not fully observable at 2026-03-15 00:00:00.000. The trajectory elevation [-89.93, 44.08] exceeds limits [80.0, 80.0]. Try a different observation time or shorter duration.",
+    "type": "TargetNotObservableError"
+   },
+   "warnings": []
+  },
+  "fixed_setting": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 247.8694498032934,
+      "last": 250.38397552036776,
+      "max": 250.53903845474557,
+      "min": 247.7143868689156,
+      "n": 3779,
+      "sum": 941449.8471490578,
+      "sumsq": 234542604.5656412
+     },
+     "az_vel": {
+      "first": 0.0495234375,
+      "last": 0.0495234375,
+      "max": 0.0495234375,
+      "min": -0.0504765625,
+      "n": 3779,
+      "sum": 25.198929293738534,
+      "sumsq": 9.413626919388658
+     },
+     "el": {
+      "first": 40.0,
+      "last": 40.0,
+      "max": 40.0,
+      "min": 40.0,
+      "n": 3779,
+      "sum": 151160.0,
+      "sumsq": 6046400.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3779,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 377.84279968167084,
+      "max": 377.84279968167084,
+      "min": 0.0,
+      "n": 3779,
+      "sum": 713933.9699985171,
+      "sumsq": 179860340.50303173
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 247.8694498032934,
+     "az_throw": 2.6945914262976487,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 361.7063247878077,
+     "duration": 377.84279968167084,
+     "el_bore": 40.0,
+     "mode": "setting",
+     "n_scans": 7,
+     "t0_iso": "2026-03-15 08:40:53.937",
+     "t1_iso": "2026-03-15 08:46:55.643",
+     "v_az": -0.0004765625
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 247.8694498032934,
+     "az_stop": 250.56404122959106,
+     "elevation": 40.0,
+     "timestep": 0.1
+    },
+    "duration": 377.84279968167084,
+    "metadata": {
+     "center_dec": -30.0,
+     "center_ra": 180.0,
+     "pattern_params": {
+      "az_start": 247.8694498032934,
+      "az_stop": 250.56404122959106,
+      "body": null,
+      "boresight_rot": 0.0,
+      "el_bore": 40.0,
+      "mode": "setting",
+      "n_scans": 7,
+      "v_az": -0.0004765625
+     },
+     "pattern_type": "source_ces",
+     "target_name": "RA=180.000, Dec=-30.000"
+    },
+    "scan_flag": {
+     "1": 3772,
+     "2": 7
+    },
+    "start_time": "2026-03-15T08:40:53.937",
+    "summary": "Source-CES on RA=180.000, Dec=-30.000 (setting) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [247.87, 250.56] deg (throw 2.69 deg)\n  Drift v_az=-0.00048 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 08:40:53 to 2026-03-15 08:46:55\n  Scans: 7, Duration: 377.8s (6.3min), Trajectory points: 3779",
+    "track": {
+     "eta": {
+      "first": -0.15251144656016447,
+      "last": 0.1358010058916892,
+      "max": 1.0150039391985235,
+      "min": -1.055555865811104,
+      "n": 3779,
+      "sum": -74.47973486206547,
+      "sumsq": 880.8204729710894
+     },
+     "xi": {
+      "first": 1.2049981490504915,
+      "last": -1.2509389571317437,
+      "max": 1.2049981490504915,
+      "min": -1.2509389571317437,
+      "n": 3779,
+      "sum": -67.07658509126668,
+      "sumsq": 1050.7655707524168
+     }
+    }
+   },
+   "warnings": []
+  },
+  "jup_anchor_params": {
+   "computed": {
+    "az_speed": 0.05,
+    "az_start": 37.97888297929399,
+    "az_throw": 2.5528601297174447,
+    "boresight_rot": 0.0,
+    "crossing_seconds": 545.629576207436,
+    "duration": 562.6292285378379,
+    "el_bore": 33.285665891181544,
+    "mode": "rising",
+    "n_scans": 11,
+    "t0_iso": "2026-03-15 21:41:20.525",
+    "t1_iso": "2026-03-15 21:50:26.155",
+    "v_az": -0.0035859375000000006
+   },
+   "warnings": []
+  },
+  "jup_anchor_plan": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 37.97888297929399,
+      "last": 38.51418985980153,
+      "max": 40.3500391923079,
+      "min": 36.14303364678763,
+      "n": 5627,
+      "sum": 215213.26043279527,
+      "sumsq": 8236099.162699547
+     },
+     "az_vel": {
+      "first": 0.046414062500000006,
+      "last": 0.046414062500000006,
+      "max": 0.046414062500000006,
+      "min": -0.0535859375,
+      "n": 5627,
+      "sum": 5.466838545605722,
+      "sumsq": 13.941793320361047
+     },
+     "el": {
+      "first": 33.285665891181544,
+      "last": 33.285665891181544,
+      "max": 33.285665891181544,
+      "min": 33.285665891181544,
+      "n": 5627,
+      "sum": 187298.44196967856,
+      "sumsq": 6234353.361341576
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 5627,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 562.6292285378379,
+      "max": 562.6292285378379,
+      "min": 0.0,
+      "n": 5627,
+      "sum": 1582957.3344912068,
+      "sumsq": 593798143.9278417
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 37.97888297929399,
+     "az_throw": 2.5528601297174447,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 545.629576207436,
+     "duration": 562.6292285378379,
+     "el_bore": 33.285665891181544,
+     "mode": "rising",
+     "n_scans": 11,
+     "t0_iso": "2026-03-15 21:41:20.525",
+     "t1_iso": "2026-03-15 21:50:26.155",
+     "v_az": -0.0035859375000000006
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 37.97888297929399,
+     "az_stop": 40.53174310901144,
+     "elevation": 33.285665891181544,
+     "timestep": 0.1
+    },
+    "duration": 562.6292285378379,
+    "metadata": {
+     "center_dec": 22.976891615101863,
+     "center_ra": 106.05295910053214,
+     "pattern_params": {
+      "az_start": 37.97888297929399,
+      "az_stop": 40.53174310901144,
+      "body": "jupiter",
+      "boresight_rot": 0.0,
+      "el_bore": 33.285665891181544,
+      "mode": "rising",
+      "n_scans": 11,
+      "v_az": -0.0035859375000000006
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Jupiter"
+    },
+    "scan_flag": {
+     "1": 5616,
+     "2": 11
+    },
+    "start_time": "2026-03-15T21:41:20.525",
+    "summary": "Source-CES on Jupiter (rising) at el_bore=33.29 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [37.98, 40.53] deg (throw 2.55 deg)\n  Drift v_az=-0.00359 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:41:20 to 2026-03-15 21:50:26\n  Scans: 11, Duration: 562.6s (9.4min), Trajectory points: 5627",
+    "track": {
+     "eta": {
+      "first": -1.1264577697698233,
+      "last": 1.1721291464845223,
+      "max": 1.1721291464845223,
+      "min": -1.1264577697698233,
+      "n": 5627,
+      "sum": 137.71056219515333,
+      "sumsq": 1255.5222772902412
+     },
+     "xi": {
+      "first": 0.5434556437741966,
+      "last": -0.5167680180753806,
+      "max": 1.1932973785508325,
+      "min": -1.1838962872434085,
+      "n": 5627,
+      "sum": 67.21131893442043,
+      "sumsq": 1733.2930649148768
+     }
+    }
+   },
+   "warnings": []
+  },
+  "jup_c_rising": {
+   "computed": {
+    "az_speed": 0.05,
+    "az_start": 35.304498051595004,
+    "az_throw": 2.585743217357333,
+    "boresight_rot": 0.0,
+    "crossing_seconds": 581.3504923836008,
+    "duration": 569.8635078186132,
+    "el_bore": 35.0,
+    "mode": "rising",
+    "n_scans": 11,
+    "t0_iso": "2026-03-15 21:53:25.696",
+    "t1_iso": "2026-03-15 22:03:07.047",
+    "v_az": -0.0037265625000000007
+   },
+   "warnings": []
+  },
+  "jup_c_rising_plan": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 35.304498051595004,
+      "last": 35.76660929059704,
+      "max": 37.69807211784626,
+      "min": 33.37303522434578,
+      "n": 5700,
+      "sum": 202552.6559252473,
+      "sumsq": 7203108.654910482
+     },
+     "az_vel": {
+      "first": 0.0462734375,
+      "last": 0.0462734375,
+      "max": 0.0462734375,
+      "min": -0.053726562500000005,
+      "n": 5700,
+      "sum": 4.661373268087269,
+      "sumsq": 14.121957690648035
+     },
+     "el": {
+      "first": 35.0,
+      "last": 35.0,
+      "max": 35.0,
+      "min": 35.0,
+      "n": 5700,
+      "sum": 199500.0,
+      "sumsq": 6982500.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 5700,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 569.8635078186132,
+      "max": 569.8635078186132,
+      "min": 0.0,
+      "n": 5700,
+      "sum": 1624110.9972830478,
+      "sumsq": 617068526.8990434
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 35.304498051595004,
+     "az_throw": 2.585743217357333,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 581.3504923836008,
+     "duration": 569.8635078186132,
+     "el_bore": 35.0,
+     "mode": "rising",
+     "n_scans": 11,
+     "t0_iso": "2026-03-15 21:53:25.696",
+     "t1_iso": "2026-03-15 22:03:07.047",
+     "v_az": -0.0037265625000000007
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 35.304498051595004,
+     "az_stop": 37.89024126895234,
+     "elevation": 35.0,
+     "timestep": 0.1
+    },
+    "duration": 569.8635078186132,
+    "metadata": {
+     "center_dec": 22.976889499868506,
+     "center_ra": 106.05308091945889,
+     "pattern_params": {
+      "az_start": 35.304498051595004,
+      "az_stop": 37.89024126895234,
+      "body": "jupiter",
+      "boresight_rot": 0.0,
+      "el_bore": 35.0,
+      "mode": "rising",
+      "n_scans": 11,
+      "v_az": -0.0037265625000000007
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Jupiter"
+    },
+    "scan_flag": {
+     "1": 5690,
+     "2": 10
+    },
+    "start_time": "2026-03-15T21:53:25.696",
+    "summary": "Source-CES on Jupiter (rising) at el_bore=35.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [35.30, 37.89] deg (throw 2.59 deg)\n  Drift v_az=-0.00373 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:53:25 to 2026-03-15 22:03:07\n  Scans: 11, Duration: 569.9s (9.5min), Trajectory points: 5700",
+    "track": {
+     "eta": {
+      "first": -1.1458311893113697,
+      "last": 1.1383874114601793,
+      "max": 1.1383874114601793,
+      "min": -1.1458311893113697,
+      "n": 5700,
+      "sum": -10.985535776183724,
+      "sumsq": 1257.3548722516675
+     },
+     "xi": {
+      "first": 0.5166254740292242,
+      "last": -0.5245724657734733,
+      "max": 1.1395673624584082,
+      "min": -1.1643930394835655,
+      "n": 5700,
+      "sum": -29.32458324130755,
+      "sumsq": 1655.1368178366013
+     }
+    }
+   },
+   "warnings": []
+  },
+  "jup_c_setting": {
+   "computed": {
+    "az_speed": 0.05,
+    "az_start": -35.66218625879591,
+    "az_throw": 2.5856841219778346,
+    "boresight_rot": 0.0,
+    "crossing_seconds": 581.3558949659673,
+    "duration": 569.8505068351236,
+    "el_bore": 35.0,
+    "mode": "setting",
+    "n_scans": 11,
+    "t0_iso": "2026-03-15 02:05:28.978",
+    "t1_iso": "2026-03-15 02:15:10.334",
+    "v_az": -0.003929687500000001
+   },
+   "warnings": []
+  },
+  "jup_c_setting_plan": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": -35.66218625879591,
+      "last": -35.31583655039673,
+      "max": -33.279187854030695,
+      "min": -37.69883495516195,
+      "n": 5700,
+      "sum": -202287.36500619905,
+      "sumsq": 7184503.851479842
+     },
+     "az_vel": {
+      "first": 0.0460703125,
+      "last": 0.0460703125,
+      "max": 0.0460703125,
+      "min": -0.053929687500000004,
+      "n": 5700,
+      "sum": 3.5035606444356713,
+      "sumsq": 14.120299017330543
+     },
+     "el": {
+      "first": 35.0,
+      "last": 35.0,
+      "max": 35.0,
+      "min": 35.0,
+      "n": 5700,
+      "sum": 199500.0,
+      "sumsq": 6982500.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 5700,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 569.8505068351236,
+      "max": 569.8505068351236,
+      "min": 0.0,
+      "n": 5700,
+      "sum": 1624073.9444801025,
+      "sumsq": 617040371.3631768
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": -35.66218625879591,
+     "az_throw": 2.5856841219778346,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 581.3558949659673,
+     "duration": 569.8505068351236,
+     "el_bore": 35.0,
+     "mode": "setting",
+     "n_scans": 11,
+     "t0_iso": "2026-03-15 02:05:28.978",
+     "t1_iso": "2026-03-15 02:15:10.334",
+     "v_az": -0.003929687500000001
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": -35.66218625879591,
+     "az_stop": -33.07650213681808,
+     "elevation": 35.0,
+     "timestep": 0.1
+    },
+    "duration": 569.8505068351236,
+    "metadata": {
+     "center_dec": 22.97747236654412,
+     "center_ra": 106.03980916289608,
+     "pattern_params": {
+      "az_start": -35.66218625879591,
+      "az_stop": -33.07650213681808,
+      "body": "jupiter",
+      "boresight_rot": 0.0,
+      "el_bore": 35.0,
+      "mode": "setting",
+      "n_scans": 11,
+      "v_az": -0.003929687500000001
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Jupiter"
+    },
+    "scan_flag": {
+     "1": 5690,
+     "2": 10
+    },
+    "start_time": "2026-03-15T02:05:28.978",
+    "summary": "Source-CES on Jupiter (setting) at el_bore=35.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [-35.66, -33.08] deg (throw 2.59 deg)\n  Drift v_az=-0.00393 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 02:05:28 to 2026-03-15 02:15:10\n  Scans: 11, Duration: 569.9s (9.5min), Trajectory points: 5700",
+    "track": {
+     "eta": {
+      "first": -0.05632369844890406,
+      "last": 0.08816116630977644,
+      "max": 1.0572976665039784,
+      "min": -1.0334195620657576,
+      "n": 5700,
+      "sum": 91.62020306331715,
+      "sumsq": 1238.7208145766328
+     },
+     "xi": {
+      "first": 1.2240755172311673,
+      "last": -1.2007157296234787,
+      "max": 1.2240755172311673,
+      "min": -1.2007157296234787,
+      "n": 5700,
+      "sum": 79.30960545834654,
+      "sumsq": 1671.6020983121114
+     }
+    }
+   },
+   "warnings": []
+  },
+  "jup_full_array": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 36.43297661322058,
+      "last": 34.071308525289794,
+      "max": 42.687133290597785,
+      "min": 27.817151847912594,
+      "n": 20618,
+      "sum": 726828.6754929035,
+      "sumsq": 25848824.03047277
+     },
+     "az_vel": {
+      "first": 0.0455234375,
+      "last": 0.0455234375,
+      "max": 0.0455234375,
+      "min": -0.054476562500000006,
+      "n": 20618,
+      "sum": -23.478179278801036,
+      "sumsq": 51.322740788664134
+     },
+     "el": {
+      "first": 35.0,
+      "last": 35.0,
+      "max": 35.0,
+      "min": 35.0,
+      "n": 20618,
+      "sum": 721630.0,
+      "sumsq": 25257050.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 20618,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 2061.7051156387706,
+      "max": 2061.7051156387706,
+      "min": 0.0,
+      "n": 20618,
+      "sum": 21254118.037120085,
+      "sumsq": 29213857729.37298
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 36.43297661322058,
+     "az_throw": 6.867683718795902,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 2037.4564096641843,
+     "duration": 2061.7051156387706,
+     "el_bore": 35.0,
+     "mode": "rising",
+     "n_scans": 15,
+     "t0_iso": "2026-03-15 21:42:01.174",
+     "t1_iso": "2026-03-15 22:15:58.630",
+     "v_az": -0.004476562500000001
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 36.43297661322058,
+     "az_stop": 43.300660332016484,
+     "elevation": 35.0,
+     "timestep": 0.1
+    },
+    "duration": 2061.7051156387706,
+    "metadata": {
+     "center_dec": 22.976889499868506,
+     "center_ra": 106.05308091945889,
+     "pattern_params": {
+      "az_start": 36.43297661322058,
+      "az_stop": 43.300660332016484,
+      "body": "jupiter",
+      "boresight_rot": 0.0,
+      "el_bore": 35.0,
+      "mode": "rising",
+      "n_scans": 15,
+      "v_az": -0.004476562500000001
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Jupiter"
+    },
+    "scan_flag": {
+     "1": 20603,
+     "2": 15
+    },
+    "start_time": "2026-03-15T21:42:01.174",
+    "summary": "Source-CES on Jupiter (rising) at el_bore=35.00 deg\n  Footprint: 350 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [36.43, 43.30] deg (throw 6.87 deg)\n  Drift v_az=-0.00448 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:42:01 to 2026-03-15 22:15:58\n  Scans: 15, Duration: 2061.7s (34.4min), Trajectory points: 20618",
+    "track": {
+     "eta": {
+      "first": -3.1225738450995837,
+      "last": 3.233362216963935,
+      "max": 3.233362216963935,
+      "min": -3.1225738450995837,
+      "n": 20618,
+      "sum": 1979.283468534999,
+      "sumsq": 35081.97862322614
+     },
+     "xi": {
+      "first": 0.5613474268591252,
+      "last": -0.5359769528662093,
+      "max": 3.7756168537276658,
+      "min": -3.863177126730501,
+      "n": 20618,
+      "sum": 1209.0779820727475,
+      "sumsq": 57419.60395147813
+     }
+    }
+   },
+   "warnings": []
+  },
+  "jup_partial": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 18.58731843409837,
+      "last": 4.1832286985968,
+      "max": 25.070443470221647,
+      "min": -2.299896337526473,
+      "n": 39370,
+      "sum": 448238.2203071044,
+      "sumsq": 6819814.095369963
+     },
+     "az_vel": {
+      "first": 0.0444906005859375,
+      "last": 0.0444906005859375,
+      "max": 0.0444906005859375,
+      "min": -0.05550939941406251,
+      "n": 39370,
+      "sum": -144.00571528973768,
+      "sumsq": 98.78203892659155
+     },
+     "el": {
+      "first": 43.5,
+      "last": 43.5,
+      "max": 43.5,
+      "min": 43.5,
+      "n": 39370,
+      "sum": 1712595.0,
+      "sumsq": 74497882.5
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 39370,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 3936.866076454717,
+      "max": 3936.866076454717,
+      "min": 0.0,
+      "n": 39370,
+      "sum": 77497208.7150111,
+      "sumsq": 203400004558.0699
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 18.58731843409837,
+     "az_throw": 7.285677919360587,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 3932.3254534111184,
+     "duration": 3936.866076454717,
+     "el_bore": 43.5,
+     "mode": "rising",
+     "n_scans": 27,
+     "t0_iso": "2026-03-15 22:53:57.675",
+     "t1_iso": "2026-03-15 23:59:30.000",
+     "v_az": -0.005509399414062503
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 18.58731843409837,
+     "az_stop": 25.87299635345896,
+     "elevation": 43.5,
+     "timestep": 0.1
+    },
+    "duration": 3936.866076454717,
+    "metadata": {
+     "center_dec": 22.97685655879626,
+     "center_ra": 106.05399756387311,
+     "pattern_params": {
+      "az_start": 18.58731843409837,
+      "az_stop": 25.87299635345896,
+      "body": "jupiter",
+      "boresight_rot": 0.0,
+      "el_bore": 43.5,
+      "mode": "rising",
+      "n_scans": 27,
+      "v_az": -0.005509399414062503
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Jupiter"
+    },
+    "scan_flag": {
+     "1": 39343,
+     "2": 27
+    },
+    "start_time": "2026-03-15T22:53:57.675",
+    "summary": "Source-CES on Jupiter (rising) at el_bore=43.50 deg\n  Footprint: 350 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [18.59, 25.87] deg (throw 7.29 deg)\n  Drift v_az=-0.00551 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 22:53:57 to 2026-03-15 23:59:30\n  Scans: 27, Duration: 3936.9s (65.6min), Trajectory points: 39370",
+    "track": {
+     "eta": {
+      "first": -3.009608800760062,
+      "last": 2.0732493123541174,
+      "max": 2.07472257084611,
+      "min": -3.009608800760062,
+      "n": 39370,
+      "sum": -8913.361013512573,
+      "sumsq": 53421.84385155575
+     },
+     "xi": {
+      "first": -0.2117629642942307,
+      "last": -1.286701232761441,
+      "max": 2.5043842190661696,
+      "min": -3.9432439635113408,
+      "n": 39370,
+      "sum": -15524.159138613253,
+      "sumsq": 81325.02216323039
+     }
+    }
+   },
+   "warnings": [
+    {
+     "attributed_to": "caller",
+     "category": "PointingWarning",
+     "message": "Source Jupiter elevation span [-89.93, 44.07] does not cover the footprint extent [41.14, 45.85] at el_bore=43.50; proceeding with partial scan."
+    }
+   ]
+  },
+  "jup_passes_3": {
+   "passes": [
+    {
+     "arrays": {
+      "az": {
+       "first": 37.606655737799365,
+       "last": 38.14217665676024,
+       "max": 39.978158643920494,
+       "min": 35.77067375063911,
+       "n": 5630,
+       "sum": 213232.9631906853,
+       "sumsq": 8081017.902810713
+      },
+      "az_vel": {
+       "first": 0.046414062500000006,
+       "last": 0.046414062500000006,
+       "max": 0.046414062500000006,
+       "min": -0.0535859375,
+       "n": 5630,
+       "sum": 5.408388342124141,
+       "sumsq": 13.949671557548383
+      },
+      "el": {
+       "first": 33.70256525304325,
+       "last": 33.70256525304325,
+       "max": 33.70256525304325,
+       "min": 33.70256525304325,
+       "n": 5630,
+       "sum": 189745.44237463348,
+       "sumsq": 6394908.153098643
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 5630,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 562.8522974810644,
+       "max": 562.8522974810644,
+       "min": 0.0,
+       "n": 5630,
+       "sum": 1584429.2174091963,
+       "sumsq": 594585893.3081338
+      }
+     },
+     "computed": {
+      "az_speed": 0.05,
+      "az_start": 37.606655737799365,
+      "az_throw": 2.5538740794593835,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 546.6326070546493,
+      "duration": 562.8522974810644,
+      "el_bore": 33.70256525304325,
+      "mode": "rising",
+      "n_scans": 11,
+      "t0_iso": "2026-03-15 21:41:43.898",
+      "t1_iso": "2026-03-15 21:50:50.531",
+      "v_az": -0.0035859375000000006
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 0.05,
+      "az_start": 37.606655737799365,
+      "az_stop": 40.16052981725875,
+      "elevation": 33.70256525304325,
+      "timestep": 0.1
+     },
+     "duration": 562.8522974810644,
+     "metadata": {
+      "center_dec": 22.976891156079997,
+      "center_ra": 106.05298807374047,
+      "pattern_params": {
+       "az_start": 37.606655737799365,
+       "az_stop": 40.16052981725875,
+       "body": "jupiter",
+       "boresight_rot": 0.0,
+       "el_bore": 33.70256525304325,
+       "mode": "rising",
+       "n_passes": 3,
+       "n_scans": 11,
+       "pass_el_bore_deg": 33.70256525304325,
+       "pass_eta_offset_deg": -0.43247824898558435,
+       "pass_index": 0,
+       "v_az": -0.0035859375000000006
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Jupiter"
+     },
+     "scan_flag": {
+      "1": 5619,
+      "2": 11
+     },
+     "start_time": "2026-03-15T21:41:43.898",
+     "summary": "[Pass 1/3: eta_offset=-0.432 deg (focal-plane row), el_bore=33.70 deg]\nSource-CES on Jupiter (rising) at el_bore=33.70 deg\n  Footprint: 50 cover vertices, center=(0.000, -0.432) deg (xi, eta)\n  Az range: [37.61, 40.16] deg (throw 2.55 deg)\n  Drift v_az=-0.00359 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:41:43 to 2026-03-15 21:50:50\n  Scans: 11, Duration: 562.9s (9.4min), Trajectory points: 5630",
+     "track": {
+      "eta": {
+       "first": -1.5619296028776541,
+       "last": 0.7411620271410493,
+       "max": 0.7411620271410493,
+       "min": -1.5619296028776541,
+       "n": 5630,
+       "sum": -2301.2220207528926,
+       "sumsq": 2198.610507503051
+      },
+      "xi": {
+       "first": 0.53941435790162,
+       "last": -0.5136727198273352,
+       "max": 1.190092417114072,
+       "min": -1.1816452945725573,
+       "n": 5630,
+       "sum": 64.46355653409216,
+       "sumsq": 1725.5402051173223
+      }
+     }
+    },
+    {
+     "arrays": {
+      "az": {
+       "first": 35.304498051595004,
+       "last": 35.76660929059704,
+       "max": 37.69807211784626,
+       "min": 33.37303522434578,
+       "n": 5700,
+       "sum": 202552.6559252473,
+       "sumsq": 7203108.654910482
+      },
+      "az_vel": {
+       "first": 0.0462734375,
+       "last": 0.0462734375,
+       "max": 0.0462734375,
+       "min": -0.053726562500000005,
+       "n": 5700,
+       "sum": 4.661373268087269,
+       "sumsq": 14.121957690648035
+      },
+      "el": {
+       "first": 35.0,
+       "last": 35.0,
+       "max": 35.0,
+       "min": 35.0,
+       "n": 5700,
+       "sum": 199500.0,
+       "sumsq": 6982500.0
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 5700,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 569.8635078186132,
+       "max": 569.8635078186132,
+       "min": 0.0,
+       "n": 5700,
+       "sum": 1624110.9972830478,
+       "sumsq": 617068526.8990434
+      }
+     },
+     "computed": {
+      "az_speed": 0.05,
+      "az_start": 35.304498051595004,
+      "az_throw": 2.585743217357333,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 581.3504923836008,
+      "duration": 569.8635078186132,
+      "el_bore": 35.0,
+      "mode": "rising",
+      "n_scans": 11,
+      "t0_iso": "2026-03-15 21:53:25.696",
+      "t1_iso": "2026-03-15 22:03:07.047",
+      "v_az": -0.0037265625000000007
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 0.05,
+      "az_start": 35.304498051595004,
+      "az_stop": 37.89024126895234,
+      "elevation": 35.0,
+      "timestep": 0.1
+     },
+     "duration": 569.8635078186132,
+     "metadata": {
+      "center_dec": 22.976889499868506,
+      "center_ra": 106.05308091945889,
+      "pattern_params": {
+       "az_start": 35.304498051595004,
+       "az_stop": 37.89024126895234,
+       "body": "jupiter",
+       "boresight_rot": 0.0,
+       "el_bore": 35.0,
+       "mode": "rising",
+       "n_passes": 3,
+       "n_scans": 11,
+       "pass_el_bore_deg": 35.0,
+       "pass_eta_offset_deg": 0.0,
+       "pass_index": 1,
+       "v_az": -0.0037265625000000007
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Jupiter"
+     },
+     "scan_flag": {
+      "1": 5690,
+      "2": 10
+     },
+     "start_time": "2026-03-15T21:53:25.696",
+     "summary": "[Pass 2/3: eta_offset=+0.000 deg (focal-plane row), el_bore=35.00 deg]\nSource-CES on Jupiter (rising) at el_bore=35.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [35.30, 37.89] deg (throw 2.59 deg)\n  Drift v_az=-0.00373 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:53:25 to 2026-03-15 22:03:07\n  Scans: 11, Duration: 569.9s (9.5min), Trajectory points: 5700",
+     "track": {
+      "eta": {
+       "first": -1.1458311893113697,
+       "last": 1.1383874114601793,
+       "max": 1.1383874114601793,
+       "min": -1.1458311893113697,
+       "n": 5700,
+       "sum": -10.985535776183724,
+       "sumsq": 1257.3548722516675
+      },
+      "xi": {
+       "first": 0.5166254740292242,
+       "last": -0.5245724657734733,
+       "max": 1.1395673624584082,
+       "min": -1.1643930394835655,
+       "n": 5700,
+       "sum": -29.32458324130755,
+       "sumsq": 1655.1368178366013
+      }
+     }
+    },
+    {
+     "arrays": {
+      "az": {
+       "first": 32.8139575937364,
+       "last": 30.19640386547475,
+       "max": 35.21611634462886,
+       "min": 30.19640386547475,
+       "n": 6299,
+       "sum": 206701.345320106,
+       "sumsq": 6790106.857468659
+      },
+      "az_vel": {
+       "first": 0.04584375,
+       "last": -0.05415625,
+       "max": 0.04584375,
+       "min": -0.05415625,
+       "n": 6299,
+       "sum": -26.180218750000122,
+       "sumsq": 15.840882557089854
+      },
+      "el": {
+       "first": 36.29743474695675,
+       "last": 36.29743474695675,
+       "max": 36.29743474695675,
+       "min": 36.29743474695675,
+       "n": 6299,
+       "sum": 228637.5414710806,
+       "sumsq": 8298956.242251164
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 6299,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 629.7873631907719,
+       "max": 629.7873631907719,
+       "min": 0.0,
+       "n": 6299,
+       "sum": 1983515.3003693363,
+       "sumsq": 832861363.0954887
+      }
+     },
+     "computed": {
+      "az_speed": 0.05,
+      "az_start": 32.8139575937364,
+      "az_throw": 2.6195306799615494,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 628.2708948166983,
+      "duration": 629.7873631907719,
+      "el_bore": 36.29743474695675,
+      "mode": "rising",
+      "n_scans": 12,
+      "t0_iso": "2026-03-15 22:05:48.173",
+      "t1_iso": "2026-03-15 22:16:16.444",
+      "v_az": -0.004156250000000001
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 0.05,
+      "az_start": 32.8139575937364,
+      "az_stop": 35.43348827369795,
+      "elevation": 36.29743474695675,
+      "timestep": 0.1
+     },
+     "duration": 629.7873631907719,
+     "metadata": {
+      "center_dec": 22.97688744386074,
+      "center_ra": 106.05317864883277,
+      "pattern_params": {
+       "az_start": 32.8139575937364,
+       "az_stop": 35.43348827369795,
+       "body": "jupiter",
+       "boresight_rot": 0.0,
+       "el_bore": 36.29743474695675,
+       "mode": "rising",
+       "n_passes": 3,
+       "n_scans": 12,
+       "pass_el_bore_deg": 36.29743474695675,
+       "pass_eta_offset_deg": 0.43247824898558435,
+       "pass_index": 2,
+       "v_az": -0.004156250000000001
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Jupiter"
+     },
+     "scan_flag": {
+      "1": 6287,
+      "2": 12
+     },
+     "start_time": "2026-03-15T22:05:48.173",
+     "summary": "[Pass 3/3: eta_offset=+0.432 deg (focal-plane row), el_bore=36.30 deg]\nSource-CES on Jupiter (rising) at el_bore=36.30 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.432) deg (xi, eta)\n  Az range: [32.81, 35.43] deg (throw 2.62 deg)\n  Drift v_az=-0.00416 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 22:05:48 to 2026-03-15 22:16:16\n  Scans: 12, Duration: 629.8s (10.5min), Trajectory points: 6299",
+     "track": {
+      "eta": {
+       "first": -0.6908786501374853,
+       "last": 0.33297407645448246,
+       "max": 1.4892768823372613,
+       "min": -0.6908786501374853,
+       "n": 6299,
+       "sum": 2794.295672732085,
+       "sumsq": 2601.4712530187226
+      },
+      "xi": {
+       "first": 0.438585937936144,
+       "last": 1.243451478196472,
+       "max": 1.243451478196472,
+       "min": -1.1907578720660328,
+       "n": 6299,
+       "sum": 26.868351375810676,
+       "sumsq": 1855.3495794433654
+      }
+     }
+    }
+   ],
+   "warnings": []
+  },
+  "pm_setting": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 247.87422574753788,
+      "last": 250.38875141767357,
+      "max": 250.54381434923374,
+      "min": 247.7191628159777,
+      "n": 3779,
+      "sum": 941467.895353667,
+      "sumsq": 234551597.23151982
+     },
+     "az_vel": {
+      "first": 0.0495234375,
+      "last": 0.0495234375,
+      "max": 0.0495234375,
+      "min": -0.0504765625,
+      "n": 3779,
+      "sum": 25.198929292956805,
+      "sumsq": 9.413626919080809
+     },
+     "el": {
+      "first": 40.0,
+      "last": 40.0,
+      "max": 40.0,
+      "min": 40.0,
+      "n": 3779,
+      "sum": 151160.0,
+      "sumsq": 6046400.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3779,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 377.84279264047825,
+      "max": 377.84279264047825,
+      "min": 0.0,
+      "n": 3779,
+      "sum": 713933.9566941836,
+      "sumsq": 179860333.79954928
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 247.87422574753788,
+     "az_throw": 2.694591376003416,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 361.694814763664,
+     "duration": 377.84279264047825,
+     "el_bore": 40.0,
+     "mode": "setting",
+     "n_scans": 7,
+     "t0_iso": "2026-03-15 08:40:55.853",
+     "t1_iso": "2026-03-15 08:46:57.548",
+     "v_az": -0.0004765625
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 247.87422574753788,
+     "az_stop": 250.5688171235413,
+     "elevation": 40.0,
+     "timestep": 0.1
+    },
+    "duration": 377.84279264047825,
+    "metadata": {
+     "center_dec": -30.0,
+     "center_ra": 180.0,
+     "pattern_params": {
+      "az_start": 247.87422574753788,
+      "az_stop": 250.5688171235413,
+      "body": null,
+      "boresight_rot": 0.0,
+      "el_bore": 40.0,
+      "mode": "setting",
+      "n_scans": 7,
+      "v_az": -0.0004765625
+     },
+     "pattern_type": "source_ces",
+     "target_name": "RA=180.000, Dec=-30.000"
+    },
+    "scan_flag": {
+     "1": 3772,
+     "2": 7
+    },
+    "start_time": "2026-03-15T08:40:55.853",
+    "summary": "Source-CES on RA=180.000, Dec=-30.000 (setting) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [247.87, 250.57] deg (throw 2.69 deg)\n  Drift v_az=-0.00048 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 08:40:55 to 2026-03-15 08:46:57\n  Scans: 7, Duration: 377.8s (6.3min), Trajectory points: 3779",
+    "track": {
+     "eta": {
+      "first": -0.1551493089155323,
+      "last": 0.13350363353630101,
+      "max": 1.0126161109306402,
+      "min": -1.0581032903103813,
+      "n": 3779,
+      "sum": -83.80498842584177,
+      "sumsq": 881.3377413820756
+     },
+     "xi": {
+      "first": 1.1973188762557476,
+      "last": -1.2588053794570122,
+      "max": 1.1973188762557476,
+      "min": -1.2588053794570122,
+      "n": 3779,
+      "sum": -96.45746231600901,
+      "sumsq": 1052.1767026416314
+     }
+    }
+   },
+   "warnings": []
+  },
+  "sat_branch_rot_vaz": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": -72.37247434829916,
+      "last": -72.01529793095806,
+      "max": -69.10489009133593,
+      "min": -72.37247434829916,
+      "n": 1787,
+      "sum": -126355.46596330294,
+      "sumsq": 8935701.176306972
+     },
+     "az_vel": {
+      "first": 0.051000000000000004,
+      "last": -0.049,
+      "max": 0.051000000000000004,
+      "min": -0.049,
+      "n": 1787,
+      "sum": 1.7870000000000132,
+      "sumsq": 4.4667869998837695
+     },
+     "el": {
+      "first": 32.5,
+      "last": 32.5,
+      "max": 32.5,
+      "min": 32.5,
+      "n": 1787,
+      "sum": 58077.5,
+      "sumsq": 1887518.75
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 1787,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 357.176417341107,
+      "max": 357.176417341107,
+      "min": 0.0,
+      "n": 1787,
+      "sum": 319137.1288942791,
+      "sumsq": 76013445.29660246
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": -72.37247434829916,
+     "az_throw": 2.9723034778425586,
+     "boresight_rot": 10.0,
+     "crossing_seconds": 357.58872866157617,
+     "duration": 357.176417341107,
+     "el_bore": 32.5,
+     "mode": "setting",
+     "n_scans": 6,
+     "t0_iso": "2026-09-11 09:29:46.827",
+     "t1_iso": "2026-09-11 09:35:44.415",
+     "v_az": 0.001
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": -72.37247434829916,
+     "az_stop": -69.4001708704566,
+     "elevation": 32.5,
+     "timestep": 0.2
+    },
+    "duration": 357.176417341107,
+    "metadata": {
+     "center_dec": 2.5268916637807335,
+     "center_ra": 12.68822594941484,
+     "pattern_params": {
+      "az_start": -72.37247434829916,
+      "az_stop": -69.4001708704566,
+      "body": "saturn",
+      "boresight_rot": 10.0,
+      "el_bore": 32.5,
+      "mode": "setting",
+      "n_scans": 6,
+      "v_az": 0.001
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 1784,
+     "2": 3
+    },
+    "start_time": "2026-09-11T09:29:46.827",
+    "summary": "Source-CES on Saturn (setting) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [-72.37, -69.40] deg (throw 2.97 deg)\n  Drift v_az=+0.00100 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 09:29:46 to 2026-09-11 09:35:44\n  Scans: 6, Duration: 357.2s (6.0min), Trajectory points: 1787",
+    "track": {
+     "eta": {
+      "first": -0.6980058885109534,
+      "last": -0.9766021774508522,
+      "max": 0.9318010694158363,
+      "min": -0.9766021774508522,
+      "n": 1787,
+      "sum": 7.43181688233512,
+      "sumsq": 438.603065339934
+     },
+     "xi": {
+      "first": 1.748477650211821,
+      "last": 0.11157274905298104,
+      "max": 1.748477650211821,
+      "min": -1.4650054468133924,
+      "n": 1787,
+      "sum": 4.438647185910725,
+      "sumsq": 911.7661054461475
+     }
+    }
+   },
+   "warnings": []
+  },
+  "sat_c_auto_mode": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 69.8679825410098,
+      "last": 71.53353411934327,
+      "max": 72.28308165626902,
+      "min": 69.11843500408403,
+      "n": 3562,
+      "sum": 251836.10117208882,
+      "sumsq": 17807124.099669434
+     },
+     "az_vel": {
+      "first": 0.047546875,
+      "last": 0.047546875,
+      "max": 0.047546875,
+      "min": -0.052453125,
+      "n": 3562,
+      "sum": 16.711818542875875,
+      "sumsq": 8.792571437244797
+     },
+     "el": {
+      "first": 32.5,
+      "last": 32.5,
+      "max": 32.5,
+      "min": 32.5,
+      "n": 3562,
+      "sum": 115765.0,
+      "sumsq": 3762362.5
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3562,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 356.0624022338871,
+      "max": 356.0624022338871,
+      "min": 0.0,
+      "n": 3562,
+      "sum": 634147.1383785529,
+      "sumsq": 150551771.64666942
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 69.8679825410098,
+     "az_throw": 2.539017158813479,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 358.0407018176993,
+     "duration": 356.0624022338871,
+     "el_bore": 32.5,
+     "mode": "rising",
+     "n_scans": 7,
+     "t0_iso": "2026-09-11 02:28:20.495",
+     "t1_iso": "2026-09-11 02:34:18.536",
+     "v_az": -0.0024531250000000004
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 69.8679825410098,
+     "az_stop": 72.40699969982327,
+     "elevation": 32.5,
+     "timestep": 0.1
+    },
+    "duration": 356.0624022338871,
+    "metadata": {
+     "center_dec": 2.5352299497356374,
+     "center_ra": 12.706582318421257,
+     "pattern_params": {
+      "az_start": 69.8679825410098,
+      "az_stop": 72.40699969982327,
+      "body": "saturn",
+      "boresight_rot": 0.0,
+      "el_bore": 32.5,
+      "mode": "rising",
+      "n_scans": 7,
+      "v_az": -0.0024531250000000004
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 3555,
+     "2": 7
+    },
+    "start_time": "2026-09-11T02:28:20.495",
+    "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [69.87, 72.41] deg (throw 2.54 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:28:20 to 2026-09-11 02:34:18\n  Scans: 7, Duration: 356.1s (5.9min), Trajectory points: 3562",
+    "track": {
+     "eta": {
+      "first": -1.1197120958709805,
+      "last": 1.11935607684276,
+      "max": 1.11935607684276,
+      "min": -1.1197120958709805,
+      "n": 3562,
+      "sum": -0.5912283361458321,
+      "sumsq": 761.6242184598516
+     },
+     "xi": {
+      "first": 0.5596255773889267,
+      "last": -0.5487333065611832,
+      "max": 1.1485012709449676,
+      "min": -1.1570278564610663,
+      "n": 3562,
+      "sum": -4.848985760965661,
+      "sumsq": 1101.266118731754
+     }
+    }
+   },
+   "warnings": []
+  },
+  "sat_dwell": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 70.17413574268652,
+      "last": 69.7198610040608,
+      "max": 71.63839514100302,
+      "min": 69.7198610040608,
+      "n": 1853,
+      "sum": 131037.68746990181,
+      "sumsq": 9266927.569122085
+     },
+     "az_vel": {
+      "first": 0.047546875,
+      "last": -0.052453125,
+      "max": 0.047546875,
+      "min": -0.052453125,
+      "n": 1853,
+      "sum": -4.545640625000006,
+      "sumsq": 4.635937073063552
+     },
+     "el": {
+      "first": 32.5,
+      "last": 32.5,
+      "max": 32.5,
+      "min": 32.5,
+      "n": 1853,
+      "sum": 60222.5,
+      "sumsq": 1957231.25
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 1853,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 185.1820590576175,
+      "max": 185.1820590576175,
+      "min": 0.0,
+      "n": 1853,
+      "sum": 171571.1777168826,
+      "sumsq": 21186987.794936623
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 70.17413574268652,
+     "az_throw": 1.5390171588134791,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 358.0407018176993,
+     "duration": 185.1820590576175,
+     "el_bore": 32.5,
+     "mode": "rising",
+     "n_scans": 6,
+     "t0_iso": "2026-09-11 02:29:39.516",
+     "t1_iso": "2026-09-11 02:32:59.516",
+     "v_az": -0.0024531250000000004
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 70.17413574268652,
+     "az_stop": 71.7131529015,
+     "elevation": 32.5,
+     "timestep": 0.1
+    },
+    "duration": 185.1820590576175,
+    "metadata": {
+     "center_dec": 2.5352299497356374,
+     "center_ra": 12.706582318421257,
+     "pattern_params": {
+      "az_start": 70.17413574268652,
+      "az_stop": 71.7131529015,
+      "body": "saturn",
+      "boresight_rot": 0.0,
+      "el_bore": 32.5,
+      "mode": "rising",
+      "n_scans": 6,
+      "v_az": -0.0024531250000000004
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 1848,
+     "2": 5
+    },
+    "start_time": "2026-09-11T02:29:39.516",
+    "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [70.17, 71.71] deg (throw 1.54 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:29:39 to 2026-09-11 02:32:59\n  Scans: 6, Duration: 185.2s (3.1min), Trajectory points: 1853",
+    "track": {
+     "eta": {
+      "first": -0.6527734239321943,
+      "last": -0.08411295048003187,
+      "max": 0.5174211662138585,
+      "min": -0.6527734239321943,
+      "n": 1853,
+      "sum": -39.08690486054478,
+      "sumsq": 126.01300162803378
+     },
+     "xi": {
+      "first": 0.3543351450640736,
+      "last": 0.7132828428263089,
+      "max": 0.7132828428263089,
+      "min": -0.6838392343152928,
+      "n": 1853,
+      "sum": -25.9708919786043,
+      "sumsq": 207.04392534337524
+     }
+    }
+   },
+   "warnings": [
+    {
+     "attributed_to": "caller",
+     "category": "PointingWarning",
+     "message": "dwell=200.0 s is shorter than the 358.0 s footprint crossing of Saturn at el_bore=32.50 deg; planning a partial pass centred on the crossing midpoint."
+    }
+   ]
+  },
+  "sat_i1_offcentre": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 63.90361945285203,
+      "last": 65.49209995782572,
+      "max": 66.41304222956636,
+      "min": 62.98267718111139,
+      "n": 3733,
+      "sum": 241517.11028003,
+      "sumsq": 15628173.85401677
+     },
+     "az_vel": {
+      "first": 0.047125,
+      "last": 0.047125,
+      "max": 0.047125,
+      "min": -0.052875000000000005,
+      "n": 3733,
+      "sum": 15.92491364672579,
+      "sumsq": 9.201077203293396
+     },
+     "el": {
+      "first": 40.0,
+      "last": 40.0,
+      "max": 40.0,
+      "min": 40.0,
+      "n": 3733,
+      "sum": 149320.0,
+      "sumsq": 5972800.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3733,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 373.20045304822855,
+      "max": 373.20045304822855,
+      "min": 0.0,
+      "n": 3733,
+      "sum": 696578.6456145187,
+      "sumsq": 173332196.73441422
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 63.90361945285203,
+     "az_throw": 2.6614318074873466,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 369.3744165731914,
+     "duration": 373.20045304822855,
+     "el_bore": 40.0,
+     "mode": "rising",
+     "n_scans": 7,
+     "t0_iso": "2026-09-11 02:56:47.229",
+     "t1_iso": "2026-09-11 03:02:56.604",
+     "v_az": -0.002875
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 63.90361945285203,
+     "az_stop": 66.56505126033937,
+     "elevation": 40.0,
+     "timestep": 0.1
+    },
+    "duration": 373.20045304822855,
+    "metadata": {
+     "center_dec": 2.534538493940606,
+     "center_ra": 12.705065968562737,
+     "pattern_params": {
+      "az_start": 63.90361945285203,
+      "az_stop": 66.56505126033937,
+      "body": "saturn",
+      "boresight_rot": 0.0,
+      "el_bore": 40.0,
+      "mode": "rising",
+      "n_scans": 7,
+      "v_az": -0.002875
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 3726,
+     "2": 7
+    },
+    "start_time": "2026-09-11T02:56:47.229",
+    "summary": "Source-CES on Saturn (rising) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.000, -1.780) deg (xi, eta)\n  Az range: [63.90, 66.57] deg (throw 2.66 deg)\n  Drift v_az=-0.00287 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:56:47 to 2026-09-11 03:02:56\n  Scans: 7, Duration: 373.2s (6.2min), Trajectory points: 3733",
+    "track": {
+     "eta": {
+      "first": -2.937282357217784,
+      "last": -0.6075583367367289,
+      "max": -0.6075583367367289,
+      "min": -2.937282357217784,
+      "n": 3733,
+      "sum": -6612.368804379376,
+      "sumsq": 12589.280875434219
+     },
+     "xi": {
+      "first": 0.4066094643236724,
+      "last": -0.3794762401102913,
+      "max": 1.1063994872205787,
+      "min": -1.1007370285923916,
+      "n": 3733,
+      "sum": 21.149994030641153,
+      "sumsq": 1010.1636485777082
+     }
+    }
+   },
+   "warnings": []
+  },
+  "sat_offset_footprint": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 63.89636076552068,
+      "last": 65.45172380516709,
+      "max": 66.42876617651113,
+      "min": 62.919318394176635,
+      "n": 3780,
+      "sum": 244467.87983859988,
+      "sumsq": 15813391.965661898
+     },
+     "az_vel": {
+      "first": 0.046984375,
+      "last": 0.046984375,
+      "max": 0.046984375,
+      "min": -0.053015625000000004,
+      "n": 3780,
+      "sum": 15.600937499889895,
+      "sumsq": 9.32153154780452
+     },
+     "el": {
+      "first": 40.0,
+      "last": 40.0,
+      "max": 40.0,
+      "min": 40.0,
+      "n": 3780,
+      "sum": 151200.0,
+      "sumsq": 6048000.0
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3780,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 377.8921805092429,
+      "max": 377.8921805092429,
+      "min": 0.0,
+      "n": 3780,
+      "sum": 714216.2211624691,
+      "sumsq": 179954956.82819244
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 63.89636076552068,
+     "az_throw": 2.694944146494592,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 372.82479320423226,
+     "duration": 377.8921805092429,
+     "el_bore": 40.0,
+     "mode": "rising",
+     "n_scans": 7,
+     "t0_iso": "2026-09-11 03:03:21.158",
+     "t1_iso": "2026-09-11 03:09:33.983",
+     "v_az": -0.0030156250000000005
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 63.89636076552068,
+     "az_stop": 66.59130491201527,
+     "elevation": 40.0,
+     "timestep": 0.1
+    },
+    "duration": 377.8921805092429,
+    "metadata": {
+     "center_dec": 2.534538493940606,
+     "center_ra": 12.705065968562737,
+     "pattern_params": {
+      "az_start": 63.89636076552068,
+      "az_stop": 66.59130491201527,
+      "body": "saturn",
+      "boresight_rot": 0.0,
+      "el_bore": 40.0,
+      "mode": "rising",
+      "n_scans": 7,
+      "v_az": -0.0030156250000000005
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 3767,
+     "2": 13
+    },
+    "start_time": "2026-09-11T03:03:21.158",
+    "summary": "Source-CES on Saturn (rising) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.200, -0.150) deg (xi, eta)\n  Az range: [63.90, 66.59] deg (throw 2.69 deg)\n  Drift v_az=-0.00302 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 03:03:21 to 2026-09-11 03:09:33\n  Scans: 7, Duration: 377.9s (6.3min), Trajectory points: 3780",
+    "track": {
+     "eta": {
+      "first": -1.3055316420240803,
+      "last": 1.0241350260075852,
+      "max": 1.0241350260075852,
+      "min": -1.3055316420240803,
+      "n": 3780,
+      "sum": -527.0269846814253,
+      "sumsq": 963.0231747807566
+     },
+     "xi": {
+      "first": 0.5837968681868824,
+      "last": -0.15443754951627803,
+      "max": 1.2993944587478583,
+      "min": -0.891874601479741,
+      "n": 3780,
+      "sum": 781.3689300075375,
+      "sumsq": 1165.519801038753
+     }
+    }
+   },
+   "warnings": []
+  },
+  "sat_overrides": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 69.91749112041654,
+      "last": 71.48162737041672,
+      "max": 73.28782975503785,
+      "min": 68.11128873579524,
+      "n": 3571,
+      "sum": 252468.12606538247,
+      "sumsq": 17857098.65869084
+     },
+     "az_vel": {
+      "first": 1.497546875,
+      "last": 1.497546875,
+      "max": 1.497546875,
+      "min": -1.502453125,
+      "n": 3571,
+      "sum": 17.137531221393143,
+      "sumsq": 5766.898505551722
+     },
+     "el": {
+      "first": 32.5,
+      "last": 32.5,
+      "max": 32.5,
+      "min": 32.5,
+      "n": 3571,
+      "sum": 116057.5,
+      "sumsq": 3771868.75
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3571,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 357.03999999999996,
+      "max": 357.03999999999996,
+      "min": 0.0,
+      "n": 3571,
+      "sum": 637494.92,
+      "sumsq": 151762043.03613338
+     }
+    },
+    "computed": {
+     "az_speed": 1.5,
+     "az_start": 69.91749112041654,
+     "az_throw": 2.44,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 358.0407018176993,
+     "duration": 357.03999999999996,
+     "el_bore": 32.5,
+     "mode": "rising",
+     "n_scans": 99,
+     "t0_iso": "2026-09-11 02:28:20.495",
+     "t1_iso": "2026-09-11 02:34:18.536",
+     "v_az": -0.0024531250000000004
+    },
+    "config": {
+     "az_accel": 1.5,
+     "az_speed": 1.5,
+     "az_start": 69.91749112041654,
+     "az_stop": 72.35749112041654,
+     "elevation": 32.5,
+     "timestep": 0.1
+    },
+    "duration": 357.03999999999996,
+    "metadata": {
+     "center_dec": 2.5352299497356374,
+     "center_ra": 12.706582318421257,
+     "pattern_params": {
+      "az_start": 69.91749112041654,
+      "az_stop": 72.35749112041654,
+      "body": "saturn",
+      "boresight_rot": 0.0,
+      "el_bore": 32.5,
+      "mode": "rising",
+      "n_scans": 99,
+      "v_az": -0.0024531250000000004
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 1610,
+     "2": 1961
+    },
+    "start_time": "2026-09-11T02:28:20.495",
+    "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [69.92, 72.36] deg (throw 2.44 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.50 deg/s^2\n  Source pass: 2026-09-11 02:28:20 to 2026-09-11 02:34:18\n  Scans: 99, Duration: 357.0s (6.0min), Trajectory points: 3571",
+    "track": {
+     "eta": {
+      "first": -1.0975271367874373,
+      "last": 1.0996484122225911,
+      "max": 1.5116979998296673,
+      "min": -1.494294977424564,
+      "n": 3571,
+      "sum": 23.402924517766394,
+      "sumsq": 1868.3645815994792
+     },
+     "xi": {
+      "first": 0.5238979955877918,
+      "last": -0.5121165875917099,
+      "max": 1.8741269875377922,
+      "min": -1.8829804635858438,
+      "n": 3571,
+      "sum": 9.950086358088924,
+      "sumsq": 3934.3985831151904
+     }
+    }
+   },
+   "warnings": [
+    {
+     "attributed_to": "library",
+     "category": "AccelerationLimitWarning",
+     "message": "Trajectory azimuth acceleration (2.23 deg/s^2) exceeds limit (1.50 deg/s^2)."
+    }
+   ]
+  },
+  "sat_passes_anchor": {
+   "passes": [
+    {
+     "arrays": {
+      "az": {
+       "first": 71.56282129628563,
+       "last": 73.1835774278013,
+       "max": 75.45431390204125,
+       "min": 69.29208482204567,
+       "n": 3561,
+       "sum": 257720.96292823675,
+       "sumsq": 18663971.93397461
+      },
+      "az_vel": {
+       "first": 1.497546875,
+       "last": 1.497546875,
+       "max": 1.497546875,
+       "min": -1.502453125,
+       "n": 3561,
+       "sum": 17.704111860161536,
+       "sumsq": 5374.1006371276435
+      },
+      "el": {
+       "first": 29.900439383214547,
+       "last": 29.900439383214547,
+       "max": 29.900439383214547,
+       "min": 29.900439383214547,
+       "n": 3561,
+       "sum": 106475.46464362704,
+       "sumsq": 3183663.1763763726
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 3561,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 356.0330137420495,
+       "max": 356.0330137420495,
+       "min": 0.0,
+       "n": 3561,
+       "sum": 633916.7809677192,
+       "sumsq": 150484667.17864338
+      }
+     },
+     "computed": {
+      "az_speed": 1.5,
+      "az_start": 71.56282129628563,
+      "az_throw": 2.4941496183516136,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 353.8300726670792,
+      "duration": 356.0330137420495,
+      "el_bore": 29.900439383214547,
+      "mode": "rising",
+      "n_scans": 77,
+      "t0_iso": "2026-09-11 02:15:13.533",
+      "t1_iso": "2026-09-11 02:21:07.363",
+      "v_az": -0.0024531250000000004
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 1.5,
+      "az_start": 71.56282129628563,
+      "az_stop": 74.05697091463725,
+      "elevation": 29.900439383214547,
+      "timestep": 0.1
+     },
+     "duration": 356.0330137420495,
+     "metadata": {
+      "center_dec": 2.535463961677896,
+      "center_ra": 12.707094466589242,
+      "pattern_params": {
+       "az_start": 71.56282129628563,
+       "az_stop": 74.05697091463725,
+       "body": "saturn",
+       "boresight_rot": 0.0,
+       "el_bore": 29.900439383214547,
+       "mode": "rising",
+       "n_passes": 2,
+       "n_scans": 77,
+       "pass_el_bore_deg": 29.900439383214547,
+       "pass_eta_offset_deg": -0.3243586867391883,
+       "pass_index": 0,
+       "v_az": -0.0024531250000000004
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Saturn"
+     },
+     "scan_flag": {
+      "1": 1280,
+      "2": 2281
+     },
+     "start_time": "2026-09-11T02:15:13.533",
+     "summary": "[Pass 1/2: eta_offset=-0.324 deg (focal-plane row), el_bore=29.90 deg]\nSource-CES on Saturn (rising) at el_bore=29.90 deg\n  Footprint: 50 cover vertices, center=(0.000, -0.324) deg (xi, eta)\n  Az range: [71.56, 74.06] deg (throw 2.49 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:15:13 to 2026-09-11 02:21:07\n  Scans: 77, Duration: 356.0s (5.9min), Trajectory points: 3561",
+     "track": {
+      "eta": {
+       "first": -1.4114073396953857,
+       "last": 0.7746712879927602,
+       "max": 1.3717676483918158,
+       "min": -1.9805123704158758,
+       "n": 3561,
+       "sum": -1101.9619681744846,
+       "sumsq": 2841.6794951704005
+      },
+      "xi": {
+       "first": 0.6023974719902017,
+       "last": -0.5846382126952357,
+       "max": 2.341907394060463,
+       "min": -2.340313610213674,
+       "n": 3561,
+       "sum": 27.76380962498638,
+       "sumsq": 6774.967972414206
+      }
+     }
+    },
+    {
+     "arrays": {
+      "az": {
+       "first": 70.74789104095069,
+       "last": 72.39855296003721,
+       "max": 74.66806358585225,
+       "min": 68.47838041513566,
+       "n": 3576,
+       "sum": 255945.8418737664,
+       "sumsq": 18330911.458517823
+      },
+      "az_vel": {
+       "first": 1.4975625,
+       "last": 1.4975625,
+       "max": 1.4975625,
+       "min": -1.5024375,
+       "n": 3576,
+       "sum": 18.00618273021832,
+       "sumsq": 5407.319811019529
+      },
+      "el": {
+       "first": 31.1978741301713,
+       "last": 31.1978741301713,
+       "max": 31.1978741301713,
+       "min": 31.1978741301713,
+       "n": 3576,
+       "sum": 111563.59788949252,
+       "sumsq": 3480547.084465435
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 3576,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 357.4613270617043,
+       "max": 357.4613270617043,
+       "min": 0.0,
+       "n": 3576,
+       "sum": 639140.8527863272,
+       "sumsq": 152333394.00133505
+      }
+     },
+     "computed": {
+      "az_speed": 1.5,
+      "az_start": 70.74789104095069,
+      "az_throw": 2.5219739037994344,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 356.5183856978243,
+      "duration": 357.4613270617043,
+      "el_bore": 31.1978741301713,
+      "mode": "rising",
+      "n_scans": 77,
+      "t0_iso": "2026-09-11 02:23:39.572",
+      "t1_iso": "2026-09-11 02:29:36.091",
+      "v_az": -0.0024375000000000004
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 1.5,
+      "az_start": 70.74789104095069,
+      "az_stop": 73.26986494475013,
+      "elevation": 31.1978741301713,
+      "timestep": 0.1
+     },
+     "duration": 357.4613270617043,
+     "metadata": {
+      "center_dec": 2.5353474591146044,
+      "center_ra": 12.70683956348153,
+      "pattern_params": {
+       "az_start": 70.74789104095069,
+       "az_stop": 73.26986494475013,
+       "body": "saturn",
+       "boresight_rot": 0.0,
+       "el_bore": 31.1978741301713,
+       "mode": "rising",
+       "n_passes": 2,
+       "n_scans": 77,
+       "pass_el_bore_deg": 31.1978741301713,
+       "pass_eta_offset_deg": 0.3243586867391883,
+       "pass_index": 1,
+       "v_az": -0.0024375000000000004
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Saturn"
+     },
+     "scan_flag": {
+      "1": 1290,
+      "2": 2286
+     },
+     "start_time": "2026-09-11T02:23:39.572",
+     "summary": "[Pass 2/2: eta_offset=+0.324 deg (focal-plane row), el_bore=31.20 deg]\nSource-CES on Saturn (rising) at el_bore=31.20 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.324) deg (xi, eta)\n  Az range: [70.75, 73.27] deg (throw 2.52 deg)\n  Drift v_az=-0.00244 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:23:39 to 2026-09-11 02:29:36\n  Scans: 77, Duration: 357.5s (6.0min), Trajectory points: 3576",
+     "track": {
+      "eta": {
+       "first": -0.7827681876678398,
+       "last": 1.4396324540805838,
+       "max": 2.0518626654556096,
+       "min": -1.3667378471824358,
+       "n": 3576,
+       "sum": 1207.0856285184063,
+       "sumsq": 3049.462979416741
+      },
+      "xi": {
+       "first": 0.581606892463159,
+       "last": -0.5650433982815003,
+       "max": 2.282489856687971,
+       "min": -2.2825604536970867,
+       "n": 3576,
+       "sum": 25.499872646638835,
+       "sumsq": 6419.227606680572
+      }
+     }
+    }
+   ],
+   "warnings": []
+  },
+  "sat_passes_anchor_zero_padding": {
+   "passes": [
+    {
+     "arrays": {
+      "az": {
+       "first": 72.06282129628563,
+       "last": 72.69186932487449,
+       "max": 74.9570793829684,
+       "min": 69.79761123819169,
+       "n": 3528,
+       "sum": 255347.27425572643,
+       "sumsq": 18489440.635112964
+      },
+      "az_vel": {
+       "first": 1.497546875,
+       "last": 1.497546875,
+       "max": 1.497546875,
+       "min": -1.502453125,
+       "n": 3528,
+       "sum": 7.788924565993881,
+       "sumsq": 4882.675177277219
+      },
+      "el": {
+       "first": 29.900439383214547,
+       "last": 29.900439383214547,
+       "max": 29.900439383214547,
+       "min": 29.900439383214547,
+       "n": 3528,
+       "sum": 105488.75014398096,
+       "sumsq": 3154159.979291166
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 3528,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 352.6528773555291,
+       "max": 352.6528773555291,
+       "min": 0.0,
+       "n": 3528,
+       "sum": 622079.6756551533,
+       "sumsq": 146272858.2615366
+      }
+     },
+     "computed": {
+      "az_speed": 1.5,
+      "az_start": 72.06282129628563,
+      "az_throw": 1.4941496183516136,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 353.8300726670792,
+      "duration": 352.6528773555291,
+      "el_bore": 29.900439383214547,
+      "mode": "rising",
+      "n_scans": 89,
+      "t0_iso": "2026-09-11 02:15:13.533",
+      "t1_iso": "2026-09-11 02:21:07.363",
+      "v_az": -0.0024531250000000004
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 1.5,
+      "az_start": 72.06282129628563,
+      "az_stop": 73.55697091463725,
+      "elevation": 29.900439383214547,
+      "timestep": 0.1
+     },
+     "duration": 352.6528773555291,
+     "metadata": {
+      "center_dec": 2.535463961677896,
+      "center_ra": 12.707094466589242,
+      "pattern_params": {
+       "az_start": 72.06282129628563,
+       "az_stop": 73.55697091463725,
+       "body": "saturn",
+       "boresight_rot": 0.0,
+       "el_bore": 29.900439383214547,
+       "mode": "rising",
+       "n_passes": 2,
+       "n_scans": 89,
+       "pass_el_bore_deg": 29.900439383214547,
+       "pass_eta_offset_deg": -0.3243586867391883,
+       "pass_index": 0,
+       "v_az": -0.0024531250000000004
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Saturn"
+     },
+     "scan_flag": {
+      "1": 887,
+      "2": 2641
+     },
+     "start_time": "2026-09-11T02:15:13.533",
+     "summary": "[Pass 1/2: eta_offset=-0.324 deg (focal-plane row), el_bore=29.90 deg]\nSource-CES on Saturn (rising) at el_bore=29.90 deg\n  Footprint: 50 cover vertices, center=(0.000, -0.324) deg (xi, eta)\n  Az range: [72.06, 73.56] deg (throw 1.49 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:15:13 to 2026-09-11 02:21:07\n  Scans: 89, Duration: 352.7s (5.9min), Trajectory points: 3528",
+     "track": {
+      "eta": {
+       "first": -1.1971106313920525,
+       "last": 0.5463555473180861,
+       "max": 1.1431080276902001,
+       "min": -1.7751883977956338,
+       "n": 3528,
+       "sum": -1122.3847456862761,
+       "sumsq": 2149.0943296135933
+      },
+      "xi": {
+       "first": 0.22102457137762577,
+       "last": -0.218350965291437,
+       "max": 1.9585221212904567,
+       "min": -1.9676369346738565,
+       "n": 3528,
+       "sum": 9.124775679092409,
+       "sumsq": 4613.903695083145
+      }
+     }
+    },
+    {
+     "arrays": {
+      "az": {
+       "first": 71.24789104095069,
+       "last": 70.37448985752002,
+       "max": 74.16986274682412,
+       "min": 68.98471357370885,
+       "n": 3584,
+       "sum": 256563.72485689062,
+       "sumsq": 18374602.810433585
+      },
+      "az_vel": {
+       "first": 1.4975625,
+       "last": -1.5024375,
+       "max": 1.4975625,
+       "min": -1.5024375,
+       "n": 3584,
+       "sum": -8.735999999999827,
+       "sumsq": 4974.608809599313
+      },
+      "el": {
+       "first": 31.1978741301713,
+       "last": 31.1978741301713,
+       "max": 31.1978741301713,
+       "min": 31.1978741301713,
+       "n": 3584,
+       "sum": 111813.1808825339,
+       "sumsq": 3488333.5432673707
+      },
+      "el_vel": {
+       "first": 0.0,
+       "last": 0.0,
+       "max": 0.0,
+       "min": 0.0,
+       "n": 3584,
+       "sum": 0.0,
+       "sumsq": 0.0
+      },
+      "times": {
+       "first": 0.0,
+       "last": 358.31843422796607,
+       "max": 358.31843422796607,
+       "min": 0.0,
+       "n": 3584,
+       "sum": 642106.6341365152,
+       "sumsq": 153407167.1564561
+      }
+     },
+     "computed": {
+      "az_speed": 1.5,
+      "az_start": 71.24789104095069,
+      "az_throw": 1.5219739037994344,
+      "boresight_rot": 0.0,
+      "crossing_seconds": 356.5183856978243,
+      "duration": 358.31843422796607,
+      "el_bore": 31.1978741301713,
+      "mode": "rising",
+      "n_scans": 90,
+      "t0_iso": "2026-09-11 02:23:39.572",
+      "t1_iso": "2026-09-11 02:29:36.091",
+      "v_az": -0.0024375000000000004
+     },
+     "config": {
+      "az_accel": 1.0,
+      "az_speed": 1.5,
+      "az_start": 71.24789104095069,
+      "az_stop": 72.76986494475013,
+      "elevation": 31.1978741301713,
+      "timestep": 0.1
+     },
+     "duration": 358.31843422796607,
+     "metadata": {
+      "center_dec": 2.5353474591146044,
+      "center_ra": 12.70683956348153,
+      "pattern_params": {
+       "az_start": 71.24789104095069,
+       "az_stop": 72.76986494475013,
+       "body": "saturn",
+       "boresight_rot": 0.0,
+       "el_bore": 31.1978741301713,
+       "mode": "rising",
+       "n_passes": 2,
+       "n_scans": 90,
+       "pass_el_bore_deg": 31.1978741301713,
+       "pass_eta_offset_deg": 0.3243586867391883,
+       "pass_index": 1,
+       "v_az": -0.0024375000000000004
+      },
+      "pattern_type": "source_ces",
+      "target_name": "Saturn"
+     },
+     "scan_flag": {
+      "1": 913,
+      "2": 2671
+     },
+     "start_time": "2026-09-11T02:23:39.572",
+     "summary": "[Pass 2/2: eta_offset=+0.324 deg (focal-plane row), el_bore=31.20 deg]\nSource-CES on Saturn (rising) at el_bore=31.20 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.324) deg (xi, eta)\n  Az range: [71.25, 72.77] deg (throw 1.52 deg)\n  Drift v_az=-0.00244 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:23:39 to 2026-09-11 02:29:36\n  Scans: 90, Duration: 358.3s (6.0min), Trajectory points: 3584",
+     "track": {
+      "eta": {
+       "first": -0.5630144949966961,
+       "last": 0.5494227364841049,
+       "max": 1.8434344794225956,
+       "min": -1.156267748465107,
+       "n": 3584,
+       "sum": 1223.6893015778905,
+       "sumsq": 2362.698312327183
+      },
+      "xi": {
+       "first": 0.21273491766316857,
+       "last": 0.8977304953230478,
+       "max": 1.9110806785453196,
+       "min": -1.9221786331815165,
+       "n": 3584,
+       "sum": -14.430931876293641,
+       "sumsq": 4412.404731159402
+      }
+     }
+    }
+   ],
+   "warnings": []
+  },
+  "sat_zero_padding": {
+   "block": {
+    "arrays": {
+     "az": {
+      "first": 70.3679825410098,
+      "last": 69.45918775125836,
+      "max": 71.83224197164667,
+      "min": 69.45918775125836,
+      "n": 3706,
+      "sum": 261951.54544480337,
+      "sumsq": 18516537.101345424
+     },
+     "az_vel": {
+      "first": 0.047546875,
+      "last": -0.052453125,
+      "max": 0.047546875,
+      "min": -0.052453125,
+      "n": 3706,
+      "sum": -9.091281249999984,
+      "sumsq": 9.271874812363682
+     },
+     "el": {
+      "first": 32.5,
+      "last": 32.5,
+      "max": 32.5,
+      "min": 32.5,
+      "n": 3706,
+      "sum": 120445.0,
+      "sumsq": 3914462.5
+     },
+     "el_vel": {
+      "first": 0.0,
+      "last": 0.0,
+      "max": 0.0,
+      "min": 0.0,
+      "n": 3706,
+      "sum": 0.0,
+      "sumsq": 0.0
+     },
+     "times": {
+      "first": 0.0,
+      "last": 370.464118115235,
+      "max": 370.464118115235,
+      "min": 0.0,
+      "n": 3706,
+      "sum": 686470.0108675305,
+      "sumsq": 169564551.57666945
+     }
+    },
+    "computed": {
+     "az_speed": 0.05,
+     "az_start": 70.3679825410098,
+     "az_throw": 1.5390171588134791,
+     "boresight_rot": 0.0,
+     "crossing_seconds": 358.0407018176993,
+     "duration": 370.464118115235,
+     "el_bore": 32.5,
+     "mode": "rising",
+     "n_scans": 12,
+     "t0_iso": "2026-09-11 02:28:20.495",
+     "t1_iso": "2026-09-11 02:34:18.536",
+     "v_az": -0.0024531250000000004
+    },
+    "config": {
+     "az_accel": 1.0,
+     "az_speed": 0.05,
+     "az_start": 70.3679825410098,
+     "az_stop": 71.90699969982327,
+     "elevation": 32.5,
+     "timestep": 0.1
+    },
+    "duration": 370.464118115235,
+    "metadata": {
+     "center_dec": 2.5352299497356374,
+     "center_ra": 12.706582318421257,
+     "pattern_params": {
+      "az_start": 70.3679825410098,
+      "az_stop": 71.90699969982327,
+      "body": "saturn",
+      "boresight_rot": 0.0,
+      "el_bore": 32.5,
+      "mode": "rising",
+      "n_scans": 12,
+      "v_az": -0.0024531250000000004
+     },
+     "pattern_type": "source_ces",
+     "target_name": "Saturn"
+    },
+    "scan_flag": {
+     "1": 3693,
+     "2": 13
+    },
+    "start_time": "2026-09-11T02:28:20.495",
+    "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [70.37, 71.91] deg (throw 1.54 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:28:20 to 2026-09-11 02:34:18\n  Scans: 12, Duration: 370.5s (6.2min), Trajectory points: 3706",
+    "track": {
+     "eta": {
+      "first": -0.8949034293549023,
+      "last": 0.24297488815294277,
+      "max": 0.8413478401281886,
+      "min": -0.8949034293549023,
+      "n": 3706,
+      "sum": 76.94623285731001,
+      "sumsq": 549.1657582728468
+     },
+     "xi": {
+      "first": 0.19927512464121017,
+      "last": 0.9164162022948565,
+      "max": 0.9164162022948565,
+      "min": -0.8419179135930842,
+      "n": 3706,
+      "sum": 44.08224802711368,
+      "sumsq": 535.2950725530258
+     }
+    }
+   },
+   "warnings": []
+  }
+ },
+ "header": {
+  "astropy": "7.2.0",
+  "cases": [
+   "jup_c_rising",
+   "jup_c_setting",
+   "jup_c_rising_plan",
+   "jup_c_setting_plan",
+   "sat_c_auto_mode",
+   "sat_i1_offcentre",
+   "sat_offset_footprint",
+   "jup_full_array",
+   "fixed_setting",
+   "pm_setting",
+   "sat_overrides",
+   "sat_dwell",
+   "sat_zero_padding",
+   "sat_branch_rot_vaz",
+   "jup_partial",
+   "jup_anchor_plan",
+   "jup_anchor_params",
+   "jup_passes_3",
+   "sat_passes_anchor",
+   "sat_passes_anchor_zero_padding",
+   "err_not_reached",
+   "err_dwell_long",
+   "err_near_transit"
+  ],
+  "commit": "3234265a07124acc6e5269e5eca8c9b0393d15f4",
+  "iers_last_measured_mjd": 61216.0,
+  "numpy": "2.3.5",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "pyerfa": "2.0.1.5",
+  "python": "3.13.5",
+  "scipy": "1.17.0"
+ }
+}

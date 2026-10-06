@@ -1,8 +1,8 @@
-"""Tests for the pairwise slew transition primitive.
+"""Tests for the slew transition and escape primitives (``overhead.transitions``).
 
-Every cause is reached through predicate fakes, so no test here touches
-the Sun ephemeris; the one real-model test uses a site with avoidance
-disabled.
+Transition causes are reached through predicate fakes; the escape tests use
+the real Sun ephemeris to place their fake zones, and two tests exercise the
+real scalar model.
 """
 
 import dataclasses
@@ -14,11 +14,11 @@ from _sun_stubs import fake_sun_model
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import Coordinates, get_fyst_site
+from fyst_trajectories.dispatch import estimate_slew_time
 from fyst_trajectories.exceptions import EncoderSolutionCause
 from fyst_trajectories.overhead import (
     DeferralReason,
     Transition,
-    estimate_slew_time,
     plan_escape,
     plan_transition,
 )
@@ -154,6 +154,10 @@ class TestDirectTransition:
         assert tr.az_shift == 0.0
 
     def test_real_scalar_model_with_avoidance_disabled(self, quiet_site):
+        """10 deg of azimuth at 3 deg/s and 1.5 deg/s^2 is 10/3 + 3/1.5 = 5.33 s, plus 5 s settle.
+
+        The limits are pending instrument verification, so 10.3 moves with them.
+        """
         tr = plan_transition(190.0, 45.0, 200.0, 45.0, T0, quiet_site, settle_time=5.0)
         assert tr.path == "direct"
         assert tr.duration == pytest.approx(10.3, abs=0.05)
@@ -341,6 +345,95 @@ class TestDetour:
         )
         assert tr.cause is DeferralReason.SUN_PATH
 
+    @staticmethod
+    def _safe_until(cut_seconds: float):
+        """Build a point predicate that closes ``cut_seconds`` after ``T0``."""
+
+        def predicate(az, el, t):
+            return bool((t - T0).sec < cut_seconds)
+
+        return predicate
+
+    def test_a_detour_whose_goal_closes_during_the_hold_is_refused(self, site):
+        """The detoured goal is held like a direct one, so the slew buys nothing."""
+        kwargs = dict(
+            sun_safe=self._safe_until(200.0), slew_safe=_HighPathsOnly(), allow_detour=True
+        )
+        unheld = plan_transition(0.0, 30.0, 90.0, 30.0, T0, site, **kwargs)
+        assert unheld.safe and unheld.path == "detour"
+        assert unheld.duration < 200.0
+
+        held = plan_transition(0.0, 30.0, 90.0, 30.0, T0, site, hold=300.0, **kwargs)
+        assert not held.safe
+        assert held.cause is DeferralReason.SUN_POINT
+        assert held.duration == 0.0
+        assert held.detour_via is None
+
+    def test_a_detour_that_outlives_the_hold_is_unchanged(self, site):
+        kwargs = dict(
+            sun_safe=_always(True), slew_safe=_HighPathsOnly(), settle_time=5.0, allow_detour=True
+        )
+        plain = plan_transition(0.0, 30.0, 90.0, 30.0, T0, site, **kwargs)
+        held = plan_transition(0.0, 30.0, 90.0, 30.0, T0, site, hold=300.0, **kwargs)
+        assert held.safe and held.path == "detour"
+        assert held.detour_via == plain.detour_via
+        assert held.az_to == plain.az_to
+        assert held.duration == pytest.approx(plain.duration)
+
+    def test_the_hold_window_starts_at_the_detour_arrival(self, site):
+        """The goal is asked about at the two-leg arrival and the hold's end."""
+        seen = []
+
+        class _Recorder:
+            def __call__(self, az, el, t):
+                seen.append(float((t - T0).sec))
+                return True
+
+        tr = plan_transition(
+            0.0,
+            30.0,
+            90.0,
+            30.0,
+            T0,
+            site,
+            sun_safe=_Recorder(),
+            slew_safe=_HighPathsOnly(),
+            allow_detour=True,
+            hold=300.0,
+        )
+        assert tr.path == "detour"
+        # The two-leg price is longer than the direct estimate a direct hold
+        # would have anchored on.
+        assert tr.duration > estimate_slew_time(0.0, 30.0, 90.0, 30.0, site)
+        assert any(abs(s - tr.duration) < 1e-3 for s in seen)
+        assert any(abs(s - (tr.duration + 300.0)) < 1e-3 for s in seen)
+        assert max(seen) == pytest.approx(tr.duration + 300.0, abs=1e-3)
+
+    def test_no_detour_path_stays_sun_path_with_a_hold(self, site):
+        tr = plan_transition(
+            0.0,
+            30.0,
+            90.0,
+            30.0,
+            T0,
+            site,
+            sun_safe=_always(True),
+            slew_safe=_HighPathsOnly(clear_above=1000.0),
+            allow_detour=True,
+            hold=300.0,
+        )
+        assert tr.cause is DeferralReason.SUN_PATH
+
+    def test_real_scalar_model_detour_into_the_approaching_zone_is_refused(self, site):
+        """45 deg scalar zone: the detoured goal is inside the zone within minutes."""
+        t = Time("2026-03-15T16:30:00", scale="utc")
+        unheld = plan_transition(340.0, 25.0, 208.0, 65.0, t, site, allow_detour=True)
+        assert unheld.safe and unheld.path == "detour"
+
+        held = plan_transition(340.0, 25.0, 208.0, 65.0, t, site, allow_detour=True, hold=1200.0)
+        assert held.cause is DeferralReason.SUN_POINT
+        assert held.duration == 0.0
+
     def test_detour_needs_an_evaluating_predicate(self, site):
         with pytest.raises(ValueError, match="evaluate"):
             plan_transition(
@@ -388,6 +481,16 @@ class TestArgumentRules:
                 sun_safe=_always(True),
                 slew_safe=_path_always(True),
             )
+
+    def test_nan_current_el_raises_rather_than_deferring(self, site):
+        """A lost elevation read is a caller fault, not a Sun-blocked path."""
+        with pytest.raises(ValueError, match="current_el must be finite"):
+            plan_transition(190.0, float("nan"), 200.0, 45.0, T0, site)
+
+    def test_nan_goal_el_raises_rather_than_deferring(self, site):
+        """A NaN goal elevation is a caller fault, not a limits refusal."""
+        with pytest.raises(ValueError, match="goal_el must be finite"):
+            plan_transition(190.0, 45.0, 200.0, float("nan"), T0, site)
 
 
 class TestDefaultSlewSafe:
@@ -441,9 +544,10 @@ class _DirectionalFake:
     """A zone whose required separation depends on the azimuth sector.
 
     Stands in for the shipped directional model: it answers verdicts like
-    any point predicate and additionally exposes ``threshold``, the
-    optional extension ``plan_escape`` reads to measure depth against the
-    model's own requirement rather than against raw Sun separation.
+    any point predicate and, like every model ``make_sun_safe`` builds, is
+    a zoned one (``batch`` and ``threshold``), the extension ``plan_escape``
+    reads to measure depth against the model's own requirement rather than
+    against raw Sun separation.
     """
 
     def __init__(self, coords):
@@ -455,6 +559,9 @@ class _DirectionalFake:
 
     def __call__(self, az, el, t):
         return bool(self._separation(az, el, t)[0] > _required_separation(az))
+
+    def batch(self, az, el, times):
+        return self._separation(az, el, times) > self.threshold(az, el, times)
 
     def threshold(self, az, el, times):
         return np.array([_required_separation(a) for a in np.atleast_1d(az)], dtype=float)
@@ -637,6 +744,10 @@ class TestEscape:
             def __call__(self, az, el, t):
                 sun_az, sun_el = coords.get_sun_altaz(t)
                 return bool(coords.angular_separation(az, el, sun_az, sun_el) > 75.0)
+
+            def batch(self, az, el, times):
+                sun_az, sun_el = coords.get_sun_altaz(times)
+                return np.atleast_1d(coords.angular_separation(az, el, sun_az, sun_el)) > 75.0
 
             def threshold(self, az, el, times):
                 return np.full(np.shape(np.atleast_1d(az)), 75.0)

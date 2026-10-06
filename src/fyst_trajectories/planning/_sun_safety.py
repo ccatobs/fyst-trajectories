@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
+import math
 import warnings
-from typing import TYPE_CHECKING
 
 import numpy as np
-from astropy.time import Time
+from astropy import units as u
+from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
 from ..exceptions import PointingWarning
 from ..patterns.turnarounds import swept_az_envelope
 from ..site import Site
-
-if TYPE_CHECKING:
-    # Annotation-only import to avoid an import cycle: ``dispatch`` imports
-    # ``coordinates``/``site``/``exceptions`` at runtime, so importing it here
-    # at module level could cycle. The predicate is invoked structurally, so
-    # only the type hint needs the symbol.
-    from ..dispatch import SunSafePredicate
+from ..sun_protocols import SunSafePredicate, _sun_verdicts
+from ..trajectory import Trajectory
+from ..trajectory_utils import get_absolute_times
 
 # Number of times sampled along a planned constant-elevation pass for the
 # sun-safety sweep. 60 samples over a typical 10-minute arc gives ~10 s
@@ -26,6 +23,17 @@ if TYPE_CHECKING:
 # footprint extent; a multi-hour pass gets proportionally coarser sampling,
 # still well inside the exclusion radius the check screens against.
 _SUN_SAFETY_ARC_N_SAMPLES = 60
+
+# Spacing of the Sun ephemeris grid behind the built-in block screen. The Sun
+# moves about 0.25 deg per minute, so its unit vector interpolated between grid
+# points stays far inside the warning's 0.1 deg rounding, zenith transits
+# included.
+_SUN_SAFETY_EPHEMERIS_STEP_SEC = 60.0
+
+# Most samples of a built trajectory an injected sun_safe model is asked
+# about; the model solves its own Sun ephemeris per call, so every sample of
+# an hour-long block would cost seconds.
+_SUN_SAFETY_TRAJECTORY_MAX_PROBES = 600
 
 
 def _check_field_sun_safety(
@@ -53,7 +61,7 @@ def _check_field_sun_safety(
         Site configuration with sun avoidance settings.
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the field
         center is clear of the Sun. ``None`` (default) keeps the built-in
         scalar exclusion-radius check (the field center's angular separation
@@ -61,7 +69,7 @@ def _check_field_sun_safety(
         predicate is injected it is consulted in place of the scalar check, so
         the directional sun-avoidance model (see
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
-        end-to-end. See :class:`~fyst_trajectories.dispatch.SunSafePredicate`.
+        end-to-end. See :class:`~fyst_trajectories.sun_protocols.SunSafePredicate`.
 
     Warns
     -----
@@ -120,8 +128,8 @@ def _warn_if_center_unsafe(
         sep = coords.angular_separation(az, el, sun_az, sun_alt)
         if sep <= site.sun_avoidance.exclusion_radius:
             warnings.warn(
-                f"EXCLUSION ZONE: Field center passes {sep:.1f}\u00b0 from the Sun "
-                f"(exclusion radius: {site.sun_avoidance.exclusion_radius}\u00b0) "
+                f"EXCLUSION ZONE: Field center passes {sep:.1f} deg from the Sun "
+                f"(exclusion radius: {site.sun_avoidance.exclusion_radius} deg) "
                 f"at {start_time.iso}. This violates the configured Sun avoidance "
                 f"policy; nothing downstream is guaranteed to reject it.",
                 PointingWarning,
@@ -129,8 +137,8 @@ def _warn_if_center_unsafe(
             )
     elif not sun_safe(az, el, start_time):
         warnings.warn(
-            f"EXCLUSION ZONE: Field center at (az={az:.1f}\u00b0, "
-            f"el={el:.1f}\u00b0) is inside the Sun avoidance zone at "
+            f"EXCLUSION ZONE: Field center at (az={az:.1f} deg, "
+            f"el={el:.1f} deg) is inside the Sun avoidance zone at "
             f"{start_time.iso}. This violates the configured Sun avoidance "
             f"policy; nothing downstream is guaranteed to reject it.",
             PointingWarning,
@@ -250,6 +258,8 @@ def _check_arc_sun_safety(
     scan_label: str,
     sun_safe: SunSafePredicate | None = None,
     stacklevel: int = 4,
+    *,
+    sun_altaz: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> None:
     """Check sun safety along an arc of samples; warns only.
 
@@ -290,6 +300,11 @@ def _check_arc_sun_safety(
         function's own frame. Default 4 attributes the warning to the
         caller of a planner that reaches this check through one
         intermediate frame.
+    sun_altaz : tuple of np.ndarray, optional
+        The Sun's azimuth and elevation in degrees at every sample, used
+        in place of solving the ephemeris at ``times`` when the caller
+        already holds it. Read on the built-in branch only; an injected
+        ``sun_safe`` model solves its own.
 
     Warns
     -----
@@ -301,17 +316,15 @@ def _check_arc_sun_safety(
         return
 
     if sun_safe is None:
-        sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
-        # Vectorised haversine on the sphere (in degrees) so the whole sample
-        # grid costs one call rather than a Python loop over every probe.
-        az_rad = np.deg2rad(az_arr)
-        el_rad = np.deg2rad(el_arr)
-        sun_az_rad = np.deg2rad(np.asarray(sun_az_arr, dtype=float))
-        sun_el_rad = np.deg2rad(np.asarray(sun_el_arr, dtype=float))
-        cos_sep = np.sin(el_rad) * np.sin(sun_el_rad) + np.cos(el_rad) * np.cos(
-            sun_el_rad
-        ) * np.cos(az_rad - sun_az_rad)
-        seps_deg = np.rad2deg(np.arccos(np.clip(cos_sep, -1.0, 1.0)))
+        if sun_altaz is None:
+            sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
+        else:
+            sun_az_arr, sun_el_arr = sun_altaz
+        # The same separation the centre pre-flight uses, over the whole
+        # sample grid in one vectorised call.
+        seps_deg = np.asarray(
+            coords.angular_separation(az_arr, el_arr, sun_az_arr, sun_el_arr), dtype=float
+        )
 
         excl = site.sun_avoidance.exclusion_radius
         inside = seps_deg <= excl
@@ -332,27 +345,16 @@ def _check_arc_sun_safety(
         return
 
     # Injected directional model: ``False`` marks an unsafe (inside-the-zone)
-    # sample. Warn once, naming the first unsafe sample, mirroring the scalar
+    # sample. Warn once, naming the earliest unsafe sample, mirroring the scalar
     # branch's single-warning semantics. A model exposing the vectorised
     # ``batch`` extension answers the whole grid in one call, which matters
     # here because this runs inside a dispatch-time plan.
-    batch = getattr(sun_safe, "batch", None)
-    if callable(batch):
-        verdicts = np.asarray(batch(az_arr, el_arr, times), dtype=bool)
-        if verdicts.shape != az_arr.shape:
-            raise ValueError(
-                f"sun_safe.batch returned shape {verdicts.shape}, expected {az_arr.shape}"
-            )
-        unsafe_idx = np.flatnonzero(~verdicts).tolist()
-    else:
-        unsafe_idx = [
-            i
-            for i in range(len(az_arr))
-            if not sun_safe(float(az_arr[i]), float(el_arr[i]), times[i])  # type: ignore[index]
-        ]
+    verdicts = _sun_verdicts(sun_safe, az_arr, el_arr, times, what="swept arc")
+    unsafe_idx = np.flatnonzero(~verdicts).tolist()
     if not unsafe_idx:
         return
-    first = int(unsafe_idx[0])
+    jd = times.jd  # type: ignore[union-attr]
+    first = min(unsafe_idx, key=lambda i: jd[i])
     first_iso = str(times[first].iso)  # type: ignore[union-attr]
     warnings.warn(
         f"EXCLUSION ZONE: planned {scan_label} enters the Sun "
@@ -360,4 +362,97 @@ def _check_arc_sun_safety(
         f"el={float(el_arr[first]):.1f} deg) at {first_iso}.",
         PointingWarning,
         stacklevel=stacklevel,
+    )
+
+
+def _check_trajectory_sun_safety(
+    *,
+    site: Site,
+    trajectory: Trajectory,
+    scan_label: str,
+    sun_safe: SunSafePredicate | None = None,
+) -> None:
+    """Screen a built trajectory against the Sun over its whole block; warns only.
+
+    A fixed horizon-frame scan holds its position while the Sun moves about
+    15 deg per hour, so a block whose centre is clear at the start can end
+    inside the zone, and the pattern's own extent can reach in where its
+    centre does not. This screens the realised boresight trajectory, so it
+    covers both, and emits :func:`_check_arc_sun_safety`'s single warning.
+
+    With the built-in scalar check every sample is screened: the Sun is
+    solved on a grid ``_SUN_SAFETY_EPHEMERIS_STEP_SEC`` apart and its unit
+    vector interpolated to each sample, which is exact to well under the
+    warning's 0.1 deg rounding. An injected ``sun_safe`` model solves its own
+    ephemeris, so it is asked about at most
+    ``_SUN_SAFETY_TRAJECTORY_MAX_PROBES`` evenly strided samples plus the
+    last one; that is a sampled screen, not a proof, and a graze between
+    probes can pass unwarned.
+
+    Parameters
+    ----------
+    site : Site
+        Site whose ``sun_avoidance`` policy is screened against. A disabled
+        policy makes this a no-op.
+    trajectory : Trajectory
+        The built trajectory. Without a ``start_time`` there is no Sun to
+        place, and the screen is skipped.
+    scan_label : str
+        Phrase naming the planned scan in the warning text.
+    sun_safe : SunSafePredicate, optional
+        Injected sun-safety model; ``None`` uses the scalar radius.
+
+    Warns
+    -----
+    PointingWarning
+        If any screened sample falls inside the sun exclusion radius
+        (default) or the injected ``sun_safe`` model reports it unsafe. The
+        warning is attributed to the caller of the planner that calls this.
+    """
+    if not site.sun_avoidance.enabled or trajectory.start_time is None:
+        return
+    coords = Coordinates(site)
+    if sun_safe is None:
+        rel = trajectory.times - trajectory.times[0]
+        grid = np.append(np.arange(0.0, rel[-1], _SUN_SAFETY_EPHEMERIS_STEP_SEC), rel[-1])
+        grid_az, grid_el = coords.get_sun_altaz(trajectory.start_time + TimeDelta(grid * u.s))
+        az_rad = np.radians(np.asarray(grid_az, dtype=float))
+        el_rad = np.radians(np.asarray(grid_el, dtype=float))
+        # Interpolate the Sun's unit vector rather than its azimuth, which
+        # swings through tens of degrees a minute near a zenith transit.
+        x, y, z = (
+            np.interp(rel, grid, component)
+            for component in (
+                np.cos(el_rad) * np.cos(az_rad),
+                np.cos(el_rad) * np.sin(az_rad),
+                np.sin(el_rad),
+            )
+        )
+        sun_az = np.degrees(np.arctan2(y, x)) % 360.0
+        sun_el = np.degrees(np.arcsin(z / np.sqrt(x * x + y * y + z * z)))
+        _check_arc_sun_safety(
+            coords,
+            site,
+            trajectory.az,
+            trajectory.el,
+            get_absolute_times(trajectory),
+            scan_label,
+            stacklevel=4,
+            sun_altaz=(sun_az, sun_el),
+        )
+        return
+    n = trajectory.n_points
+    step = max(1, math.ceil(n / _SUN_SAFETY_TRAJECTORY_MAX_PROBES))
+    index = np.arange(0, n, step)
+    if index[-1] != n - 1:
+        index = np.append(index, n - 1)
+    _check_arc_sun_safety(
+        coords,
+        site,
+        trajectory.az[index],
+        trajectory.el[index],
+        get_absolute_times(trajectory)[index],
+        scan_label,
+        sun_safe=sun_safe,
+        stacklevel=4,
     )

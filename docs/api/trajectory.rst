@@ -14,13 +14,30 @@ Scan Flags
 ----------
 
 Each trajectory sample can be classified with a scan flag indicating
-whether it is science data, a turnaround, or a retune pause.  Four
+whether it is science data, a turnaround, or a retune pause. Four
 constants are exported from ``fyst_trajectories``:
 
-- ``SCAN_FLAG_UNCLASSIFIED`` (0) - default when no classification is available.
-- ``SCAN_FLAG_SCIENCE`` (1) - science-quality samples.
-- ``SCAN_FLAG_TURNAROUND`` (2) - turnaround or slew samples.
-- ``SCAN_FLAG_RETUNE`` (3) - KID retune pause (injected by ``inject_retune()``).
+.. py:data:: SCAN_FLAG_UNCLASSIFIED
+   :value: 0
+
+   Default when no classification is available.
+
+.. py:data:: SCAN_FLAG_SCIENCE
+   :value: 1
+
+   Science-quality samples.
+
+.. py:data:: SCAN_FLAG_TURNAROUND
+   :value: 2
+
+   Turnaround samples, and any other stretch a pattern moves too slowly
+   to count as science, such as a daisy's start-up ramp.
+
+.. py:data:: SCAN_FLAG_RETUNE
+   :value: 3
+
+   KID retune pause (injected by
+   :func:`~fyst_trajectories.retune.inject_retune`).
 
 The ``science_mask`` property returns a boolean mask that is ``True``
 for science samples, making it easy to filter trajectory data::
@@ -74,26 +91,6 @@ celestial patterns, ``center_ra`` / ``center_dec``.
     accel = trajectory.az_accel          # np.ndarray, same shape as times
     max_jerk = np.abs(trajectory.el_jerk).max()
 
-**Export**::
-
-    from fyst_trajectories.trajectory_utils import to_arrays, to_path_payload
-
-    # Ready-to-POST Go TCS /path body: {"start_time", "coordsys", "points"}
-    payload = to_path_payload(trajectory)
-
-    # Simple arrays
-    times, az, el = to_arrays(trajectory)
-
-Absolute-time conversion, validation, and the formatted-table printer are
-covered in :doc:`trajectory_utils`.
-
-**Plot trajectory**::
-
-    from fyst_trajectories.visualization import plot_trajectory
-
-    # Display interactive plot
-    fig = plot_trajectory(trajectory, show=True)
-
-    # Get figure for saving
-    fig = plot_trajectory(trajectory, show=False)
-    fig.savefig("trajectory.png")
+Export, absolute-time conversion, validation, and the formatted-table
+printer are covered in :doc:`trajectory_utils`; plotting in
+:doc:`visualization`.

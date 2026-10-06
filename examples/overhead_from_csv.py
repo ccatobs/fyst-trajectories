@@ -12,11 +12,15 @@ The CSV schema is ``name,RA,DEC,width,height,priority,velocity,scan_type``,
 with ``RA`` in sexagesimal hour-angle and ``DEC`` in sexagesimal degrees
 (parsed with :class:`astropy.coordinates.SkyCoord`), ``width`` / ``height``
 in degrees, and ``scan_type`` one of ``constant_el``, ``pong``, or ``daisy``.
-``priority`` is the scheduler's tie-breaker, lower is more urgent: the
-sample's constant-elevation row carries 0.5 so it wins the telescope in the
-minutes before its elevation crossing opens, the only time the scheduler can
-place a constant-elevation pass (it has no lookahead, so a row left at the
-same priority as the tracking patches around it schedules nothing).
+The scheduler multiplies each candidate's selection score by
+``weight / priority`` (``weight`` keeps its default of 1 here), so a lower
+``priority`` is more urgent: the sample's constant-elevation row carries 0.5
+so it wins the telescope in the minutes before its elevation crossing
+opens, the only time the scheduler can place a constant-elevation pass. The
+scheduler is greedy (equal scores go to the patch listed first), and its
+look-ahead admits a constant-elevation pass only when the pass opens
+within one ``time_step`` plus a slew allowance, so a row left at the same
+priority as the tracking patches listed before it schedules nothing.
 
 Run it from the repository root::
 

@@ -49,7 +49,7 @@ Usage Examples
 .. note::
 
    ``get_field_rotation()`` returns the *celestial-frame* orientation,
-   ``nasmyth_sign * elevation + parallactic angle``, using the Nasmyth port
+   ``nasmyth_sign * elevation + parallactic_angle``, using the Nasmyth port
    from the site configuration: map orientation, image rotation and
    polarization angles. The rotation the az/el projections use is the
    *mechanical* one, ``nasmyth_sign * elevation + instrument_rotation``,

@@ -25,9 +25,11 @@ class ScanParamsSchemaError(PointingError):
     """Raised when recorded block metadata does not match the expected schema.
 
     The recorded ``scan_params`` or block metadata is missing a key the
-    rebuild needs, or names a scan type the simulator cannot rebuild. The
-    block itself may be perfectly well formed on the timeline; what failed
-    is the contract between what was written and what the rebuild expects.
+    rebuild needs, holds a value the rebuild cannot read (a
+    ``search_start`` that is not two finite numbers), or names a scan type
+    the simulator cannot rebuild. The block itself may be perfectly well
+    formed on the timeline; what failed is the contract between what was
+    written and what the rebuild expects.
     """
 
 

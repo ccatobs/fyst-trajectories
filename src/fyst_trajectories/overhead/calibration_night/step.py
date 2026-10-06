@@ -17,14 +17,16 @@ from typing import Any
 import numpy as np
 from astropy.time import Time, TimeDelta
 
-from ...exceptions import PointingError, PointingWarning
+from ...dispatch import estimate_slew_time
+from ...exceptions import DwellExceedsCrossingError, PointingError, PointingWarning
 from ...planning import ScanBlock, plan_source_ces_passes
 from ...planning.footprints import inflate_footprint, resolve_footprint
 from ...trajectory_utils import get_absolute_times
 from .._moves import EscapeMove, plan_escape_move
-from ..models import CalibrationType, TimelineBlock, validate_scan_params
+from ..models import CalibrationType, TimelineBlock
+from ..schemas import validate_scan_params
 from ..transitions import DeferralReason, Transition, plan_transition
-from ..utils import estimate_slew_time
+from ..utils import _canonical_module_name, _normalize_az, _search_start_record
 from .helpers import (
     json_native,
     module_crossings,
@@ -33,7 +35,7 @@ from .helpers import (
     validate_geometry_record,
 )
 from .policy import ScanOverrides
-from .state import NightContext, NightState
+from .state import NightContext, NightState, _fold_calibrations
 from .tables import ElevationBin, table_for
 
 __all__ = [
@@ -52,6 +54,9 @@ _ANCHOR_SLACK_SEC = 60.0
 _MAX_REANCHOR = 1
 # The reasons that drop a body for the night; every other reason defers.
 _DROP_REASONS = frozenset({DeferralReason.NO_WRAP, DeferralReason.LIMITS})
+# Sampling interval of the wait before each later pass of a visit, the
+# cadence the default path sweep samples a slew at.
+_WAIT_SAMPLE_SEC = 1.0
 
 
 @dataclass(frozen=True)
@@ -66,8 +71,10 @@ class Candidate:
         The body's elevation in degrees at the estimated pass start (now
         plus the slew to it plus the reserved tuning).
     az_throw : float or None
-        The throw the table gives at that elevation, or ``None`` below
-        the table's coverage.
+        The table's reference throw at that elevation, or ``None`` below
+        the table's coverage. A pass sweeps it only under the policy's
+        ``use_table_throw``; by default it sweeps the throw solved from
+        the footprint.
     bin : ElevationBin or None
         The table bin at that elevation; ``None`` above the top bin,
         where the throw is extrapolated, or below the coverage.
@@ -154,23 +161,35 @@ def _skydip_due(state: NightState, ctx: NightContext) -> bool:
     return last is None or (state.t - last).to_value("s") >= cadence
 
 
+def _detector_operations(
+    state: NightState, ctx: NightContext
+) -> list[tuple[CalibrationType, float, dict[str, Any]]]:
+    """Return the detector operations reserved before the next pass, in execution order."""
+    tuning = ctx.policy.tuning
+    model = ctx.overhead_model
+    operations: list[tuple[CalibrationType, float, dict[str, Any]]] = []
+    if tuning.find_detectors_at_start and state.cal_state.last_retune is None:
+        operations.append(
+            (
+                CalibrationType.RETUNE,
+                tuning.find_detectors_duration,
+                {"operation": "find_detectors"},
+            )
+        )
+    if _skydip_due(state, ctx):
+        operations.append(
+            (CalibrationType.SKYDIP, model.get_calibration_duration(CalibrationType.SKYDIP), {})
+        )
+    if tuning.retune_before_each_block:
+        operations.append(
+            (CalibrationType.RETUNE, model.get_calibration_duration(CalibrationType.RETUNE), {})
+        )
+    return operations
+
+
 def _tuning_seconds(state: NightState, ctx: NightContext) -> float:
     """Seconds of detector operations reserved before the next pass."""
-    total = 0.0
-    tuning = ctx.policy.tuning
-    if tuning.find_detectors_at_start and state.cal_state.last_retune is None:
-        total += tuning.find_detectors_duration
-    if _skydip_due(state, ctx):
-        total += ctx.overhead_model.get_calibration_duration(CalibrationType.SKYDIP)
-    if tuning.retune_before_each_block:
-        total += ctx.overhead_model.get_calibration_duration(CalibrationType.RETUNE)
-    return total
-
-
-def _nearest_wrap(sky_az: float, reference_az: float) -> float:
-    """Return the 360 deg image of ``sky_az`` nearest ``reference_az`` (a slew estimate aid)."""
-    k = round((reference_az - sky_az) / 360.0)
-    return sky_az + 360.0 * k
+    return sum((duration for _, duration, _ in _detector_operations(state, ctx)), 0.0)
 
 
 def _time_left_in_band(ctx: NightContext, body: str, t: Time) -> float:
@@ -192,11 +211,13 @@ def _time_left_in_band(ctx: NightContext, body: str, t: Time) -> float:
 def list_candidates(state: NightState, ctx: NightContext) -> tuple[Candidate, ...]:
     """Assess every target at the current time, in the caller's order.
 
-    Each body is placed at the estimated pass start (now plus the slew to
-    it plus the reserved tuning), its table throw is looked up at that
-    elevation, the Sun is checked at the estimated retune pose, and the
-    Moon is checked when the policy asks. Deferred bodies carry their
-    reason until their retry time; dropped bodies carry it for the night.
+    Each body is placed at the estimated pass start (now plus the slew to it
+    plus the reserved tuning), its table throw is looked up at that
+    elevation as a reference (swept only under the policy's
+    ``use_table_throw``), the Sun is checked at the estimated retune pose,
+    and the Moon is checked when the policy asks. Deferred bodies carry
+    their reason until their retry time; dropped bodies carry it for the
+    night.
 
     Parameters
     ----------
@@ -215,7 +236,7 @@ def list_candidates(state: NightState, ctx: NightContext) -> tuple[Candidate, ..
     for body in ctx.targets:
         az_now, el_now = ctx.body_altaz(body, state.t)
         slew = estimate_slew_time(
-            state.az, state.el, _nearest_wrap(az_now, state.az), el_now, ctx.site
+            state.az, state.el, _normalize_az(az_now, ctx.site, ref=state.az), el_now, ctx.site
         )
         t_est = state.t + TimeDelta(slew + tuning, format="sec")
         az_est, el_est = ctx.body_altaz(body, t_est)
@@ -261,8 +282,11 @@ def _resolve_geometry(
 ) -> tuple[dict[str, float], float | None]:
     """Resolve the requested geometry: overrides, then the table, then the policy.
 
-    Returns the requested record and the dwell to apply (``None`` means
-    solve the crossing).
+    The table's throw is requested only under the policy's
+    ``use_table_throw``; otherwise, unless a visit overrides it, no throw
+    is requested and the kernel solves it from the footprint. Returns the
+    requested record and the dwell to apply (``None`` means solve the
+    crossing).
     """
     policy = ctx.policy
     table = table_for(ctx.tables, body)
@@ -272,7 +296,7 @@ def _resolve_geometry(
     }
     if overrides.az_throw is not None:
         requested["az_throw"] = overrides.az_throw
-    elif el_est >= table.el_range[0]:
+    elif policy.use_table_throw and el_est >= table.el_range[0]:
         requested["az_throw"] = table.az_throw_at(el_est)
     dwell: float | None = None
     if overrides.dwell is not None:
@@ -316,6 +340,11 @@ def _plan_passes(
     }
     if "az_throw" in requested:
         kwargs["az_throw"] = requested["az_throw"]
+    elif not ctx.policy.use_table_throw:
+        # The pass sweeps the footprint's own extent: the kernel solves the
+        # throw from the margined footprint and adds no padding. It refuses
+        # an explicit padding beside a throw, so the two are never both set.
+        kwargs["az_padding"] = 0.0
     if dwell is not None:
         kwargs["dwell"] = dwell
     with warnings.catch_warnings(record=True) as caught:
@@ -344,15 +373,17 @@ def plan_visit(
     Resolves the scan geometry (overrides, then the table, then the
     policy), anchors the passes at now plus the slew and the reserved
     detector operations, plans them with the source-CES kernel on the
-    margined footprint, keeps the whole passes that end before the night
-    does, checks the solved boresight elevation against the band and the
-    solved crossing against the policy's cap, plans the slew to the first
-    pass in a wrap that holds the pass start clear for the length of that
-    pass, re-anchors once if the slew plus tuning
+    margined footprint (which solves each pass's throw from that footprint
+    unless a throw is requested), keeps the whole passes that end before the
+    night does, checks the solved boresight elevation against the band and
+    the solved crossing against the policy's cap, plans the slew to the
+    first pass in a wrap that holds the pass start clear for the length of
+    that pass, re-anchors once if the slew plus tuning
     overruns the pass start, gates the visit on the Sun (the retune pose,
-    both ends of every pass, the whole planned trajectory, fail closed),
-    and assembles the blocks: the slew, the detector operations at the
-    target pose, then one calibration block per pass carrying a relative
+    both ends of every pass, the whole planned trajectory, and between
+    passes both poses held through the wait and the step itself, fail
+    closed), and assembles the blocks: the slew, the detector operations
+    at the target pose, then one calibration block per pass carrying a relative
     dispatch dict and the geometry records. A state whose pose the Sun
     zone has overtaken is moved out first
     (:func:`~fyst_trajectories.overhead.plan_escape`): the escape leads
@@ -380,9 +411,11 @@ def plan_visit(
         elevation leaves the band, ``CROSSING_TOO_SLOW`` when the solved
         crossing exceeds the cap, ``WINDOW_CLOSED`` when no whole pass
         fits before the night ends or the tuning cannot finish before
-        the pass, ``SUN_POINT`` when the retune pose or the pass is inside
-        the Sun zone, ``NO_ESCAPE`` when the zone holds the telescope
-        where it sits, or the transition's own cause.
+        the pass, ``SUN_POINT`` when the retune pose, a pass or a pose
+        held through the wait before a later pass is inside the Sun zone,
+        ``SUN_PATH`` when the step between two passes crosses it,
+        ``NO_ESCAPE`` when the zone holds the telescope where it sits, or
+        the transition's own cause.
 
     Raises
     ------
@@ -397,7 +430,7 @@ def plan_visit(
     policy = ctx.policy
     warns: list[str] = []
 
-    if policy.footprint.lower() not in ("c", "center"):
+    if _canonical_module_name(policy.footprint) != "c":
         warns.append(
             f"footprint {policy.footprint!r} is planned for simulation; the execution "
             "layer accepts centred footprints only"
@@ -430,7 +463,7 @@ def plan_visit(
     tuning = _tuning_seconds(state, ctx)
     az_now, el_now = ctx.body_altaz(body, origin.t)
     slew_est = estimate_slew_time(
-        origin.az, origin.el, _nearest_wrap(az_now, origin.az), el_now, ctx.site
+        origin.az, origin.el, _normalize_az(az_now, ctx.site, ref=origin.az), el_now, ctx.site
     )
     anchor = origin.t + TimeDelta(slew_est + tuning, format="sec")
     _, el_est = ctx.body_altaz(body, anchor)
@@ -440,20 +473,69 @@ def plan_visit(
         dwell = None
         requested.pop("dwell", None)
 
+    solved = _solve_visit(origin, ctx, body, anchor, footprint, requested, dwell, tuning, warns)
+    if isinstance(solved, DeferralReason):
+        return _infeasible(body, solved, warns)
+    passes, transition, requested, anchor = solved
+    el_bore = float(passes[0].computed_params["el_bore"])
+
+    wrap_shift = transition.az_to - float(passes[0].trajectory.az[0])
+    refusal = _sun_gate(ctx, transition, passes, el_bore, wrap_shift)
+    if refusal is not None:
+        return _infeasible(body, refusal, warns)
+
+    blocks = _assemble_blocks(
+        state,
+        ctx,
+        body,
+        transition,
+        passes,
+        wrap_shift,
+        requested,
+        escape=escape,
+        search_start=anchor,
+    )
+    return VisitPlan(
+        body=body,
+        feasible=True,
+        reason=None,
+        transition=transition,
+        blocks=tuple(blocks),
+        warnings=tuple(warns),
+        passes=tuple(passes),
+    )
+
+
+def _solve_visit(
+    origin: NightState,
+    ctx: NightContext,
+    body: str,
+    anchor: Time,
+    footprint: Any,
+    requested: dict[str, float],
+    dwell: float | None,
+    tuning: float,
+    warns: list[str],
+) -> tuple[list[ScanBlock], Transition, dict[str, float], Time] | DeferralReason:
+    """Solve the passes and the slew to the first one, re-anchoring once if late.
+
+    The dwell fallback drops the dwell for every later attempt, so the
+    request that was finally planned is returned with the passes, the
+    transition and the anchor the passes were planned from (the start of
+    the kernel's search, which every pass block records); a refusal returns
+    its reason instead.
+    """
+    policy = ctx.policy
+    requested = dict(requested)
     transition: Transition | None = None
     passes: list[ScanBlock] = []
     for attempt in range(_MAX_REANCHOR + 1):
         try:
             passes = _plan_passes(ctx, body, anchor, footprint, requested, dwell, warns)
-        except PointingError as exc:
-            # PointingError subclasses ValueError, so it is caught first.
-            warns.append(str(exc))
-            return _infeasible(body, DeferralReason.UNPLANNABLE, warns)
-        except ValueError as exc:
-            if dwell is None or "dwell must not exceed" not in str(exc):
-                raise
+        except DwellExceedsCrossingError as exc:
+            # A PointingError subclass, so it is caught first.
             warns.append(
-                f"the requested dwell of {dwell:.0f} s exceeds this crossing; scanning the "
+                f"the requested dwell of {exc.dwell:.0f} s exceeds this crossing; scanning the "
                 "full crossing instead"
             )
             dwell = None
@@ -462,23 +544,20 @@ def plan_visit(
                 passes = _plan_passes(ctx, body, anchor, footprint, requested, None, warns)
             except PointingError as exc2:
                 warns.append(str(exc2))
-                return _infeasible(body, DeferralReason.UNPLANNABLE, warns)
+                return DeferralReason.UNPLANNABLE
+        except PointingError as exc:
+            warns.append(str(exc))
+            return DeferralReason.UNPLANNABLE
 
         passes = [
             p
             for p in passes
             if (Time(p.computed_params["t1_iso"], scale="utc") - ctx.end_time).to_value("s") <= 0.0
         ]
-        if not passes:
-            return _infeasible(body, DeferralReason.WINDOW_CLOSED, warns)
-        cp = passes[0].computed_params
-        el_bore = float(cp["el_bore"])
-        if el_bore < policy.el_min:
-            return _infeasible(body, DeferralReason.BELOW_BAND, warns)
-        if el_bore > ctx.site.telescope_limits.elevation.max:
-            return _infeasible(body, DeferralReason.ABOVE_BAND, warns)
-        if float(cp["crossing_seconds"]) > policy.max_pass_seconds:
-            return _infeasible(body, DeferralReason.CROSSING_TOO_SLOW, warns)
+        refusal = _pass_gate(ctx, passes)
+        if refusal is not None:
+            return refusal
+        el_bore = float(passes[0].computed_params["el_bore"])
 
         traj = passes[0].trajectory
         transition = plan_transition(
@@ -490,17 +569,20 @@ def plan_visit(
             ctx.site,
             sun_safe=ctx.sun_safe,
             slew_safe=ctx.slew_safe,
-            goal_az_span=(float(traj.az.min()), float(traj.az.max())),
+            goal_az_span=(
+                min(float(p.trajectory.az.min()) for p in passes),
+                max(float(p.trajectory.az.max()) for p in passes),
+            ),
             settle_time=ctx.overhead_model.settle_time,
             allow_detour=policy.allow_detour,
             # The pass has to stay clear for its whole length, so the wrap
             # choice holds the start pose that long. It is the cheap gate,
-            # three instants at one azimuth; the full trajectory sweep
-            # below is what actually certifies the pass.
+            # three instants at one azimuth; the full trajectory sweep in
+            # the Sun gate is what actually certifies the pass.
             hold=float(passes[0].duration),
         )
         if not transition.safe:
-            return _infeasible(body, transition.cause, warns)
+            return transition.cause
         ready = transition.arrival + TimeDelta(tuning, format="sec")
         if (ready - traj.start_time).to_value("s") <= 0.0 or attempt == _MAX_REANCHOR:
             break
@@ -509,35 +591,85 @@ def plan_visit(
     assert transition is not None
     ready = transition.arrival + TimeDelta(tuning, format="sec")
     if (ready - passes[0].trajectory.start_time).to_value("s") > 0.0:
-        return _infeasible(body, DeferralReason.WINDOW_CLOSED, warns)
+        return DeferralReason.WINDOW_CLOSED
+    return passes, transition, requested, anchor
 
-    # The Sun gate: the retune pose, both ends of every pass, the whole
-    # trajectory in the chosen wrap, fail closed.
-    wrap_shift = transition.az_to - float(passes[0].trajectory.az[0])
+
+def _pass_gate(ctx: NightContext, passes: list[ScanBlock]) -> DeferralReason | None:
+    """Refuse an empty visit, a boresight elevation outside the band or a slow crossing."""
+    if not passes:
+        return DeferralReason.WINDOW_CLOSED
+    cp = passes[0].computed_params
+    el_bore = float(cp["el_bore"])
+    if el_bore < ctx.policy.el_min:
+        return DeferralReason.BELOW_BAND
+    if el_bore > ctx.site.telescope_limits.elevation.max:
+        return DeferralReason.ABOVE_BAND
+    if float(cp["crossing_seconds"]) > ctx.policy.max_pass_seconds:
+        return DeferralReason.CROSSING_TOO_SLOW
+    return None
+
+
+def _sun_gate(
+    ctx: NightContext,
+    transition: Transition,
+    passes: list[ScanBlock],
+    el_bore: float,
+    wrap_shift: float,
+) -> DeferralReason | None:
+    """Return why the visit is not clear of the Sun, or ``None`` when it is.
+
+    Checks the retune pose, then every pass's whole trajectory in the wrap,
+    then the wait and the step between each pair of consecutive passes.
+    Fails closed: an empty pass trajectory is not clear.
+    """
     if not ctx.sun_safe(transition.az_to, el_bore, transition.arrival):
-        return _infeasible(body, DeferralReason.SUN_POINT, warns)
+        return DeferralReason.SUN_POINT
     for p in passes:
         times = get_absolute_times(p.trajectory)
         az = np.asarray(p.trajectory.az) + wrap_shift
         el = np.asarray(p.trajectory.el)
-        ends_ok = bool(ctx.sun_safe(float(az[0]), float(el[0]), times[0])) and bool(
-            ctx.sun_safe(float(az[-1]), float(el[-1]), times[-1])
-        )
-        if not ends_ok or not sweep_sun_safe(ctx.sun_safe, az, el, times):
-            return _infeasible(body, DeferralReason.SUN_POINT, warns)
+        if not sweep_sun_safe(ctx.sun_safe, az, el, times):
+            return DeferralReason.SUN_POINT
+    for before, after in zip(passes, passes[1:]):
+        refusal = _between_passes_gate(ctx, before, after, wrap_shift)
+        if refusal is not None:
+            return refusal
+    return None
 
-    blocks = _assemble_blocks(
-        state, ctx, body, transition, passes, wrap_shift, requested, escape=escape
-    )
-    return VisitPlan(
-        body=body,
-        feasible=True,
-        reason=None,
-        transition=transition,
-        blocks=tuple(blocks),
-        warnings=tuple(warns),
-        passes=tuple(passes),
-    )
+
+def _between_passes_gate(
+    ctx: NightContext, before: ScanBlock, after: ScanBlock, wrap_shift: float
+) -> DeferralReason | None:
+    """Check the wait and the step from the end of one pass to the start of the next.
+
+    The wait runs from the end of ``before`` to the start of ``after``. Its
+    idle records the pose ``before`` left the telescope at, and the step to
+    the start of ``after`` can be made at any time in the wait, so both
+    poses must stay clear for the whole of it (``SUN_POINT``). The step is
+    then swept as a direct slew leaving when ``before`` ends and leaving
+    late enough to arrive as ``after`` starts (``SUN_PATH``). The poses are
+    checked first, as the wrap choice checks the goal before the path.
+    """
+    t_end = before.trajectory.start_time + TimeDelta(float(before.duration), format="sec")
+    wait = max((after.trajectory.start_time - t_end).to_value("s"), 0.0)
+    n = max(2, int(np.ceil(wait / _WAIT_SAMPLE_SEC)) + 1)
+    offsets = np.linspace(0.0, wait, n)
+    az_end = float(before.trajectory.az[-1]) + wrap_shift
+    el_end = float(before.trajectory.el[-1])
+    az_next = float(after.trajectory.az[0]) + wrap_shift
+    el_next = float(after.trajectory.el[0])
+    az = np.concatenate([np.full(n, az_end), np.full(n, az_next)])
+    el = np.concatenate([np.full(n, el_end), np.full(n, el_next)])
+    times = t_end + TimeDelta(np.concatenate([offsets, offsets]), format="sec")
+    if not sweep_sun_safe(ctx.sun_safe, az, el, times):
+        return DeferralReason.SUN_POINT
+    step = estimate_slew_time(az_end, el_end, az_next, el_next, ctx.site)
+    t_last = after.trajectory.start_time - TimeDelta(step, format="sec")
+    for t_leave in (t_end, max(t_end, t_last)):
+        if not ctx.slew_safe(az_end, el_end, az_next, el_next, t_leave):
+            return DeferralReason.SUN_PATH
+    return None
 
 
 def _parked(
@@ -572,10 +704,9 @@ def _assemble_blocks(
     requested: dict[str, float],
     *,
     escape: EscapeMove,
+    search_start: Time,
 ) -> list[TimelineBlock]:
     """Build the slew, the detector operations at the target pose, then one block per pass."""
-    model = ctx.overhead_model
-    tuning = ctx.policy.tuning
     blocks: list[TimelineBlock] = []
     t = state.t
     az_from = state.az
@@ -605,23 +736,7 @@ def _assemble_blocks(
         )
         t = transition.arrival
 
-    operations: list[tuple[CalibrationType, float, dict[str, Any]]] = []
-    if tuning.find_detectors_at_start and state.cal_state.last_retune is None:
-        operations.append(
-            (
-                CalibrationType.RETUNE,
-                tuning.find_detectors_duration,
-                {"operation": "find_detectors"},
-            )
-        )
-    if _skydip_due(state, ctx):
-        operations.append(
-            (CalibrationType.SKYDIP, model.get_calibration_duration(CalibrationType.SKYDIP), {})
-        )
-    if tuning.retune_before_each_block:
-        operations.append(
-            (CalibrationType.RETUNE, model.get_calibration_duration(CalibrationType.RETUNE), {})
-        )
+    operations = _detector_operations(state, ctx)
     for cal_type, duration, extra in operations:
         if duration <= 0.0:
             continue
@@ -658,7 +773,15 @@ def _assemble_blocks(
             )
         blocks.append(
             _pass_block(
-                ctx, body, p, wrap_shift, requested, transition_record, position, scan_index
+                ctx,
+                body,
+                p,
+                wrap_shift,
+                requested,
+                transition_record,
+                position,
+                scan_index,
+                search_start,
             )
         )
         t = blocks[-1].t_stop
@@ -677,8 +800,15 @@ def _pass_block(
     transition_record: dict[str, Any],
     position: int,
     scan_index: int,
+    search_start: Time,
 ) -> TimelineBlock:
-    """One calibration block per pass: a relative dispatch dict plus the records."""
+    """One calibration block per pass: a relative dispatch dict plus the records.
+
+    ``search_start`` is the anchor the kernel searched from; the block
+    records it beside the dict, not in it, so the dict and the dispatch
+    sheet stay what the execution layer reads while a rebuild can repeat
+    the kernel's search exactly.
+    """
     cp = p.computed_params
     pp = p.trajectory.metadata.pattern_params
     policy = ctx.policy
@@ -691,12 +821,14 @@ def _pass_block(
 
     scan_params: dict[str, Any] = {
         "body": body,
-        "footprint": policy.footprint,
+        # The execution layer compares the module name as a string, so the
+        # dict names the module canonically ("c", not "IM0" or "Center").
+        "footprint": _canonical_module_name(policy.footprint),
         "el_bore": el_bore,
         "mode": str(cp["mode"]),
         # The dict repeats the request, and the planner requests no boresight
         # rotation. None is not the 0.0 the kernel resolves it to: an
-        # execution layer may accept only an uncommanded rotator.
+        # execution layer may accept only None.
         "boresight_rot": None,
         "timestep": float(p.config.timestep),
         "eta_offset_deg": float(pp.get("pass_eta_offset_deg", 0.0)),
@@ -707,6 +839,9 @@ def _pass_block(
     }
     if "az_throw" in requested:
         scan_params["az_throw"] = float(requested["az_throw"])
+    elif not policy.use_table_throw:
+        # Mirrors the kernel call, so a rebuild solves the same throw.
+        scan_params["az_padding"] = 0.0
     if "dwell" in requested:
         scan_params["dwell"] = float(requested["dwell"])
     if policy.footprint_margin > 0.0:
@@ -729,6 +864,7 @@ def _pass_block(
         "crossing_seconds": float(cp["crossing_seconds"]),
     }
     extra = {
+        "search_start": _search_start_record(search_start),
         "requested": validate_geometry_record(requested, "requested"),
         "applied": validate_geometry_record(applied, "applied"),
         "solved": validate_geometry_record(solved, "solved"),
@@ -789,12 +925,6 @@ def commit_visit(state: NightState, plan: VisitPlan, *, retry_after: float = 0.0
         deferred[plan.body] = (state.t + TimeDelta(retry_after, format="sec"), plan.reason)
         return state.advanced(deferred=deferred)
 
-    cal_state = state.cal_state
-    for block in plan.blocks:
-        if block.block_type == "calibration":
-            cal_type = block.metadata.get("cal_type")
-            if cal_type in ("retune", "skydip", "planet_cal"):
-                cal_state = cal_state.update(cal_type, block.t_stop)
     last = plan.blocks[-1]
     deferred = {k: v for k, v in state.deferred.items() if k != plan.body}
     return state.advanced(
@@ -802,7 +932,7 @@ def commit_visit(state: NightState, plan: VisitPlan, *, retry_after: float = 0.0
         az=float(last.end_pose_az),
         el=float(last.elevation),
         blocks=state.blocks + plan.blocks,
-        cal_state=cal_state,
+        cal_state=_fold_calibrations(state.cal_state, plan.blocks),
         deferred=deferred,
         script_index=state.script_index + 1,
         script_waiting_since=None,

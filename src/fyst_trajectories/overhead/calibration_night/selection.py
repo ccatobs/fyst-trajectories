@@ -42,8 +42,7 @@ class SelectionRule(Protocol):
     ) -> tuple[str, ScanOverrides] | None:
         """Return ``(body, overrides)`` for the next visit, or ``None`` to idle.
 
-        ``body`` must be one of the candidates; the driver refuses a body
-        it did not offer.
+        ``body`` must be an available candidate; the driver refuses any other.
         """
         ...
 
@@ -54,7 +53,8 @@ def select_priority(
     """Select the first available candidate in the caller's target order.
 
     The default :class:`SelectionRule`. It applies no overrides, so every
-    visit is planned from the scan tables and the policy alone.
+    visit is planned from the policy alone, with the scan tables applied
+    only where the policy asks for them.
 
     Parameters
     ----------

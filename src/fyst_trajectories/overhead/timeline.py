@@ -15,7 +15,7 @@ from .models import (
 from .scheduler import Scheduler, SchedulerContext
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
+    from ..sun_protocols import SunSafePredicate
 
 __all__ = [
     "generate_timeline",
@@ -46,9 +46,12 @@ def generate_timeline(
     site : Site
         Observatory site configuration.
     start_time : Time or str
-        Timeline start time (UTC). Strings are auto-parsed.
+        Timeline start time, held in UTC: a string is read as UTC, and any
+        ``Time`` is held as a UTC ``Time`` without a location and with
+        astropy's default ``precision`` and ``out_subfmt`` (one in another
+        scale is converted to UTC).
     end_time : Time or str
-        Timeline end time (UTC).
+        Timeline end time, held in UTC like ``start_time``.
     overhead_model : OverheadModel or None
         Overhead timing parameters. Uses defaults if None.
     calibration_policy : CalibrationPolicy or None
@@ -63,12 +66,14 @@ def generate_timeline(
         start.
     sun_safe : SunSafePredicate, optional
         Injected sun-safety model
-        (:class:`~fyst_trajectories.dispatch.SunSafePredicate`, e.g. from
+        (:class:`~fyst_trajectories.sun_protocols.SunSafePredicate`, e.g. from
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) driving the
         default Sun constraint, the mid-scan sun-drift duration clips, the
-        slew gate and the escape move, and the scan-mode
-        planet-calibration planner (``plan_source_ces_passes``). Default
-        ``None`` keeps the site's scalar exclusion radius.
+        slew gate and the escape move, and the scan-mode planet
+        calibrations (the planet choice, the planner
+        ``plan_source_ces_passes``, the slew to the first pass and the
+        sweep of every pass). Default ``None`` keeps the site's scalar
+        exclusion radius.
         Only consulted while the site has Sun avoidance enabled. When an
         explicit ``constraints`` list is supplied it is used as-is, so
         ``sun_safe`` no longer sets the patch-selection constraint; it
@@ -80,6 +85,14 @@ def generate_timeline(
         Complete observing timeline with science, calibration,
         slew, and idle blocks.
 
+    Raises
+    ------
+    ValueError
+        If ``time_step`` is not positive, two patches share a name, a
+        constant-elevation patch has no pinned ``elevation``, or a pong
+        patch's pattern period exceeds ``max_scan_duration`` less, at
+        ``retune_cadence=0``, the retune booked before every subscan.
+
     See Also
     --------
     fyst_trajectories.overhead.plan_calibration_night : one night of
@@ -90,6 +103,8 @@ def generate_timeline(
         start_time = Time(start_time, scale="utc")
     if isinstance(end_time, str):
         end_time = Time(end_time, scale="utc")
+    if not time_step > 0:
+        raise ValueError(f"time_step must be positive, got {time_step}")
 
     ctx = SchedulerContext.build(
         patches=patches,

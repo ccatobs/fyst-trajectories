@@ -54,8 +54,9 @@ class Scheduler:
     that assemble the :class:`SchedulerContext` themselves. The phase
     sequence is fixed: ``run()`` instantiates the four phases and there
     is no hook for a different list. Callers needing another loop (a
-    body queue, lookahead, multi-night stitching) compose the phases or
-    the timeline model directly, as the calibration-night planner does.
+    body queue, non-greedy selection, multi-night stitching) compose the
+    phases or the timeline model directly, as the calibration-night
+    planner does.
 
     Notes
     -----
@@ -132,8 +133,6 @@ class Scheduler:
             science_result = science_phase.run(state, ctx, selection=slew_result)
             blocks.extend(science_result.blocks)
             state = science_result.state
-            if science_result.skip_to_next_iter:
-                continue
 
         # Whatever the loop exited on, the window is the timeline's
         # declared extent, so the stretch after the last block belongs to

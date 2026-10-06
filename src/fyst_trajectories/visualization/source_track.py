@@ -14,6 +14,7 @@ from ..offsets import InstrumentOffset
 from ..planning import ScanBlock, source_ces_focal_plane_track
 from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import Site, get_fyst_site
+from ._common import FOOTPRINT_COLOR, _unique_offsets
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -108,12 +109,7 @@ def plot_source_track(
     site = get_fyst_site() if site is None else site
     modules = PRIMECAM_MODULES if modules is None else modules
 
-    unique: list[InstrumentOffset] = []
-    for offset in modules.values():
-        if not any(offset is seen for seen in unique):
-            unique.append(offset)
-    if not unique:
-        raise ValueError("modules must not be empty")
+    unique = _unique_offsets(modules)
 
     xi, eta = source_ces_focal_plane_track(block, site=site)
     metadata = block.trajectory.metadata
@@ -131,15 +127,24 @@ def plot_source_track(
             Circle(
                 (dx, dy),
                 fov_radius_deg,
-                facecolor="#1f77b4",
+                facecolor=FOOTPRINT_COLOR,
                 alpha=0.18,
-                edgecolor="#1f77b4",
+                edgecolor=FOOTPRINT_COLOR,
                 lw=1.2,
             )
         )
         if labels:
-            name = (offset.name or "").removeprefix("PrimeCam-") or "?"
-            ax.annotate(name, xy=(dx, dy), ha="center", va="center", fontsize=9, alpha=0.8)
+            name = (offset.name or "").removeprefix("PrimeCam-").lower() or "?"
+            ax.annotate(
+                name,
+                xy=(dx, dy),
+                xytext=(0, -14),  # below the centre, clear of the boresight marker
+                textcoords="offset points",
+                ha="center",
+                va="center",
+                fontsize=9,
+                alpha=0.8,
+            )
 
     ax.plot(xi, eta, color="#d62728", lw=0.8, alpha=0.9, label="source track")
     ax.plot(xi[0], eta[0], "o", color="#d62728", ms=7, mfc="white", mew=1.5, label="pass start")
@@ -163,8 +168,8 @@ def plot_source_track(
         rot = float(params["boresight_rot"])
         title = (
             f"{metadata.target_name} source-CES pass, {params['mode']} at "
-            f"el_bore = {el_bore:.1f}°\n"
-            f"Nasmyth sign {site.nasmyth_sign:+d}, boresight rotation {rot:+.1f}°, "
+            f"el_bore = {el_bore:.1f} deg\n"
+            f"Nasmyth sign {site.nasmyth_sign:+d}, boresight rotation {rot:+.1f} deg, "
             "registry layout"
         )
     ax.set_title(title, fontsize=10.5)

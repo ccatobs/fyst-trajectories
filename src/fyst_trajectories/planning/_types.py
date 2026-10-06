@@ -19,11 +19,12 @@ The dataclasses and schemas are re-exported from
 import dataclasses
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from dataclasses import dataclass
+from typing import Any, Generic, Literal, TypedDict, TypeVar
 
 import numpy as np
 
+from .._validation import _require_positive
 from ..exceptions import PointingWarning
 from ..patterns.configs import ScanConfig
 from ..trajectory import Trajectory
@@ -189,8 +190,8 @@ class SourceCESComputedParams(TypedDict):
         Duration in seconds of the full footprint crossing, before any
         ``dwell`` narrowing. Equals ``t1 - t0`` unless a ``dwell`` was
         given.
-    mode : str
-        Either ``"rising"`` or ``"setting"``.
+    mode : {"rising", "setting"}
+        Direction of the source arc the pass was planned on.
     n_scans : int
         Number of azimuth sweeps (legs) in the scan.
     """
@@ -205,7 +206,7 @@ class SourceCESComputedParams(TypedDict):
     t1_iso: str
     duration: float
     crossing_seconds: float
-    mode: str
+    mode: Literal["rising", "setting"]
     n_scans: int
 
 
@@ -222,6 +223,11 @@ ComputedParams = (
     | DaisyAltAzComputedParams
     | SourceCESComputedParams
 )
+
+# The type parameter of :class:`ScanBlock`: the computed-parameter schema of
+# the planner that produced the block. Covariant because a block is frozen, so
+# a block of any one planner is also a ``ScanBlock[ComputedParams]``.
+_ParamsT_co = TypeVar("_ParamsT_co", bound=ComputedParams, covariant=True)
 
 
 @dataclass(frozen=True)
@@ -259,10 +265,8 @@ class FieldRegion:
     height: float
 
     def __post_init__(self) -> None:
-        if self.width <= 0:
-            raise ValueError(f"width must be positive, got {self.width}")
-        if self.height <= 0:
-            raise ValueError(f"height must be positive, got {self.height}")
+        _require_positive(self.width, "width")
+        _require_positive(self.height, "height")
 
     @property
     def dec_min(self) -> float:
@@ -275,7 +279,7 @@ class FieldRegion:
         return self.dec_center + self.height / 2.0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ArrayFootprint:
     """Explicit array footprint (focal-plane center + cover polygon).
 
@@ -308,6 +312,20 @@ class ArrayFootprint:
         If the cover arrays are not 1-D, are different lengths, or
         are empty.
 
+    Notes
+    -----
+    The cover arrays are copied at construction and stored read-only, so
+    editing the arrays passed in leaves the footprint unchanged and an
+    in-place write to ``cover_xi_deg`` or ``cover_eta_deg`` raises
+    ``ValueError``; copy an array with ``np.array(footprint.cover_xi_deg)``
+    before editing it. Pickling and copying rebuild the footprint through
+    its constructor, so the copies are read-only too.
+
+    Footprints compare and hash by identity: ``==`` is ``True`` only for
+    the same object, so a :func:`dataclasses.replace` copy is unequal to its
+    original, and a footprint can be a set member or a dictionary key.
+    Compare two footprints field by field with :func:`numpy.array_equal`.
+
     Examples
     --------
     A 50-vertex circular footprint of radius 0.65 degrees centered on
@@ -326,12 +344,12 @@ class ArrayFootprint:
 
     center_xi_deg: float
     center_eta_deg: float
-    cover_xi_deg: np.ndarray = field()
-    cover_eta_deg: np.ndarray = field()
+    cover_xi_deg: np.ndarray
+    cover_eta_deg: np.ndarray
 
     def __post_init__(self) -> None:
-        cover_xi = np.asarray(self.cover_xi_deg, dtype=float)
-        cover_eta = np.asarray(self.cover_eta_deg, dtype=float)
+        cover_xi = np.array(self.cover_xi_deg, dtype=float)
+        cover_eta = np.array(self.cover_eta_deg, dtype=float)
         if cover_xi.ndim != 1 or cover_eta.ndim != 1:
             raise ValueError(
                 f"cover_xi_deg and cover_eta_deg must be 1-D arrays, "
@@ -344,11 +362,18 @@ class ArrayFootprint:
             )
         if cover_xi.size == 0:
             raise ValueError("ArrayFootprint cover polygon must have at least one vertex")
-        # frozen=True precludes normal assignment; use object.__setattr__ to
-        # canonicalise to float arrays (cheap and avoids defensive copies in
-        # downstream code).
+        # frozen=True precludes normal assignment, so object.__setattr__
+        # stores the float-canonicalised arrays. np.array always copies, so
+        # the footprint owns its arrays and can make them read-only.
+        cover_xi.setflags(write=False)
+        cover_eta.setflags(write=False)
         object.__setattr__(self, "cover_xi_deg", cover_xi)
         object.__setattr__(self, "cover_eta_deg", cover_eta)
+
+    def __reduce__(self) -> tuple[type["ArrayFootprint"], tuple[Any, ...]]:
+        # NumPy returns writeable arrays from pickle, deepcopy and copy, so
+        # rebuild through the constructor, which copies and freezes them again.
+        return (type(self), tuple(getattr(self, f.name) for f in dataclasses.fields(self)))
 
     @classmethod
     def from_array_info(
@@ -417,8 +442,8 @@ class ArrayFootprint:
         )
 
 
-@dataclass(frozen=True)
-class ScanBlock:
+@dataclass(frozen=True, eq=False)
+class ScanBlock(Generic[_ParamsT_co]):
     """Complete observation specification produced by a planning function.
 
     Contains the generated trajectory, the pattern configuration used, and
@@ -440,9 +465,18 @@ class ScanBlock:
         :class:`PongAltAzComputedParams`,
         :class:`ConstantElComputedParams`, :class:`DaisyComputedParams`,
         :class:`DaisyAltAzComputedParams`, or
-        :class:`SourceCESComputedParams`.
+        :class:`SourceCESComputedParams`. The block's type parameter is
+        that schema, so ``plan_pong_scan`` returns a
+        ``ScanBlock[PongComputedParams]``.
     summary : str
         Human-readable summary of the planned observation.
+
+    Notes
+    -----
+    Blocks compare and hash by identity: ``==`` is ``True`` only for the
+    same object, so a :func:`dataclasses.replace` copy is unequal to its
+    original even though it shares the trajectory, and a block can be a
+    set member or a dictionary key.
 
     Examples
     --------
@@ -455,9 +489,9 @@ class ScanBlock:
     trajectory: Trajectory
     config: ScanConfig
     duration: float
-    # Runtime is a plain ``dict``; the TypedDict union is advisory for
-    # static checkers. mypy can't match ``dict`` to any union member.
-    computed_params: ComputedParams = dataclasses.field(default_factory=dict)  # type: ignore[assignment]
+    # Runtime is a plain ``dict``; the schema type is advisory for static
+    # checkers, which cannot match the ``dict`` default to it.
+    computed_params: _ParamsT_co = dataclasses.field(default_factory=dict)  # type: ignore[assignment]
     summary: str = ""
 
 

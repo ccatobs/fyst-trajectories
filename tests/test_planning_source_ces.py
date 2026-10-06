@@ -9,29 +9,34 @@ and footprint geometry are exercised against astropy throughout.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import pickle
 import warnings
 
 import numpy as np
 import pytest
+from _source_ces_helpers import _FULL_PRIMECAM_MODULES, _JUPITER_NIGHT, _full_primecam_block
 from _sun_stubs import allow_everything, block_everything
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
 import fyst_trajectories.planning.source_ces as _source_ces_module
+import fyst_trajectories.planning.source_ces._kernel as _source_ces_kernel
 from fyst_trajectories import (
     FYST_AZ_MAX_VELOCITY,
     MODULE_FOV_RADIUS_DEG,
-    PRIMECAM_MODULES,
     ArrayFootprint,
     AzimuthBoundsError,
+    ConstantElScanConfig,
     Coordinates,
-    ElevationBoundsError,
     InstrumentOffset,
+    PointingError,
     PointingWarning,
     ScanBlock,
     SourceCESComputedParams,
     TargetNotObservableError,
+    Trajectory,
     boresight_to_detector,
     compute_focal_plane_rotation,
     compute_source_ces_params,
@@ -39,35 +44,7 @@ from fyst_trajectories import (
     plan_source_ces,
     plan_source_ces_passes,
 )
-from fyst_trajectories.patterns.turnarounds import turnaround_overshoot_deg
-from fyst_trajectories.planning._types import _SCAN_TYPE_TO_KEYS
-
-# Constants used across multiple tests. These dates and elevations were
-# picked from a sweep over 2026 to give well-behaved Jupiter/sidereal
-# arcs at FYST.
-_JUPITER_NIGHT = Time("2026-03-15T00:00:00", scale="utc")
-_FULL_PRIMECAM_MODULES = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
-
-# Tolerance for the "anchored pass starts near the anchor" assertions. The
-# derivation leads by _ANCHOR_START_LEAD_DEG of elevation, which at the minimum
-# permitted drift rate crosses in _ANCHOR_START_LEAD_DEG / _MIN_ANCHOR_EL_DRIFT_DEG_S
-# = 60 s; doubled to cover crossing-solver slack.
-_ANCHOR_START_TOL_SEC = 120.0
-
-
-def _full_primecam_block(site, **overrides):
-    """Build a full-PrimeCam Jupiter-rising CES block (test convenience)."""
-    kwargs = dict(
-        body="jupiter",
-        footprint=_FULL_PRIMECAM_MODULES,
-        el_bore=35.0,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-    kwargs.update(overrides)
-    return plan_source_ces(**kwargs)
-
+from fyst_trajectories.planning._types import validate_computed_params
 
 # ---------------------------------------------------------------------------
 # Happy-path tests
@@ -138,6 +115,19 @@ def test_sidereal_setting_single_module(site):
     assert 1.0 < abs(cp["az_start"] - block_centre.computed_params["az_start"]) < 2.0
 
 
+def test_source_identity_recorded_in_pattern_params(site):
+    """``pattern_params["body"]`` is the lower-case body, or None for an RA/Dec source."""
+    common = dict(footprint="c", night=_JUPITER_NIGHT, site=site)
+    body_block = plan_source_ces(body="JUPITER", el_bore=35.0, mode="rising", **common)
+    radec_block = plan_source_ces(ra=180.0, dec=-30.0, el_bore=40.0, mode="setting", **common)
+
+    assert body_block.trajectory.metadata.pattern_params["body"] == "jupiter"
+    assert radec_block.trajectory.metadata.pattern_params["body"] is None
+    # target_name stays the display label.
+    assert body_block.trajectory.metadata.target_name == "Jupiter"
+    assert radec_block.trajectory.metadata.target_name.startswith("RA=")
+
+
 def test_explicit_window_auto_mode_detect(site):
     """When ``window`` is given and no ``mode``, the planner auto-detects."""
     # Window straddles a Jupiter rising arc identified empirically above.
@@ -157,13 +147,13 @@ def test_v_az_override_skips_optimisation(site, monkeypatch):
     """Passing ``v_az`` short-circuits the optimiser."""
     called = {"n": 0}
 
-    real_minimize = _source_ces_module.minimize
+    real_minimize = _source_ces_kernel.minimize
 
     def _spy(*args, **kwargs):
         called["n"] += 1
         return real_minimize(*args, **kwargs)
 
-    monkeypatch.setattr("fyst_trajectories.planning.source_ces.minimize", _spy)
+    monkeypatch.setattr("fyst_trajectories.planning.source_ces._kernel.minimize", _spy)
 
     block = _full_primecam_block(site, v_az=0.005)
 
@@ -199,19 +189,15 @@ def test_computed_params_schema(site):
     assert set(block.computed_params) == set(SourceCESComputedParams.__required_keys__)
 
 
-def test_source_ces_not_in_overhead_dispatch_table():
-    """source_ces is intentionally not registered with the overhead-side dispatcher.
+def test_source_ces_computed_params_message_signposts():
+    """A source_ces computed_params check points the caller at the right validator.
 
-    The boundary is documented next to ``_SCAN_TYPE_TO_KEYS`` in
-    ``planning/_types.py``. plan_source_ces self-validates against
-    ``SourceCESComputedParams.__required_keys__`` directly. If this
-    test ever needs updating, also wire source_ces through
-    ``overhead/simulation.py:_generate_trajectory_for_block`` and
-    ``overhead/models.py:ObservingPatch.__post_init__``, otherwise
-    the dispatch table will lie about what scan types the overhead
-    simulator actually supports.
+    Passing ``"source_ces"`` raises ``KeyError`` whose message names the public
+    ``validate_scan_params`` entry point, so a caller who reaches this corner is
+    directed to the validator that does accept source-CES params.
     """
-    assert "source_ces" not in _SCAN_TYPE_TO_KEYS
+    with pytest.raises(KeyError, match="validate_scan_params"):
+        validate_computed_params({}, "source_ces")
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +269,75 @@ def test_partial_coverage_allow_true_warns(site):
     )
 
 
+# A source at Dec -75 culminates at 37.84 deg. At el_bore 37.7 the first vertex of
+# this cover sits on the boresight, inside the source's arc, and the second, a
+# degree away in eta, projects 0.79 deg higher, above the culmination.
+_TWO_VERTEX_COVER = ArrayFootprint(
+    center_xi_deg=0.0,
+    center_eta_deg=0.0,
+    cover_xi_deg=np.array([0.0, 0.0]),
+    cover_eta_deg=np.array([0.0, 1.0]),
+)
+_POINT_COVER = ArrayFootprint(
+    center_xi_deg=0.0,
+    center_eta_deg=0.0,
+    cover_xi_deg=np.array([0.0]),
+    cover_eta_deg=np.array([0.0]),
+)
+_DEC_M75_RISING = dict(ra=180.0, dec=-75.0, el_bore=37.7, night=_JUPITER_NIGHT, mode="rising")
+
+
+def _computed(result):
+    """Return the computed parameters of a result of any of the three planners."""
+    if isinstance(result, list):
+        return result[0].computed_params
+    return result if isinstance(result, dict) else result.computed_params
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Source RA=180.000, Dec=-75.000 elevation span:"
+    "fyst_trajectories.exceptions.PointingWarning"
+)
+@pytest.mark.parametrize(
+    "entry", [compute_source_ces_params, plan_source_ces, plan_source_ces_passes]
+)
+def test_a_partial_cover_reached_at_one_vertex_has_no_sweep_without_padding(site, entry):
+    """The crossing of a single vertex has no azimuth extent to sweep.
+
+    At this elevation the source reaches one vertex of the partial cover, so
+    with no padding the swept window has no width. The request is well formed
+    (at a lower ``el_bore`` the source crosses the whole cover), so it is a
+    ``PointingError``; the default padding sweeps the same crossing at twice
+    the padding.
+    """
+    kwargs = dict(_DEC_M75_RISING, footprint=_TWO_VERTEX_COVER, site=site, allow_partial=True)
+    if entry is plan_source_ces_passes:
+        kwargs["n_passes"] = 1
+    with pytest.raises(PointingError, match="swept azimuth window has no width"):
+        entry(az_padding=0.0, **kwargs)
+    assert _computed(entry(**kwargs))["az_throw"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "entry", [compute_source_ces_params, plan_source_ces, plan_source_ces_passes]
+)
+def test_a_point_cover_with_no_padding_is_refused_as_malformed(site, entry):
+    """A cover of one point has no crossing to sweep at any site or time.
+
+    So with no padding and no throw the request is malformed, a plain
+    ``ValueError`` raised before any computation; a padding or a throw gives
+    the sweep its width.
+    """
+    kwargs = dict(_DEC_M75_RISING, footprint=_POINT_COVER, site=site)
+    if entry is plan_source_ces_passes:
+        kwargs["n_passes"] = 1
+    with pytest.raises(ValueError, match="footprint cover is a single point") as excinfo:
+        entry(az_padding=0.0, **kwargs)
+    assert not isinstance(excinfo.value, PointingError)
+    assert _computed(entry(**kwargs))["az_throw"] == pytest.approx(1.0)
+    assert _computed(entry(az_throw=0.8, **kwargs))["az_throw"] == pytest.approx(0.8)
+
+
 def test_sun_avoidance_warns_not_raises(site):
     """A planet near the Sun emits a PointingWarning but still returns."""
     # Mercury on 2026-05-15 lies inside FYST's 45 deg sun exclusion at
@@ -342,6 +397,36 @@ def test_plan_source_ces_injected_predicate_receives_arc_samples(site):
     # The arc is probed at el_bore across many az positions/times.
     assert len(seen) > 1
     assert all(el == pytest.approx(35.0) for _, el in seen)
+
+
+def test_arc_warning_names_the_earliest_unsafe_sample(site):
+    """The swept-arc warning names the earliest unsafe time, not the first probe.
+
+    The probe grid lists every low envelope edge, then every midpoint, then
+    every high edge, so the first unsafe array position can be a late
+    low-edge sample while a high-edge sample is unsafe at the pass start.
+    """
+    times = []
+
+    def record(az, el, t):
+        times.append(t)
+        return True
+
+    _full_primecam_block(site, sun_safe=record)
+    n = len(times) // 3
+    # The model is consulted in grid order. Unsafe: the last low-edge probe
+    # (the latest time) and the first high-edge probe (the earliest time).
+    unsafe = {n - 1, 2 * n}
+    calls = iter(range(3 * n))
+
+    def two_unsafe_probes(az, el, t):
+        return next(calls) not in unsafe
+
+    with pytest.warns(PointingWarning, match="enters the Sun") as caught:
+        _full_primecam_block(site, sun_safe=two_unsafe_probes)
+    message = next(str(w.message) for w in caught if "enters the Sun" in str(w.message))
+    assert f"at {times[2 * n].iso}." in message
+    assert times[n - 1].iso not in message
 
 
 def test_plan_source_ces_allow_predicate_overrides_sun(site):
@@ -410,7 +495,7 @@ def test_convergence_failure_falls_back(site, monkeypatch):
     def _bad_minimize(*_args, **_kwargs):
         return _BadResult()
 
-    monkeypatch.setattr("fyst_trajectories.planning.source_ces.minimize", _bad_minimize)
+    monkeypatch.setattr("fyst_trajectories.planning.source_ces._kernel.minimize", _bad_minimize)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -427,25 +512,29 @@ def test_convergence_failure_falls_back(site, monkeypatch):
 
 def test_az_branch_wraps(site):
     """``az_branch`` re-expresses az_start in the chosen half-turn branch."""
-    # Branch 180 deg -> az_start in [0, 360). Jupiter's natural az (~36 deg) is
-    # already in this branch so the wrap is a no-op for the start value;
-    # we still verify the branch is honoured.
-    block = _full_primecam_block(site, az_branch=180.0)
-    az_start = block.computed_params["az_start"]
-    assert 0.0 <= az_start < 360.0
-
-    # Branch 0 deg -> az_start in [-180, 180). Same input (~36 deg) stays put.
-    block = _full_primecam_block(site, az_branch=0.0)
-    az_start = block.computed_params["az_start"]
-    assert -180.0 <= az_start < 180.0
+    # A source setting in the west (az_start ~248 deg) has an image inside
+    # FYST's [-180, 360] limits in both the 180 and the 0 branch, so the
+    # branch choice is observable: 180 keeps ~248, 0 moves it to ~-112.
+    common = dict(
+        ra=180.0,
+        dec=-30.0,
+        footprint="c",
+        el_bore=40.0,
+        night=_JUPITER_NIGHT,
+        mode="setting",
+        site=site,
+    )
+    high = plan_source_ces(az_branch=180.0, **common).computed_params["az_start"]
+    low = plan_source_ces(az_branch=0.0, **common).computed_params["az_start"]
+    assert 0.0 <= high < 360.0
+    assert -180.0 <= low < 180.0
+    assert high - low == pytest.approx(360.0)
 
     # The wrap math for ``az_branch=-180`` produces az_start in [-360, 0),
     # which falls outside FYST's [-180, 360] hardware limits. The
     # post-build bounds check correctly rejects it with
     # AzimuthBoundsError. This pins both the wrap algebra and the
     # downstream safety net.
-    from fyst_trajectories.exceptions import AzimuthBoundsError
-
     with pytest.raises(AzimuthBoundsError):
         _full_primecam_block(site, az_branch=-180.0)
 
@@ -456,10 +545,16 @@ def test_az_branch_wraps(site):
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    ("kwargs", "match"),
     [
-        pytest.param(dict(body="jupiter", ra=180.0, dec=-30.0), id="both-body-and-radec"),
-        pytest.param(dict(), id="neither-body-nor-radec"),
+        pytest.param(
+            dict(body="jupiter", ra=180.0, dec=-30.0),
+            "'body' or 'ra'/'dec', not both",
+            id="both-body-and-radec",
+        ),
+        pytest.param(
+            dict(), "must specify 'body' or both 'ra' and 'dec'", id="neither-body-nor-radec"
+        ),
         pytest.param(
             dict(
                 body="jupiter",
@@ -467,21 +562,31 @@ def test_az_branch_wraps(site):
                 night=_JUPITER_NIGHT,
                 mode="rising",
             ),
+            "'window' or 'night', not both",
             id="both-window-and-night",
         ),
-        pytest.param(dict(body="jupiter"), id="neither-window-nor-night"),
-        pytest.param(dict(body="jupiter", night=_JUPITER_NIGHT), id="night-without-mode"),
+        pytest.param(
+            dict(body="jupiter"),
+            "must specify either 'window' or 'night'",
+            id="neither-window-nor-night",
+        ),
+        pytest.param(
+            dict(body="jupiter", night=_JUPITER_NIGHT),
+            "'mode' is required when using 'night'",
+            id="night-without-mode",
+        ),
         pytest.param(
             dict(body="jupiter", night=_JUPITER_NIGHT, mode="upwards"),
+            "mode must be 'rising' or 'setting'",
             id="invalid-mode-string",
         ),
     ],
 )
-def test_invalid_arg_combos_raise_value_error(site, kwargs):
+def test_invalid_arg_combos_raise_value_error(site, kwargs, match):
     """Invalid keyword combinations raise ValueError before any astronomy runs."""
     full = dict(footprint="c", el_bore=40.0, site=site)
     full.update(kwargs)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=match):
         plan_source_ces(**full)
 
 
@@ -498,8 +603,27 @@ def test_invalid_footprint_type_raises(site):
         )
 
 
+@pytest.mark.parametrize(
+    "entry", [compute_source_ces_params, plan_source_ces, plan_source_ces_passes]
+)
+def test_negative_az_padding_is_refused(site, entry):
+    """A negative ``az_padding`` would narrow the sweep below the footprint crossing."""
+    kwargs = dict(n_passes=2) if entry is plan_source_ces_passes else {}
+    with pytest.raises(ValueError, match="az_padding must be non-negative"):
+        entry(
+            body="jupiter",
+            footprint="c",
+            el_bore=35.0,
+            night=_JUPITER_NIGHT,
+            mode="rising",
+            site=site,
+            az_padding=-0.3,
+            **kwargs,
+        )
+
+
 def test_empty_footprint_sequence_raises(site):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="footprint sequence cannot be empty"):
         plan_source_ces(
             body="jupiter",
             footprint=[],
@@ -580,8 +704,8 @@ def test_proper_motion_requires_ref_epoch(site):
 
 
 def test_proper_motion_path_runs(site):
-    """A non-zero proper-motion call exercises the per-time PM loop."""
-    # Large PM (1000 mas/yr ~ 0.28"/yr per RA, well above Barnard's Star)
+    """A non-zero proper-motion call takes the proper-motion propagation path."""
+    # Large PM (1000 mas/yr = 1 arcsec/yr in RA, about a tenth of Barnard's Star)
     # so the displacement at the planning epoch is unambiguously
     # different from the no-PM case.
     common = dict(
@@ -603,7 +727,7 @@ def test_proper_motion_path_runs(site):
     block_nopm = plan_source_ces(**common)
 
     assert isinstance(block_pm, ScanBlock)
-    # The PM loop and the vectorised no-PM path produce different az
+    # The proper-motion and fixed-position paths produce different az
     # solutions for the same source at the same epoch.
     assert (
         block_pm.computed_params["az_start"] != block_nopm.computed_params["az_start"]
@@ -611,7 +735,7 @@ def test_proper_motion_path_runs(site):
     )
 
     # Magnitude guard: 1000 mas/yr (RA) + 500 mas/yr (dec) over ~26 yr from the
-    # J2000 ref epoch is ~0.0072 deg of on-sky motion; projected to the boresight
+    # J2000 ref epoch is ~0.008 deg of on-sky motion; projected to the boresight
     # azimuth it shifts az_start by ~0.0048 deg (the throw is unchanged). Bounding
     # the shift rules out a units error (mas read as arcsec -> ~1000x too large)
     # and a silently-zero displacement, both of which the bare "differs" check
@@ -657,6 +781,116 @@ def test_array_footprint_from_array_info_rejects_unknown_units(bad):
     info = {"center": (0.0, 0.0), "cover": (np.array([0.01]), np.array([0.0]))}
     with pytest.raises(ValueError, match="units must be 'rad' or 'deg'"):
         ArrayFootprint.from_array_info(info, units=bad)
+
+
+def _square_footprint() -> ArrayFootprint:
+    return ArrayFootprint(
+        center_xi_deg=0.05,
+        center_eta_deg=-0.05,
+        cover_xi_deg=np.array([-0.1, 0.1, 0.1, -0.1]),
+        cover_eta_deg=np.array([-0.1, -0.1, 0.1, 0.1]),
+    )
+
+
+def test_array_footprint_copies_cover_arrays():
+    """Editing the arrays passed in leaves the footprint unchanged."""
+    cover_xi = np.array([-0.1, 0.1, 0.1, -0.1])
+    cover_eta = np.array([-0.1, -0.1, 0.1, 0.1])
+    fp = ArrayFootprint(
+        center_xi_deg=0.0,
+        center_eta_deg=0.0,
+        cover_xi_deg=cover_xi,
+        cover_eta_deg=cover_eta,
+    )
+
+    cover_xi[0] = 42.0
+    cover_eta[0] = 42.0
+
+    assert fp.cover_xi_deg[0] == -0.1
+    assert fp.cover_eta_deg[0] == -0.1
+
+
+def test_array_footprint_cover_arrays_are_read_only():
+    """An in-place write to a stored cover array raises."""
+    fp = _square_footprint()
+
+    with pytest.raises(ValueError, match="read-only"):
+        fp.cover_xi_deg[0] = 1.0
+    with pytest.raises(ValueError, match="read-only"):
+        fp.cover_eta_deg[0] = 1.0
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        lambda fp: pickle.loads(pickle.dumps(fp)),
+        copy.deepcopy,
+        copy.copy,
+    ],
+    ids=["pickle", "deepcopy", "copy"],
+)
+def test_array_footprint_copies_keep_read_only_arrays_and_every_field(duplicate):
+    """Pickle, deepcopy and copy rebuild through the constructor.
+
+    NumPy hands back writeable arrays from all three, so a footprint that
+    did not rebuild through its constructor would lose the read-only flag;
+    every field is compared so a field the rebuild dropped is caught.
+    """
+    fp = _square_footprint()
+
+    dup = duplicate(fp)
+
+    assert dup is not fp
+    assert not dup.cover_xi_deg.flags.writeable
+    assert not dup.cover_eta_deg.flags.writeable
+    for f in dataclasses.fields(fp):
+        assert np.array_equal(getattr(dup, f.name), getattr(fp, f.name)), f.name
+
+
+def test_array_footprint_compares_and_hashes_by_identity():
+    """Two footprints built from the same module are unequal and hashable."""
+    from fyst_trajectories.planning.footprints import resolve_footprint
+
+    fp_a = resolve_footprint("c")
+    fp_b = resolve_footprint("c")
+
+    assert isinstance(hash(fp_a), int)
+    assert fp_a == fp_a
+    assert fp_a != fp_b
+    assert fp_a != dataclasses.replace(fp_a)
+    assert len({fp_a, fp_b}) == 2
+
+
+def test_scan_block_compares_and_hashes_by_identity():
+    """A block is hashable and unequal to its replace copy, on every interpreter.
+
+    A replace copy shares the trajectory object, so the generated ``==``
+    returned ``True`` for it on every interpreter, while ``hash`` raised.
+    """
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0, 2.0]),
+        az=np.array([100.0, 101.0, 102.0]),
+        el=np.full(3, 45.0),
+        az_vel=np.ones(3),
+        el_vel=np.zeros(3),
+    )
+    block = ScanBlock(
+        trajectory=trajectory,
+        config=ConstantElScanConfig(
+            az_start=100.0,
+            az_stop=102.0,
+            elevation=45.0,
+            az_speed=1.0,
+            az_accel=1.0,
+            timestep=0.1,
+        ),
+        duration=2.0,
+    )
+
+    assert isinstance(hash(block), int)
+    assert block in {block}
+    assert block == block
+    assert block != dataclasses.replace(block)
 
 
 # ---------------------------------------------------------------------------
@@ -727,11 +961,14 @@ def test_compute_params_az_envelope_validation(site, monkeypatch):
     )
 
     # Pick a v_az override that, multiplied by the source-pass duration,
-    # pushes the envelope past the FYST azimuth max (360 deg). The source-
-    # pass duration for a centred footprint at el_bore=35 is on the order
-    # of tens of seconds; v_az=10 deg/s drives the drift-extended endpoint
-    # past 360 quickly.
-    with pytest.raises(AzimuthBoundsError):
+    # pushes the envelope past the FYST azimuth max (360 deg). The source
+    # pass for a centred footprint at el_bore=35 lasts about ten minutes, so
+    # v_az=10 deg/s drives the drift-extended endpoint far past 360.
+    with (
+        pytest.warns(PointingWarning, match="EXCLUSION ZONE"),
+        pytest.warns(PointingWarning, match="Required peak azimuth speed"),
+        pytest.raises(AzimuthBoundsError),
+    ):
         compute_source_ces_params(
             body="jupiter",
             footprint="c",
@@ -758,8 +995,6 @@ def test_compute_params_az_envelope_directional_parity(site):
     where ``plan_source_ces`` succeeds. Tightening the max below the real
     trajectory (``36.0 < 37.70``) must make BOTH raise.
     """
-    import dataclasses
-
     base_az = site.telescope_limits.azimuth
 
     def _site_with_az_max(az_max):
@@ -869,6 +1104,10 @@ def _so_chosen_rising_block(schedlib_source, source_name, el_bore):
 
 
 @pytest.mark.slow
+@pytest.mark.filterwarnings(
+    "ignore:EXCLUSION ZONE. planned source-CES on Saturn:"
+    "fyst_trajectories.exceptions.PointingWarning",
+)
 def test_cross_validate_so_make_source_ces(site, monkeypatch):
     """Cross-validate source-CES geometry against SO ``schedlib.source.make_source_ces``.
 
@@ -879,10 +1118,10 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     implementation (``so3g.proj.quat`` via ``make_source_ces``) and
     fyst-trajectories' spherical-trig :func:`compute_source_ces_params`.
 
-    Requires ``so3g`` (Linux only; no Windows wheel), ``schedlib``, and a
-    ``schedlib.policies.fyst`` module registering a FYST entry in
-    ``schedlib.source.SITES`` (upstream schedlib ships SO sites only); the
-    registration itself is then asserted. Skipped when any import is missing.
+    Requires ``so3g`` (Linux only; no Windows wheel) and upstream ``schedlib``.
+    Upstream schedlib ships SO sites only, so the test registers FYST in
+    ``schedlib.source.SITES`` from this library's site constants. Skipped when
+    either import is missing.
     Run with::
 
         pytest tests/test_planning_source_ces.py --run-slow -k cross_validate_so
@@ -918,25 +1157,19 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     so3g = pytest.importorskip("so3g")  # noqa: F841  Linux-only; gates the test
     schedlib_source = pytest.importorskip("schedlib.source")
     schedlib_instrument = pytest.importorskip("schedlib.instrument")
-    # Importing the FYST policy registers 'fyst' into schedlib.source.SITES.
-    pytest.importorskip("schedlib.policies.fyst")
-
-    from astropy import units as u
-
-    from fyst_trajectories.offsets import (
-        InstrumentOffset,
-        compute_focal_plane_rotation,
-    )
 
     source_name = "saturn"  # reaches el ~67 deg from FYST in the chosen window
     el_bore = 50.0
 
     # --- Make BOTH sides use the SAME site (FYST). SO's PyEphem path
     # resolves the source via ``schedlib.source.get_site()``, which
-    # hard-defaults to 'lat'; patch it to 'fyst' (registered by the
-    # policy import) and clear the precomputed-source cache so the FYST
-    # site is actually used.
-    assert "fyst" in schedlib_source.SITES, "FYST site not registered by policy import"
+    # hard-defaults to 'lat'; register 'fyst', point get_site at it, and
+    # clear the precomputed-source cache so the FYST site is actually used.
+    monkeypatch.setitem(
+        schedlib_source.SITES,
+        "fyst",
+        schedlib_source.Location(lat=site.latitude, lon=site.longitude, elev=site.elevation),
+    )
     _orig_get_site = schedlib_source.get_site
     monkeypatch.setattr(schedlib_source, "get_site", lambda s="fyst": _orig_get_site(s))
     schedlib_source.PRECOMPUTED_SOURCES.clear()
@@ -986,7 +1219,7 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     # Part 1 - common case: CENTRED footprint.
     #
     # For a symmetric circular cover centred on the boresight, fyst's
-    # ``nasmyth_sign*el + parallactic`` rotation is a no-op, so the
+    # mechanical ``nasmyth_sign*el`` rotation is a no-op, so the
     # AS-SHIPPED planner must match SO directly at every boresight_rot.
     # A swapped xi/eta axis or a flipped boresight_rot sign
     # would shift az_start here.
@@ -1195,7 +1428,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
                 az=bore_az,
                 el=bore_el,
                 offset=vertex_offset,
-                field_rotation=fp_rot_k,
+                focal_plane_rotation=fp_rot_k,
             )
             swept_az.append(float(az_v))
             swept_el.append(float(el_v))
@@ -1320,7 +1553,7 @@ def test_off_centre_module_lands_on_source_during_pass(site):
             az=bore_az,
             el=bore_el,
             offset=i1_offset,
-            field_rotation=fp_rot_k,
+            focal_plane_rotation=fp_rot_k,
         )
         det_az = float(det_az)
         det_el = float(det_el)
@@ -1354,512 +1587,8 @@ def test_off_centre_module_lands_on_source_during_pass(site):
 
 
 # ---------------------------------------------------------------------------
-# plan_source_ces_passes (multi-pass full-coverage sequence)
+# Core-parameter guards
 # ---------------------------------------------------------------------------
-
-
-def _source_focalplane_eta_mean(block, site, coords, body="jupiter"):
-    """Mean focal-plane eta of the source over a pass's source window.
-
-    Recovers the source's position in the pass's focal-plane frame by
-    un-rotating the (source - boresight) sky offset by the mechanical
-    focal-plane rotation (the same horizon-frame convention the planner
-    uses). For a footprint offset by ``eta`` this mean tracks ``eta``,
-    which is what proves the offset moves the coverage 1:1.
-    """
-    traj = block.trajectory
-    cp = block.computed_params
-    el_bore = float(cp["el_bore"])
-    t0 = (Time(cp["t0_iso"]) - traj.start_time).to_value(u.s)
-    t1 = (Time(cp["t1_iso"]) - traj.start_time).to_value(u.s)
-    ts = np.linspace(t0, t1, 60)
-    times = traj.start_time + TimeDelta(ts * u.s)
-    src_az, src_el = coords.get_body_altaz(body, times)
-    src_az = np.asarray(src_az, dtype=float)
-    src_el = np.asarray(src_el, dtype=float)
-    bore_az = np.interp(ts, traj.times, traj.az)
-    bore_el = np.interp(ts, traj.times, traj.el)
-    # Wrap the azimuth difference into [-180, 180] so a coordinate that
-    # straddles the 0/360 boundary does not blow up the cross-el term.
-    d_az = ((src_az - bore_az + 180.0) % 360.0) - 180.0
-    dxi_sky = d_az * np.cos(np.deg2rad(el_bore))
-    deta_sky = src_el - bore_el
-    rot = np.deg2rad(
-        compute_focal_plane_rotation(el=el_bore, site=site, offset=InstrumentOffset(dx=0.0, dy=0.0))
-    )
-    eta = -dxi_sky * np.sin(rot) + deta_sky * np.cos(rot)
-    return float(np.mean(eta))
-
-
-def test_passes_time_ordered_and_non_overlapping(site):
-    """A 3-pass Jupiter-rising sequence is time-ordered and non-overlapping."""
-    blocks = plan_source_ces_passes(
-        body="jupiter",
-        footprint="c",
-        el_bore=35.0,
-        n_passes=3,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-    assert len(blocks) == 3
-    assert all(isinstance(b, ScanBlock) for b in blocks)
-
-    # Full-block occupancy windows [start, start + duration].
-    occ = [
-        (b.trajectory.start_time.unix, b.trajectory.start_time.unix + b.duration) for b in blocks
-    ]
-    # Strictly time-ordered by start.
-    assert all(occ[k][0] < occ[k + 1][0] for k in range(len(occ) - 1))
-    # Non-overlapping: each pass starts at or after the previous one ends.
-    assert all(occ[k + 1][0] >= occ[k][1] - 1e-6 for k in range(len(occ) - 1)), (
-        f"passes overlap in time: {occ}"
-    )
-    # pass_index metadata matches the returned (time) order.
-    assert [b.trajectory.metadata.pattern_params["pass_index"] for b in blocks] == [0, 1, 2]
-
-
-def test_passes_tile_footprint_extent(site):
-    """The passes' eta offsets tile the footprint extent, and coverage tracks them."""
-    coords = Coordinates(site)
-    n_passes = 3
-    blocks = plan_source_ces_passes(
-        body="jupiter",
-        footprint="c",
-        el_bore=35.0,
-        n_passes=n_passes,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-
-    # Footprint eta extent, computed exactly as the wrapper does (the
-    # 50-vertex circular cover inscribes slightly inside 2 * radius).
-    from fyst_trajectories.planning.footprints import resolve_footprint
-
-    base_fp = resolve_footprint("c")
-    extent = float(base_fp.cover_eta_deg.max() - base_fp.cover_eta_deg.min())
-    step = extent / n_passes  # the documented default step
-
-    offsets = sorted(b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks)
-    # Distinct, monotonic, symmetric about 0.
-    assert len(set(offsets)) == n_passes
-    assert offsets == sorted(offsets)
-    # The n bands of width ``step`` centred on the offsets tile
-    # [-extent/2, +extent/2] edge to edge.
-    assert offsets[0] - step / 2.0 == pytest.approx(-extent / 2.0, abs=1e-6)
-    assert offsets[-1] + step / 2.0 == pytest.approx(extent / 2.0, abs=1e-6)
-
-    # The offset is not a cosmetic label: the source's mean focal-plane
-    # eta actually tracks each pass's offset (this is what a bare el_bore
-    # step would fail to do). Sort by offset and check monotonic tracking.
-    by_offset = sorted(
-        blocks, key=lambda b: b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
-    )
-    measured = [_source_focalplane_eta_mean(b, site, coords) for b in by_offset]
-    assert measured == sorted(measured), f"coverage centres not monotonic: {measured}"
-    for b, m in zip(by_offset, measured):
-        expected = b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
-        assert m == pytest.approx(expected, abs=0.1), (
-            f"coverage centre {m:.3f} does not track eta offset {expected:.3f}"
-        )
-    # The measured coverage centres span ~the full offset range (tiling).
-    assert (measured[-1] - measured[0]) == pytest.approx(offsets[-1] - offsets[0], abs=0.1)
-
-
-def test_each_pass_is_valid_source_ces(site):
-    """Every pass validates exactly like a standalone plan_source_ces block."""
-    blocks = plan_source_ces_passes(
-        body="jupiter",
-        footprint="c",
-        el_bore=35.0,
-        n_passes=3,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-    for b in blocks:
-        # Same computed_params schema as a single source-CES block.
-        assert set(b.computed_params) == set(SourceCESComputedParams.__required_keys__)
-        assert b.computed_params["mode"] == "rising"
-        assert b.computed_params["n_scans"] >= 1
-        assert b.duration > 0
-        # Constant elevation at this pass's stepped el_bore.
-        el_bore = b.computed_params["el_bore"]
-        assert np.allclose(b.trajectory.el, el_bore, atol=1e-6)
-        # Azimuth velocity within the hardware limit (bounds were validated
-        # inside plan_source_ces).
-        assert np.all(np.abs(b.trajectory.az_vel) <= FYST_AZ_MAX_VELOCITY)
-    # The stepped boresight elevations are symmetric about el_bore.
-    el_bores = sorted(b.computed_params["el_bore"] for b in blocks)
-    assert el_bores[1] == pytest.approx(35.0)
-    assert (el_bores[2] - el_bores[1]) == pytest.approx(el_bores[1] - el_bores[0])
-
-
-def test_explicit_eta_offsets_honored(site):
-    """An explicit eta_offsets list produces one pass per row, coverage tracking."""
-    coords = Coordinates(site)
-    requested = [0.3, -0.3, 0.0]  # deliberately unsorted
-    blocks = plan_source_ces_passes(
-        body="jupiter",
-        footprint="c",
-        el_bore=35.0,
-        eta_offsets=requested,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-    assert len(blocks) == 3
-    offsets = sorted(b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks)
-    assert offsets == pytest.approx(sorted(requested))
-    # Coverage tracks the explicit rows.
-    for b in blocks:
-        m = _source_focalplane_eta_mean(b, site, coords)
-        expected = b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
-        assert m == pytest.approx(expected, abs=0.1)
-
-
-def test_passes_setting_source_time_ordered(site):
-    """A setting source (coverage order reversed vs time) still returns time-ordered."""
-    blocks = plan_source_ces_passes(
-        ra=180.0,
-        dec=-30.0,
-        footprint="c",
-        el_bore=40.0,
-        n_passes=3,
-        night=_JUPITER_NIGHT,
-        mode="setting",
-        site=site,
-    )
-    occ = [
-        (b.trajectory.start_time.unix, b.trajectory.start_time.unix + b.duration) for b in blocks
-    ]
-    assert all(occ[k][0] < occ[k + 1][0] for k in range(len(occ) - 1))
-    assert all(occ[k + 1][0] >= occ[k][1] - 1e-6 for k in range(len(occ) - 1)), (
-        f"setting-source passes overlap in time: {occ}"
-    )
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        pytest.param(dict(n_passes=0), id="n_passes-zero"),
-        pytest.param(dict(n_passes=-1), id="n_passes-negative"),
-        pytest.param(dict(), id="neither-n_passes-nor-eta_offsets"),
-        pytest.param(dict(n_passes=3, eta_offsets=[0.0, 0.5]), id="both-n_passes-and-eta_offsets"),
-        pytest.param(dict(eta_offsets=[]), id="empty-eta_offsets"),
-        pytest.param(dict(step=0.2), id="step-without-n_passes"),
-        pytest.param(dict(n_passes=3, step=-0.1), id="negative-step"),
-        pytest.param(dict(n_passes=3, el_step=0.0), id="zero-el_step"),
-    ],
-)
-def test_passes_invalid_controls_raise_value_error(site, kwargs):
-    """Degenerate pass-control combinations raise ValueError before astronomy runs."""
-    full = dict(
-        body="jupiter",
-        footprint="c",
-        el_bore=35.0,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-    full.update(kwargs)
-    with pytest.raises(ValueError):
-        plan_source_ces_passes(**full)
-
-
-def test_passes_offset_beyond_reach_raises(site):
-    """An eta offset that steps a pass past the source's reachable arc raises cleanly."""
-    # A +30 deg eta offset drives one pass's footprint (and its stepped
-    # el_bore) far above Jupiter's accessible arc, so the underlying
-    # plan_source_ces gate rejects it.
-    with pytest.raises((TargetNotObservableError, ElevationBoundsError)):
-        plan_source_ces_passes(
-            body="jupiter",
-            footprint="c",
-            el_bore=35.0,
-            eta_offsets=[0.0, 30.0],
-            night=_JUPITER_NIGHT,
-            mode="rising",
-            site=site,
-        )
-
-
-def test_passes_duplicate_eta_offsets_raise(site):
-    """Duplicate eta offsets are rejected: identical passes are never intended."""
-    with pytest.raises(ValueError, match="unique"):
-        plan_source_ces_passes(
-            body="jupiter",
-            footprint="c",
-            el_bore=35.0,
-            eta_offsets=[0.0, 0.0],
-            night=_JUPITER_NIGHT,
-            mode="rising",
-            site=site,
-        )
-
-
-def test_passes_small_el_step_overlap_warns(site):
-    """Shrinking el_step below the footprint extent overlaps pass windows and warns."""
-    with pytest.warns(PointingWarning, match="overlap"):
-        blocks = plan_source_ces_passes(
-            body="jupiter",
-            footprint="c",
-            el_bore=35.0,
-            n_passes=2,
-            el_step=0.05,
-            night=_JUPITER_NIGHT,
-            mode="rising",
-            site=site,
-        )
-    # Still time-ordered even when the occupancy windows overlap.
-    starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
-    assert starts == sorted(starts)
-
-
-# ---------------------------------------------------------------------------
-# Approximate start_time anchor ("plan a pass starting about now")
-# ---------------------------------------------------------------------------
-
-# A Jupiter rising anchor on the test night (el ~ 32.6 deg, climbing). Reuses
-# the ~21:41 UTC rising window the pass tests above lean on.
-_JUPITER_RISING_ANCHOR = Time("2026-03-15T21:41:00", scale="utc")
-
-
-def _jupiter_el_track(site):
-    """Sample Jupiter (az, el) across the test night at 60 s cadence."""
-    coords = Coordinates(site)
-    dt = np.arange(0.0, 24 * 3600.0, 60.0)
-    times = _JUPITER_NIGHT + TimeDelta(dt * u.s)
-    _, el = coords.get_body_altaz("jupiter", times)
-    return times, np.asarray(el, dtype=float)
-
-
-def _jupiter_transit_anchor(site):
-    """Time of Jupiter's culmination (elevation maximum) on the test night."""
-    times, el = _jupiter_el_track(site)
-    return times[int(np.argmax(el))]
-
-
-def _jupiter_setting_anchor(site, target_el=40.0):
-    """First post-transit time Jupiter descends through ``target_el``."""
-    times, el = _jupiter_el_track(site)
-    i_max = int(np.argmax(el))
-    after = np.arange(len(el)) > i_max
-    idx = np.where(after & (el <= target_el))[0]
-    assert len(idx), "no setting Jupiter sample found"
-    return times[idx[0]]
-
-
-def test_anchored_plan_source_ces_rising(site):
-    """Anchored plan_source_ces derives a rising pass starting near the anchor."""
-    coords = Coordinates(site)
-    anchor = _JUPITER_RISING_ANCHOR
-    _, el_at_anchor = coords.get_body_altaz("jupiter", anchor)
-    el_at_anchor = float(el_at_anchor)
-
-    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
-    cp = block.computed_params
-
-    assert cp["mode"] == "rising"
-    t0 = Time(cp["t0_iso"])
-    delta = (t0 - anchor).to_value(u.s)
-    # Anchor, not literal start: t0 lands at or just after the anchor.
-    assert delta >= -1e-6, f"t0 must be >= anchor, got {delta:+.3f}s"
-    assert delta <= _ANCHOR_START_TOL_SEC, (
-        f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
-    )
-
-    el_limits = site.telescope_limits.elevation
-    assert el_limits.min <= cp["el_bore"] <= el_limits.max
-    # For a centred module the boresight sits a little above the source
-    # elevation at the anchor (roughly the cover half-height plus the lead).
-    assert el_at_anchor < cp["el_bore"] < el_at_anchor + 1.5
-
-
-def test_anchored_plan_source_ces_setting(site):
-    """A setting anchor resolves mode='setting' and starts at or after the anchor."""
-    anchor = _jupiter_setting_anchor(site)
-    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
-    cp = block.computed_params
-
-    assert cp["mode"] == "setting"
-    delta = (Time(cp["t0_iso"]) - anchor).to_value(u.s)
-    assert delta >= -1e-6, f"t0 must be >= anchor, got {delta:+.3f}s"
-    assert delta <= _ANCHOR_START_TOL_SEC, (
-        f"t0 should land within 120 s of the anchor, got {delta:+.1f}s"
-    )
-
-
-def test_anchored_explicit_el_bore_is_forward_search(site):
-    """Explicit el_bore + start_time forward-searches from the anchor, el_bore respected."""
-    anchor = _JUPITER_RISING_ANCHOR
-    block = plan_source_ces(
-        body="jupiter", footprint="c", el_bore=35.0, start_time=anchor, site=site
-    )
-    cp = block.computed_params
-    # el_bore is honoured exactly (no derivation).
-    assert cp["el_bore"] == pytest.approx(35.0)
-    # Jupiter is below 35 deg at the anchor and climbs to it later, so the
-    # forward search lands the pass strictly after the anchor.
-    assert (Time(cp["t0_iso"]) - anchor).to_value(u.s) >= -1e-6
-
-
-def test_anchored_matches_classic_window(site):
-    """An anchored call equals the classic window call with its derived params."""
-    anchor = _JUPITER_RISING_ANCHOR
-    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
-    cp = block.computed_params
-
-    # Rebuild the window and el_bore the anchor resolved to and run the classic
-    # form; the two must agree bit-for-bit on the pass endpoints.
-    horizon = _source_ces_module._DEFAULT_SEARCH_HORIZON_HOURS * 3600.0
-    window = (anchor, anchor + TimeDelta(horizon * u.s))
-    classic = plan_source_ces(
-        body="jupiter",
-        footprint="c",
-        el_bore=cp["el_bore"],
-        window=window,
-        mode=cp["mode"],
-        site=site,
-    )
-    assert classic.computed_params["t0_iso"] == cp["t0_iso"]
-    assert classic.computed_params["t1_iso"] == cp["t1_iso"]
-
-
-def test_anchored_compute_params_matches_plan(site):
-    """compute_source_ces_params anchored path matches plan_source_ces's derived t0."""
-    anchor = _JUPITER_RISING_ANCHOR
-    params = compute_source_ces_params(body="jupiter", footprint="c", start_time=anchor, site=site)
-    block = plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
-
-    assert set(params) == set(SourceCESComputedParams.__required_keys__)
-    for key in SourceCESComputedParams.__required_keys__:
-        expected = block.computed_params[key]
-        actual = params[key]
-        if isinstance(expected, float):
-            assert actual == pytest.approx(expected), f"mismatch on key {key!r}"
-        else:
-            assert actual == expected, f"mismatch on key {key!r}"
-
-
-def test_anchored_passes_first_pass_near_anchor(site):
-    """Anchored plan_source_ces_passes starts the first pass near the anchor."""
-    anchor = _JUPITER_RISING_ANCHOR
-    blocks = plan_source_ces_passes(
-        body="jupiter", footprint="c", n_passes=3, start_time=anchor, site=site
-    )
-    assert len(blocks) == 3
-    assert all(isinstance(b, ScanBlock) for b in blocks)
-
-    # The first pass in time is anchored; later passes follow.
-    delta0 = (Time(blocks[0].computed_params["t0_iso"]) - anchor).to_value(u.s)
-    assert delta0 >= -1e-6, f"first pass t0 must be >= anchor, got {delta0:+.3f}s"
-    assert delta0 <= _ANCHOR_START_TOL_SEC, (
-        f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
-    )
-
-    # Blocks time-ordered by start, with intact per-pass metadata.
-    starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
-    assert starts == sorted(starts)
-    assert [b.trajectory.metadata.pattern_params["pass_index"] for b in blocks] == [0, 1, 2]
-    for b in blocks:
-        assert set(b.computed_params) == set(SourceCESComputedParams.__required_keys__)
-        assert b.computed_params["mode"] == "rising"
-
-
-def test_anchored_mutual_exclusion_with_night_and_window(site):
-    """start_time may not be combined with night or window."""
-    with pytest.raises(ValueError, match="'start_time' or 'night'"):
-        plan_source_ces(
-            body="jupiter",
-            footprint="c",
-            start_time=_JUPITER_RISING_ANCHOR,
-            night=_JUPITER_NIGHT,
-            mode="rising",
-            site=site,
-        )
-    with pytest.raises(ValueError, match="'start_time' or 'window'"):
-        plan_source_ces(
-            body="jupiter",
-            footprint="c",
-            start_time=_JUPITER_RISING_ANCHOR,
-            window=(_JUPITER_NIGHT, _JUPITER_NIGHT + TimeDelta(1 * u.hour)),
-            site=site,
-        )
-
-
-def test_missing_el_bore_without_start_time_raises(site):
-    """Omitting el_bore in the classic (night/window) form raises a clear ValueError."""
-    with pytest.raises(ValueError, match="el_bore is required"):
-        plan_source_ces(
-            body="jupiter",
-            footprint="c",
-            night=_JUPITER_NIGHT,
-            mode="rising",
-            site=site,
-        )
-
-
-def test_anchored_near_transit_guard(site):
-    """Anchoring at transit (near-zero elevation drift) raises mentioning drift."""
-    transit = _jupiter_transit_anchor(site)
-    with pytest.raises(TargetNotObservableError, match="drift"):
-        plan_source_ces(body="jupiter", footprint="c", start_time=transit, site=site)
-
-
-def test_anchored_passes_first_pass_near_anchor_setting(site):
-    """A setting anchor puts the highest pass first, starting near the anchor."""
-    anchor = _jupiter_setting_anchor(site)
-    blocks = plan_source_ces_passes(
-        body="jupiter", footprint="c", n_passes=3, start_time=anchor, site=site
-    )
-    assert len(blocks) == 3
-    assert all(b.computed_params["mode"] == "setting" for b in blocks)
-
-    # The first pass in time is anchored.
-    delta0 = (Time(blocks[0].computed_params["t0_iso"]) - anchor).to_value(u.s)
-    assert delta0 >= -1e-6, f"first pass t0 must be >= anchor, got {delta0:+.3f}s"
-    assert delta0 <= _ANCHOR_START_TOL_SEC, (
-        f"first pass should start within 120 s of anchor, got {delta0:+.1f}s"
-    )
-
-    # Blocks time-ordered with intact per-pass metadata.
-    starts = [Time(b.computed_params["t0_iso"]).unix for b in blocks]
-    assert starts == sorted(starts)
-    assert [b.trajectory.metadata.pattern_params["pass_index"] for b in blocks] == [0, 1, 2]
-
-    # A setting source crosses higher elevations first, so the anchored first
-    # pass must carry the highest boresight elevation and the top coverage row
-    # (the largest eta offset of the default symmetric grid).
-    etas = [b.trajectory.metadata.pattern_params["pass_eta_offset_deg"] for b in blocks]
-    el_bores = [b.trajectory.metadata.pattern_params["pass_el_bore_deg"] for b in blocks]
-    assert etas[0] == pytest.approx(max(etas))
-    assert etas[0] > 0.0  # the top row of a symmetric grid is strictly positive
-    assert el_bores[0] == pytest.approx(max(el_bores))
-
-
-def test_anchored_below_elevation_floor_raises_target_not_observable(site):
-    """Anchoring a source below the elevation floor raises an anchor-relative error."""
-    times, el = _jupiter_el_track(site)
-    floor = site.telescope_limits.elevation.min
-    i_max = int(np.argmax(el))
-    after = np.arange(len(el)) > i_max
-    idx = np.where(after & (el <= floor - 5.0))[0]
-    assert len(idx), "no below-floor Jupiter sample found on the test night"
-    anchor = times[idx[0]]
-
-    with pytest.raises(TargetNotObservableError, match="floor") as excinfo:
-        plan_source_ces(body="jupiter", footprint="c", start_time=anchor, site=site)
-    msg = str(excinfo.value)
-    assert "Jupiter" in msg
-    assert str(anchor.iso) in msg
-    # The message reports the telescope floor and the source's elevation at
-    # the anchor, not the internal probe boresight the derivation attempted.
-    assert f"floor {floor}" in msg
-    assert f"{float(el[idx[0]]):.2f}" in msg
-    # The kernel's original bounds rejection is preserved for structured access.
-    assert isinstance(excinfo.value.__cause__, ElevationBoundsError)
 
 
 class TestNumericParameterGuards:
@@ -1931,469 +1660,6 @@ class TestPostDriftDynamicsCheck:
         assert np.abs(drift).max() > 0.01
 
 
-# ---------------------------------------------------------------------------
-# Scan-geometry inputs: az_speed, az_throw, dwell, and the margin transform
-# ---------------------------------------------------------------------------
-
-
-def _one_module_params(site, **overrides):
-    """compute_source_ces_params for a single-module Jupiter-rising pass."""
-    kwargs = dict(
-        body="jupiter",
-        footprint="c",
-        el_bore=35.0,
-        night=_JUPITER_NIGHT,
-        mode="rising",
-        site=site,
-    )
-    kwargs.update(overrides)
-    return compute_source_ces_params(**kwargs)
-
-
-class TestAzSpeedInput:
-    """``az_speed`` replaces the derived slow-drag leg speed."""
-
-    def test_default_records_the_derived_slow_drag_speed(self, site):
-        cp = _one_module_params(site)
-        # One module crosses in ~10 min at ~2.6 deg of throw: the derived
-        # speed sits on the slow-drag floor, and it is recorded either way.
-        assert cp["az_speed"] == pytest.approx(0.05)
-
-    def test_explicit_speed_is_used_and_recorded(self, site):
-        cp = _one_module_params(site, az_speed=1.5)
-        assert cp["az_speed"] == 1.5
-        block = _full_primecam_block(site, footprint="c", az_speed=1.5)
-        assert block.computed_params["az_speed"] == 1.5
-        assert block.config.az_speed == 1.5
-        # The legs cruise at the requested speed plus the small drift.
-        peak = float(np.abs(block.trajectory.az_vel).max())
-        assert peak == pytest.approx(1.5 + abs(block.computed_params["v_az"]), abs=0.02)
-
-    def test_speed_feeds_the_peak_speed_advisory(self, site):
-        with pytest.warns(PointingWarning, match="exceeds site limit"):
-            _one_module_params(site, az_speed=FYST_AZ_MAX_VELOCITY + 0.5)
-
-    @pytest.mark.parametrize("bad", [0.0, -1.0])
-    def test_non_positive_speed_raises(self, site, bad):
-        with pytest.raises(ValueError, match="az_speed must be positive"):
-            _one_module_params(site, az_speed=bad)
-
-    def test_fast_drag_at_hot_acceleration_warns_at_the_quintic_peak(self, site):
-        """1.5 deg/s at 1.5 deg/s^2: the turnaround peaks at 2.25 deg/s^2, over the limit."""
-        from fyst_trajectories.exceptions import AccelerationLimitWarning
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            block = _full_primecam_block(
-                site, footprint="c", az_speed=1.5, az_accel=1.5, az_throw=2.44
-            )
-        accel = [w for w in caught if issubclass(w.category, AccelerationLimitWarning)]
-        assert len(accel) == 1
-        traj = block.trajectory
-        az_vel = np.gradient(np.unwrap(traj.az, period=360.0), traj.times)
-        peak = float(np.abs(np.gradient(az_vel, traj.times)).max())
-        assert peak == pytest.approx(2.25, abs=0.05)
-
-
-class TestAzThrowInput:
-    """``az_throw`` replaces the padded solved throw, re-centred on the window."""
-
-    def test_explicit_throw_is_recorded_and_recentred(self, site):
-        default = _one_module_params(site)
-        cp = _one_module_params(site, az_throw=2.44)
-        assert cp["az_throw"] == 2.44
-        centre_default = default["az_start"] + 0.5 * default["az_throw"]
-        centre = cp["az_start"] + 0.5 * cp["az_throw"]
-        assert centre == pytest.approx(centre_default, abs=1e-9)
-        # Timing and drift are untouched by the throw.
-        assert cp["t0_iso"] == default["t0_iso"]
-        assert cp["v_az"] == pytest.approx(default["v_az"])
-
-    def test_throw_with_explicit_padding_raises(self, site):
-        with pytest.raises(ValueError, match="cannot be combined with an explicit az_padding"):
-            _one_module_params(site, az_throw=2.44, az_padding=0.2)
-
-    def test_narrow_throw_warns(self, site):
-        default = _one_module_params(site, az_padding=0.0)
-        crossing = default["az_throw"]
-        with pytest.warns(PointingWarning, match="narrower than the .* footprint crossing"):
-            cp = _one_module_params(site, az_throw=0.5 * crossing)
-        assert cp["az_throw"] == pytest.approx(0.5 * crossing)
-
-    @pytest.mark.parametrize("bad", [0.0, -2.0])
-    def test_non_positive_throw_raises(self, site, bad):
-        with pytest.raises(ValueError, match="az_throw must be positive"):
-            _one_module_params(site, az_throw=bad)
-
-    def test_arc_sun_check_sees_the_overridden_envelope(self, site, monkeypatch):
-        """The Sun sweep runs on the final swept window, so a narrower throw shrinks it."""
-        seen: list[np.ndarray] = []
-        real = _source_ces_module._check_arc_sun_safety
-
-        def spy(coords, site_, arc_az, arc_el, arc_times, source_label, **kw):
-            seen.append(np.asarray(arc_az))
-            return real(coords, site_, arc_az, arc_el, arc_times, source_label, **kw)
-
-        monkeypatch.setattr(_source_ces_module, "_check_arc_sun_safety", spy)
-        default = _one_module_params(site)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            narrow = _one_module_params(site, az_throw=1.0)
-        assert len(seen) == 2
-        span_default = seen[0].max() - seen[0].min()
-        span_narrow = seen[1].max() - seen[1].min()
-        assert span_default - span_narrow == pytest.approx(default["az_throw"] - narrow["az_throw"])
-
-
-class TestNonScalarTimeInputs:
-    """A time grid where one instant belongs is refused, clearly.
-
-    Unchecked, an array-valued ``Time`` fails far downstream: ``night`` as a
-    numpy broadcast error, ``window`` as "the truth value of an array is
-    ambiguous", and ``start_time`` worst of all, as a
-    ``TargetNotObservableError`` naming a whole grid of times, which reads
-    as an astronomy verdict rather than a malformed argument.
-    """
-
-    _GRID = Time(["2026-03-15T00:00:00", "2026-03-15T01:00:00"], scale="utc")
-
-    def test_array_night_raises(self, site):
-        with pytest.raises(ValueError, match="night must be a single instant"):
-            plan_source_ces(
-                body="jupiter",
-                footprint="c",
-                el_bore=35.0,
-                site=site,
-                night=self._GRID,
-                mode="rising",
-            )
-
-    def test_array_window_edge_raises(self, site):
-        with pytest.raises(ValueError, match="window start must be a single instant"):
-            plan_source_ces(
-                body="jupiter",
-                footprint="c",
-                el_bore=35.0,
-                site=site,
-                window=(self._GRID, self._GRID[0]),
-            )
-
-    def test_array_start_time_raises(self, site):
-        with pytest.raises(ValueError, match="start_time must be a single instant"):
-            plan_source_ces(body="jupiter", footprint="c", site=site, start_time=self._GRID)
-
-
-class TestSweptEnvelope:
-    """Every envelope the kernel reasons about covers the commanded motion.
-
-    A constant-elevation sweep cruises across the science window and then
-    overshoots each edge by the quintic turnaround peak
-    ``5 * az_speed**2 / (8 * az_accel)`` before coming back. Two places
-    could reason about the science window instead: the arc Sun check and the
-    emit-time azimuth-bounds check. Both widen through the shared
-    ``swept_az_envelope`` helper, so the screened range contains what the
-    builder produces rather than sitting inside it.
-    """
-
-    def _captured_arc(self, site, monkeypatch, **overrides):
-        """Plan a pass and return (arc azimuths seen by the Sun check, block)."""
-        seen: list[np.ndarray] = []
-        real = _source_ces_module._check_arc_sun_safety
-
-        def spy(coords, site_, arc_az, arc_el, arc_times, label, **kw):
-            seen.append(np.asarray(arc_az, dtype=float))
-            return real(coords, site_, arc_az, arc_el, arc_times, label, **kw)
-
-        monkeypatch.setattr(_source_ces_module, "_check_arc_sun_safety", spy)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            block = _full_primecam_block(site, footprint="c", **overrides)
-        assert len(seen) == 1
-        return seen[0], block
-
-    @pytest.mark.parametrize(
-        ("az_speed", "az_accel"),
-        [(1.5, 1.0), (1.5, 1.5), (2.0, 1.0)],
-    )
-    def test_arc_sun_check_covers_the_built_trajectory(self, site, monkeypatch, az_speed, az_accel):
-        """The sampled arc contains the trajectory's own azimuth extremes.
-
-        An arc that is only the science window misses, at
-        ``az_speed=1.5, az_accel=1.0``, 1.36 deg of commanded motion on each
-        side, and a scan could then put 47 of 377 samples inside the
-        exclusion zone with no warning at all.
-        """
-        arc_az, block = self._captured_arc(site, monkeypatch, az_speed=az_speed, az_accel=az_accel)
-        assert arc_az.min() <= block.trajectory.az.min()
-        assert arc_az.max() >= block.trajectory.az.max()
-
-    def test_arc_widens_by_exactly_the_turnaround_overshoot(self, site, monkeypatch):
-        """The widening is the shared constant, not an arbitrary pad."""
-        arc_az, block = self._captured_arc(site, monkeypatch, az_speed=1.5, az_accel=1.0)
-        cp = block.computed_params
-        overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
-        assert overshoot == pytest.approx(1.40625)
-        # The arc spans the commanded window plus the drift the pass
-        # accumulates between t0 and t1: throw + 2 * overshoot + |v_az| * dt.
-        # The recorded window is an ISO string truncated to milliseconds, so
-        # reconstructing the drift from it carries about a microdegree of
-        # slack; that is far below the 1.4 deg the widening adds.
-        window_sec = (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s)
-        expected = cp["az_throw"] + 2 * overshoot + abs(cp["v_az"]) * window_sec
-        assert arc_az.max() - arc_az.min() == pytest.approx(expected, abs=1e-4)
-
-    @pytest.mark.parametrize("az_speed", [1.0, 2.0])
-    def test_emit_time_envelope_covers_the_built_trajectory(self, site, az_speed):
-        """``compute_source_ces_params`` refuses what ``plan_source_ces`` would.
-
-        An emit-time azimuth-bounds check that widened only by the drift
-        would let a scheduler emit a block whose built trajectory reaches
-        2.49 deg outside the limits that check accepted. The two entry points
-        are screened against the same envelope.
-        """
-        limits = site.telescope_limits.azimuth
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            block = _full_primecam_block(site, footprint="c", az_speed=az_speed)
-            cp = compute_source_ces_params(
-                body="jupiter",
-                footprint="c",
-                el_bore=35.0,
-                night=_JUPITER_NIGHT,
-                mode="rising",
-                site=site,
-                az_speed=az_speed,
-            )
-        overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
-        env_lo = min(cp["az_start"], cp["az_start"] + cp["az_throw"]) - overshoot
-        env_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"]) + overshoot
-        drift = cp["v_az"] * cp["duration"]
-        env_lo += min(0.0, drift)
-        env_hi += max(0.0, drift)
-        assert env_lo <= block.trajectory.az.min()
-        assert env_hi >= block.trajectory.az.max()
-        # Sanity: this geometry is comfortably inside the limits, so the
-        # widening is what is being pinned, not a bounds refusal.
-        assert limits.min < env_lo and env_hi < limits.max
-
-    def test_emit_time_envelope_refuses_a_trajectory_that_leaves_the_limits(self, site):
-        """A sweep whose overshoot crosses the limit is refused at emit time.
-
-        Built by squeezing the azimuth limits around the solved window so
-        only the turnaround overshoot pushes past them: without the widening
-        the same call returns a params dict a dispatcher would then reject.
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            cp = _one_module_params(site, az_speed=1.5)
-        overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
-        drift = cp["v_az"] * cp["duration"]
-        sci_hi = max(cp["az_start"], cp["az_start"] + cp["az_throw"]) + max(0.0, drift)
-        # A limit between the science edge and the commanded edge.
-        tight = dataclasses.replace(
-            site,
-            telescope_limits=dataclasses.replace(
-                site.telescope_limits,
-                azimuth=dataclasses.replace(
-                    site.telescope_limits.azimuth, max=sci_hi + 0.5 * overshoot
-                ),
-            ),
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            with pytest.raises(AzimuthBoundsError):
-                _one_module_params(tight, az_speed=1.5)
-
-
-class TestDwellInput:
-    """``dwell`` narrows the pass about the crossing midpoint."""
-
-    def test_default_records_the_full_crossing(self, site):
-        cp = _one_module_params(site)
-        span = (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s)
-        assert cp["crossing_seconds"] == pytest.approx(span, abs=1e-3)
-
-    def test_dwell_narrows_symmetrically_and_keeps_the_crossing(self, site):
-        default = _one_module_params(site)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            cp = _one_module_params(site, dwell=300.0)
-        t0, t1 = Time(cp["t0_iso"]), Time(cp["t1_iso"])
-        assert (t1 - t0).to_value(u.s) == pytest.approx(300.0, abs=1e-3)
-        mid_default = Time(default["t0_iso"]) + 0.5 * (
-            Time(default["t1_iso"]) - Time(default["t0_iso"])
-        )
-        mid = t0 + 0.5 * (t1 - t0)
-        assert abs((mid - mid_default).to_value(u.s)) < 1e-3
-        assert cp["crossing_seconds"] == pytest.approx(default["crossing_seconds"])
-        assert cp["crossing_seconds"] > 300.0
-        # The quantised trajectory length tracks the dwell, not the crossing.
-        # The bound is derived, not picked: rounding the window to whole legs
-        # can land at most half a leg-plus-turnaround either side of it. A
-        # flat 60 s slop would be 2.3x that and would pass a floor that
-        # silently widened the pass.
-        half_cycle = 0.5 * (cp["az_throw"] / cp["az_speed"] + 2.0 * cp["az_speed"] / 1.0)
-        assert abs(cp["duration"] - 300.0) <= half_cycle
-
-    def test_partial_dwell_warns(self, site):
-        with pytest.warns(PointingWarning, match="shorter than the .* footprint crossing"):
-            _one_module_params(site, dwell=300.0)
-
-    def test_dwell_longer_than_the_crossing_raises(self, site):
-        crossing = _one_module_params(site)["crossing_seconds"]
-        with pytest.raises(ValueError, match="dwell must not exceed the solved footprint crossing"):
-            _one_module_params(site, dwell=crossing + 60.0)
-
-    @pytest.mark.parametrize("bad", [0.0, -30.0])
-    def test_non_positive_dwell_raises(self, site, bad):
-        with pytest.raises(ValueError, match="dwell must be positive"):
-            _one_module_params(site, dwell=bad)
-
-    def test_dwell_below_the_sampling_step_raises_naming_both(self, site):
-        """A dwell shorter than one sample is refused, not silently widened.
-
-        The narrowed window is resampled on the ``sampling_step_seconds``
-        grid, so a shorter dwell would be floored back up to one step: a
-        dwell of 8 s would build a 30 s scan while ``t0_iso``/``t1_iso`` still
-        reported 8 s, and changing only the sampling step would change the
-        scan duration by 3.75x. The message names both numbers so the caller
-        can see which knob to move.
-        """
-        with pytest.raises(ValueError, match=r"dwell must be at least sampling_step_seconds"):
-            _one_module_params(site, dwell=8.0)
-
-        with pytest.raises(ValueError) as excinfo:
-            _one_module_params(site, dwell=8.0, sampling_step_seconds=30.0)
-        assert "dwell=8.0" in str(excinfo.value)
-        assert "sampling_step_seconds=30.0" in str(excinfo.value)
-
-    def test_dwell_at_the_sampling_step_is_honoured_exactly(self, site):
-        """At the floor the pass is exactly the requested length, not one step wider."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            cp = _one_module_params(site, dwell=10.0, sampling_step_seconds=10.0)
-        assert (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s) == pytest.approx(
-            10.0, abs=1e-3
-        )
-
-    def test_dwell_with_multiple_passes_raises(self, site):
-        with pytest.raises(ValueError, match="accepted only for a single pass"):
-            plan_source_ces_passes(
-                body="jupiter",
-                footprint="c",
-                el_bore=35.0,
-                n_passes=2,
-                night=_JUPITER_NIGHT,
-                mode="rising",
-                site=site,
-                dwell=120.0,
-            )
-
-    def test_single_pass_sequence_accepts_dwell(self, site):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            (block,) = plan_source_ces_passes(
-                body="jupiter",
-                footprint="c",
-                el_bore=35.0,
-                n_passes=1,
-                night=_JUPITER_NIGHT,
-                mode="rising",
-                site=site,
-                dwell=300.0,
-            )
-        cp = block.computed_params
-        assert (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s) == pytest.approx(
-            300.0, abs=1e-3
-        )
-
-    def test_anchored_dwell_pass_starts_half_the_cut_after_the_anchor(self, site):
-        """The anchor places the full crossing; the dwell narrows about its midpoint."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", PointingWarning)
-            full = plan_source_ces(
-                body="jupiter", footprint="c", start_time=_JUPITER_RISING_ANCHOR, site=site
-            )
-            narrowed = plan_source_ces(
-                body="jupiter",
-                footprint="c",
-                start_time=_JUPITER_RISING_ANCHOR,
-                site=site,
-                dwell=300.0,
-            )
-        assert narrowed.computed_params["el_bore"] == pytest.approx(full.computed_params["el_bore"])
-        crossing = full.computed_params["crossing_seconds"]
-        expected_delay = 0.5 * (crossing - 300.0)
-        delay = (narrowed.trajectory.start_time - full.trajectory.start_time).to_value(u.s)
-        assert delay == pytest.approx(expected_delay, abs=1.0)
-        cp = narrowed.computed_params
-        assert (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s) == pytest.approx(
-            300.0, abs=1e-3
-        )
-
-
-class TestInflateFootprint:
-    """The caller-side margin transform pushes the cover out from the centre."""
-
-    def test_single_module_circle_grows_by_the_margin(self):
-        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
-
-        base = resolve_footprint("c")
-        grown = inflate_footprint(base, 0.4)
-        r_base = np.hypot(
-            base.cover_xi_deg - base.center_xi_deg, base.cover_eta_deg - base.center_eta_deg
-        )
-        r_grown = np.hypot(
-            grown.cover_xi_deg - grown.center_xi_deg, grown.cover_eta_deg - grown.center_eta_deg
-        )
-        np.testing.assert_allclose(r_grown, r_base + 0.4)
-        assert grown.center_xi_deg == base.center_xi_deg
-        assert grown.center_eta_deg == base.center_eta_deg
-        assert r_base.max() == pytest.approx(MODULE_FOV_RADIUS_DEG)
-
-    def test_off_centre_module_keeps_its_own_centre(self):
-        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
-
-        base = resolve_footprint("i1")
-        grown = inflate_footprint(base, 0.25)
-        assert (grown.center_xi_deg, grown.center_eta_deg) == (
-            base.center_xi_deg,
-            base.center_eta_deg,
-        )
-        r = np.hypot(
-            grown.cover_xi_deg - base.center_xi_deg, grown.cover_eta_deg - base.center_eta_deg
-        )
-        np.testing.assert_allclose(r, MODULE_FOV_RADIUS_DEG + 0.25)
-
-    def test_zero_margin_is_an_equal_copy(self):
-        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
-
-        base = resolve_footprint(_FULL_PRIMECAM_MODULES)
-        same = inflate_footprint(base, 0.0)
-        np.testing.assert_allclose(same.cover_xi_deg, base.cover_xi_deg)
-        np.testing.assert_allclose(same.cover_eta_deg, base.cover_eta_deg)
-        assert same is not base
-
-    def test_negative_margin_raises(self):
-        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
-
-        with pytest.raises(ValueError, match="margin_deg must be non-negative"):
-            inflate_footprint(resolve_footprint("c"), -0.1)
-
-    def test_margin_lengthens_the_crossing(self, site):
-        """One module plus 0.4 deg per side reproduces a wider, longer pass."""
-        from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
-
-        plain = _one_module_params(site, az_padding=0.0)
-        wide = _one_module_params(
-            site, footprint=inflate_footprint(resolve_footprint("c"), 0.4), az_padding=0.0
-        )
-        assert wide["crossing_seconds"] > plain["crossing_seconds"]
-        # The on-sky throw grows by twice the margin, up to the drift term.
-        grown = (wide["az_throw"] - plain["az_throw"]) * np.cos(np.radians(35.0))
-        assert grown == pytest.approx(0.8, abs=0.1)
-
-
 class TestWindowOrdering:
     """A window that does not run forwards is refused as a bad argument.
 
@@ -2420,26 +1686,27 @@ class TestWindowOrdering:
                 body="jupiter", window=(later, self.T0), el_bore=45.0, footprint="c", site=site
             )
 
-    def test_computed_params_record_utc(self, site):
-        """``t0_iso``/``t1_iso`` are UTC, and re-parsing them as UTC round-trips.
 
-        The recorded strings carry no scale, and every reader (the pass
-        sequencer included) parses them as UTC, so the conversion has to be
-        made where they are written.
-        """
-        block = plan_source_ces(
-            body="jupiter",
-            night=Time("2026-03-15T00:00:00", scale="utc"),
-            mode="rising",
-            el_bore=40.0,
-            footprint="c",
-            site=site,
-        )
-        params = block.computed_params
-        t0 = Time(params["t0_iso"], scale="utc")
-        t1 = Time(params["t1_iso"], scale="utc")
-        assert t1 > t0
-        # The trajectory carries the same instant as a real ``Time``; reading
-        # the recorded string back as UTC has to land on it. A TAI-scaled
-        # write would sit 37 s away.
-        assert abs((t0 - block.trajectory.start_time).sec) < 1.0
+def test_computed_params_record_utc(site):
+    """``t0_iso``/``t1_iso`` are UTC, and re-parsing them as UTC round-trips.
+
+    The recorded strings carry no scale, and every reader (the pass
+    sequencer included) parses them as UTC, so the conversion has to be
+    made where they are written.
+    """
+    block = plan_source_ces(
+        body="jupiter",
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="rising",
+        el_bore=40.0,
+        footprint="c",
+        site=site,
+    )
+    params = block.computed_params
+    t0 = Time(params["t0_iso"], scale="utc")
+    t1 = Time(params["t1_iso"], scale="utc")
+    assert t1 > t0
+    # The trajectory carries the same instant as a real ``Time``; reading
+    # the recorded string back as UTC has to land on it. A TAI-scaled
+    # write would sit 37 s away.
+    assert abs((t0 - block.trajectory.start_time).sec) < 1.0

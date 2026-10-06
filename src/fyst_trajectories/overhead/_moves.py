@@ -12,6 +12,10 @@ that decision stays with the caller, because the two loops genuinely
 differ there: one restarts its tick, the other plans a visit from the
 escape pose or shortens an idle by the move.
 
+:func:`sweep_sun_safe` is the other check both loops share: the
+fail-closed Sun sweep over a planned pass, which certifies the pass before
+it is emitted.
+
 Both loops plan an escape under the path-level safety model and the
 schedule's own elevation floor, and both leave the telescope where it is
 when the escape does not fit in what is left of the window, labelling the
@@ -40,19 +44,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
 from astropy.time import Time
 
+from ..sun_protocols import BatchSunSafePredicate
 from .models import TimelineBlock
 from .transitions import DeferralReason, Transition, plan_escape
 
 if TYPE_CHECKING:
-    from ..dispatch import SlewSafePredicate, SunSafePredicate
     from ..site import Site
+    from ..sun_protocols import SlewSafePredicate, SunSafePredicate
 
-__all__ = ["ESCAPE_BLOCK_NAME", "EscapeMove", "plan_escape_move"]
+__all__ = ["ESCAPE_BLOCK_NAME", "EscapeMove", "plan_escape_move", "sweep_sun_safe"]
 
 #: ``patch_name`` of the SLEW block that records an escape, in both loops.
 ESCAPE_BLOCK_NAME = "sun_escape"
+
+# Per-sample fallback budget for a predicate without ``batch``: a 10 min pass
+# at 0.1 s has 6000 samples; 600 keeps the fail-closed sweep at ~1 s spacing.
+_SWEEP_MAX_SAMPLES = 600
 
 
 @dataclass(frozen=True)
@@ -192,3 +202,32 @@ def plan_escape_move(
         patch_name=ESCAPE_BLOCK_NAME,
     )
     return EscapeMove(transition=escape, block=block)
+
+
+def sweep_sun_safe(sun_safe: SunSafePredicate, az: np.ndarray, el: np.ndarray, times: Time) -> bool:
+    """Whether a trajectory's samples are clear of the Sun, fail closed.
+
+    Uses the predicate's vectorised ``batch`` when it has one, which checks
+    every sample; otherwise evaluates the predicate per sample on an even
+    subsample of at most :data:`_SWEEP_MAX_SAMPLES` points, both ends
+    included, so that path is a sampled gate rather than a proof.
+
+    An empty trajectory answers ``False``. There is nothing to screen, so a
+    ``True`` would be a vacuous pass of the Sun gate rather than a verdict,
+    the same hole the dispatch-time wrap gate fails closed on.
+    """
+    az = np.asarray(az, dtype=float)
+    el = np.asarray(el, dtype=float)
+    if az.size == 0:
+        return False
+    if isinstance(sun_safe, BatchSunSafePredicate):
+        verdicts = np.asarray(sun_safe.batch(az, el, times), dtype=bool)
+        if verdicts.shape != az.shape:
+            raise ValueError(f"sun_safe.batch returned shape {verdicts.shape}, expected {az.shape}")
+        return bool(verdicts.all())
+    n = az.size
+    stride = max(1, int(np.ceil(n / _SWEEP_MAX_SAMPLES)))
+    index = list(range(0, n, stride))
+    if index[-1] != n - 1:
+        index.append(n - 1)
+    return all(bool(sun_safe(float(az[i]), float(el[i]), times[i])) for i in index)

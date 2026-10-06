@@ -7,16 +7,29 @@ inserts any calibrations whose cadence has elapsed, picks the best-positioned
 observable patch, plans a Sun-checked slew to it, schedules a science scan on
 it, and advances the clock.
 
-Three things make the clock advance without a scan. A constant-elevation
-patch is only selectable while its elevation-crossing pass is imminent, so
-expect idle blocks before such a pass opens. A slew whose direct path would
-cross the Sun zone is refused, and that tick idles at the unmoved pose and
-retries once the Sun has moved. A parked pose the zone has overtaken is
-moved out of it before anything else runs that tick. See
-:doc:`sun_avoidance` for the policy all three apply.
+Besides a tick on which nothing is observable, four things make the clock
+advance without a scan. A constant-elevation patch is only selectable while
+its elevation-crossing pass is imminent, so expect idle blocks before such a
+pass opens; a pong or daisy patch, only while its shortest subscan (for a
+pong, one whole pattern period), and any retune due before it, fit before any
+part of its scan pattern reaches an elevation limit or the Sun reaches the
+field. The pattern reaches well past the field centre: a pong fills its box,
+and a daisy's petals reach past ``radius`` by at least ``turn_radius``, so
+near rising and setting such a patch is passed over while its centre is
+still inside the limits. The pong's whole box is taken at every instant,
+while the pattern passes near each corner once a period, so near setting a
+pong can stop up to a period before its own trajectory would reach the
+limit. A visit whose first science subscan cannot be planned books nothing,
+and that tick idles: the planner refuses the subscan (a pong first retries
+with fewer periods), or the subscan no longer fits by the time the slew
+would arrive, and then the telescope does not slew. A slew whose direct
+path would cross the Sun zone is refused, and that tick idles at the
+unmoved pose and retries once the Sun has moved. A parked pose the zone has
+overtaken is moved out of it before anything else runs that tick. See
+:doc:`sun_avoidance` for the Sun policy these checks apply.
 
-ObservingPatch Setup
---------------------
+Defining Patches
+----------------
 
 Each sky region is defined as an :class:`~fyst_trajectories.overhead.ObservingPatch`::
 
@@ -39,8 +52,8 @@ Each sky region is defined as an :class:`~fyst_trajectories.overhead.ObservingPa
         name="Wide01",
         ra_center=180.0,
         dec_center=-30.0,
-        width=20.0,
-        height=10.0,
+        width=4.0,
+        height=4.0,
         scan_type="pong",
         velocity=0.5,
         scan_params={"spacing": 0.1, "num_terms": 4},
@@ -67,8 +80,8 @@ observable at once: each candidate's score is multiplied by
         field, name="Stripe82", scan_type="constant_el", velocity=1.0, elevation=45.0,
     )
 
-Custom CalibrationPolicy
-------------------------
+Custom Cadences and Durations
+-----------------------------
 
 Override the default cadences and durations. See :doc:`overhead_model`
 for all available fields.
@@ -122,8 +135,8 @@ for all available fields.
 
     print(timeline)
 
-Budget Output
--------------
+Time Budget
+-----------
 
 :func:`~fyst_trajectories.overhead.compute_budget` returns a dict with time breakdowns::
 
@@ -166,9 +179,11 @@ The returned :class:`~fyst_trajectories.overhead.ObservingTimeline` contains a l
 +-------------------+-----------------------------------------------+
 | ``"idle"``        | No scan was placed this tick: nothing         |
 |                   | observable or a pass not yet open (neither    |
-|                   | carries a reason), a refused slew, a pose the |
-|                   | Sun zone holds, or the stretch after the last |
-|                   | block; the last three name themselves in      |
+|                   | carries a reason), a refused slew, a subscan  |
+|                   | that cannot be built or no longer fits by     |
+|                   | the slew's arrival (``unplannable``), a pose  |
+|                   | the Sun zone holds, or the stretch after the  |
+|                   | last block; the last four name themselves in  |
 |                   | ``metadata["reason"]``                        |
 +-------------------+-----------------------------------------------+
 

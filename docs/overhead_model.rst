@@ -3,11 +3,11 @@ Overhead Model and Calibration Policy
 
 Two configuration objects control overhead timing:
 :class:`~fyst_trajectories.overhead.OverheadModel` for activity durations, and
-:class:`~fyst_trajectories.overhead.CalibrationPolicy` for how often each calibration
-is performed.
+:class:`~fyst_trajectories.overhead.CalibrationPolicy` for how often each
+calibration is performed.
 
-OverheadModel
--------------
+Activity Durations
+------------------
 
 Controls the duration of each non-science activity::
 
@@ -22,24 +22,33 @@ Controls the duration of each non-science activity::
         beam_map_duration=600.0,      # beam-map scan (same default as planet cal)
         settle_time=5.0,              # post-slew settling (s)
         min_scan_duration=60.0,       # minimum useful science scan (s)
-        max_scan_duration=3600.0,     # forced split threshold (s)
+        max_scan_duration=3600.0,     # longest science subscan (s)
     )
 
 ``min_scan_duration`` prevents short, wasteful scans; ``max_scan_duration``
-forces long observations to split into sub-scans with retune breaks; and
+forces long observations to split into sub-scans, with a retune between
+them whenever one is due (always, at the default ``retune_cadence=0.0``); and
 ``beam_map_duration`` starts equal to ``planet_cal_duration`` because beam
 maps run on the same planet targets.
+
+A pong sub-scan holds the most whole pattern periods that fit its visit's
+budget, which is at most ``max_scan_duration`` less any retune booked before
+the sub-scan. A pong patch whose period can never fit (at
+``retune_cadence=0.0``, a period longer than ``max_scan_duration`` less
+``retune_duration``) is refused by
+:func:`~fyst_trajectories.overhead.generate_timeline`: shrink the field,
+widen ``spacing``, raise ``velocity`` or raise ``max_scan_duration``.
 
 ``retune_duration`` reserves a whole-array detector retune between
 scan blocks (probe-tone placement followed by a target sweep across
 every module; the default is the instrument team's commissioning
 estimate, pending on-sky timing). It is a different operation from the
 few-second in-scan tone-correction gap that
-:func:`~fyst_trajectories.trajectory_utils.inject_retune` stamps into a
+:func:`~fyst_trajectories.retune.inject_retune` stamps into a
 trajectory (see :doc:`retune_events`).
 
-CalibrationPolicy
------------------
+Calibration Cadences
+--------------------
 
 Controls *when* each calibration type is triggered. Cadences are in seconds.
 A cadence of 0 keeps that calibration permanently due: retune then fires
@@ -68,12 +77,15 @@ entirely::
 
 Planet calibrations and beam maps are only scheduled when at least one
 planet target in ``planet_targets`` is above ``planet_min_elevation``.
+An empty ``planet_targets`` skips that check and schedules them with no
+target, which only the parked form accepts: ``planet_cal_scan=True``
+needs at least one target.
 
 The ``planet_cal_scan`` / ``planet_cal_passes`` / ``planet_cal_el_step`` /
 ``planet_cal_footprint`` group controls how a planet calibration is
 realised (see :ref:`planet-cal-source-ces` below). Like the cadences and
-durations, these are commissioning-era placeholders for the
-instrument/operations team to confirm.
+durations, these are commissioning-era placeholders, listed with the
+other unconfirmed defaults in :doc:`the pending-verification table <index>`.
 
 Beam maps run on the same ``planet_targets`` machinery as planet
 calibrations once a cadence opts them in:
@@ -94,8 +106,14 @@ pose while the calibration runs, and no scan geometry is recorded.
 
 Setting ``planet_cal_scan=True`` instead plans each planet calibration as
 a multi-pass source-CES sequence via
-:func:`~fyst_trajectories.planning.plan_source_ces_passes`, anchored at
-the scheduler clock. The planet is dragged across the Prime-Cam focal
+:func:`~fyst_trajectories.planning.plan_source_ces_passes`, on the first
+entry of ``planet_targets`` that is above ``planet_min_elevation`` and
+clear of the Sun, so a planet inside the Sun zone is passed over for the
+next one. The slew to the first pass is planned with
+:func:`~fyst_trajectories.overhead.plan_transition`, as a science slew is,
+and recorded as a ``SLEW`` block named ``slew_to_<planet>``: its azimuth
+wrap holds every pass, its path clears the Sun zone, and the passes start
+after it arrives. The planet is dragged across the Prime-Cam focal
 plane at a fixed boresight elevation, once per pass, with the passes
 stepped in elevation so they run sequentially:
 
@@ -111,15 +129,25 @@ stepped in elevation so they run sequentially:
 Each pass becomes its own calibration block (``scan_type="planet_cal"``),
 carrying the full source-CES parameters in
 ``metadata["scan_params"]`` (a
-:class:`~fyst_trajectories.overhead.SourceCESScanParams`) and the true
-scan start in ``metadata["t0_scan"]``. If the sequence is not feasible at
-the anchor (the planet never reaches the required geometry in the search
-window), the calibration is skipped and left due, so it is retried on a
-later scheduler iteration, exactly like a planet cal with no visible
-planet.
+:class:`~fyst_trajectories.overhead.SourceCESScanParams`), the true
+scan start in ``metadata["t0_scan"]`` and the instant the planner's search
+for the pass began in ``metadata["search_start"]``. Unlike a
+calibration-night pass (see :doc:`overhead_calibration_night`), the dict
+records the absolute ``window`` of its pass, so it describes that pass
+rather than serving as a dispatch dict. Each pass is swept against the Sun
+model in the slew's azimuth wrap before it is emitted. If no listed planet
+is up and clear of the Sun, the sequence is not feasible (the planet never
+reaches the required geometry in the search window), the slew is refused,
+or a pass would enter the Sun zone, the calibration is skipped and left
+due, so it is retried on a later scheduler iteration, exactly like a
+planet cal with no visible planet.
 
 Rebuild the pass trajectories with
-``schedule_to_trajectories(timeline, science_only=False)``; the default
+``schedule_to_trajectories(timeline, science_only=False)``, which repeats
+the planner's search from each block's ``search_start`` and so returns
+each pass as it was planned, sample for sample (a block without
+``search_start`` is re-solved around its recorded ``window`` instead; see
+:func:`~fyst_trajectories.overhead.schedule_to_trajectories`); the default
 ``science_only=True`` returns science blocks only. An explicit
 ``planet_cal_el_step`` smaller than the footprint's elevation extent makes
 adjacent pass windows overlap in time, and the planner emits a

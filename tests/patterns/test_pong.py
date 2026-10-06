@@ -7,6 +7,7 @@ import pytest
 from astropy.time import Time
 
 from fyst_trajectories.patterns import PongScanConfig, PongScanPattern, compute_pong_period
+from fyst_trajectories.patterns.pong import _pong_peak_offsets
 
 
 class TestPongScanPattern:
@@ -27,13 +28,11 @@ class TestPongScanPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
         assert trajectory.duration == pytest.approx(60.0, abs=0.2)
         assert trajectory.start_time == start_time
         assert trajectory.pattern_type == "pong"
         assert trajectory.center_ra == 180.0
         assert trajectory.center_dec == -30.0
-        assert trajectory.coordsys == "altaz"
         assert trajectory.metadata.input_frame == "icrs"
 
     def test_pong_covers_expected_region(self, site):
@@ -62,11 +61,14 @@ class TestPongScanPattern:
         assert el_range > 0.5
 
         # Precise coverage check in the offset frame (decoupled from cos(el) and
-        # field rotation): for this field x_numvert=8, y_numvert=9, so the pattern
-        # spans 2*amp = numvert*sqrt(2)*spacing: 1.131 deg in x, 1.273 deg in y.
+        # field rotation): for this field x_numvert=8, y_numvert=9, so the ideal
+        # triangle wave spans numvert*sqrt(2)*spacing, 1.131 deg in x and 1.273 deg
+        # in y. Four Fourier terms reach 8/pi^2 * (1 + 1/9 + 1/25 + 1/49) = 0.950
+        # of each vertex, so the path spans 1.074 deg and 1.209 deg.
         _, x_off, y_off = pattern.generate_offsets(300.0)
-        assert np.ptp(x_off) == pytest.approx(8 * np.sqrt(2) * 0.1, abs=0.1)
-        assert np.ptp(y_off) == pytest.approx(9 * np.sqrt(2) * 0.1, abs=0.1)
+        truncation = 8.0 / np.pi**2 * (1.0 + 1.0 / 9.0 + 1.0 / 25.0 + 1.0 / 49.0)
+        assert np.ptp(x_off) == pytest.approx(truncation * 8 * np.sqrt(2) * 0.1, abs=1e-6)
+        assert np.ptp(y_off) == pytest.approx(truncation * 9 * np.sqrt(2) * 0.1, abs=1e-6)
 
     def test_pong_smooth_velocities(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -137,7 +139,6 @@ class TestPongScanPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.pattern_params is not None
         params = trajectory.pattern_params
         assert params["width"] == 2.0
         assert params["height"] == 1.5
@@ -162,11 +163,11 @@ class TestPongScanPattern:
         )
         pattern = PongScanPattern(ra=180.0, dec=-30.0, config=config)
 
-        trajectory = pattern.generate(site, duration=120.0, start_time=start_time)
+        pattern.generate(site, duration=120.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
+        # A 3 x 0.5 deg field stays elongated: 2.95 deg by 0.67 deg in the offset frame.
+        _, x_off, y_off = pattern.generate_offsets(120.0)
+        assert np.ptp(x_off) > 3.0 * np.ptp(y_off)
 
 
 class TestPongScanFlags:
@@ -263,14 +264,19 @@ class TestComputePongPeriod:
         assert math.gcd(x_numvert, y_numvert) == 1
         assert (x_numvert % 2) != (y_numvert % 2)
 
-    def test_matches_pattern_metadata(self):
-        """``compute_pong_period`` agrees with ``PongScanPattern.get_metadata``.
 
-        The helper and the pattern compute the period from independent copies
-        of the same formula; pin them together so they cannot drift apart.
+class TestPongVertexSpeed:
+    """The science-speed threshold sits above the dip at the vertices."""
+
+    def test_vertex_speed_dips_to_about_one_over_root_two(self):
+        """At an x vertex the offset-frame speed falls to about ``velocity / sqrt(2)``.
+
+        One axis passes through its turning point there, so the diagonal speed
+        is the other axis's speed alone. The pattern flags science above
+        ``0.8 * velocity``; this pins the dip that threshold is set against.
         """
         config = PongScanConfig(
-            timestep=0.1,
+            timestep=0.01,
             width=2.0,
             height=2.0,
             spacing=0.1,
@@ -278,10 +284,55 @@ class TestComputePongPeriod:
             num_terms=4,
             angle=0.0,
         )
+        period, _, _ = compute_pong_period(config)
+        pattern = PongScanPattern(ra=180.0, dec=-30.0, config=config)
+        times, x_off, y_off = pattern.generate_offsets(period)
 
-        period, x_numvert, y_numvert = compute_pong_period(config)
-        meta = PongScanPattern(ra=180.0, dec=-30.0, config=config).get_metadata()
+        x_vel = np.gradient(x_off, times)
+        y_vel = np.gradient(y_off, times)
+        vertex = np.flatnonzero(np.sign(x_vel[:-1]) != np.sign(x_vel[1:]))
+        assert vertex.size > 0
+        median_fraction = np.median(np.hypot(x_vel[vertex], y_vel[vertex])) / config.velocity
 
-        assert meta.pattern_params["period"] == pytest.approx(period)
-        assert meta.pattern_params["x_numvert"] == x_numvert
-        assert meta.pattern_params["y_numvert"] == y_numvert
+        # Measured 0.747 of ``velocity``; the ideal corner gives 1 / sqrt(2) = 0.707.
+        assert median_fraction == pytest.approx(1.0 / math.sqrt(2.0), abs=0.1)
+
+
+class TestPongPeakOffsets:
+    """``_pong_peak_offsets`` is the box the pattern fills: it reaches each side and no further.
+
+    The offline scheduler bounds a pong visit by the elevation of this box's
+    corners, so an offset past it would let a booked scan leave the limits.
+    """
+
+    @pytest.mark.parametrize(
+        "width, height, spacing, num_terms",
+        [
+            (4.0, 4.0, 0.1, 4),  # the rebuild's defaults
+            (4.0, 3.0, 0.5, 5),  # coarse spacing, five terms
+            (6.0, 3.0, 0.3, 2),
+            (2.0, 2.0, 0.1, 1),  # one term: the furthest from a triangle
+        ],
+    )
+    def test_the_pattern_reaches_its_peaks_and_never_passes_them(
+        self, width, height, spacing, num_terms
+    ):
+        config = PongScanConfig(
+            timestep=0.01,
+            width=width,
+            height=height,
+            spacing=spacing,
+            velocity=0.5,
+            num_terms=num_terms,
+            angle=0.0,
+        )
+        period, _, _ = compute_pong_period(config)
+        _, x_off, y_off = PongScanPattern(ra=0.0, dec=0.0, config=config).generate_offsets(period)
+
+        peak_x, peak_y = _pong_peak_offsets(config)
+        assert np.abs(x_off).max() <= peak_x * (1.0 + 1e-12)
+        assert np.abs(y_off).max() <= peak_y * (1.0 + 1e-12)
+        # Each axis peaks at a quarter of its own period, which the 0.01 s
+        # grid samples to well under a micro-degree.
+        assert np.abs(x_off).max() == pytest.approx(peak_x, abs=1e-6)
+        assert np.abs(y_off).max() == pytest.approx(peak_y, abs=1e-6)

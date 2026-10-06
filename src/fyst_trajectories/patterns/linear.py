@@ -7,9 +7,9 @@ import numpy as np
 from astropy.time import Time
 
 from ..site import AtmosphericConditions, Site
-from ..trajectory import Trajectory
+from ..trajectory import Trajectory, TrajectoryMetadata
 from ..trajectory_utils import validate_trajectory_bounds
-from .base import AltAzPattern, TrajectoryMetadata
+from .base import AltAzPattern
 from .configs import LinearMotionConfig
 from .registry import register_pattern
 from .utils import validate_sample_count
@@ -20,7 +20,7 @@ class LinearMotionPattern(AltAzPattern):
     """Linear motion pattern with constant velocity.
 
     Generates a trajectory that moves in a straight line in Az/El space
-    at constant velocity. Useful for simple scans or testing.
+    at constant velocity.
 
     Parameters
     ----------
@@ -48,10 +48,6 @@ class LinearMotionPattern(AltAzPattern):
 
     def __init__(self, config: LinearMotionConfig):
         self.config = config
-
-    @property
-    def name(self) -> str:
-        return "linear"
 
     def generate(
         self,
@@ -85,6 +81,9 @@ class LinearMotionPattern(AltAzPattern):
         ------
         AzimuthBoundsError
             If the trajectory azimuth exceeds telescope limits.
+        ValueError
+            If ``duration`` yields fewer than two samples at the config
+            timestep.
         ElevationBoundsError
             If the trajectory elevation exceeds telescope limits.
         """
@@ -109,7 +108,6 @@ class LinearMotionPattern(AltAzPattern):
             el_vel=el_vel,
             start_time=start_time,
             metadata=self.get_metadata(),
-            coordsys="altaz",
         )
 
     def get_metadata(self) -> TrajectoryMetadata:

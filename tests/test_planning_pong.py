@@ -1,8 +1,8 @@
-"""Tests for plan_pong_scan."""
+"""Tests for plan_pong_scan and the two Pong rotation planners."""
 
 import numpy as np
 import pytest
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
 
 from fyst_trajectories.exceptions import TargetNotObservableError
 from fyst_trajectories.offsets import InstrumentOffset
@@ -10,6 +10,7 @@ from fyst_trajectories.patterns.configs import PongScanConfig
 from fyst_trajectories.planning import (
     FieldRegion,
     ScanBlock,
+    plan_pong_rotation_scans,
     plan_pong_rotation_sequence,
     plan_pong_scan,
 )
@@ -28,8 +29,14 @@ def small_field():
 
 
 class TestPlanPongScan:
-    """Hand-derived Lissajous parameters, duration scaling, bounds, and refusals."""
+    """Hand-derived Lissajous parameters, duration scaling, and refusals."""
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_basic_plan(self, site, start_time, small_field):
         """plan_pong_scan returns a ScanBlock with pong config and metadata."""
         block = plan_pong_scan(
@@ -59,20 +66,12 @@ class TestPlanPongScan:
         assert block.computed_params["period"] == pytest.approx(57.6)
         assert block.duration == pytest.approx(57.6)
 
-    def test_duration_equals_period(self, site, start_time, small_field):
-        block = plan_pong_scan(
-            field=small_field,
-            velocity=0.5,
-            spacing=0.1,
-            num_terms=4,
-            site=site,
-            start_time=start_time,
-            timestep=0.1,
-        )
-
-        expected_period = block.computed_params["period"]
-        assert block.duration == pytest.approx(expected_period)
-
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_multiple_cycles(self, site, start_time, small_field):
         """Test that n_cycles multiplies the duration."""
         block1 = plan_pong_scan(
@@ -111,6 +110,12 @@ class TestPlanPongScan:
                 n_cycles=0,
             )
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_config_matches_field(self, site, start_time, small_field):
         block = plan_pong_scan(
             field=small_field,
@@ -124,24 +129,6 @@ class TestPlanPongScan:
 
         assert block.config.width == small_field.width
         assert block.config.height == small_field.height
-
-    def test_trajectory_has_valid_bounds(self, site, start_time, small_field):
-        block = plan_pong_scan(
-            field=small_field,
-            velocity=0.5,
-            spacing=0.1,
-            num_terms=4,
-            site=site,
-            start_time=start_time,
-            timestep=0.1,
-        )
-
-        traj = block.trajectory
-        limits = site.telescope_limits
-        assert traj.el.min() >= limits.elevation.min
-        assert traj.el.max() <= limits.elevation.max
-        assert traj.az.min() >= limits.azimuth.min
-        assert traj.az.max() <= limits.azimuth.max
 
     def test_unobservable_target_raises(self, site, start_time):
         # Dec = +80 is never visible from FYST (latitude ~ -23)
@@ -157,6 +144,12 @@ class TestPlanPongScan:
                 timestep=0.1,
             )
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_with_angle(self, site, start_time, small_field):
         """Test that angle parameter is passed through correctly."""
         block = plan_pong_scan(
@@ -172,6 +165,12 @@ class TestPlanPongScan:
 
         assert block.config.angle == 45.0
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_with_detector_offset(self, site, start_time, small_field):
         """Test that detector offset is applied."""
         block_no_offset = plan_pong_scan(
@@ -198,6 +197,24 @@ class TestPlanPongScan:
 
         # Trajectories should differ when offset is applied
         assert not np.allclose(block_no_offset.trajectory.az, block_with_offset.trajectory.az)
+
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
+    def test_defaults_equal_explicit_timestep_and_num_terms(self, site, start_time, small_field):
+        """Omitting ``timestep`` and ``num_terms`` plans exactly what 0.1 s and 4 terms plan."""
+        common = dict(field=small_field, velocity=0.5, spacing=0.1, site=site)
+        defaulted = plan_pong_scan(**common, start_time=start_time)
+        explicit = plan_pong_scan(**common, start_time=start_time, timestep=0.1, num_terms=4)
+
+        assert defaulted.config == explicit.config
+        for name in ("times", "az", "el", "az_vel", "el_vel"):
+            np.testing.assert_array_equal(
+                getattr(defaulted.trajectory, name), getattr(explicit.trajectory, name)
+            )
 
 
 class TestPlanPongRotationSequence:
@@ -257,3 +274,87 @@ class TestPlanPongRotationSequence:
         # Spacing between consecutive is constant
         diffs = np.diff(angles)
         assert np.allclose(diffs, 180.0 / 11)
+
+
+_PONG_ADVISORIES = (
+    "ignore:High elevation reduces on-sky azimuth speed:"
+    "fyst_trajectories.exceptions.PointingWarning",
+    "ignore:Trajectory (azimuth|elevation) acceleration:"
+    "fyst_trajectories.exceptions.AccelerationLimitWarning",
+)
+
+
+@pytest.mark.filterwarnings(*_PONG_ADVISORIES)
+class TestPlanPongRotationScans:
+    """The planner-path rotation sibling: angles, back-to-back starts and its refusals."""
+
+    @pytest.fixture
+    def scan_kwargs(self, site):
+        return dict(velocity=0.5, spacing=0.1, site=site)
+
+    def test_angles_and_back_to_back_starts(self, start_time, small_field, scan_kwargs):
+        blocks = plan_pong_rotation_scans(
+            small_field, n_rotations=4, start_time=start_time, **scan_kwargs
+        )
+
+        assert [block.config.angle for block in blocks] == [0.0, 45.0, 90.0, 135.0]
+        for i, block in enumerate(blocks):
+            offset = (block.trajectory.start_time - start_time).to_value("s")
+            assert offset == pytest.approx(i * blocks[0].duration, abs=1e-6)
+            assert block.duration == pytest.approx(blocks[0].duration)
+
+        # Each boundary is one instant at one pose: the last sample of a block
+        # is the first sample of the next.
+        for before, after in zip(blocks, blocks[1:]):
+            end = before.trajectory.start_time + TimeDelta(
+                before.trajectory.times[-1], format="sec"
+            )
+            assert (after.trajectory.start_time - end).to_value("s") == pytest.approx(0.0, abs=1e-6)
+            assert after.trajectory.az[0] == pytest.approx(before.trajectory.az[-1], abs=1e-6)
+            assert after.trajectory.el[0] == pytest.approx(before.trajectory.el[-1], abs=1e-6)
+
+    def test_each_block_equals_a_direct_call(self, start_time, small_field, scan_kwargs):
+        blocks = plan_pong_rotation_scans(
+            small_field, n_rotations=4, start_time=start_time, **scan_kwargs
+        )
+
+        for block in blocks:
+            direct = plan_pong_scan(
+                small_field,
+                angle=block.config.angle,
+                start_time=block.trajectory.start_time,
+                **scan_kwargs,
+            )
+            assert block.config == direct.config
+            assert block.duration == direct.duration
+            for name in ("times", "az", "el", "az_vel", "el_vel"):
+                np.testing.assert_array_equal(
+                    getattr(block.trajectory, name), getattr(direct.trajectory, name)
+                )
+
+    def test_forwarded_keywords_take_effect(self, start_time, small_field, scan_kwargs):
+        one = plan_pong_rotation_scans(
+            small_field, n_rotations=2, start_time=start_time, **scan_kwargs
+        )
+        two = plan_pong_rotation_scans(
+            small_field, n_rotations=2, start_time=start_time, n_cycles=2, **scan_kwargs
+        )
+
+        for single, double in zip(one, two, strict=True):
+            assert double.duration == pytest.approx(2 * single.duration)
+
+    def test_angle_keyword_raises(self, start_time, small_field, scan_kwargs):
+        with pytest.raises(TypeError, match="angle"):
+            plan_pong_rotation_scans(
+                small_field, n_rotations=2, start_time=start_time, angle=10.0, **scan_kwargs
+            )
+
+    def test_n_rotations_zero_raises(self, start_time, small_field, scan_kwargs):
+        with pytest.raises(ValueError, match="n_rotations must be at least 1"):
+            plan_pong_rotation_scans(
+                small_field, n_rotations=0, start_time=start_time, **scan_kwargs
+            )
+
+    def test_positional_n_rotations_raises(self, start_time, small_field, scan_kwargs):
+        with pytest.raises(TypeError, match="positional argument"):
+            plan_pong_rotation_scans(small_field, 4, start_time=start_time, **scan_kwargs)

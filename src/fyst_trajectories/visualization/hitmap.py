@@ -1,8 +1,8 @@
 """Hit-density coverage maps in equatorial coordinates.
 
 Bins each detector module's sky track into a 2D RA/Dec histogram,
-optionally convolved with the module FOV disk. Primarily a developer
-diagnostic, not a polished user-facing API.
+convolved by default with the module FOV disk, and draws one panel per
+module (:func:`plot_hit_map`).
 
 Everything is computed on a plain RA x Dec grid with no ``cos(dec)``
 weighting: reported areas are **coordinate areas** (RA extent times Dec
@@ -16,41 +16,59 @@ These functions require ``matplotlib`` (install via
 
 Examples
 --------
-Plot detector-center tracks for two PrimeCam modules:
+Plot the coverage of two PrimeCam modules, each averaged over its
+0.65 deg field-of-view radius:
 
->>> from fyst_trajectories import get_fyst_site
 >>> from fyst_trajectories.primecam import get_primecam_offset
 >>> from fyst_trajectories.visualization import plot_hit_map
->>> site = get_fyst_site()
->>> offsets = [
-...     (get_primecam_offset("i1"), "f280"),
-...     (get_primecam_offset("i6"), "f350"),
-... ]
->>> fig = plot_hit_map(trajectory, offsets, site, show=True)
+>>> modules = {
+...     "module i1": get_primecam_offset("i1"),
+...     "module i6": get_primecam_offset("i6"),
+... }
+>>> fig = plot_hit_map(trajectory, modules=modules, show=True)
 
-Plot with module footprint convolution for realistic coverage:
+Plot the raw detector-centre tracks instead:
 
 >>> fig = plot_hit_map(
 ...     trajectory,
-...     offsets,
-...     site,
-...     module_fov=1.3,
+...     modules=modules,
+...     fov_radius_deg=None,
 ...     show=True,
 ... )
 """
 
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
+from ..site import Site, get_fyst_site
+from ._common import _unique_keyed_offsets
+
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
     from ..offsets import InstrumentOffset
-    from ..site import Site
     from ..trajectory import Trajectory
 
 __all__ = ["plot_hit_map"]
+
+#: Candidate RA tick spacings, in minutes of RA, smallest first.
+_RA_TICK_STEPS_MIN = (1, 2, 5, 10, 15, 30, 60, 120)
+
+#: Candidate RA tick spacings, in seconds of RA, for an axis that holds fewer
+#: than two whole minutes of RA, smallest first.
+_RA_TICK_STEPS_SEC = (1, 2, 3, 5, 10, 15, 20, 30)
+
+#: Most RA ticks a hit-map panel labelled in minutes draws.
+_RA_MAX_TICKS = 5
+
+#: Most RA ticks a hit-map panel labelled to the second draws (longer labels).
+_RA_MAX_SECOND_TICKS = 3
 
 
 def _make_disk_kernel(radius_bins: float) -> np.ndarray:
@@ -79,90 +97,148 @@ def _make_disk_kernel(radius_bins: float) -> np.ndarray:
 
 def _format_ra_hm(deg: float, _pos: Any) -> str:
     """Format RA in degrees as hours and minutes."""
-    deg = deg % 360
-    h = deg / 15.0
-    hours = int(h)
-    minutes = abs(h - hours) * 60
-    return f"{hours}$^{{h}}${minutes:02.0f}$^{{m}}$"
+    total_minutes = round((deg % 360.0) * 4.0) % 1440
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours}$^{{h}}${minutes:02d}$^{{m}}$"
+
+
+def _format_ra_hms(deg: float, _pos: Any) -> str:
+    """Format RA in degrees as hours, minutes and seconds."""
+    total_seconds = round((deg % 360.0) * 240.0) % 86400
+    hours, rest = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f"{hours}$^{{h}}${minutes:02d}$^{{m}}${seconds:02d}$^{{s}}$"
+
+
+def _ra_ticks_inside(lo: float, hi: float, step_deg: float) -> int:
+    """Return how many multiples of ``step_deg`` lie in ``[lo, hi]``."""
+    return math.floor(hi / step_deg) - math.ceil(lo / step_deg) + 1
+
+
+def _ra_tick_step_deg(lo_deg: float, hi_deg: float) -> float:
+    """Return the RA tick spacing, in degrees, for an axis from ``lo_deg`` to ``hi_deg``.
+
+    An axis that holds two or more whole minutes of RA is ticked on the
+    smallest of 1, 2, 5, 10, 15, 30, 60 and 120 minutes that puts at most
+    five ticks inside it (120 minutes when none does); five ticks keep
+    two-digit-hour labels clear of each other on a 6 in panel. A narrower
+    axis is ticked on the smallest of 1, 2, 3, 5, 10, 15, 20 and 30 seconds
+    that puts at most three ticks inside it, labelled to the second (see
+    ``_format_ra_hms``), since those labels are longer. Every axis of at
+    least two seconds of RA gets at least two ticks, and the labels never
+    repeat.
+    """
+    lo, hi = sorted((lo_deg, hi_deg))
+    if _ra_ticks_inside(lo, hi, 0.25) < 2:
+        for step_sec in _RA_TICK_STEPS_SEC:
+            if _ra_ticks_inside(lo, hi, step_sec / 240.0) <= _RA_MAX_SECOND_TICKS:
+                return step_sec / 240.0
+    for step_min in _RA_TICK_STEPS_MIN:
+        if _ra_ticks_inside(lo, hi, step_min / 4.0) <= _RA_MAX_TICKS:
+            return step_min / 4.0
+    return _RA_TICK_STEPS_MIN[-1] / 4.0
 
 
 def _format_dec_deg(deg: float, _pos: Any) -> str:
     """Format Dec in degrees with degree symbol."""
-    return f"{deg:.0f}$^\\circ$"
+    return f"{deg:g}$^\\circ$"
 
 
 def plot_hit_map(
     trajectory: "Trajectory",
-    offsets: list[tuple["InstrumentOffset", str]],
-    site: "Site",
     *,
+    site: Site | None = None,
+    modules: "Mapping[str, InstrumentOffset] | None" = None,
+    fov_radius_deg: float | None = MODULE_FOV_RADIUS_DEG,
     bin_size: float = 0.02,
-    module_fov: float | None = None,
     smooth_sigma: float | None = None,
     footprint_threshold: float = 0.1,
     stats_threshold: float = 0.5,
     cmap: str = "viridis",
+    title: str | None = None,
+    axes: "Sequence[Axes] | None" = None,
     show: bool = True,
 ) -> "Figure":
-    """Plot hit-density maps in RA/Dec for multiple detector modules.
+    """Plot hit-density maps in RA/Dec, one panel per detector module.
 
-    For each (offset, label) pair, computes the detector's sky track by
-    applying the offset to the boresight trajectory, converts Az/El to
-    RA/Dec, and bins into a 2D histogram.
+    For each module, computes the detector's sky track by applying its
+    offset to the boresight trajectory, converts Az/El to RA/Dec, and bins
+    the track into a 2D histogram.
 
-    When ``module_fov`` is set, the histogram is convolved with a disk
-    kernel of the module's field-of-view diameter (circular in RA/Dec
-    coordinate space, so stretched in RA on sky away from the equator),
-    producing filled coverage maps suitable for observation planning.
-    Statistics are reported as areas in square coordinate degrees on a
+    By default the histogram is convolved with a disk kernel of the
+    module's field-of-view radius (circular in RA/Dec coordinate space, so
+    stretched in RA on sky away from the equator), producing filled
+    coverage maps. Two statistics are drawn above each panel, at its
+    right, clear of the map: areas in square coordinate degrees on a
     plain RA x Dec grid, with no ``cos(dec)`` weighting.
 
-    When ``module_fov`` is None (default), the raw detector-center
-    track is plotted. Statistics are reported as fractional coverage
-    ratios, useful for verifying scan geometry.
+    With ``fov_radius_deg=None`` the raw detector-centre track is plotted
+    instead. Statistics are then reported as fractional coverage ratios.
 
     Parameters
     ----------
     trajectory : Trajectory
         Boresight trajectory with ``start_time`` set (needed for
         Az/El -> RA/Dec conversion).
-    offsets : list of (InstrumentOffset, str)
-        List of (offset, label) pairs. Each offset produces one panel.
-        Use ``InstrumentOffset(dx=0, dy=0)`` for boresight.
-    site : Site
-        Telescope site configuration.
+    site : Site, optional
+        Observing site (Nasmyth sign and location). Defaults to
+        :func:`~fyst_trajectories.site.get_fyst_site`.
+    modules : mapping of str to InstrumentOffset, optional
+        Modules to draw, one panel each. Default
+        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (alias keys
+        pointing at the same offset are drawn once). Each panel is titled
+        with the first key of its offset, so a caller can label panels
+        freely (the other plot functions label modules with the offset's
+        name instead); use ``InstrumentOffset(dx=0, dy=0)`` for the
+        boresight.
+    fov_radius_deg : float or None, optional
+        Per-module on-sky FOV radius in degrees: the histogram is
+        convolved with a disk kernel of this radius in coordinate degrees,
+        approximating coverage from the full module. Default
+        :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG` (0.65).
+        ``None`` draws the raw detector-centre track, with no convolution.
     bin_size : float, optional
         Histogram bin size in degrees for both RA and Dec. Default 0.02.
-    module_fov : float or None, optional
-        Module field-of-view diameter in degrees. If set, the histogram
-        is convolved with a disk kernel of this diameter in coordinate
-        degrees, approximating coverage from the full module. A PrimeCam
-        module subtends about 1.3 degrees on sky (twice the 0.65 deg
-        ``MODULE_FOV_RADIUS_DEG``). Default is None.
     smooth_sigma : float or None, optional
         If not None, apply Gaussian smoothing with this sigma (in bins)
         after any module FOV convolution. Default is None (no smoothing).
     footprint_threshold : float, optional
         Fraction of max hit count to define the footprint boundary
-        contour. Default 0.1 (10% of peak).
+        contour. Default 0.1 (10% of peak). The contour is drawn only on a
+        filled map (``fov_radius_deg`` or ``smooth_sigma`` set).
     stats_threshold : float, optional
         Fraction of max for the area efficiency statistic. Default 0.5.
     cmap : str, optional
         Matplotlib colormap name. Default "viridis".
+    title : str, optional
+        Title text. On a figure this function creates it is drawn as the
+        figure suptitle; with caller-supplied ``axes`` it replaces the
+        first panel's title (the caller's suptitle is never touched).
+        Default None, no title beyond the panel titles.
+    axes : sequence of matplotlib.axes.Axes, optional
+        Draw into these axes (one per distinct module, in mapping order)
+        instead of creating a new figure. When given, ``show`` is ignored
+        and no layout call is made on the caller's figure; each panel's
+        colour bar takes its space from that panel's axes. Without it the
+        function creates a figure of up to four 6 x 5 in panels per row.
     show : bool, optional
-        Whether to call ``plt.show()``. Default True.
+        Call ``plt.show()`` after rendering (only when the function
+        created the figure). Default True.
 
     Returns
     -------
     Figure
-        The matplotlib figure with one panel per offset.
+        The figure containing the panels (``axes[0].get_figure()`` when
+        ``axes`` was supplied).
 
     Raises
     ------
     ImportError
         If matplotlib is not installed.
     ValueError
-        If ``offsets`` is empty, ``bin_size`` is not positive, or the
+        If ``modules`` is empty, ``bin_size`` is not positive,
+        ``fov_radius_deg`` is neither None nor a finite positive value,
+        ``axes`` does not hold one axes per distinct module, or the
         trajectory has no ``start_time`` set.
     """
     try:
@@ -174,12 +250,16 @@ def plot_hit_map(
             "Install it with: pip install fyst-trajectories[plotting]"
         ) from None
 
-    if not offsets:
-        raise ValueError("offsets must name at least one module; there is nothing to plot")
+    panels = _unique_keyed_offsets(PRIMECAM_MODULES if modules is None else modules)
     if not bin_size > 0.0:
         raise ValueError(f"bin_size must be positive, got {bin_size}")
+    if fov_radius_deg is not None and not (np.isfinite(fov_radius_deg) and fov_radius_deg > 0.0):
+        raise ValueError(f"fov_radius_deg must be a finite value > 0, got {fov_radius_deg}")
+    if axes is not None and len(axes) != len(panels):
+        raise ValueError(f"axes has {len(axes)} entries but {len(panels)} modules are drawn")
     if trajectory.start_time is None:
         raise ValueError("Trajectory must have start_time for RA/Dec conversion")
+    site = get_fyst_site() if site is None else site
 
     from scipy.ndimage import gaussian_filter  # pylint: disable=import-outside-toplevel
     from scipy.signal import fftconvolve  # pylint: disable=import-outside-toplevel
@@ -191,26 +271,36 @@ def plot_hit_map(
     coords = Coordinates(site)
     abs_times = get_absolute_times(trajectory)
 
-    coverage_mode = module_fov is not None
-    pad_deg = (module_fov / 2.0) if coverage_mode else 0.0
+    coverage_mode = fov_radius_deg is not None
+    pad_deg = fov_radius_deg if fov_radius_deg is not None else 0.0
     bin_area_deg2 = bin_size * bin_size
 
-    n_panels = len(offsets)
-    fig, axes = plt.subplots(
-        1,
-        n_panels,
-        figsize=(6 * n_panels, 5),
-        squeeze=False,
-    )
-    axes = axes[0]
+    own_fig = axes is None
+    if axes is None:
+        n_panels = len(panels)
+        ncols = min(n_panels, 4)
+        nrows = -(-n_panels // ncols)
+        fig, grid = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(6 * ncols, 5 * nrows),
+            squeeze=False,
+        )
+        flat = list(grid.ravel())
+        for spare in flat[n_panels:]:
+            spare.set_visible(False)
+        axes = flat[:n_panels]
+    else:
+        axes = list(axes)
+        fig = axes[0].get_figure()
 
-    for ax, (offset, label) in zip(axes, offsets):
+    for ax, (label, offset) in zip(axes, panels):
         # Horizon-frame projection: mechanical rotation; the celestial
         # rotation enters in the az/el -> RA/Dec conversion below.
         fr = compute_focal_plane_rotation(
             trajectory.el,
-            site,
-            offset,
+            site=site,
+            offset=offset,
         )
 
         det_az, det_el = boresight_to_detector(
@@ -243,8 +333,8 @@ def plot_hit_map(
             bins=[ra_bins, dec_bins],
         )
 
-        if coverage_mode:
-            radius_bins = (module_fov / 2.0) / bin_size
+        if fov_radius_deg is not None:
+            radius_bins = fov_radius_deg / bin_size
             kernel = _make_disk_kernel(radius_bins)
             hist = fftconvolve(hist, kernel, mode="same")
             np.maximum(hist, 0.0, out=hist)
@@ -262,9 +352,11 @@ def plot_hit_map(
             cmap=cmap,
             shading="auto",
         )
-        fig.colorbar(im, ax=ax, label="Hits", shrink=0.8)
+        cbar_label = "Hits per bin, mean over the module field" if coverage_mode else "Hits"
+        fig.colorbar(im, ax=ax, label=cbar_label, shrink=0.8)
 
-        if hist.max() > 0:
+        # A contour of a raw track outlines every sample; draw it on filled maps only.
+        if hist.max() > 0 and (coverage_mode or smooth_sigma is not None):
             threshold_val = footprint_threshold * hist.max()
             ax.contour(
                 ra_centers,
@@ -307,28 +399,27 @@ def plot_hit_map(
                 f"$A_{{>{thresh_pct}\\%max}}/A_{{footprint}}$ = {a_ratio:.2f}"
             )
 
-        ax.text(
-            0.98,
-            0.98,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=9,
-            verticalalignment="top",
-            horizontalalignment="right",
-            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
-        )
-
-        ax.set_xlabel("pos.eq.ra")
-        ax.set_ylabel("pos.eq.dec")
+        ax.set_xlabel("Right Ascension")
+        ax.set_ylabel("Declination")
         ax.set_title(label, fontweight="bold", loc="left")
+        # Above the map rather than over it, so that no cell is hidden.
+        ax.set_title(stats_text, fontsize="small", loc="right")
         ax.invert_xaxis()
 
-        ax.xaxis.set_major_formatter(ticker.FuncFormatter(_format_ra_hm))
+        ra_step_deg = _ra_tick_step_deg(*ax.get_xlim())
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(ra_step_deg))
+        ax.xaxis.set_major_formatter(
+            ticker.FuncFormatter(_format_ra_hms if ra_step_deg < 0.25 else _format_ra_hm)
+        )
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(_format_dec_deg))
 
-    fig.tight_layout()
-
-    if show:
-        plt.show()
+    if own_fig:
+        if title is not None:
+            fig.suptitle(title)
+        fig.tight_layout()
+        if show:
+            plt.show()
+    elif title is not None:
+        axes[0].set_title(title, fontweight="bold", loc="left")
 
     return fig

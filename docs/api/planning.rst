@@ -40,10 +40,10 @@ Each planner function returns a :class:`ScanBlock` whose
 .. autoclass:: fyst_trajectories.planning.SourceCESComputedParams
    :members:
 
-.. autodata:: fyst_trajectories.planning.ComputedParams
-   :annotation: = PongComputedParams | PongAltAzComputedParams |
-                ConstantElComputedParams | DaisyComputedParams |
-                DaisyAltAzComputedParams | SourceCESComputedParams
+.. py:data:: ComputedParams
+   :value: PongComputedParams | PongAltAzComputedParams |
+           ConstantElComputedParams | DaisyComputedParams |
+           DaisyAltAzComputedParams | SourceCESComputedParams
 
    Umbrella union alias for the ``computed_params`` mapping carried on
    :class:`ScanBlock`. The concrete schema is the one the planner that
@@ -53,11 +53,7 @@ Each planner function returns a :class:`ScanBlock` whose
 
 .. note::
 
-   ``"source_ces"`` is intentionally not accepted by
-   ``validate_computed_params``. :func:`plan_source_ces` is
-   planner-only and self-validates against
-   ``SourceCESComputedParams.__required_keys__`` directly.
    The overhead-side :func:`~fyst_trajectories.overhead.validate_scan_params`
-   *does* accept ``"source_ces"`` (for planet-calibration passes recorded as
-   ``SourceCESScanParams``); the two validators track deliberately different
-   scan-type sets.
+   accepts ``"source_ces"`` (for planet-calibration passes recorded as
+   ``SourceCESScanParams``), which ``validate_computed_params`` refuses; the
+   two validators track deliberately different scan-type sets.

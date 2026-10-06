@@ -29,8 +29,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from .._validation import _require_non_negative
 from ..offsets import InstrumentOffset
-from ..patterns.configs import _require_non_negative
 from ..primecam import MODULE_FOV_RADIUS_DEG, get_primecam_offset
 from ._types import ArrayFootprint
 
@@ -53,7 +53,7 @@ def resolve_footprint(
     Accepts:
 
     * ``ArrayFootprint``: returned unchanged.
-    * ``InstrumentOffset``: built as a ``_CIRCULAR_COVER_N_VERTICES``-vertex
+    * ``InstrumentOffset``: built as a 50-vertex
       circle of radius
       :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG` around the
       offset.
@@ -81,6 +81,9 @@ def resolve_footprint(
     TypeError
         If the footprint is not one of the accepted shapes, or a
         sequence holds something other than ``InstrumentOffset``.
+    KeyError
+        If a string names no PrimeCam module (raised by
+        :func:`~fyst_trajectories.primecam.get_primecam_offset`).
     """
     if isinstance(footprint, ArrayFootprint):
         return footprint
@@ -154,7 +157,7 @@ def offset_footprint_eta(fp: ArrayFootprint, d_eta_deg: float) -> ArrayFootprint
     return ArrayFootprint(
         center_xi_deg=fp.center_xi_deg,
         center_eta_deg=fp.center_eta_deg + d_eta_deg,
-        cover_xi_deg=fp.cover_xi_deg.copy(),
+        cover_xi_deg=fp.cover_xi_deg,
         cover_eta_deg=fp.cover_eta_deg + d_eta_deg,
     )
 

@@ -89,7 +89,8 @@ def test_overhead_from_csv_example_runs(example_env):
 
     Runs the example in a fresh interpreter (the way a reader would), then
     checks the exit status and the summary line. It builds a full 8-hour
-    timeline but completes in a few seconds, so it stays in the fast suite.
+    timeline and completes in tens of seconds, so it stays in the default
+    (non-slow) suite.
     """
     result = subprocess.run(
         [sys.executable, str(EXAMPLE), str(SAMPLE_CSV)],
@@ -116,6 +117,12 @@ def test_overhead_from_csv_example_runs(example_env):
 
 PLANET_NIGHT = REPO_ROOT / "examples" / "planet_night.py"
 SPEED_SWEEP = REPO_ROOT / "examples" / "planet_speed_sweep.py"
+
+
+def test_every_bundled_example_is_exercised():
+    """A new file under examples/ needs a test here."""
+    exercised = {EXAMPLE.name, PLANET_NIGHT.name, SPEED_SWEEP.name}
+    assert {p.name for p in (REPO_ROOT / "examples").glob("*.py")} == exercised
 
 
 def test_planet_night_example_runs(example_env, tmp_path):

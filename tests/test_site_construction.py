@@ -9,18 +9,13 @@ and an accepted port string is stored lower-cased, so ``site.nasmyth_port``
 and the value the sign lookup uses can never differ in case.
 """
 
-import math
-
-import numpy as np
 import pytest
 
 from fyst_trajectories.site import (
-    AtmosphericConditions,
     AxisLimits,
     Site,
     SunAvoidanceConfig,
     TelescopeLimits,
-    get_fyst_site,
 )
 
 
@@ -32,7 +27,6 @@ def _make_site(**overrides) -> Site:
         "latitude": -22.985639,
         "longitude": -67.740278,
         "elevation": 5611.8,
-        "atmosphere": None,
         "telescope_limits": TelescopeLimits(
             azimuth=AxisLimits(min=-180.0, max=360.0, max_velocity=3.0, max_acceleration=1.5),
             elevation=AxisLimits(min=20.0, max=89.0, max_velocity=1.0, max_acceleration=0.75),
@@ -122,25 +116,3 @@ class TestNasmythPortCanonicalisation:
     def test_unknown_port_still_names_the_value_as_given(self):
         with pytest.raises(ValueError, match="Unknown nasmyth_port 'Middle'"):
             _make_site(nasmyth_port="Middle")
-
-
-class TestAxisLimitsClip:
-    """``AxisLimits.clip`` honours its ``float`` annotation."""
-
-    def test_clip_returns_a_builtin_float(self):
-        """The result is a plain float, not a numpy scalar leaking into caller arithmetic."""
-        limits = AxisLimits(min=-90.0, max=90.0, max_velocity=1.0, max_acceleration=0.5)
-        clipped = limits.clip(100.0)
-        assert clipped == 90.0
-        assert type(clipped) is float
-        assert not isinstance(clipped, np.floating)
-
-
-def test_fyst_site_is_unaffected():
-    """The shipped FYST site satisfies every construction guard."""
-    site = get_fyst_site()
-    assert -90.0 <= site.latitude <= 90.0
-    assert math.isfinite(site.longitude) and math.isfinite(site.elevation)
-    assert site.plate_scale > 0.0
-    assert site.nasmyth_port == "right"
-    assert isinstance(site.atmosphere, AtmosphericConditions | type(None))

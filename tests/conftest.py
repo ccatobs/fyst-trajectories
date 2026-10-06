@@ -14,8 +14,20 @@ from pathlib import Path
 import _tiers
 import pytest
 from astropy.utils import iers
+from hypothesis import HealthCheck, settings
 
 from fyst_trajectories import Coordinates, get_fyst_site
+
+# Hypothesis's too_slow health check times data generation by the wall clock, so
+# on a loaded machine (parallel test runs, a busy CI runner) it fails whatever the
+# code under test does. The suite's profile suppresses that check and nothing
+# else: filter_too_much and data_too_large still flag a strategy that wastes its
+# draws. It is loaded here, before any test module is imported, because a
+# @settings decorator inherits from the profile active when it runs. A test that
+# passes its own suppress_health_check list replaces this one, so the list must
+# repeat HealthCheck.too_slow.
+settings.register_profile("fyst", suppress_health_check=[HealthCheck.too_slow])
+settings.load_profile("fyst")
 
 # Pin astropy Earth-orientation handling to a vendored IERS table at import time,
 # before any test is collected or run. On a cold CI runner there is no cached

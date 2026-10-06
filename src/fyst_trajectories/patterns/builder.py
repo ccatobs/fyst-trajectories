@@ -7,23 +7,20 @@ The pattern type is automatically inferred from the config class passed to
 ``with_config()``.
 """
 
+import math
 import warnings
-from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
-from ..exceptions import PointingError, PointingWarning
-from ..offsets import apply_detector_offset
+from ..exceptions import PointingWarning
+from ..offsets import InstrumentOffset, apply_detector_offset
 from ..site import AtmosphericConditions, Site
 from ..trajectory import Trajectory
 from ..trajectory_utils import validate_trajectory_bounds, validate_trajectory_dynamics
-from .base import AltAzPattern, CelestialPattern
+from .base import AltAzPattern, CelestialPattern, ScanPattern
 from .configs import ScanConfig
 from .registry import get_pattern, get_pattern_for_config
 from .utils import validate_sample_count
-
-if TYPE_CHECKING:
-    from ..offsets import InstrumentOffset
 
 
 class TrajectoryBuilder:
@@ -142,22 +139,20 @@ class TrajectoryBuilder:
 
         Raises
         ------
-        PointingError
-            If the config type is not recognized. A subclass of
-            ``ValueError``, so an existing ``except ValueError`` still
-            catches it.
+        ValueError
+            If the config type is not recognized.
         """
-        self._config = config
-
         try:
-            self._pattern_name = get_pattern_for_config(type(config))
+            pattern_name = get_pattern_for_config(type(config))
         except KeyError as exc:
             # The registry lookup is a genuine key miss, but a builder
-            # caller is handed a value it passed in, so re-raise inside the
-            # library's own hierarchy. ``str(exc)`` strips the quoting
-            # ``KeyError`` adds.
-            raise PointingError(str(exc).strip('"')) from None
+            # caller is refused a value it passed in, which is a malformed
+            # argument. ``exc.args[0]`` is the message without the quotes
+            # ``str`` of a ``KeyError`` adds.
+            raise ValueError(exc.args[0]) from None
 
+        self._config = config
+        self._pattern_name = pattern_name
         return self
 
     def duration(self, seconds: float) -> "TrajectoryBuilder":
@@ -176,9 +171,9 @@ class TrajectoryBuilder:
         Raises
         ------
         ValueError
-            If duration is not positive.
+            If duration is not a finite positive number.
         """
-        if seconds <= 0:
+        if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError(f"Duration must be positive, got {seconds}")
         self._duration = seconds
         return self
@@ -227,7 +222,7 @@ class TrajectoryBuilder:
 
     def for_detector(
         self,
-        offset: "InstrumentOffset | None",
+        offset: InstrumentOffset | None,
     ) -> "TrajectoryBuilder":
         """Adjust trajectory so specified detector is centered on target.
 
@@ -236,11 +231,9 @@ class TrajectoryBuilder:
         the target coordinates instead of the boresight. Uses spherical
         trigonometry for accurate offset projection at any offset size.
 
-        This is useful when you want an off-axis instrument or detector
-        module to track a celestial target, rather than the telescope
-        boresight. Passing ``None`` is a no-op (boresight tracking),
-        which allows callers to unconditionally call this method without
-        checking whether an offset was resolved.
+        Passing ``None`` is a no-op (boresight tracking), which allows
+        callers to unconditionally call this method without checking
+        whether an offset was resolved.
 
         Parameters
         ----------
@@ -285,16 +278,16 @@ class TrajectoryBuilder:
         return self
 
     @staticmethod
-    def _needs_start_time(pattern_cls: type) -> bool:
+    def _needs_start_time(pattern_cls: type[ScanPattern]) -> bool:
         """Check if a pattern class requires a start time.
 
-        Uses the ``requires_start_time`` ClassVar declared on base classes.
-        CelestialPattern defaults to True, AltAzPattern defaults to False,
-        and PlanetTrackPattern overrides to True.
+        Reads the ``requires_start_time`` ClassVar that the ``ScanPattern``
+        protocol declares. CelestialPattern sets it to True, AltAzPattern
+        to False, and PlanetTrackPattern overrides it to True.
 
         Parameters
         ----------
-        pattern_cls : type
+        pattern_cls : type[ScanPattern]
             The pattern class to check.
 
         Returns
@@ -302,7 +295,7 @@ class TrajectoryBuilder:
         bool
             True if the pattern requires a start time.
         """
-        return getattr(pattern_cls, "requires_start_time", False)
+        return pattern_cls.requires_start_time
 
     def build(self, *, validate_dynamics: bool = True) -> Trajectory:
         """Build the trajectory.
@@ -355,6 +348,22 @@ class TrajectoryBuilder:
             If the target is not observable at the requested time.
         TrajectoryBoundsError
             If the trajectory exceeds telescope limits.
+        OffsetInversionError
+            If a detector offset was set with :meth:`for_detector` and the
+            boresight inversion hits the near-pole degeneracy or fails to
+            converge.
+
+        Warns
+        -----
+        PointingWarning
+            If ``.at()`` coordinates were set for an AltAz pattern (they are
+            ignored); if no whole-turn shift places a celestial or tracking
+            pattern's azimuth track inside the telescope's azimuth range; or,
+            unless ``validate_dynamics=False``, for any advisory of
+            :func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`
+            (a velocity or acceleration limit exceeded, reported as the
+            ``VelocityLimitWarning`` and ``AccelerationLimitWarning``
+            subclasses, or high-elevation azimuth compression).
         """
         if self._pattern_name is None:
             raise ValueError("Pattern not set. Call .with_config() first.")
@@ -395,8 +404,7 @@ class TrajectoryBuilder:
                 "transforms. Call .starting_at(start_time) before .build()."
             )
 
-        if self._config is not None:
-            kwargs["config"] = self._config
+        kwargs["config"] = self._config
 
         pattern = pattern_cls(**kwargs)
 
@@ -411,7 +419,7 @@ class TrajectoryBuilder:
             trajectory = apply_detector_offset(
                 trajectory,
                 self._detector_offset,
-                self._site,
+                site=self._site,
             )
 
         # Validate dynamics after detector offset so the check covers

@@ -37,8 +37,8 @@ the defaults, which :doc:`overhead_model` lists field by field.
             name="Wide01",
             ra_center=180.0,
             dec_center=-30.0,
-            width=20.0,
-            height=10.0,
+            width=4.0,
+            height=4.0,
             scan_type="pong",
             velocity=0.5,
         ),
@@ -51,22 +51,38 @@ the defaults, which :doc:`overhead_model` lists field by field.
         end_time="2026-06-15T10:00:00",
     )
 
-    print(f"{len(timeline)} blocks scheduled")
+    print(f"{len(timeline)} blocks scheduled")  # 65 blocks scheduled
 
-``generate_timeline`` also takes ``sun_safe=`` to select the avoidance
-policy the night is simulated under (default: the site's scalar
-exclusion radius, see :doc:`sun_avoidance`); ``constraints=`` to
-replace the default patch-selection constraint set (elevation + Sun)
-with an explicit list built from the exported constraint classes
-(:class:`~fyst_trajectories.overhead.ElevationConstraint`,
-:class:`~fyst_trajectories.overhead.SunAvoidanceConstraint`,
-:class:`~fyst_trajectories.overhead.MoonAvoidanceConstraint`,
-:class:`~fyst_trajectories.overhead.MinDurationConstraint`, or a
-custom :class:`~fyst_trajectories.overhead.Constraint`) - note that an
-explicit ``constraints`` list is used as given, so ``sun_safe`` no longer
-drives patch selection; and
-``time_step=`` for the idle-tick step in seconds (default 300). See
-:doc:`api/overhead_timeline`.
+.. figure:: figures/night_gantt.png
+   :alt: Gantt chart of the simulated night from 02:00 to 10:00 UTC, one lane
+      per patch and per calibration type plus slew and idle lanes.
+   :width: 100%
+
+   This night as ``plot_timeline_gantt`` draws it: Wide01's Pong scans
+   early, Deep56's constant-elevation scans once its crossing opens,
+   calibrations on their cadences in between, and idle ticks while no
+   patch is observable.
+
+``generate_timeline`` takes three more keyword arguments:
+
+* ``sun_safe=`` selects the Sun-avoidance policy the night is simulated
+  under; the default is the site's scalar exclusion radius (see
+  :doc:`sun_avoidance`).
+* ``constraints=`` replaces the default patch-selection constraints
+  (elevation and Sun) with an explicit list built from
+  :class:`~fyst_trajectories.overhead.ElevationConstraint`,
+  :class:`~fyst_trajectories.overhead.SunAvoidanceConstraint`,
+  :class:`~fyst_trajectories.overhead.MoonAvoidanceConstraint`,
+  :class:`~fyst_trajectories.overhead.MinDurationConstraint`, or a custom
+  :class:`~fyst_trajectories.overhead.Constraint`. The list is used as
+  given, so ``sun_safe`` then no longer drives patch selection; it still
+  drives the mid-scan duration clips, the slew gate, the escape move and
+  the scan-mode planet calibrations.
+* ``time_step=`` sets the scheduler tick in seconds (default 300): how
+  far the clock advances when nothing can be scheduled, and (plus a slew
+  allowance) the look-ahead for a constant-elevation pass.
+
+See :doc:`api/overhead_timeline` for the full signature.
 
 Efficiency Statistics
 ---------------------
@@ -74,8 +90,8 @@ Efficiency Statistics
 :func:`~fyst_trajectories.overhead.compute_budget` provides a summary::
 
     stats = compute_budget(timeline)
-    print(f"Efficiency: {stats['efficiency']:.1%}")
-    print(f"Science:     {stats['science_time'] / 3600:.1f}h")
+    print(f"Efficiency: {stats['efficiency']:.1%}")  # Efficiency: 41.7%
+    print(f"Science:     {stats['science_time'] / 3600:.1f}h")  # Science: 3.3h
 
 :doc:`overhead_timeline` walks the full breakdown, including the
 per-patch and per-calibration-type entries.
@@ -89,7 +105,7 @@ Write to TOAST-compatible ECSV and read it back::
 
     write_timeline(timeline, "my_timeline.ecsv")
     loaded = read_timeline("my_timeline.ecsv")
-    print(f"Loaded {len(loaded)} blocks")
+    print(f"Loaded {len(loaded)} blocks")  # Loaded 65 blocks
 
 See :doc:`overhead_io` for format details and TOAST compatibility.
 

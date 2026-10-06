@@ -1,4 +1,4 @@
-"""Tests for calibration overhead tracking."""
+"""Tests for calibration cadence tracking (CalibrationState)."""
 
 import pytest
 from astropy.time import Time, TimeDelta
@@ -9,19 +9,6 @@ from fyst_trajectories.overhead.models import CalibrationPolicy, OverheadModel
 
 class TestCalibrationState:
     """What is due when, in priority order, plus immutable updates and planet picks."""
-
-    def test_all_due_initially(self):
-        state = CalibrationState()
-        t = Time("2026-06-15T02:00:00", scale="utc")
-        policy = CalibrationPolicy()
-        overhead = OverheadModel()
-        needed = state.needs_calibration(t, policy, overhead)
-        names = [c.name for c in needed]
-        assert "retune" in names
-        assert "pointing_cal" in names
-        assert "focus" in names
-        assert "skydip" in names
-        assert "planet_cal" in names
 
     def test_retune_always_due_with_zero_cadence(self):
         t0 = Time("2026-06-15T02:00:00", scale="utc")
@@ -78,12 +65,21 @@ class TestCalibrationState:
         assert "retune" not in names
 
     def test_priority_order(self):
+        """A fresh state is due everything, in the documented priority order.
+
+        Beam maps stay off the automatic schedule (``beam_map_cadence`` is
+        None by default), so five calibrations come back.
+        """
         state = CalibrationState()
         t = Time("2026-06-15T02:00:00", scale="utc")
-        policy = CalibrationPolicy()
-        overhead = OverheadModel()
-        needed = state.needs_calibration(t, policy, overhead)
-        assert needed[0].name == "retune"
+        needed = state.needs_calibration(t, CalibrationPolicy(), OverheadModel())
+        assert [c.name for c in needed] == [
+            "retune",
+            "pointing_cal",
+            "focus",
+            "skydip",
+            "planet_cal",
+        ]
 
     def test_update_returns_new_state(self):
         t0 = Time("2026-06-15T02:00:00", scale="utc")
@@ -108,28 +104,23 @@ class TestCalibrationState:
         assert len(planet_cals) == 1
         assert planet_cals[0].target == "jupiter"
 
-    def test_find_visible_planet_uses_min_elevation(self):
-        class MockCoords:
-            def __init__(self, altitudes: dict[str, float]):
-                self._altitudes = altitudes
+    def test_planet_choice_follows_target_order_above_min_elevation(self):
+        """The first listed planet above ``planet_min_elevation`` is the target."""
 
+        class MockCoords:
             def get_body_altaz(self, body: str, time):
-                return 0.0, self._altitudes.get(body, -10.0)
+                return 0.0, {"jupiter": 15.0, "saturn": 25.0}.get(body, -10.0)
 
         t = Time("2026-06-15T02:00:00", scale="utc")
-        coords = MockCoords({"jupiter": 15.0, "saturn": 25.0})
-        result = CalibrationState._find_visible_planet(
-            ("jupiter", "saturn"), t, coords, min_elevation=20.0
-        )
-        assert result == "saturn"
-
-        result = CalibrationState._find_visible_planet(
-            ("jupiter", "saturn"), t, coords, min_elevation=10.0
-        )
-        assert result == "jupiter"
-
-        result = CalibrationState._find_visible_planet(("jupiter",), t, coords, min_elevation=30.0)
-        assert result is None
+        for min_el, expected in ((20.0, "saturn"), (10.0, "jupiter")):
+            policy = CalibrationPolicy(
+                planet_targets=("jupiter", "saturn"), planet_min_elevation=min_el
+            )
+            needed = CalibrationState().needs_calibration(
+                t, policy, OverheadModel(), coords=MockCoords()
+            )
+            planet_cals = [c for c in needed if c.name == "planet_cal"]
+            assert [c.target for c in planet_cals] == [expected]
 
     def test_planet_min_elevation_threaded_through_needs_calibration(self):
         class MockCoords:

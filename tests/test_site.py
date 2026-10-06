@@ -8,6 +8,7 @@ get_fyst_site() constructor.
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 from astropy import units as u
@@ -41,13 +42,6 @@ from fyst_trajectories.site import (
 
 class TestSiteLoading:
     """Tests for the shipped FYST site values and the ``Site.from_config()`` loader."""
-
-    def test_default_site_location(self, site):
-        """The shipped FYST site carries the documented geographic constants."""
-        assert site.name == "FYST"
-        assert site.latitude == pytest.approx(-22.985639, abs=0.001)
-        assert site.longitude == pytest.approx(-67.740278, abs=0.001)
-        assert site.elevation == pytest.approx(5611.8, abs=1.0)
 
     def test_location_property(self, site):
         """Test that location returns an EarthLocation."""
@@ -104,30 +98,9 @@ class TestSiteLoading:
             site = Site.from_config(temp_path)
             assert site.name == "TestSite"
             assert site.latitude == -30.0
-            assert site.atmosphere is None
             assert site.telescope_limits.elevation.min == 15.0
         finally:
             Path(temp_path).unlink()
-
-    def test_config_loading_sets_atmosphere_none(self, tmp_path):
-        """Test that config loading always sets atmosphere=None."""
-        config = {
-            "site": {
-                "name": "Test",
-                "location": {"latitude": -23.0, "longitude": -67.0, "elevation": 5000.0},
-            },
-            "telescope": {
-                "plate_scale": 13.89,
-                "azimuth": {"min": -270, "max": 270, "max_velocity": 3, "max_acceleration": 1},
-                "elevation": {"min": 20, "max": 90, "max_velocity": 1, "max_acceleration": 0.5},
-            },
-            "sun_avoidance": {"enabled": True, "exclusion_radius": 45, "warning_radius": 50},
-        }
-        config_file = tmp_path / "test_config.yaml"
-        config_file.write_text(yaml.dump(config))
-
-        site = Site.from_config(config_file)
-        assert site.atmosphere is None
 
     def test_optional_description_has_default(self, tmp_path):
         """Test that description is optional and defaults to empty string."""
@@ -150,6 +123,54 @@ class TestSiteLoading:
         site = Site.from_config(config_file)
         assert site.description == ""
 
+    @pytest.mark.parametrize("case", ["empty-file", "scalar-section", "null-nasmyth-port"])
+    def test_malformed_config_raises_value_error(self, tmp_path, case):
+        """A document of the wrong shape is reported as the invalid config it is."""
+        config = {
+            "site": {
+                "name": "Test",
+                "location": {"latitude": -23.0, "longitude": -67.0, "elevation": 5000.0},
+            },
+            "telescope": {
+                "plate_scale": 13.89,
+                "azimuth": {"min": -270, "max": 270, "max_velocity": 3, "max_acceleration": 1},
+                "elevation": {"min": 20, "max": 90, "max_velocity": 1, "max_acceleration": 0.5},
+            },
+            "sun_avoidance": {"enabled": True, "exclusion_radius": 45, "warning_radius": 50},
+        }
+        config_file = tmp_path / f"{case}.yaml"
+        if case == "empty-file":
+            config_file.write_text("")
+        else:
+            if case == "scalar-section":
+                config["site"] = 3
+            else:
+                config["telescope"]["nasmyth_port"] = None
+            config_file.write_text(yaml.dump(config))
+
+        with pytest.raises(ValueError, match=f"Config '{case}.yaml' is malformed"):
+            Site.from_config(config_file)
+
+    def test_zero_velocity_config_raises_value_error(self, tmp_path):
+        """A ``max_velocity: 0`` typo is refused rather than pricing every slew as free."""
+        config = {
+            "site": {
+                "name": "Test",
+                "location": {"latitude": -23.0, "longitude": -67.0, "elevation": 5000.0},
+            },
+            "telescope": {
+                "plate_scale": 13.89,
+                "azimuth": {"min": -270, "max": 270, "max_velocity": 0, "max_acceleration": 1},
+                "elevation": {"min": 20, "max": 90, "max_velocity": 1, "max_acceleration": 0.5},
+            },
+            "sun_avoidance": {"enabled": True, "exclusion_radius": 45, "warning_radius": 50},
+        }
+        config_file = tmp_path / "zero_velocity.yaml"
+        config_file.write_text(yaml.dump(config))
+
+        with pytest.raises(ValueError, match="max_velocity must be a finite, positive number"):
+            Site.from_config(config_file)
+
 
 class TestAtmosphericConditions:
     """Tests for AtmosphericConditions class."""
@@ -160,6 +181,25 @@ class TestAtmosphericConditions:
             AtmosphericConditions(pressure=550.0, temperature=270.0, relative_humidity=1.5)
         with pytest.raises(ValueError, match="relative_humidity must be in range"):
             AtmosphericConditions(pressure=550.0, temperature=270.0, relative_humidity=-0.1)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            pytest.param(dict(temperature=-5.0), "temperature must be >= 0 K", id="celsius"),
+            pytest.param(dict(temperature=float("nan")), "temperature must be >= 0 K", id="nan-t"),
+            pytest.param(dict(pressure=float("nan")), "pressure must be >= 0 hPa", id="nan-p"),
+        ],
+    )
+    def test_validation_rejects_negative_or_nan_pressure_and_temperature(self, kwargs, match):
+        """A Celsius value passed as Kelvin, or a NaN, is refused rather than refracted."""
+        values = dict(pressure=550.0, temperature=270.0, relative_humidity=0.2)
+        values.update(kwargs)
+        with pytest.raises(ValueError, match=match):
+            AtmosphericConditions(**values)
+
+    def test_no_refraction_zero_kelvin_still_builds(self):
+        """The vacuum synonym's 0 K temperature stays legal."""
+        assert AtmosphericConditions.no_refraction().temperature == 0.0
 
     def test_for_fyst_defaults(self):
         """``for_fyst()`` returns a Cerro-Chajnantor profile with submm wavelength."""
@@ -204,6 +244,32 @@ class TestAxisLimits:
         with pytest.raises(ValueError, match="min .* must be <= max"):
             AxisLimits(min=100.0, max=50.0, max_velocity=1.0, max_acceleration=0.5)
 
+    @pytest.mark.parametrize("field", ["min", "max"])
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_rejects_non_finite_bound(self, field, value):
+        """A NaN bound disables every range comparison; an infinite one breaks the arithmetic."""
+        kwargs = {"min": -90.0, "max": 90.0, "max_velocity": 1.0, "max_acceleration": 0.5}
+        kwargs[field] = value
+        with pytest.raises(ValueError, match=f"^{field} must be a finite number"):
+            AxisLimits(**kwargs)
+
+    @pytest.mark.parametrize("field", ["max_velocity", "max_acceleration"])
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+    def test_rejects_rate_that_is_not_finite_and_positive(self, field, value):
+        """A zero or negative rate priced every slew as free; a NaN one priced it as NaN."""
+        kwargs = {"min": -90.0, "max": 90.0, "max_velocity": 1.0, "max_acceleration": 0.5}
+        kwargs[field] = value
+        with pytest.raises(ValueError, match=f"^{field} must be a finite, positive number"):
+            AxisLimits(**kwargs)
+
+    def test_clip_returns_a_builtin_float(self):
+        """The result is a plain float, not a numpy scalar leaking into caller arithmetic."""
+        limits = AxisLimits(min=-90.0, max=90.0, max_velocity=1.0, max_acceleration=0.5)
+        clipped = limits.clip(100.0)
+        assert clipped == 90.0
+        assert type(clipped) is float
+        assert not isinstance(clipped, np.floating)
+
 
 class TestSunAvoidanceConfig:
     """SunAvoidanceConfig enforces 0 <= exclusion_radius < warning_radius when enabled."""
@@ -235,35 +301,30 @@ class TestSunAvoidanceConfig:
         cfg = SunAvoidanceConfig(enabled=False, exclusion_radius=-5.0, warning_radius=0.0)
         assert cfg.enabled is False
 
+    @pytest.mark.parametrize("field", ["exclusion_radius", "warning_radius"])
+    @pytest.mark.parametrize("value", [float("nan"), float("inf")])
+    def test_rejects_non_finite_radius_when_enabled(self, field, value):
+        # Every ``separation <= radius`` test is False against a NaN radius,
+        # so such a config passed every Sun warning and observability check.
+        kwargs = {"exclusion_radius": 45.0, "warning_radius": 50.0}
+        kwargs[field] = value
+        with pytest.raises(ValueError, match=f"^{field} must be a finite number"):
+            SunAvoidanceConfig(enabled=True, **kwargs)
+
+    def test_disabled_config_accepts_non_finite_radii(self):
+        # The finite check sits on the enabled branch, like the other radius checks.
+        cfg = SunAvoidanceConfig(
+            enabled=False, exclusion_radius=float("nan"), warning_radius=float("inf")
+        )
+        assert cfg.enabled is False
+
 
 class TestNasmythPort:
     """Tests for nasmyth_port and nasmyth_sign property."""
 
-    def test_default_nasmyth_port(self, site):
-        """Test that the shipped FYST site has nasmyth_port='right'."""
-        assert site.nasmyth_port == "right"
-
     def test_nasmyth_sign_right(self, site):
         """Test nasmyth_sign is +1 for right port."""
         assert site.nasmyth_sign == 1
-
-    def test_nasmyth_sign_left(self):
-        """Test nasmyth_sign is -1 for left port."""
-        site = Site(
-            name="Test",
-            description="",
-            latitude=-23.0,
-            longitude=-67.0,
-            elevation=5000.0,
-            atmosphere=None,
-            telescope_limits=TelescopeLimits(
-                azimuth=AxisLimits(min=-270, max=270, max_velocity=3, max_acceleration=1),
-                elevation=AxisLimits(min=20, max=90, max_velocity=1, max_acceleration=0.5),
-            ),
-            sun_avoidance=SunAvoidanceConfig(enabled=True, exclusion_radius=45, warning_radius=50),
-            nasmyth_port="left",
-        )
-        assert site.nasmyth_sign == -1
 
     def test_nasmyth_sign_cassegrain(self):
         """Test nasmyth_sign is 0 for cassegrain."""
@@ -273,7 +334,6 @@ class TestNasmythPort:
             latitude=-23.0,
             longitude=-67.0,
             elevation=5000.0,
-            atmosphere=None,
             telescope_limits=TelescopeLimits(
                 azimuth=AxisLimits(min=-270, max=270, max_velocity=3, max_acceleration=1),
                 elevation=AxisLimits(min=20, max=90, max_velocity=1, max_acceleration=0.5),
@@ -282,26 +342,6 @@ class TestNasmythPort:
             nasmyth_port="cassegrain",
         )
         assert site.nasmyth_sign == 0
-
-    def test_nasmyth_sign_invalid_raises(self):
-        """Test that invalid nasmyth_port raises ValueError at construction."""
-        with pytest.raises(ValueError, match="Unknown nasmyth_port"):
-            Site(
-                name="Test",
-                description="",
-                latitude=-23.0,
-                longitude=-67.0,
-                elevation=5000.0,
-                atmosphere=None,
-                telescope_limits=TelescopeLimits(
-                    azimuth=AxisLimits(min=-270, max=270, max_velocity=3, max_acceleration=1),
-                    elevation=AxisLimits(min=20, max=90, max_velocity=1, max_acceleration=0.5),
-                ),
-                sun_avoidance=SunAvoidanceConfig(
-                    enabled=True, exclusion_radius=45, warning_radius=50
-                ),
-                nasmyth_port="invalid",
-            )
 
     def test_load_from_yaml_with_nasmyth_port(self, tmp_path):
         """Test loading nasmyth_port from YAML config."""
@@ -363,10 +403,13 @@ class TestTelescopeLimits:
 class TestFYSTConstants:
     """Regression tests for FYST physical constants.
 
-    These pin the hardcoded constants. The Tier 1 values trace to the FYST
-    TCS source code and the optical design; the Tier 2 kinematic values
-    either match the TCS values or sit below them, as each test states. If
-    any of these fail, a constant was accidentally changed.
+    These pin the hardcoded constants. The Tier 1 geographic values trace to
+    the FYST TCS source code; the Tier 2 kinematic values either match the
+    TCS values or sit below them, as each test states. The Nasmyth port, the
+    plate scale, the velocity and acceleration limits and the Sun radii are
+    commissioning defaults listed under "Pending instrument verification" in
+    ``docs/index.rst``: their pins move when the FYST team confirms or
+    changes them. Any other failure means a constant was changed by accident.
     """
 
     def test_tier1_location(self):
@@ -376,7 +419,7 @@ class TestFYSTConstants:
         assert FYST_ELEVATION == 5611.8
 
     def test_tier1_optics(self):
-        """Test Tier 1 optical constants."""
+        """Test Tier 1 optical constants (both pending instrument verification)."""
         assert FYST_PLATE_SCALE == 13.89
         assert FYST_NASMYTH_PORT == "right"
 
@@ -438,7 +481,6 @@ class TestGetFystSiteKwargs:
         assert site.sun_avoidance.exclusion_radius == FYST_SUN_EXCLUSION_RADIUS
         assert site.sun_avoidance.warning_radius == FYST_SUN_WARNING_RADIUS
         assert site.sun_avoidance.enabled == FYST_SUN_AVOIDANCE_ENABLED
-        assert site.atmosphere is None
 
     def test_override_sun_exclusion_radius(self):
         """Test overriding sun exclusion radius."""
@@ -465,6 +507,11 @@ class TestGetFystSiteKwargs:
         assert site.sun_avoidance.exclusion_radius == 20.0
         assert site.sun_avoidance.warning_radius == 25.0
         assert site.sun_avoidance.enabled is False
+
+    def test_rejects_nan_sun_exclusion_radius(self):
+        """A NaN radius is refused at construction instead of passing every Sun check."""
+        with pytest.raises(ValueError, match="^exclusion_radius must be a finite number"):
+            get_fyst_site(sun_exclusion_radius=float("nan"))
 
     def test_returns_fresh_instance(self):
         """Each call builds a new ``Site``; nothing memoises it.

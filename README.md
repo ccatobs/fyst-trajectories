@@ -11,10 +11,12 @@ observing-night overhead simulator, and a calibration-night planner.
 
 ## Installation
 
-Pin a release tag (`v0.9.0` is the latest).
+Pin a release tag (`v0.10.0` is the latest; the
+[changelog](https://fyst-trajectories.readthedocs.io/en/latest/changelog.html)
+lists what each release changes).
 
 ```bash
-pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.9.0"
+pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.10.0"
 ```
 
 ## Development
@@ -36,3 +38,7 @@ They are gated behind the `--run-slow` flag:
 ```bash
 pytest tests/ --run-slow
 ```
+
+## License
+
+BSD 3-Clause; see [LICENSE](LICENSE).

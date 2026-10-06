@@ -39,9 +39,7 @@ List available patterns:
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
-
-from ..exceptions import PointingError
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from .base import ScanPattern
@@ -54,10 +52,14 @@ if TYPE_CHECKING:
 _PATTERN_REGISTRY: dict[str, type["ScanPattern"]] = {}
 _CONFIG_TO_PATTERN_NAME: dict[type, str] = {}
 
+# Binds the decorated class so ``register_pattern`` hands it back with its own
+# type; typed ``type[ScanPattern]`` it would erase every constructor signature.
+_PatternT = TypeVar("_PatternT", bound="ScanPattern")
+
 
 def register_pattern(
     name: str, *, config: type["ScanConfig"] | None = None
-) -> Callable[[type["ScanPattern"]], type["ScanPattern"]]:
+) -> Callable[[type[_PatternT]], type[_PatternT]]:
     """Register a pattern class via decorator.
 
     Parameters
@@ -74,15 +76,15 @@ def register_pattern(
     Returns
     -------
     callable
-        Decorator that registers the class and returns it unchanged.
+        Decorator that registers the class, sets its ``name`` class
+        attribute to ``name`` and returns it.
 
     Raises
     ------
-    PointingError
+    ValueError
         If ``name`` is not a non-blank string, if a pattern with the same
         name is already registered, or if the config class is already
-        mapped to another pattern. A subclass of ``ValueError``, so an
-        existing ``except ValueError`` still catches it.
+        mapped to another pattern.
 
     Examples
     --------
@@ -94,20 +96,21 @@ def register_pattern(
     # a usable key poisons ``list_patterns``, which sorts the keys, for the
     # rest of the process.
     if not isinstance(name, str) or not name.strip():
-        raise PointingError(f"Pattern name must be a non-blank string, got {name!r}")
+        raise ValueError(f"Pattern name must be a non-blank string, got {name!r}")
 
-    def decorator(cls: type["ScanPattern"]) -> type["ScanPattern"]:
-        # Both checks run before either map is written, so a refused
-        # registration leaves the registry exactly as it found it. Writing the
-        # name first would leave a half-registered pattern behind whenever the
-        # config mapping is the half that clashes.
+    def decorator(cls: type[_PatternT]) -> type[_PatternT]:
+        # Both checks run before the name is set or either map is written, so a
+        # refused registration leaves the class and the registry exactly as it
+        # found them. Writing the name first would leave a half-registered
+        # pattern behind whenever the config mapping is the half that clashes.
         if name in _PATTERN_REGISTRY:
-            raise PointingError(
+            raise ValueError(
                 f"Pattern '{name}' already registered by {_PATTERN_REGISTRY[name].__name__}"
             )
         if config is not None and config in _CONFIG_TO_PATTERN_NAME:
             existing = _CONFIG_TO_PATTERN_NAME[config]
-            raise PointingError(f"Config {config.__name__} already mapped to pattern '{existing}'")
+            raise ValueError(f"Config {config.__name__} already mapped to pattern '{existing}'")
+        cls.name = name
         _PATTERN_REGISTRY[name] = cls
         if config is not None:
             _CONFIG_TO_PATTERN_NAME[config] = name

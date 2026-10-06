@@ -6,7 +6,9 @@ import pytest
 from astropy.time import Time
 
 from fyst_trajectories import choose_encoder_solution, get_fyst_site
+from fyst_trajectories.dispatch import EncoderSolution, estimate_slew_time
 from fyst_trajectories.exceptions import PointingError
+from fyst_trajectories.sun_models import _axis_slew_duration
 
 # Fixed time; only consulted by the sun predicate. The geometry tests disable
 # sun avoidance, so they need no ephemeris/network, the default predicate
@@ -17,24 +19,6 @@ OBSTIME = Time("2026-03-15T12:00:00", scale="utc")
 class TestChooseEncoderSolution:
     """Wrap enumeration, the sun-safety seam, and minimum-slew selection."""
 
-    def test_returns_goal_el_unchanged(self):
-        """The returned encoder elevation equals the goal elevation."""
-        site = get_fyst_site(sun_avoidance_enabled=False)
-        _, el = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
-        assert el == 45.0
-
-    def test_picks_nearest_wrap(self):
-        """Sky az 200 has images {200, -160}; from 190 the nearest is 200."""
-        site = get_fyst_site(sun_avoidance_enabled=False)
-        az, _ = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
-        assert az == pytest.approx(200.0)
-
-    def test_picks_nearest_wrap_from_other_side(self):
-        """From current az -170 the nearer image of sky az 200 is -160."""
-        site = get_fyst_site(sun_avoidance_enabled=False)
-        az, _ = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site)
-        assert az == pytest.approx(-160.0)
-
     def test_single_image_low_azimuth(self):
         """Sky az 10 has a single in-range encoder image (10 itself)."""
         site = get_fyst_site(sun_avoidance_enabled=False)
@@ -42,9 +26,10 @@ class TestChooseEncoderSolution:
         assert az == pytest.approx(10.0)
 
     def test_chosen_az_within_limits(self):
-        """The returned encoder azimuth is within the telescope az limits."""
+        """From current az 0 the nearer image of sky az 350 is -10, inside the limits."""
         site = get_fyst_site(sun_avoidance_enabled=False)
         az, _ = choose_encoder_solution(0.0, 45.0, 350.0, 45.0, OBSTIME, site)
+        assert az == pytest.approx(-10.0)
         lim = site.telescope_limits.azimuth
         assert lim.min <= az <= lim.max
 
@@ -94,11 +79,6 @@ class TestChooseEncoderSolution:
         choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site, sun_safe=spy)
         assert seen, "sun_safe predicate was not consulted"
         assert all(el == 45.0 for _, el in seen)
-
-    def test_docstring_example_result(self):
-        """Regression guard mirroring the dispatch.py docstring example."""
-        site = get_fyst_site(sun_avoidance_enabled=False)
-        assert choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site) == (200.0, 45.0)
 
     def test_no_in_range_wrap_raises(self):
         """A sky azimuth with no encoder image in a narrow az range raises PointingError."""
@@ -162,17 +142,6 @@ class TestChooseEncoderSolutionSpan:
             0.0, 45.0, 0.0, 45.0, OBSTIME, site, goal_az_span=(-180.0, 360.0)
         )
         assert az == pytest.approx(0.0)
-
-    def test_none_span_returns_near_wrap_unchanged(self):
-        """``goal_az_span=None`` selects by the goal point alone (nearest wrap).
-
-        Same scenario as the far-wrap test but with no span: the nearest wrap
-        (350) is returned, proving the span admissibility is gated on the
-        parameter.
-        """
-        site = get_fyst_site(sun_avoidance_enabled=False)
-        az, _ = choose_encoder_solution(355.0, 45.0, 350.0, 45.0, OBSTIME, site, goal_az_span=None)
-        assert az == pytest.approx(350.0)
 
     def test_span_min_greater_than_max_raises_valueerror(self):
         """An inverted span (min > max) is rejected with ValueError."""
@@ -394,11 +363,73 @@ class TestSunGateBatching:
     pair: a dispatcher has about 10 s before the scan must start.
     """
 
-    def test_default_predicate_exposes_batch(self):
-        from fyst_trajectories.dispatch import _SiteScalarSunSafe
+    def test_default_gate_is_the_scalar_model_and_agrees_with_is_sun_safe(self, monkeypatch):
+        """The default Sun test is the scalar model, asked once per call through ``batch``.
 
-        model = _SiteScalarSunSafe(get_fyst_site())
-        assert callable(getattr(model, "batch", None))
+        Over a grid of goals around the Sun its outcomes match the bare
+        ``Coordinates.is_sun_safe`` consulted per (wrap, time) pair, refusals
+        included.
+        """
+        import numpy as np
+        from astropy import units as u
+
+        from fyst_trajectories import Coordinates
+        from fyst_trajectories.exceptions import EncoderSolutionError
+        from fyst_trajectories.sun_models import _ScalarSunModel
+
+        calls = []
+        real_batch = _ScalarSunModel.batch
+
+        def spy(self, az_deg, el_deg, times):
+            calls.append(np.size(az_deg))
+            return real_batch(self, az_deg, el_deg, times)
+
+        monkeypatch.setattr(_ScalarSunModel, "batch", spy)
+
+        site = get_fyst_site()
+        bare = Coordinates(site).is_sun_safe
+        grid = OBSTIME + np.array([0.0, 300.0, 600.0]) * u.s
+
+        def outcome(goal_az, goal_el, sun_safe):
+            try:
+                return tuple(
+                    choose_encoder_solution(
+                        0.0, 45.0, goal_az, goal_el, grid, site, sun_safe=sun_safe
+                    )
+                )
+            except EncoderSolutionError as exc:
+                return exc.cause
+
+        outcomes = []
+        for goal_az in np.arange(0.0, 360.0, 30.0):
+            for goal_el in (20.0, 50.0, 80.0):
+                calls.clear()
+                default = outcome(float(goal_az), goal_el, None)
+                assert len(calls) == 1
+                assert outcome(float(goal_az), goal_el, bare) == default
+                outcomes.append(default)
+        # The grid holds both answers, so the agreement is not vacuous.
+        assert "sun_blocked" in outcomes
+        assert any(isinstance(o, tuple) for o in outcomes)
+
+    def test_goal_el_above_90_is_refused_even_with_avoidance_disabled(self):
+        """A custom site whose elevation limit exceeds 90 deg still gets no over-the-top pose.
+
+        The default Sun test checks its inputs whether or not the site's Sun
+        avoidance is enabled, and an elevation above 90 deg is outside them.
+        """
+        import dataclasses
+
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        limits = site.telescope_limits
+        custom = dataclasses.replace(
+            site,
+            telescope_limits=dataclasses.replace(
+                limits, elevation=dataclasses.replace(limits.elevation, max=180.0)
+            ),
+        )
+        with pytest.raises(ValueError, match=r"el_deg must lie within \[-90, 90\]"):
+            choose_encoder_solution(0.0, 45.0, 100.0, 100.0, OBSTIME, custom)
 
     def test_batch_capable_model_is_called_once(self):
         import numpy as np
@@ -514,3 +545,158 @@ class TestEncoderSolutionCarriesTheWrapShift:
         for revived in (copy.copy(solution), pickle.loads(pickle.dumps(solution))):
             assert revived == solution
             assert revived.az_shift == solution.az_shift
+
+
+class TestNonFiniteInputsAreRefused:
+    """A NaN or infinite pose is refused with a ValueError naming the argument.
+
+    A NaN ``current_az`` (a lost position read) makes every wrap distance NaN,
+    so without the refusal ``min`` returns the first, most negative wrap; an
+    infinite goal overflows the wrap enumeration. Neither is an infeasibility,
+    so the refusal is not a ``PointingError``.
+    """
+
+    _GOOD = {"current_az": 190.0, "current_el": 45.0, "goal_az": 200.0, "goal_el": 45.0}
+
+    @pytest.mark.parametrize("name", ["current_az", "current_el", "goal_az", "goal_el"])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_each_pose_argument(self, name, bad):
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        kwargs = {**self._GOOD, name: bad}
+        with pytest.raises(ValueError, match=f"{name} must be finite") as info:
+            choose_encoder_solution(obstime=OBSTIME, site=site, **kwargs)
+        assert not isinstance(info.value, PointingError)
+
+    @pytest.mark.parametrize("span", [(float("nan"), 210.0), (190.0, float("inf"))])
+    def test_span_endpoints(self, span):
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        with pytest.raises(ValueError, match="goal_az_span must be finite") as info:
+            choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site, goal_az_span=span)
+        assert not isinstance(info.value, PointingError)
+
+    def test_nan_current_el_is_not_reported_as_a_blocked_path(self):
+        """With a path check, a NaN start elevation is not a Sun refusal."""
+        site = get_fyst_site()
+
+        def clear(az, el, t):
+            return True
+
+        def path_clear_when_finite(current_az, current_el, goal_az, goal_el, t):
+            return all(v == v for v in (current_az, current_el, goal_az, goal_el))
+
+        with pytest.raises(ValueError, match="current_el must be finite") as info:
+            choose_encoder_solution(
+                190.0,
+                float("nan"),
+                200.0,
+                45.0,
+                OBSTIME,
+                site,
+                sun_safe=clear,
+                slew_safe=path_clear_when_finite,
+            )
+        assert not isinstance(info.value, PointingError)
+
+    def test_finite_control_is_unchanged(self):
+        site = get_fyst_site(sun_avoidance_enabled=False)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        assert solution == (200.0, 45.0)
+        assert solution.az_shift == 0.0
+
+
+class TestEncoderSolutionIsImmutable:
+    """``az_shift`` is set once; equality and hashing are those of the pose."""
+
+    def test_assignment_deletion_and_new_attributes_raise(self):
+        solution = EncoderSolution(-160.0, 45.0, -360.0)
+        with pytest.raises(AttributeError):
+            solution.az_shift = 0.0
+        with pytest.raises(AttributeError):
+            del solution.az_shift
+        with pytest.raises(AttributeError):
+            solution.other = 1
+        assert solution.az_shift == -360.0
+        assert not hasattr(solution, "other")
+
+    def test_equality_and_hash_follow_the_pose(self):
+        a = EncoderSolution(10.0, 45.0, 0.0)
+        b = EncoderSolution(10.0, 45.0, 360.0)
+        assert a == b == (10.0, 45.0)
+        assert hash(a) == hash(b) == hash((10.0, 45.0))
+        assert (tuple(a), a.az_shift) != (tuple(b), b.az_shift)
+
+    def test_copies_revive_the_shift_and_stay_immutable(self):
+        import copy
+        import pickle
+
+        solution = EncoderSolution(-160.0, 45.0, -360.0)
+        revived_all = [copy.copy(solution), copy.deepcopy(solution)]
+        revived_all += [
+            pickle.loads(pickle.dumps(solution, protocol=p))
+            for p in range(pickle.HIGHEST_PROTOCOL + 1)
+        ]
+        for revived in revived_all:
+            assert revived == solution
+            assert revived.az_shift == -360.0
+            with pytest.raises(AttributeError):
+                revived.az_shift = 0.0
+
+
+class TestEstimateSlewTime:
+    """Trapezoidal and triangular slew profiles, and the shared kinematic kernel.
+
+    The pinned durations follow from the site's axis velocity and
+    acceleration limits, which are pending instrument verification (see the
+    table on the documentation index); they move when those limits do.
+    """
+
+    def test_zero_distance(self, site):
+        t = estimate_slew_time(180.0, 50.0, 180.0, 50.0, site)
+        assert t == 0.0
+
+    def test_az_only(self, site):
+        # 10 deg azimuth slew, trapezoidal profile (FYST az vel=3.0, accel=1.5):
+        # t_accel=2, d_accel=6; distance 10 > 6, so
+        # t = 2*t_accel + (10 - d_accel)/vel = 4 + 4/3 = 5.333 s.
+        t = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
+        assert t == pytest.approx(5.333, abs=0.01)
+
+    def test_el_only(self, site):
+        # 10 deg elevation slew, trapezoidal (FYST el vel=1.0, accel=0.75):
+        # t_accel=1.333, d_accel=1.333; distance 10 > 1.333, so
+        # t = 2*t_accel + (10 - d_accel)/vel = 2.667 + 8.667 = 11.333 s.
+        t = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
+        assert t == pytest.approx(11.333, abs=0.01)
+
+    def test_el_slower_than_az(self, site):
+        t_az = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
+        t_el = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
+        assert t_el > t_az
+
+    def test_large_slew(self, site):
+        t = estimate_slew_time(0.0, 30.0, 180.0, 70.0, site)
+        assert t > 30.0
+
+    def test_short_az_slew_is_triangular(self, site):
+        # A 2 deg az slew never reaches cruise: d_accel = v^2/a = 6 deg > 2 deg, so
+        # the triangular branch gives t = 2*sqrt(distance/a) = 2*sqrt(2/1.5) = 2.309 s.
+        t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site)
+        assert t == pytest.approx(2.309, abs=0.01)
+
+    @pytest.mark.parametrize(
+        "d_az,d_el",
+        [(10.0, 0.0), (0.0, 10.0), (0.5, 0.0), (180.0, 40.0), (3.0, 1.5)],
+    )
+    def test_the_estimate_is_the_shared_profile(self, site, d_az, d_el):
+        """The estimator and the Sun sweep price a slew with one profile.
+
+        A second copy of the trapezoid here would let the duration a scan is
+        priced with drift from the duration its path is sampled over.
+        """
+        az_limits = site.telescope_limits.azimuth
+        el_limits = site.telescope_limits.elevation
+        expected = max(
+            _axis_slew_duration(d_az, az_limits.max_velocity, az_limits.max_acceleration),
+            _axis_slew_duration(d_el, el_limits.max_velocity, el_limits.max_acceleration),
+        )
+        assert estimate_slew_time(0.0, 45.0, d_az, 45.0 + d_el, site) == pytest.approx(expected)

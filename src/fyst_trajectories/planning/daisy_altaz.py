@@ -7,17 +7,18 @@ from astropy.time import Time
 from ..patterns.configs import DaisyAltAzScanConfig
 from ..site import AtmosphericConditions, Site
 from ._helpers import _build_altaz_trajectory, _coerce_start_time
-from ._sun_safety import _check_altaz_center_sun_safety
+from ._sun_safety import _check_altaz_center_sun_safety, _check_trajectory_sun_safety
 from ._types import DaisyAltAzComputedParams, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import SunSafePredicate
 
 
 def plan_daisy_altaz_scan(
     az_center: float,
     el_center: float,
+    *,
     radius: float,
     velocity: float,
     turn_radius: float,
@@ -25,13 +26,13 @@ def plan_daisy_altaz_scan(
     start_acceleration: float,
     site: Site,
     start_time: str | Time,
-    timestep: float,
     duration: float,
+    timestep: float = 0.1,
     y_offset: float = 0.0,
     detector_offset: "InstrumentOffset | None" = None,
     atmosphere: AtmosphericConditions | None = None,
     sun_safe: "SunSafePredicate | None" = None,
-) -> ScanBlock:
+) -> ScanBlock[DaisyAltAzComputedParams]:
     """Plan a Constant-Velocity Daisy scan about a fixed AltAz center.
 
     Generates the same on-sky Daisy pattern as :func:`plan_daisy_scan`, but
@@ -74,12 +75,14 @@ def plan_daisy_altaz_scan(
         Telescope site configuration.
     start_time : str or Time
         Observation start time. Accepts an ISO string or
-        ``astropy.time.Time``. Used to anchor the trajectory timestamp and
-        to place the Sun for the center's sun-safety pre-flight check.
-    timestep : float
-        Time between trajectory points in seconds. Must be positive.
+        ``astropy.time.Time``. Used to anchor the trajectory timestamp, to
+        place the Sun for the center's sun-safety pre-flight check, and to
+        time the Sun screen of the built block.
     duration : float
         Observation duration in seconds. Must be positive.
+    timestep : float, optional
+        Time between trajectory points in seconds. Default is 0.1. Must be
+        positive.
     y_offset : float, optional
         Initial on-sky y offset in degrees. Default is 0.0 (start at center).
     detector_offset : InstrumentOffset or None, optional
@@ -90,10 +93,13 @@ def plan_daisy_altaz_scan(
         for parity with the other planners. Default is None.
     sun_safe : SunSafePredicate or None, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
-        forwarded to the center pre-flight check. ``None`` (default) keeps
-        the built-in scalar exclusion-radius check; an injected predicate is
-        consulted instead, so the directional sun-avoidance model (see
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
+        forwarded to the center pre-flight check and to the screen of the
+        built block. ``None`` (default) keeps the built-in scalar
+        exclusion-radius check, which screens every sample of the block; an
+        injected predicate is consulted instead, on the center and on about
+        600 evenly spaced samples of the block, both ends included, so the
+        directional sun-avoidance model (see
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
         end-to-end. Warn-only.
 
@@ -107,10 +113,25 @@ def plan_daisy_altaz_scan(
     ------
     ValueError
         If any config field is invalid (non-positive
-        radius/velocity/turn_radius/start_acceleration, negative
-        avoidance_radius, or el_center outside ``(0, 90)``).
+        radius/velocity/turn_radius/start_acceleration/timestep, negative
+        avoidance_radius, or el_center outside ``(0, 90)``), or if
+        ``duration`` is not positive.
     TrajectoryBoundsError
         If the trajectory exceeds telescope limits.
+
+    Warns
+    -----
+    PointingWarning
+        If the center is inside the Sun exclusion zone at ``start_time``,
+        and separately if the built trajectory enters it at any point of
+        the block (the Sun moves about 15 deg per hour against the fixed
+        horizon-frame pattern); the second warning names the closest
+        approach, or with an injected ``sun_safe`` the earliest unsafe
+        sample. Neither refuses the plan. A ``PointingWarning`` also flags a
+        high elevation that cuts the on-sky azimuth speed.
+    VelocityLimitWarning, AccelerationLimitWarning
+        The built trajectory exceeds an axis velocity or acceleration limit
+        (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).
 
     Examples
     --------
@@ -120,7 +141,7 @@ def plan_daisy_altaz_scan(
     >>> site = get_fyst_site()
     >>> block = plan_daisy_altaz_scan(
     ...     az_center=120.0,
-    ...     el_center=60.0,
+    ...     el_center=50.0,
     ...     radius=0.5,
     ...     velocity=0.3,
     ...     turn_radius=0.2,
@@ -163,6 +184,13 @@ def plan_daisy_altaz_scan(
         start_time=start_time,
         atmosphere=atmosphere,
         detector_offset=detector_offset,
+    )
+
+    _check_trajectory_sun_safety(
+        site=site,
+        trajectory=trajectory,
+        scan_label=f"AltAz Daisy scan at az={az_center:.3f}, el={el_center:.3f}",
+        sun_safe=sun_safe,
     )
 
     computed_params: DaisyAltAzComputedParams = {

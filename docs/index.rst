@@ -1,9 +1,11 @@
 fyst-trajectories
 ==================
 
-Trajectory generation for the FYST (Fred Young Submillimeter
-Telescope).  Wraps astropy with FYST-specific site coordinates, telescope
-limits, and scan pattern generators.
+Trajectory generation for FYST, the Fred Young Submillimeter Telescope.
+Wraps astropy with FYST-specific site coordinates, telescope limits, and
+scan pattern generators. Written for CCAT/FYST collaborators: authors of
+control and scheduling software, and anyone planning or simulating
+Prime-Cam observations.
 
 What it does: nine scan patterns (pong, daisy, constant-elevation,
 linear, sidereal, planet and satellite tracking, plus AltAz-frame pong
@@ -46,8 +48,9 @@ between them runs one way.
 Scope and boundaries
 --------------------
 
-This library generates planning-time trajectories and overhead
-estimates. A few concerns live outside its scope:
+This library generates trajectories, at planning time and at dispatch,
+and the offline simulator's overhead estimates. A few concerns live
+outside its scope:
 
 - **Pointing-model corrections** are applied downstream at execution
   time, nominally in the ACU. They are not computed here.
@@ -88,12 +91,25 @@ estimates. A few concerns live outside its scope:
    overhead_integration
    api/overhead_index
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Project
+
+   changelog
+
+.. _index-pending-verification:
+
 Pending instrument verification
 -------------------------------
 
 The following parameters use commissioning-era defaults that should be
 confirmed by the FYST instrument and operations teams before production
 use. A row whose Override is a module constant has no call-time keyword.
+``get_fyst_site()`` reads the ``site`` constants each time it builds a
+site, but a value bound at import does not follow a later rebinding: the
+Prime-Cam geometry is computed once, at import, and
+:func:`~fyst_trajectories.sun_models.make_slew_safe` takes the axis
+limits as keyword defaults (pass ``az_speed=`` and the others there).
 
 .. list-table::
    :header-rows: 1
@@ -121,18 +137,24 @@ use. A row whose Override is a module constant has no call-time keyword.
        ``site.FYST_EL_MAX_ACCELERATION``
    * - Plate scale
      - 13.89 arcsec/mm
-     - module constant ``site.FYST_PLATE_SCALE``
-   * - PrimeCam inner ring radius
+     - module constant ``site.FYST_PLATE_SCALE``, read once at import by
+       the Prime-Cam offsets; for another value build them with
+       ``InstrumentOffset.from_focal_plane(x_mm, y_mm, plate_scale)``
+   * - Prime-Cam inner-ring radius
      - 461.3 mm
-     - module constant ``primecam.INNER_RING_RADIUS_MM``
-   * - PrimeCam inner-ring ordering (clocking and parity)
+     - module constant ``primecam.INNER_RING_RADIUS_MM``, read once at
+       import; for another radius build the offsets with
+       ``InstrumentOffset.from_focal_plane``
+   * - Prime-Cam inner-ring ordering (clocking and parity)
      - ``i1`` at focal-plane angle -90°, ``i1`` .. ``i6`` counterclockwise
        in the focal-plane (cross-elevation, elevation) frame, the
        orientation
        :func:`~fyst_trajectories.visualization.plot_array_footprint`
        draws; the mapping to the instrument team's ``IM0`` .. ``IM6``
        labels is pending confirmation (see :doc:`instrument_offsets`)
-     - module constants ``primecam.PRIMECAM_I1`` .. ``PRIMECAM_I6``
+     - module constants ``primecam.PRIMECAM_I1`` .. ``PRIMECAM_I6``, fixed
+       at import; pass your own ``InstrumentOffset`` to ``.for_detector()``
+       or ``detector_offset=`` instead
    * - Retune interval (in-scan)
      - 300 s
      - ``inject_retune(retune_interval=...)``
@@ -147,20 +169,29 @@ use. A row whose Override is a module constant has no call-time keyword.
    * - Per-module retune
      - Disabled (all modules retune together)
      - ``inject_retune(n_modules=7, module_index=...)``
-   * - Per-module FOV radius (PrimeCam)
+   * - Per-module FOV radius (Prime-Cam)
      - 0.65°
-     - ``primecam.MODULE_FOV_RADIUS_DEG`` or pass an explicit
-       ``ArrayFootprint`` to ``plan_source_ces``
+     - pass an explicit ``ArrayFootprint`` to ``plan_source_ces``;
+       ``primecam.MODULE_FOV_RADIUS_DEG`` is bound at import, so rebinding
+       it has no effect
    * - Calibration cadences (offline simulator)
      - pointing 3600 s, focus 7200 s, planet cal 43 200 s
      - ``CalibrationPolicy(pointing_cadence=, ...)``
    * - Planet-calibration scan geometry
      - parked block; 3 passes on ``c`` if ``planet_cal_scan=True``
      - ``CalibrationPolicy(planet_cal_passes=, planet_cal_footprint=, ...)``
-   * - Calibration-night scan tables and slew rates
-     - ``DEFAULT_SCAN_TABLES["default"]``; 1.5 deg/s, 1.5 deg/s²
+   * - Calibration-night scan tables and scan azimuth speed / acceleration
+     - ``DEFAULT_SCAN_TABLES["default"]``; 1.5 deg/s, 1.0 deg/s²
      - ``CalibrationNightPolicy(az_speed=, az_accel=)``,
        ``plan_calibration_night(tables=)``
+   * - Constant-elevation azimuth range
+     - projection of the whole field over the whole pass (not an
+       elevation-band drift corridor)
+     - none in the planner; build the scan from an explicit
+       ``ConstantElScanConfig`` for another range
+   * - Constant-elevation azimuth padding
+     - 2.0° per side
+     - ``plan_constant_el_scan(az_padding=)``
 
 Indices and tables
 ==================

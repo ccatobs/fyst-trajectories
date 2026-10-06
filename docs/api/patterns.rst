@@ -62,14 +62,14 @@ sky center via ``.at(ra, dec)`` and need ``.starting_at()``;
 
 .. autoclass:: fyst_trajectories.patterns.CelestialPattern
    :members:
-   :show-inheritance:
+   :inherited-members:
 
 .. autoclass:: fyst_trajectories.patterns.AltAzPattern
    :members:
-   :show-inheritance:
+   :inherited-members:
 
-.. autoclass:: fyst_trajectories.patterns.TrajectoryMetadata
-   :members:
+The metadata a pattern attaches, :class:`~fyst_trajectories.trajectory.TrajectoryMetadata`,
+is documented with the trajectory container (:doc:`trajectory`).
 
 Configuration Classes
 ---------------------
@@ -217,3 +217,25 @@ A trajectory that exceeds the telescope limits raises
 authors get that message by wrapping their own bounds check.
 
 .. autofunction:: fyst_trajectories.patterns.utils.wrap_bounds_error
+
+The remaining helpers a registered pattern builds on: the sample-count
+guard, the cable-wrap normalisation every celestial and planet pattern
+applies, the velocity differentiator, and the tangent-plane to Az/El
+mapping.
+
+.. autofunction:: fyst_trajectories.patterns.utils.validate_sample_count
+
+.. autofunction:: fyst_trajectories.patterns.utils.normalize_azimuth
+
+.. autofunction:: fyst_trajectories.patterns.utils.compute_velocities
+
+.. autofunction:: fyst_trajectories.patterns.utils.sky_offsets_to_altaz
+
+Turnaround Profile
+------------------
+
+The constant-elevation turnaround every sweep reverses through, and the
+azimuth envelope it adds to a science window.
+
+.. automodule:: fyst_trajectories.patterns.turnarounds
+   :members:

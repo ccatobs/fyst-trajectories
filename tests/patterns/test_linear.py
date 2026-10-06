@@ -27,7 +27,6 @@ class TestLinearMotionPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
         assert trajectory.duration == pytest.approx(60.0, abs=0.2)
         assert trajectory.start_time == start_time
         assert trajectory.pattern_type == "linear"
@@ -47,8 +46,8 @@ class TestLinearMotionPattern:
         assert trajectory.az[0] == pytest.approx(100.0, abs=0.01)
         assert trajectory.el[0] == pytest.approx(45.0, abs=0.01)
 
-        assert trajectory.az[-1] == pytest.approx(110.0, abs=0.2)
-        assert trajectory.el[-1] == pytest.approx(50.0, abs=0.2)
+        assert trajectory.az[-1] == pytest.approx(110.0, abs=1e-9)
+        assert trajectory.el[-1] == pytest.approx(50.0, abs=1e-9)
 
     def test_linear_motion_constant_velocity(self, site):
         config = LinearMotionConfig(
@@ -127,8 +126,8 @@ class TestLinearMotionPattern:
         traj_fine = pattern_fine.generate(site, duration=10.0, start_time=_START_TIME)
         traj_coarse = pattern_coarse.generate(site, duration=10.0, start_time=_START_TIME)
 
-        assert traj_fine.n_points > traj_coarse.n_points
-        assert traj_fine.n_points > traj_coarse.n_points * 5
+        assert traj_fine.n_points == 101
+        assert traj_coarse.n_points == 11
 
     def test_linear_motion_metadata_stored(self, site):
         config = LinearMotionConfig(
@@ -142,7 +141,6 @@ class TestLinearMotionPattern:
 
         trajectory = pattern.generate(site, duration=30.0, start_time=_START_TIME)
 
-        assert trajectory.pattern_params is not None
         params = trajectory.pattern_params
         assert params["az_start"] == 100.0
         assert params["el_start"] == 45.0
@@ -208,5 +206,4 @@ class TestLinearMotionPattern:
 
         trajectory = pattern.generate(site, duration=10.0, start_time=None)
         assert trajectory.start_time is None
-        assert trajectory.n_points > 0
         assert trajectory.az[0] == pytest.approx(100.0, abs=0.01)

@@ -11,7 +11,8 @@ via the optional ``metadata`` attribute.
 Utility functions (validate, export, format) are free functions in
 :mod:`fyst_trajectories.trajectory_utils`; plotting lives in
 :mod:`fyst_trajectories.visualization`. Keeping them out of the container
-leaves it free of intra-package imports.
+leaves it free of intra-package imports, apart from a private read-only
+mapping type that itself imports nothing.
 
 Examples
 --------
@@ -67,19 +68,30 @@ Trajectory(n_points=5, duration=4.0s, az=[100.0, 102.0]deg, el=[45.0, 45.0]deg)
 """
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 from astropy.time import Time
 
-if TYPE_CHECKING:
-    from .patterns.base import TrajectoryMetadata
+from ._readonly import ReadOnlyDict
 
 SCAN_FLAG_UNCLASSIFIED: int = 0
 SCAN_FLAG_SCIENCE: int = 1
 SCAN_FLAG_TURNAROUND: int = 2
 SCAN_FLAG_RETUNE: int = 3
+
+
+def _time_derivative(values: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Return the derivative of ``values`` with respect to ``times``.
+
+    ``np.gradient`` needs at least two samples; a single sample has no time
+    step, so its derivative is returned as zeros.
+    """
+    if len(times) < 2:
+        return np.zeros(len(times))
+    return np.gradient(values, times)
 
 
 @dataclass(frozen=True)
@@ -90,8 +102,9 @@ class RetuneEvent:
     ----------
     t_start : float
         Seconds from the trajectory start (i.e. ``trajectory.times[0]``).
-        Must be finite and non-negative. Events past ``trajectory.times[-1]``
-        are skipped with a :class:`~fyst_trajectories.exceptions.PointingWarning`.
+        Must be finite and non-negative. Events starting at or after the
+        trajectory end (``trajectory.times[-1]``) are skipped with a
+        :class:`~fyst_trajectories.exceptions.PointingWarning`.
     duration : float
         Wall-clock duration of the event in seconds. Must be positive.
         Events that would extend past the trajectory end are clipped to
@@ -109,7 +122,7 @@ class RetuneEvent:
     retune log has been published, so the dataclass captures only the
     fields every event must have. Per-module staggering is the caller's
     composition: invoke
-    :func:`~fyst_trajectories.trajectory_utils.inject_retune` once per
+    :func:`~fyst_trajectories.retune.inject_retune` once per
     module with a different event list rather than embedding module
     identity in the event.
     """
@@ -127,6 +140,47 @@ class RetuneEvent:
 
 
 @dataclass(frozen=True)
+class TrajectoryMetadata:
+    """Metadata about how a trajectory was generated.
+
+    Attached to a :class:`~fyst_trajectories.trajectory.Trajectory` when you need to preserve the
+    pattern type and the parameters it was built from.
+
+    Parameters
+    ----------
+    pattern_type : str
+        Name of the pattern that generated this trajectory.
+    pattern_params : Mapping
+        Parameters used to generate the pattern, stored as a read-only copy.
+        It is still a ``dict``, but item assignment, ``update``, ``pop`` and
+        the other mutating methods raise ``TypeError``, since a trajectory and
+        every copy derived from it share one metadata object. Derive edited
+        metadata with :func:`dataclasses.replace`, and convert with
+        ``dict(...)`` before editing a copy or dumping it to YAML.
+    center_ra : float, optional
+        Right Ascension of pattern center in degrees.
+    center_dec : float, optional
+        Declination of pattern center in degrees.
+    target_name : str, optional
+        Name of the target (e.g., "M42", "mars").
+    input_frame : str, optional
+        The input coordinate frame used for the pattern center:
+        ``"icrs"`` for celestial patterns, ``None`` for AltAz patterns.
+        Default is None.
+    """
+
+    pattern_type: str
+    pattern_params: Mapping[str, Any] = field(default_factory=dict, hash=False)
+    center_ra: float | None = None
+    center_dec: float | None = None
+    target_name: str | None = None
+    input_frame: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pattern_params", ReadOnlyDict(self.pattern_params))
+
+
+@dataclass(frozen=True, eq=False)
 class Trajectory:
     """Container for a telescope trajectory.
 
@@ -135,40 +189,33 @@ class Trajectory:
 
     Parameters
     ----------
-    times : np.ndarray
+    times : np.ndarray or sequence of float
         Timestamps in seconds; must be strictly increasing. They need not
         start at 0, since the absolute-time and ``/path`` exports are taken
         relative to ``times[0]``.
-    az : np.ndarray
+    az : np.ndarray or sequence of float
         Azimuth positions in degrees.
-    el : np.ndarray
+    el : np.ndarray or sequence of float
         Elevation positions in degrees.
-    az_vel : np.ndarray
+    az_vel : np.ndarray or sequence of float
         Azimuth velocities in degrees/second.
-    el_vel : np.ndarray
+    el_vel : np.ndarray or sequence of float
         Elevation velocities in degrees/second.
     start_time : Time, optional
         Absolute start time for the trajectory.
     metadata : TrajectoryMetadata, optional
         Optional metadata about pattern generation.
-    coordsys : str, optional
-        Coordinate system of the trajectory points. Typically "altaz" for
-        generated trajectories since pattern classes output Az/El coordinates.
-        Default is None, but patterns should set this to "altaz".
-    epoch : str, optional
-        The epoch/equinox if relevant (e.g., "J2000"). Primarily used for
-        documentation when the trajectory was derived from celestial coordinates.
-        Default is None.
-    scan_flag : np.ndarray or None, optional
+    scan_flag : np.ndarray or sequence of int or None, optional
         Per-sample scan phase flag: 0 = unclassified, 1 = constant-velocity
         science sweep, 2 = turnaround, 3 = retune
         pause (``SCAN_FLAG_RETUNE``, written by
-        :func:`~fyst_trajectories.trajectory_utils.inject_retune`). None
-        means no flagging info is available.
+        :func:`~fyst_trajectories.retune.inject_retune`). None
+        means no flagging info is available. Stored as a one-dimensional
+        int8 array.
     retune_events : tuple of RetuneEvent, optional
         Event-level provenance for the ``SCAN_FLAG_RETUNE`` entries in
         ``scan_flag``. Populated by
-        :func:`~fyst_trajectories.trajectory_utils.inject_retune` for both
+        :func:`~fyst_trajectories.retune.inject_retune` for both
         the uniform-cadence and explicit event-list code paths. Empty tuple
         (the default) means no retune events have been injected. See
         :class:`RetuneEvent`.
@@ -176,18 +223,30 @@ class Trajectory:
     Raises
     ------
     ValueError
-        If ``times`` is empty, any array's length (including
-        ``scan_flag``'s) differs from ``times``, any of
-        ``times``/``az``/``el``/``az_vel``/``el_vel`` contains a non-finite
-        value, or ``times`` is not strictly increasing.
+        If any of ``times``/``az``/``el``/``az_vel``/``el_vel`` or
+        ``scan_flag`` is not one-dimensional, ``times`` is empty, any
+        array's length (including ``scan_flag``'s) differs from ``times``,
+        any of ``times``/``az``/``el``/``az_vel``/``el_vel`` contains a
+        non-finite value, or ``times`` is not strictly increasing.
 
     Notes
     -----
+    ``times``, ``az``, ``el``, ``az_vel`` and ``el_vel`` are stored as
+    one-dimensional float64 arrays. A float64 array is stored as given,
+    without a copy; any other input (a list, an integer array) is converted
+    once at construction. An astropy ``Quantity`` is stored as its bare
+    numeric value in its own unit, so convert it to degrees or seconds first.
+
     Instances are immutable: the dataclass is ``frozen=True``, so rebinding a
     field (for example ``trajectory.az = new_array``) raises
     :class:`dataclasses.FrozenInstanceError`. Derive a modified copy with
     :func:`dataclasses.replace` instead. Freezing prevents field rebinding
     only; the contents of the stored NumPy arrays are not made read-only.
+
+    Trajectories compare and hash by identity: ``==`` is ``True`` only for
+    the same object, so a :func:`dataclasses.replace` copy is unequal to its
+    original, and a trajectory can be a set member or a dictionary key.
+    Compare two trajectories field by field with :func:`numpy.array_equal`.
     """
 
     times: np.ndarray
@@ -196,13 +255,20 @@ class Trajectory:
     az_vel: np.ndarray
     el_vel: np.ndarray
     start_time: Time | None = None
-    metadata: "TrajectoryMetadata | None" = field(default=None, repr=False)
-    coordsys: str | None = None
-    epoch: str | None = None
+    metadata: TrajectoryMetadata | None = field(default=None, repr=False)
     scan_flag: np.ndarray | None = None
     retune_events: tuple[RetuneEvent, ...] = ()
 
     def __post_init__(self) -> None:
+        # Store the five arrays as one-dimensional float64. A float64 array
+        # passes through np.asarray uncopied; anything else (a list, an
+        # integer array) is converted once, so arithmetic on the stored
+        # arrays never wraps and repr can call .min()/.max().
+        for name in ("times", "az", "el", "az_vel", "el_vel"):
+            arr = np.asarray(getattr(self, name), dtype=np.float64)
+            if arr.ndim != 1:
+                raise ValueError(f"'{name}' must be one-dimensional, got shape {arr.shape}")
+            object.__setattr__(self, name, arr)
         n = len(self.times)
         if n < 1:
             raise ValueError("Trajectory requires at least 1 time point")
@@ -217,18 +283,21 @@ class Trajectory:
                     f"Array length mismatch: times has {n} elements but {name} has {len(arr)}"
                 )
         if self.scan_flag is not None:
-            if len(self.scan_flag) != n:
+            flag = np.asarray(self.scan_flag)
+            if flag.ndim != 1:
+                raise ValueError(f"'scan_flag' must be one-dimensional, got shape {flag.shape}")
+            if len(flag) != n:
                 raise ValueError(
-                    f"Array length mismatch: times has {n} elements "
-                    f"but scan_flag has {len(self.scan_flag)}"
+                    f"Array length mismatch: times has {n} elements but scan_flag has {len(flag)}"
                 )
             # Coerce scan_flag to int8; downstream indexes with the int-valued
             # SCAN_FLAG_* constants and the pattern generators all produce int8,
             # so the field has one dtype everywhere. object.__setattr__ performs
             # the one-time canonicalisation under frozen=True (the sibling value
             # types coerce the same way).
-            if self.scan_flag.dtype != np.int8:
-                object.__setattr__(self, "scan_flag", np.asarray(self.scan_flag, dtype=np.int8))
+            if flag.dtype != np.int8:
+                flag = np.asarray(flag, dtype=np.int8)
+            object.__setattr__(self, "scan_flag", flag)
         for name, arr in [
             ("times", self.times),
             ("az", self.az),
@@ -268,8 +337,8 @@ class Trajectory:
         return self.metadata.pattern_type if self.metadata else None
 
     @property
-    def pattern_params(self) -> dict[str, Any] | None:
-        """Pattern parameters from metadata, if available."""
+    def pattern_params(self) -> Mapping[str, Any] | None:
+        """Pattern parameters from metadata, if available (read-only)."""
         return self.metadata.pattern_params if self.metadata else None
 
     @property
@@ -308,9 +377,10 @@ class Trajectory:
         Returns
         -------
         np.ndarray
-            Azimuth acceleration at each trajectory point.
+            Azimuth acceleration at each trajectory point; zeros for a
+            single-sample trajectory.
         """
-        return np.gradient(self.az_vel, self.times)
+        return _time_derivative(self.az_vel, self.times)
 
     @property
     def el_accel(self) -> np.ndarray:
@@ -322,9 +392,10 @@ class Trajectory:
         Returns
         -------
         np.ndarray
-            Elevation acceleration at each trajectory point.
+            Elevation acceleration at each trajectory point; zeros for a
+            single-sample trajectory.
         """
-        return np.gradient(self.el_vel, self.times)
+        return _time_derivative(self.el_vel, self.times)
 
     @property
     def az_jerk(self) -> np.ndarray:
@@ -336,9 +407,10 @@ class Trajectory:
         Returns
         -------
         np.ndarray
-            Azimuth jerk at each trajectory point.
+            Azimuth jerk at each trajectory point; zeros for a
+            single-sample trajectory.
         """
-        return np.gradient(self.az_accel, self.times)
+        return _time_derivative(self.az_accel, self.times)
 
     @property
     def el_jerk(self) -> np.ndarray:
@@ -350,9 +422,10 @@ class Trajectory:
         Returns
         -------
         np.ndarray
-            Elevation jerk at each trajectory point.
+            Elevation jerk at each trajectory point; zeros for a
+            single-sample trajectory.
         """
-        return np.gradient(self.el_accel, self.times)
+        return _time_derivative(self.el_accel, self.times)
 
     def __repr__(self) -> str:
         pattern_info = f", pattern={self.pattern_type}" if self.pattern_type else ""

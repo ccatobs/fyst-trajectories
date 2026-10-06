@@ -8,9 +8,22 @@ import dataclasses
 import enum
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 from astropy.time import Time, TimeDelta
+
+from .._readonly import ReadOnlyDict
+from ..coordinates import Coordinates
+from .schemas import (
+    CalibrationBlockMetadata,
+    EmptyBlockMetadata,
+    ScanParamsDict,
+    ScienceBlockMetadata,
+    SourceCESScanParams,
+    TimelineBlockMetadata,
+    validate_scan_params,
+)
+from .utils import _require_module_tag
 
 if TYPE_CHECKING:
     from ..planning import FieldRegion
@@ -18,499 +31,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BlockType",
-    "CEScanParams",
-    "CalibrationBlockMetadata",
     "CalibrationPolicy",
     "CalibrationSpec",
     "CalibrationType",
-    "DaisyScanParams",
-    "EmptyBlockMetadata",
     "ObservingPatch",
     "ObservingTimeline",
     "OverheadModel",
-    "PongScanParams",
-    "ScanGeometryRecord",
-    "ScanParamsDict",
-    "ScienceBlockMetadata",
-    "SourceCESScanParams",
     "TimelineBlock",
-    "TimelineBlockMetadata",
-    "TransitionRecord",
-    "validate_scan_params",
 ]
-
-
-class CEScanParams(TypedDict, total=False):
-    """Optional scan_params for a constant-elevation :class:`ObservingPatch`.
-
-    All keys are optional: any combination may be supplied to override
-    defaults computed from the patch geometry.
-
-    Attributes
-    ----------
-    az_min : float
-        Explicit lower azimuth bound in degrees. The pair steers where the
-        scan is placed - the slew target and the cable-wrap branch - and is
-        never passed to
-        :func:`~fyst_trajectories.planning.plan_constant_el_scan`, which
-        derives its own azimuth range from the field geometry, so it does
-        not bound the trajectory the scan executes.
-    az_max : float
-        Explicit upper azimuth bound in degrees. See ``az_min``.
-    az_accel : float
-        Azimuth acceleration in deg/s^2.
-    az_padding : float
-        Extra azimuth padding on each side in degrees.
-    timestep : float
-        Trajectory time step in seconds.
-    lsa_window : tuple or list of (min_lsa, max_lsa)
-        Local Sidereal Angle window in degrees. When supplied, the
-        constant-elevation planner derives ``start_time`` / ``duration``
-        from the LSA window instead of from RA-edge elevation crossings.
-        Declared as ``tuple | list`` because ECSV round-trip serialises
-        through JSON, which converts tuples to lists. A value freshly
-        constructed in Python is typically a tuple, but a value
-        deserialised from a stored timeline is a list. The CE planner
-        accepts both via ``float(lsa_window[0])`` indexing. See
-        :func:`~fyst_trajectories.planning.plan_constant_el_scan`
-        for the full semantics (wrap-around handling, search horizon).
-    rising : bool
-        Which elevation crossing to observe: ``True`` for the rising
-        (east-of-meridian) half of the field's transit, ``False`` for
-        the setting (west-of-meridian) half. When omitted, the scheduler
-        takes whichever half opens its next plannable crossing pass
-        first. When supplied, the patch is only selectable while the sky
-        side matches this request, and the value is forwarded to the
-        planner's ``rising`` argument so the emitted trajectory covers
-        the requested half. Not forwarded alongside ``lsa_window``: the
-        sidereal window fixes both the timing and the azimuth range, and
-        the planner rejects the pair.
-    """
-
-    az_min: float
-    az_max: float
-    az_accel: float
-    az_padding: float
-    timestep: float
-    lsa_window: tuple[float, float] | list[float]
-    rising: bool
-
-
-class PongScanParams(TypedDict, total=False):
-    """Optional scan_params for a Pong :class:`ObservingPatch`.
-
-    All keys are optional. ``angle`` and ``n_cycles`` override
-    :func:`~fyst_trajectories.planning.plan_pong_scan` defaults; the rest are
-    required by that planner, and an omitted key falls back to the value
-    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rebuilds with.
-
-    Attributes
-    ----------
-    spacing : float
-        Line spacing in degrees.
-    num_terms : int
-        Number of Fourier terms for smooth turnarounds.
-    timestep : float
-        Trajectory time step in seconds.
-    angle : float
-        Rotation angle of the scan pattern in degrees.
-    n_cycles : int
-        Number of full pattern cycles.
-    """
-
-    spacing: float
-    num_terms: int
-    timestep: float
-    angle: float
-    n_cycles: int
-
-
-class DaisyScanParams(TypedDict, total=False):
-    """Optional scan_params for a Daisy :class:`ObservingPatch`.
-
-    All keys are optional here, but
-    :func:`~fyst_trajectories.planning.plan_daisy_scan` requires every one of
-    them, so an omitted key falls back to the value
-    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rebuilds with.
-
-    Attributes
-    ----------
-    radius : float
-        Characteristic radius R0 in degrees.
-    turn_radius : float
-        Radius of curvature for turns in degrees.
-    avoidance_radius : float
-        Radius to avoid near center in degrees.
-    start_acceleration : float
-        Ramp-up acceleration in deg/s^2.
-    timestep : float
-        Trajectory time step in seconds.
-    """
-
-    radius: float
-    turn_radius: float
-    avoidance_radius: float
-    start_acceleration: float
-    timestep: float
-
-
-class SourceCESScanParams(TypedDict, total=False):
-    """Replay parameters for one source-CES pass of a planet calibration.
-
-    Attached to a calibration :class:`TimelineBlock` under
-    ``metadata["scan_params"]`` when a planet calibration is planned as a
-    multi-pass source-CES sequence (``CalibrationPolicy.planet_cal_scan``).
-    All keys are optional at the type level (``total=False``). The keys
-    fall into three groups: the geometry keys (``body`` through
-    ``eta_offset_deg``, plus ``footprint_margin`` when a margin was
-    applied), which every emit path records so the pass can be rebuilt;
-    the kernel-override keys (``az_accel``, ``az_padding``, ``v_az``,
-    ``az_speed``, ``az_throw``, ``dwell``), recorded only when the
-    planner was given a value and forwarded on rebuild only when present,
-    so the kernel defaults stay authoritative for passes planned without
-    them; and the provenance keys (``pass_index``, ``n_passes``), which
-    describe the sequence and play no part in the rebuild.
-
-    The fields together record one pass of
-    :func:`~fyst_trajectories.planning.plan_source_ces_passes`: a single
-    :func:`~fyst_trajectories.planning.plan_source_ces` call that drags
-    the planet across a focal-plane row at a fixed boresight elevation.
-
-    Attributes
-    ----------
-    body : str
-        Solar-system body the pass tracked (e.g. ``"jupiter"``).
-    footprint : str
-        Base Prime-Cam module tag (e.g. ``"c"``) before the per-pass eta
-        shift. ``eta_offset_deg`` records the shift applied to it.
-    el_bore : float
-        Fixed boresight elevation of this pass in degrees. Passes step
-        this value monotonically so the source crosses each footprint row
-        in sequence.
-    mode : str
-        Direction of the source arc, ``"rising"`` or ``"setting"``.
-    window : list of str
-        The pass extent as ``[t0_iso, t1_iso]``: the UTC times the source
-        enters and exits the projected footprint. This is the boresight
-        pass window, not the search horizon.
-    boresight_rot : float or None
-        Mechanical boresight rotation in degrees. The offline scheduler
-        records the resolved value (``0.0`` when the rotator is not
-        commanded); a calibration-night pass records the request, which
-        is ``None`` because that planner requests no rotation. The
-        source-CES planner reads ``None`` as ``0.0``, so both rebuild to
-        the same pass.
-    timestep : float
-        Trajectory sample spacing in seconds used to build the pass.
-    eta_offset_deg : float
-        Focal-plane eta (elevation-axis) offset in degrees applied to the
-        base footprint for this pass. This is a load-bearing geometry
-        parameter, not provenance: rebuilding the pass trajectory requires
-        shifting the base footprint by this offset (each offset selects a
-        different focal-plane row, so the source-tracking track and its
-        azimuth throw differ between passes even at the same ``el_bore``).
-    az_accel : float
-        Azimuth acceleration in deg/s^2 the pass was planned with. A
-        kernel override: recorded when supplied, forwarded when present.
-    az_padding : float
-        Extra azimuth throw per side in degrees beyond the solved
-        footprint crossing. A kernel override: recorded when supplied,
-        forwarded when present.
-    v_az : float
-        Explicit azimuth drift rate in deg/s that replaced the solved
-        drift. A kernel override: recorded when supplied, forwarded when
-        present; absent means the rebuild re-solves the drift.
-    az_speed : float
-        Per-leg azimuth speed in deg/s the pass was planned with. A
-        kernel override: recorded when supplied, forwarded when present;
-        absent means the rebuild derives the slow-drag speed.
-    az_throw : float
-        Explicit swept azimuth window in degrees. A kernel override:
-        recorded when supplied, forwarded when present; absent means the
-        rebuild re-solves the padded footprint crossing.
-    dwell : float
-        Time on source in seconds that narrowed the pass about the
-        crossing midpoint. A kernel override: recorded when supplied,
-        forwarded when present; absent means the rebuild scans the whole
-        crossing.
-    footprint_margin : float
-        On-sky margin in degrees the base footprint was inflated by on
-        every side before planning. Load-bearing geometry like
-        ``eta_offset_deg``, applied caller-side and re-applied on rebuild
-        to the base module tag before the eta shift; absent means no
-        inflation.
-    pass_index : int
-        0-based index of this pass within the sequence, ordered by start
-        time.
-    n_passes : int
-        Total number of passes requested for the sequence. Unchanged by
-        end-of-night truncation, so a truncated sequence still reports the
-        full count.
-    """
-
-    body: str
-    footprint: str
-    el_bore: float
-    mode: str
-    window: list[str]
-    boresight_rot: float | None
-    timestep: float
-    eta_offset_deg: float
-    az_accel: float
-    az_padding: float
-    v_az: float
-    az_speed: float
-    az_throw: float
-    dwell: float
-    footprint_margin: float
-    pass_index: int
-    n_passes: int
-
-
-# Umbrella alias used by :attr:`ObservingPatch.scan_params`. Which
-# concrete TypedDict applies depends on the patch's ``scan_type``.
-#
-# Deliberately EXCLUDES ``SourceCESScanParams``: a patch never carries
-# source-CES geometry. Do not equalize with the planning-side vocabularies.
-ScanParamsDict = CEScanParams | PongScanParams | DaisyScanParams
-
-
-# Allowed keys per scan type, derived from each TypedDict's
-# ``__optional_keys__`` so the table cannot drift from the declared
-# schemas (each TypedDict is ``total=False`` with no required members).
-# ``source_ces`` is registered here so a planet calibration planned as a
-# source-CES pass sequence can validate the parameters it records; the
-# science planners never emit it (``ObservingPatch`` rejects the type).
-# Do not equalize with the planning-side ``_SCAN_TYPE_TO_KEYS``, which
-# excludes ``source_ces`` for its own reason.
-_SCAN_TYPE_TO_SCAN_PARAM_KEYS: dict[str, frozenset[str]] = {
-    "constant_el": CEScanParams.__optional_keys__,
-    "pong": PongScanParams.__optional_keys__,
-    "daisy": DaisyScanParams.__optional_keys__,
-    "source_ces": SourceCESScanParams.__optional_keys__,
-}
-
-
-def validate_scan_params(params: Mapping[str, object], scan_type: str) -> None:
-    """Validate that a ``scan_params`` dict matches its declared scan type.
-
-    Catches typos and scan-type/parameter mismatches (e.g. a ``"radiu"``
-    typo or a ``"spacing"`` key on a constant-el scan). Call this before
-    consuming ``scan_params`` from ECSV round-trips or manually
-    constructed timelines.
-
-    Parameters
-    ----------
-    params : mapping of str to object
-        The candidate ``scan_params`` dict.
-    scan_type : str
-        One of ``"constant_el"``, ``"pong"``, ``"daisy"``, or
-        ``"source_ces"``. The first three are the science scan types an
-        :class:`ObservingPatch` carries; ``"source_ces"`` validates the
-        :class:`SourceCESScanParams` recorded on planet-calibration
-        blocks planned as source-CES pass sequences. Must match the
-        scan type the enclosing block declares for its ``scan_params``.
-
-    Raises
-    ------
-    KeyError
-        If ``scan_type`` is not one of the four registered types, or if
-        ``params`` contains any key not declared by the matching
-        TypedDict.
-    """
-    if scan_type not in _SCAN_TYPE_TO_SCAN_PARAM_KEYS:
-        raise KeyError(
-            f"Unknown scan_type {scan_type!r}; expected one of "
-            f"{sorted(_SCAN_TYPE_TO_SCAN_PARAM_KEYS)}"
-        )
-    allowed = _SCAN_TYPE_TO_SCAN_PARAM_KEYS[scan_type]
-    unknown = set(params) - allowed
-    if unknown:
-        raise KeyError(
-            f"{scan_type} scan_params has unknown keys {sorted(unknown)}; "
-            f"allowed keys for this scan type are {sorted(allowed)}"
-        )
-
-
-class ScienceBlockMetadata(TypedDict, total=False):
-    """Metadata attached to a science :class:`TimelineBlock`.
-
-    All keys are optional at the type level, but science blocks emitted
-    by :func:`generate_timeline` populate the six geometry/scan keys
-    (``t0_scan`` is added only on constant-elevation subscans) so
-    :func:`schedule_to_trajectories` can reconstruct the trajectory
-    after an ECSV round-trip.
-
-    Attributes
-    ----------
-    ra_center : float
-        Right Ascension of the patch center in degrees.
-    dec_center : float
-        Declination of the patch center in degrees.
-    width : float
-        Angular width of the field in degrees.
-    height : float
-        Angular height of the field in degrees.
-    velocity : float
-        Scan velocity in deg/s, forwarded verbatim to the pattern: an
-        on-sky (tangent-plane) speed for ``pong`` and ``daisy``, a
-        mount-frame azimuth coordinate rate for ``constant_el``.
-    scan_params : ScanParamsDict
-        Scan-type-specific parameters (see :data:`ScanParamsDict`).
-    t0_scan : str, optional
-        ISO timestamp of the visit's planner anchor (constant-elevation
-        subscans only): the time the scheduler gated the crossing solve
-        on, used by :func:`schedule_to_trajectories` as the
-        reconstruction anchor instead of the subscan's own start.
-    """
-
-    ra_center: float
-    dec_center: float
-    width: float
-    height: float
-    velocity: float
-    scan_params: ScanParamsDict
-    t0_scan: str
-
-
-class ScanGeometryRecord(TypedDict, total=False):
-    """Scan geometry of one source-CES pass at one stage of planning.
-
-    A calibration-night pass records three of these under
-    ``metadata["requested"]``, ``metadata["applied"]`` and
-    ``metadata["solved"]``: what the caller asked for (overrides, table,
-    policy), what the planner applied after re-centring and quantisation,
-    and what the solver found. Every value is a JSON builtin; absent keys
-    were not set at that stage.
-
-    Attributes
-    ----------
-    az_speed : float
-        Per-leg azimuth speed in deg/s.
-    az_accel : float
-        Azimuth acceleration in deg/s^2.
-    az_throw : float
-        Swept azimuth window in degrees.
-    dwell : float
-        Time on source in seconds.
-    footprint_margin : float
-        On-sky inflation of the base footprint in degrees.
-    crossing_seconds : float
-        Full footprint crossing in seconds (solved stage only).
-    """
-
-    az_speed: float
-    az_accel: float
-    az_throw: float
-    dwell: float
-    footprint_margin: float
-    crossing_seconds: float
-
-
-class TransitionRecord(TypedDict):
-    """The slew that preceded a calibration-night pass, as recorded on its block.
-
-    Attributes
-    ----------
-    wrap : float
-        Encoder azimuth the pass was planned in, in degrees.
-    cause : str
-        The transition's verdict (``"ok"`` on a recorded pass).
-    path : str
-        ``"direct"`` or ``"detour"``.
-    duration : float
-        Slew plus settle time in seconds.
-    detour_via : list of float or None
-        Intermediate ``[az, el]`` of a two-leg detour, else ``None``.
-    escape_via : list of float or None
-        The ``[az, el]`` the telescope first moved to when the Sun zone
-        had overtaken its idle pose, else ``None``. The escape is its own
-        slew block, named ``sun_escape``, ahead of the visit's slew.
-    """
-
-    wrap: float
-    cause: str
-    path: str
-    duration: float
-    detour_via: list[float] | None
-    escape_via: list[float] | None
-
-
-class CalibrationBlockMetadata(TypedDict, total=False):
-    """Metadata attached to a calibration :class:`TimelineBlock`.
-
-    Attributes
-    ----------
-    cal_type : str
-        Calibration operation name (e.g. ``"retune"``, ``"planet_cal"``).
-    target : str or None, optional
-        Target identifier (e.g. ``"jupiter"`` for a planet calibration);
-        None for in-place operations.
-    scan_params : SourceCESScanParams, optional
-        Per-pass source-CES parameters, present only when a planet
-        calibration is planned as a source-CES pass sequence
-        (``CalibrationPolicy.planet_cal_scan``). Absent for parked
-        (fixed-duration) calibrations.
-    t0_scan : str, optional
-        ISO UTC time the scan geometry actually begins, present alongside
-        ``scan_params``. The block's ``t_start`` may precede this when
-        inter-pass repointing and acquisition time are folded into the
-        block.
-    operation : str, optional
-        For a ``retune`` block that stands for another detector operation
-        (``"find_detectors"``), the operation's name; absent on a plain
-        retune.
-    requested, applied, solved : ScanGeometryRecord, optional
-        The pass geometry at the three planning stages, on
-        calibration-night passes only.
-    science_fraction : float, optional
-        Fraction of the pass trajectory's samples flagged as science
-        (legs, not turnarounds).
-    n_legs : int, optional
-        Number of azimuth legs in the pass.
-    module_crossings : dict of str to float, optional
-        Fraction of the pass during which the source sat inside each
-        module's field of view, keyed by module name.
-    transition : TransitionRecord, optional
-        The slew that preceded the pass.
-    """
-
-    cal_type: str
-    target: str | None
-    scan_params: "SourceCESScanParams"
-    t0_scan: str
-    operation: str
-    requested: ScanGeometryRecord
-    applied: ScanGeometryRecord
-    solved: ScanGeometryRecord
-    science_fraction: float
-    n_legs: int
-    module_crossings: dict[str, float]
-    transition: TransitionRecord
-
-
-class EmptyBlockMetadata(TypedDict, total=False):
-    """Metadata for slew and idle :class:`TimelineBlock` entries.
-
-    Slew and idle blocks carry no scan-specific payload. An idle block
-    emitted by a planner that knows why it waited may carry a ``reason``
-    label.
-
-    Attributes
-    ----------
-    reason : str, optional
-        Why the telescope idled (a planner's deferral vocabulary).
-    """
-
-    reason: str
-
-
-# Exhaustive union of metadata shapes a :class:`TimelineBlock` may carry.
-# Every :class:`BlockType` maps to exactly one variant:
-#   * ``BlockType.SCIENCE``     -> :class:`ScienceBlockMetadata`
-#   * ``BlockType.CALIBRATION`` -> :class:`CalibrationBlockMetadata`
-#   * ``BlockType.SLEW`` / ``IDLE`` -> :class:`EmptyBlockMetadata`
-TimelineBlockMetadata = ScienceBlockMetadata | CalibrationBlockMetadata | EmptyBlockMetadata
 
 
 class BlockType(str, enum.Enum):
@@ -583,10 +111,10 @@ class CalibrationType(str, enum.Enum):
         return _CAL_TYPE_STATE_FIELD[self]
 
 
-# Private lookup tables keyed on :class:`CalibrationType`. Centralising
-# these mappings here keeps :meth:`OverheadModel.get_calibration_duration`
-# and :meth:`CalibrationState.update` trivially in sync; adding a new
-# calibration type is a single-location change. See the docstrings on
+# Private lookup tables keyed on :class:`CalibrationType`. Keeping both
+# mappings here puts a new calibration type's duration and state entries
+# side by side; :meth:`OverheadModel.get_calibration_duration` and
+# :meth:`CalibrationState.update` read them. See the docstrings on
 # :attr:`CalibrationType.duration_field` and
 # :attr:`CalibrationType.state_field` for the public API.
 _CAL_TYPE_DURATION_FIELD: dict[CalibrationType, str] = {
@@ -637,19 +165,26 @@ class ObservingPatch:
     weight : float
         Scheduling weight for patch equalization.
     elevation : float or None
-        Fixed elevation for CE scans (degrees). None for auto-compute.
+        Fixed elevation for CE scans (degrees). Required when the patch is
+        scheduled by the offline scheduler; None is accepted only for direct
+        block construction.
     scan_params : ScanParamsDict
         Additional scan-type-specific parameters. The concrete schema
         depends on ``scan_type``: :class:`CEScanParams` for
         ``"constant_el"``, :class:`PongScanParams` for ``"pong"``, or
-        :class:`DaisyScanParams` for ``"daisy"``.
+        :class:`DaisyScanParams` for ``"daisy"``. Stored as a read-only
+        copy: it is still a ``dict``, but item assignment, ``update``,
+        ``pop`` and the other mutating methods raise ``TypeError``. Derive
+        an edited patch with :func:`dataclasses.replace`, and convert with
+        ``dict(...)`` before editing a copy or dumping it to YAML.
 
     Raises
     ------
     ValueError
         If ``width``, ``height``, ``velocity``, or ``priority`` is not
-        positive, ``weight`` is negative, or ``scan_type`` is not one of
-        ``"constant_el"`` / ``"pong"`` / ``"daisy"``.
+        positive, ``weight`` is negative, ``scan_type`` is not one of
+        ``"constant_el"`` / ``"pong"`` / ``"daisy"``, or ``scan_params``
+        carries a key that scan type does not declare.
     """
 
     name: str
@@ -662,14 +197,18 @@ class ObservingPatch:
     priority: float = 1.0
     weight: float = 1.0
     elevation: float | None = None
-    # Runtime is a plain ``dict``; the TypedDict union is advisory for
-    # static checkers. mypy can't match ``dict`` to any union member.
-    scan_params: ScanParamsDict = field(default_factory=dict)  # type: ignore[assignment]
+    # Runtime is a read-only ``dict`` subclass; the TypedDict union is
+    # advisory for static checkers. mypy can't match ``dict`` to any union
+    # member. Left out of the generated hash, since a ``dict`` is unhashable.
+    scan_params: ScanParamsDict = field(  # type: ignore[assignment]
+        default_factory=dict, hash=False
+    )
 
     def __post_init__(self) -> None:
-        if self.width <= 0:
+        object.__setattr__(self, "scan_params", ReadOnlyDict(self.scan_params))
+        if not self.width > 0:
             raise ValueError(f"width must be positive, got {self.width}")
-        if self.height <= 0:
+        if not self.height > 0:
             raise ValueError(f"height must be positive, got {self.height}")
         # Only the science scan types the simulator emits directly.
         # ``source_ces`` is deliberately rejected: it reaches a timeline only
@@ -679,12 +218,18 @@ class ObservingPatch:
             raise ValueError(
                 f"scan_type must be 'constant_el', 'pong', or 'daisy', got '{self.scan_type}'"
             )
-        if self.velocity <= 0:
+        if not self.velocity > 0:
             raise ValueError(f"velocity must be positive, got {self.velocity}")
-        if self.priority <= 0:
+        if not self.priority > 0:
             raise ValueError(f"priority must be positive, got {self.priority}")
-        if self.weight < 0:
+        if not self.weight >= 0:
             raise ValueError(f"weight must be non-negative, got {self.weight}")
+        # Refuse a mistyped key here, where it is made, rather than at
+        # reconstruction, where it would skip every block of the patch.
+        try:
+            validate_scan_params(self.scan_params, self.scan_type)
+        except KeyError as exc:
+            raise ValueError(exc.args[0]) from None
 
     @classmethod
     def from_field_region(
@@ -745,26 +290,23 @@ class CalibrationSpec:
     Parameters
     ----------
     name : str or CalibrationType
-        Calibration type. Accepts string values for backward
-        compatibility; they are coerced to ``CalibrationType``.
+        Calibration type; a string value is coerced to
+        ``CalibrationType``.
     duration : float
         Expected duration in seconds.
     target : str or None
         Planet name for planet calibrations, None for in-place operations.
-    elevation : float or None
-        Required elevation (e.g., for skydips), or None.
     """
 
     name: CalibrationType | str
     duration: float
     target: str | None = None
-    elevation: float | None = None
 
     def __post_init__(self) -> None:
         # object.__setattr__ bypasses frozen=True to coerce str -> CalibrationType.
         if not isinstance(self.name, CalibrationType):
             object.__setattr__(self, "name", CalibrationType.coerce(self.name))
-        if self.duration <= 0:
+        if not self.duration > 0:
             raise ValueError(f"duration must be positive, got {self.duration}")
 
 
@@ -782,8 +324,7 @@ class TimelineBlock:
     t_stop : Time
         UTC stop time.
     block_type : BlockType or str
-        Block kind. Accepts string values for backward compatibility;
-        they are coerced to :class:`BlockType`.
+        Block kind; a string value is coerced to :class:`BlockType`.
     patch_name : str
         Patch name (science) or calibration type name.
     az_start : float
@@ -934,7 +475,8 @@ class TimelineBlock:
         Factory for the common case where the telescope is parked
         (``az_start == az_end == az``) while a calibration operation runs.
         The boresight angle is computed from the site and the az/el pose
-        via :func:`~fyst_trajectories.overhead.compute_nasmyth_rotation`.
+        via
+        :meth:`~fyst_trajectories.coordinates.Coordinates.get_field_rotation_from_altaz`.
         For retune calibrations emitted *between* subscans, use
         :meth:`retune` instead; that variant carries the parent scan's
         azimuth range so ECSV round-trips preserve the subscan geometry.
@@ -962,7 +504,7 @@ class TimelineBlock:
             the lower azimuth bound (equal to the upper bound when parked).
         site : Site
             Observatory site (supplies ``nasmyth_sign`` and latitude
-            needed by ``compute_nasmyth_rotation``).
+            for the boresight angle).
         scan_index : int
             Parent scan counter.
         target : str or None, optional
@@ -1012,8 +554,6 @@ class TimelineBlock:
             If ``extra_metadata`` repeats one of the standard keys, or
             carries a key the metadata schema does not declare.
         """
-        from .utils import compute_nasmyth_rotation
-
         cal_name = str(CalibrationType.coerce(cal_type))
         meta: CalibrationBlockMetadata = {"cal_type": cal_name, "target": target}
         if t0_scan is not None:
@@ -1050,7 +590,7 @@ class TimelineBlock:
             subscan_index=subscan_index,
             rising=rising,
             scan_type=cal_name,
-            boresight_angle=compute_nasmyth_rotation(0.5 * (az + az_hi), el, site),
+            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(0.5 * (az + az_hi), el),
             metadata=meta,
             az_final=None if az_final is None else float(az_final),
         )
@@ -1098,8 +638,6 @@ class TimelineBlock:
         TimelineBlock
             A CALIBRATION block with ``scan_type="retune"``.
         """
-        from .utils import compute_nasmyth_rotation
-
         return cls(
             t_start=t_start,
             t_stop=t_start + TimeDelta(duration, format="sec"),
@@ -1110,7 +648,9 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="retune",
-            boresight_angle=compute_nasmyth_rotation(0.5 * (az_start + az_end), el, site),
+            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
+                0.5 * (az_start + az_end), el
+            ),
         )
 
     @classmethod
@@ -1155,8 +695,6 @@ class TimelineBlock:
             An IDLE block with ``patch_name="no_target"`` and
             ``scan_type="idle"``.
         """
-        from .utils import compute_nasmyth_rotation
-
         empty_meta: EmptyBlockMetadata = {}
         if reason is not None:
             empty_meta["reason"] = reason
@@ -1170,7 +708,7 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="idle",
-            boresight_angle=compute_nasmyth_rotation(az, el, site),
+            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(az, el),
             metadata=empty_meta,
         )
 
@@ -1220,8 +758,6 @@ class TimelineBlock:
         TimelineBlock
             A SLEW block with ``scan_type="slew"``.
         """
-        from .utils import compute_nasmyth_rotation
-
         empty_meta: EmptyBlockMetadata = {}
         return cls(
             t_start=t_start,
@@ -1236,7 +772,9 @@ class TimelineBlock:
             # The arithmetic mean is the true mid-travel azimuth of a
             # coherent pair; a circular mean would pick the short modular
             # arc the mount does not travel.
-            boresight_angle=compute_nasmyth_rotation(0.5 * (az_start + az_end), el, site),
+            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
+                0.5 * (az_start + az_end), el
+            ),
             metadata=empty_meta,
         )
 
@@ -1305,14 +843,11 @@ class TimelineBlock:
             A SCIENCE block with ``patch_name=patch.name`` and
             ``scan_type=patch.scan_type``.
         """
-        from .utils import compute_nasmyth_rotation
-
         meta: ScienceBlockMetadata = {
             "velocity": patch.velocity,
-            # Copied, not aliased: every subscan of a patch would
-            # otherwise share the patch's own dict, so editing one
-            # block's parameters would edit the patch and every other
-            # block cut from it.
+            # Copied into a plain dict: block metadata stays mutable, like
+            # the metadata the ECSV reader loads, while the patch's own
+            # mapping is read-only.
             "scan_params": dict(patch.scan_params),
             "ra_center": patch.ra_center,
             "dec_center": patch.dec_center,
@@ -1333,7 +868,9 @@ class TimelineBlock:
             subscan_index=subscan_index,
             rising=rising,
             scan_type=patch.scan_type,
-            boresight_angle=compute_nasmyth_rotation(0.5 * (az_start + az_end), el, site),
+            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
+                0.5 * (az_start + az_end), el
+            ),
             metadata=meta,
             az_final=az_final,
         )
@@ -1356,7 +893,7 @@ class OverheadModel:
         every module. The default is the instrument team's commissioning
         estimate, pending on-sky timing. This is a different
         operation from the in-scan tone-correction gap that
-        :func:`~fyst_trajectories.trajectory_utils.inject_retune` stamps
+        :func:`~fyst_trajectories.retune.inject_retune` stamps
         into a trajectory (``DEFAULT_RETUNE_DURATION_SEC``, a few
         seconds); the two values are independent and are not kept in
         sync.
@@ -1377,7 +914,10 @@ class OverheadModel:
     min_scan_duration : float
         Minimum useful science scan duration in seconds.
     max_scan_duration : float
-        Maximum scan duration before forced split in seconds.
+        Longest science subscan in seconds. A longer constant-elevation
+        pass is split into subscans; a pong or daisy visit is capped at
+        it, and a pong subscan holds the most whole pattern periods that
+        fit after its boundary retune.
     """
 
     retune_duration: float = 300.0
@@ -1393,7 +933,7 @@ class OverheadModel:
     def __post_init__(self) -> None:
         for fld in dataclasses.fields(self):
             val = getattr(self, fld.name)
-            if val < 0:
+            if not val >= 0:
                 raise ValueError(f"{fld.name} must be non-negative, got {val}")
         # ``min_scan_duration > 0`` is a tighter contract than ``>= 0``: every
         # downstream phase tests scan candidates against this floor, so a
@@ -1446,7 +986,6 @@ class CalibrationPolicy:
         never on idle ticks. Placeholder pending Prime-Cam confirmation.
     pointing_cadence : float
         Seconds between pointing corrections. Default ``3600.0`` (1 h).
-        A value of ``1800.0`` may be appropriate for commissioning.
     focus_cadence : float
         Seconds between focus checks.
     skydip_cadence : float
@@ -1460,17 +999,20 @@ class CalibrationPolicy:
         beam mapping like the other cadenced calibrations. Beam maps
         target the same planets as ``planet_cal``.
     planet_targets : tuple of str
-        Planet names to use for calibration (e.g., ``["jupiter", "saturn"]``).
+        Planet names to use for calibration (e.g. ``("jupiter", "saturn")``).
+        Must not be empty when ``planet_cal_scan`` is set.
     planet_min_elevation : float
         Minimum altitude in degrees for a planet to be considered visible
         for calibration. Default is 20.0 degrees.
     planet_cal_scan : bool
         When ``True``, plan each planet calibration as a real multi-pass
         source-CES sequence (via
-        :func:`~fyst_trajectories.planning.plan_source_ces_passes`)
-        anchored at the scheduler clock, instead of a single
-        fixed-duration parked block. Default ``False`` (parked).
-        Instrument/operations-team placeholder.
+        :func:`~fyst_trajectories.planning.plan_source_ces_passes`),
+        reached by a Sun-checked slew planned with
+        :func:`~fyst_trajectories.overhead.plan_transition`, instead of a
+        single fixed-duration parked block. A listed planet inside the Sun
+        zone is passed over for the next one up. Default ``False``
+        (parked). Instrument/operations-team placeholder.
     planet_cal_passes : int
         Number of source-CES passes per planet calibration when
         ``planet_cal_scan`` is set. Must be at least 1. Default 3.
@@ -1486,9 +1028,19 @@ class CalibrationPolicy:
     planet_cal_footprint : str
         Prime-Cam module tag defining the base footprint the passes tile
         (e.g. ``"c"``). Must be a known module tag (see
-        ``get_primecam_offset`` in :doc:`/api/offsets`); an unknown tag
-        raises :class:`ValueError` at construction. Default ``"c"``.
-        Instrument/operations-team placeholder.
+        ``get_primecam_offset`` in :doc:`/api/offsets`); an unknown tag, or
+        a value that is not a str, raises :class:`ValueError` at
+        construction. The passes' ``scan_params`` name the module by its
+        canonical name (``"c"`` for any spelling of the centre module).
+        Default ``"c"``. Instrument/operations-team placeholder.
+
+    Raises
+    ------
+    ValueError
+        If a cadence is negative, ``planet_cal_passes`` is below 1,
+        ``planet_cal_el_step`` is not positive, ``planet_cal_footprint`` is
+        not a str naming a known module, or ``planet_cal_scan`` is set with
+        no ``planet_targets``.
     """
 
     retune_cadence: float = 0.0
@@ -1505,6 +1057,7 @@ class CalibrationPolicy:
     planet_cal_footprint: str = "c"
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "planet_targets", tuple(self.planet_targets))
         for fld in (
             "retune_cadence",
             "pointing_cadence",
@@ -1513,33 +1066,30 @@ class CalibrationPolicy:
             "planet_cal_cadence",
         ):
             val = getattr(self, fld)
-            if val < 0:
+            if not val >= 0:
                 raise ValueError(f"{fld} must be non-negative, got {val}")
-        if self.beam_map_cadence is not None and self.beam_map_cadence < 0:
+        if self.beam_map_cadence is not None and not self.beam_map_cadence >= 0:
             raise ValueError(
                 f"beam_map_cadence must be non-negative or None, got {self.beam_map_cadence}"
             )
         if self.planet_cal_passes < 1:
             raise ValueError(f"planet_cal_passes must be at least 1, got {self.planet_cal_passes}")
-        if self.planet_cal_el_step is not None and self.planet_cal_el_step <= 0:
+        if self.planet_cal_el_step is not None and not self.planet_cal_el_step > 0:
             raise ValueError(
                 f"planet_cal_el_step must be positive when given, got {self.planet_cal_el_step}"
             )
+        if self.planet_cal_scan and not self.planet_targets:
+            raise ValueError("planet_cal_scan=True needs at least one entry in planet_targets")
         # Validate the footprint tag at construction (regardless of
         # planet_cal_scan) so a bad tag fails fast here instead of escaping
         # as a KeyError from the first planet-cal emission and aborting
         # generate_timeline.
-        from ..primecam import get_primecam_offset
-
-        try:
-            get_primecam_offset(self.planet_cal_footprint)
-        except KeyError as exc:
-            raise ValueError(f"planet_cal_footprint: {exc.args[0]}") from None
+        _require_module_tag("planet_cal_footprint", self.planet_cal_footprint)
 
 
 # ObservingTimeline is intentionally non-frozen: the scheduler builds it
-# incrementally by appending to ``blocks``.  Once returned to the caller it
-# should be treated as read-only (analogous to ``Trajectory`` in trajectory.py).
+# incrementally by appending to ``blocks``. Once returned to the caller it
+# should be treated as read-only.
 @dataclass
 class ObservingTimeline:
     """A complete observation timeline.

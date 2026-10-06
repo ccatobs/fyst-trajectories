@@ -11,12 +11,14 @@ seams: ``test_coordinates.py`` (constructor refraction),
 """
 
 import numpy as np
+import pytest
 from astropy.time import Time
 
 from fyst_trajectories import (
     AtmosphericConditions,
     Coordinates,
     FieldRegion,
+    plan_constant_el_scan,
     plan_daisy_scan,
     plan_pong_scan,
     plan_source_ces,
@@ -239,6 +241,40 @@ def test_plan_daisy_scan_default_emission_is_nominal_vacuum(site):
     _assert_nominal_default(default, no_refraction, for_fyst, _el_refraction_bump_deg(site))
 
 
+def test_plan_constant_el_scan_default_emission_is_nominal_vacuum(site):
+    """plan_constant_el_scan's own atmosphere default solves the crossing in vacuum.
+
+    The emitted elevation is the commanded one under any atmosphere, but the
+    atmosphere moves when the field crosses it, so a silent default flip to
+    for_fyst would shift the scan start and the azimuth track.
+    """
+
+    def _plan(**atm):
+        return plan_constant_el_scan(
+            field=FieldRegion(ra_center=_RA, dec_center=_DEC, width=2.0, height=2.0),
+            elevation=40.0,
+            velocity=0.5,
+            site=site,
+            start_time=_START,
+            rising=False,
+            timestep=0.5,
+            **atm,
+        ).trajectory
+
+    default = _plan()
+    no_refraction = _plan(atmosphere=AtmosphericConditions.no_refraction())
+    for_fyst = _plan(atmosphere=AtmosphericConditions.for_fyst())
+
+    assert default.start_time == no_refraction.start_time
+    np.testing.assert_allclose(default.az, no_refraction.az, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(default.el, no_refraction.el, rtol=0, atol=1e-9)
+    assert abs((for_fyst.start_time - default.start_time).to_value("s")) > 1.0
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Trajectory (azimuth|elevation) acceleration:"
+    "fyst_trajectories.exceptions.AccelerationLimitWarning",
+)
 def test_trajectory_builder_default_emission_is_nominal_vacuum(site):
     """TrajectoryBuilder's default (no with_atmosphere) emits vacuum az/el."""
     config = _pong_config()

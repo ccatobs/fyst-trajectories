@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
+from ..site import FYST_EL_MAX, FYST_EL_MIN
 from .models import ObservingPatch
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
+    from ..sun_protocols import SunSafePredicate
 
 __all__ = [
     "Constraint",
@@ -88,8 +89,8 @@ class ElevationConstraint(Constraint):
         (``FYST_EL_MAX``).
     """
 
-    def __init__(self, el_min: float = 20.0, el_max: float = 90.0) -> None:
-        if el_min >= el_max:
+    def __init__(self, el_min: float = FYST_EL_MIN, el_max: float = FYST_EL_MAX) -> None:
+        if not el_min < el_max:
             raise ValueError(f"el_min ({el_min}) must be less than el_max ({el_max})")
         self.el_min = el_min
         self.el_max = el_max
@@ -116,7 +117,7 @@ class SunAvoidanceConstraint(Constraint):
     or inside that radius (``<=``: a target exactly at the radius is NOT
     clear, matching :meth:`~fyst_trajectories.coordinates.Coordinates.is_sun_safe`),
     1.0 otherwise. With ``sun_safe`` the injected
-    :class:`~fyst_trajectories.dispatch.SunSafePredicate` (e.g. from
+    :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` (e.g. from
     :func:`~fyst_trajectories.sun_models.make_sun_safe`) decides instead,
     so the directional CAD model drives patch selection end to end.
 
@@ -142,7 +143,7 @@ class SunAvoidanceConstraint(Constraint):
                 "SunAvoidanceConstraint takes exactly one of min_angle (scalar mode) "
                 "or sun_safe (injected model)."
             )
-        if min_angle is not None and min_angle < 0:
+        if min_angle is not None and not min_angle >= 0:
             raise ValueError(f"min_angle must be non-negative, got {min_angle}")
         self.min_angle = min_angle
         self.sun_safe = sun_safe
@@ -175,9 +176,8 @@ class MoonAvoidanceConstraint(Constraint):
     selection on lunar proximity. The planning helpers
     (``plan_pong_scan`` etc.) run no moon-safety pre-flight check the
     way they do for the Sun. This is intentional: at submillimetre
-    wavelengths the Moon is a useful calibration source (it is a bright,
-    well-modelled extended target), so total avoidance is not always
-    desirable.
+    wavelengths the Moon is a useful calibration source, so total
+    avoidance is not always desirable.
     Callers who want a hard pre-flight moon check should query
     ``coords.get_body_altaz("moon", obstime)`` and apply their own
     threshold before constructing a trajectory.
@@ -193,7 +193,7 @@ class MoonAvoidanceConstraint(Constraint):
     """
 
     def __init__(self, min_angle: float = 20.0) -> None:
-        if min_angle < 0:
+        if not min_angle >= 0:
             raise ValueError(f"min_angle must be non-negative, got {min_angle}")
         self.min_angle = min_angle
 
@@ -237,7 +237,7 @@ class MinDurationConstraint(Constraint):
         min_duration: float = 60.0,
         sun_safe: "SunSafePredicate | None" = None,
     ) -> None:
-        if min_duration < 0:
+        if not min_duration >= 0:
             raise ValueError(f"min_duration must be non-negative, got {min_duration}")
         self.min_duration = min_duration
         self.sun_safe = sun_safe

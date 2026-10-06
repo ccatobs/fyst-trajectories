@@ -4,6 +4,7 @@ Reads and writes observation timelines in TOAST v5 (ECSV) format
 with FYST-specific extensions for calibration blocks.
 """
 
+import dataclasses
 import json
 import math
 import warnings
@@ -13,6 +14,7 @@ from astropy import units as u
 from astropy.table import QTable, Table
 from astropy.time import Time
 
+from ..coordinates import Coordinates
 from ..exceptions import PointingWarning
 from ..site import (
     AxisLimits,
@@ -24,14 +26,12 @@ from ..site import (
 from ..trajectory import RetuneEvent
 from .models import (
     CalibrationPolicy,
-    EmptyBlockMetadata,
     ObservingTimeline,
     OverheadModel,
-    ScienceBlockMetadata,
     TimelineBlock,
-    TimelineBlockMetadata,
 )
-from .utils import compute_nasmyth_rotation
+from .schemas import EmptyBlockMetadata, ScienceBlockMetadata, TimelineBlockMetadata
+from .utils import _utc_instant
 
 __all__ = [
     "read_timeline",
@@ -111,6 +111,9 @@ def write_timeline(
     bounds only for science and calibration rows. ``az_final`` holds the
     azimuth a swept block ends at when that differs from ``azmax``, and
     is ``nan`` (read back as ``None``) on every other block.
+    Every time is written as a UTC ISO string to the millisecond, the form
+    ``read_timeline`` reads, whatever scale, ``precision`` or
+    ``out_subfmt`` the timeline's ``Time`` objects carry.
     The timeline window, site, overhead model, and calibration policy
     are stored in the table header metadata, so ``read_timeline``
     restores them.
@@ -131,18 +134,17 @@ def write_timeline(
         # the field (e.g. manually constructed TimelineBlocks).
         bangle = block.boresight_angle
         if bangle == 0.0:
-            bangle = compute_nasmyth_rotation(
+            bangle = Coordinates(timeline.site).get_field_rotation_from_altaz(
                 0.5 * (block.az_start + block.az_end),
                 block.elevation,
-                timeline.site,
             )
 
         meta = block.metadata
         meta_for_json = _encode_retune_events_for_json(dict(meta))
         rows.append(
             {
-                "start_time": block.t_start.iso,
-                "stop_time": block.t_stop.iso,
+                "start_time": _utc_instant(block.t_start).iso,
+                "stop_time": _utc_instant(block.t_stop).iso,
                 "boresight_angle": bangle,
                 "name": block.patch_name,
                 "azmin": block.az_start,
@@ -208,10 +210,10 @@ def write_timeline(
     # Persist the declared timeline window so total_time / efficiency survive
     # a round-trip even when the blocks do not reach the window edges (a padded
     # window would otherwise shrink to the block extents on read). Stored as ISO
-    # strings, mirroring the block time columns. Older files without these keys
+    # strings in UTC, mirroring the block time columns. Files without these keys
     # fall back to the block-extent derivation in ``read_timeline``.
-    table.meta["timeline_start_time"] = timeline.start_time.iso
-    table.meta["timeline_end_time"] = timeline.end_time.iso
+    table.meta["timeline_start_time"] = _utc_instant(timeline.start_time).iso
+    table.meta["timeline_end_time"] = _utc_instant(timeline.end_time).iso
     table.meta["timeline_is_empty"] = substituted
     table.meta["site_name"] = timeline.site.name
     table.meta["site_description"] = timeline.site.description
@@ -277,11 +279,18 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     blocks: the single placeholder row such a file carries exists only
     because ECSV cannot hold a typed table with no rows.
 
-    Block times are stored to millisecond precision, so a block's start
-    and stop can shift by up to half a millisecond across a round trip.
-    The rendered forms (``str(timeline)``, the summary and the dispatch
-    sheet) are byte-identical either way; an equality test on raw
-    durations is not.
+    Block times are stored in UTC to millisecond precision, so a block's
+    start and stop can shift by up to half a millisecond across a round
+    trip.
+    For a timeline whose times are UTC ``Time`` objects with astropy's
+    default ``precision`` and ``out_subfmt``, as the planners and
+    ``read_timeline`` hold them, the rendered forms (``str(timeline)``,
+    the summary and the dispatch sheet) are byte-identical either way,
+    except that on a day with a leap second the sheet's
+    ``scheduled_t0_unix`` can differ in its last digit; an equality test
+    on raw durations is not. A planet pass's ``search_start`` is two floats in
+    the ``block_meta_json`` column and reads back exactly, so the pass
+    rebuilds the same from the file as from memory.
 
     Parameters
     ----------
@@ -502,11 +511,12 @@ def _site_from_meta(meta: dict) -> Site:
     """Reconstruct a ``Site`` from ECSV table metadata.
 
     If ``site_lat``/``site_lon`` are present and match the FYST
-    coordinates to 4 decimal places, ``get_fyst_site()`` is used so the
-    returned site has the full FYST default limits and atmosphere; the
-    stored altitude is not compared, so a file carrying FYST lat/lon
-    with a different ``site_alt`` reads back with the FYST 5611.8 m
-    value.
+    coordinates to 4 decimal places, the site is built from
+    ``get_fyst_site()`` so it has the full FYST default limits, with the
+    persisted ``nasmyth_port``/``plate_scale``/Sun settings applied on
+    top; the stored altitude is not compared, so a file carrying FYST
+    lat/lon with a different ``site_alt`` reads back with the FYST
+    5611.8 m value.
     Otherwise a custom ``Site`` is constructed using the metadata
     coordinates plus the persisted ``nasmyth_port``/``plate_scale``/sun
     radii (older files without those keys fall back to FYST defaults).
@@ -528,7 +538,22 @@ def _site_from_meta(meta: dict) -> Site:
     alt = float(alt.to_value(u.m)) if isinstance(alt, u.Quantity) else float(alt)
 
     if round(lat, 4) == round(fyst.latitude, 4) and round(lon, 4) == round(fyst.longitude, 4):
-        return fyst
+        # FYST limits, plus the per-run choices the writer
+        # persisted: a "left" port or changed Sun settings survive the trip.
+        fyst_site = get_fyst_site(
+            sun_exclusion_radius=float(
+                meta.get("site_sun_exclusion_radius", fyst.sun_avoidance.exclusion_radius)
+            ),
+            sun_warning_radius=float(
+                meta.get("site_sun_warning_radius", fyst.sun_avoidance.warning_radius)
+            ),
+            sun_avoidance_enabled=bool(meta.get("site_sun_enabled", fyst.sun_avoidance.enabled)),
+        )
+        return dataclasses.replace(
+            fyst_site,
+            nasmyth_port=str(meta.get("site_nasmyth_port", fyst.nasmyth_port)),
+            plate_scale=float(meta.get("site_plate_scale", fyst.plate_scale)),
+        )
 
     # Non-FYST site: restore the persisted fields below; warn that
     # telescope_limits are not persisted (a consumer recomputing pose or
@@ -539,7 +564,7 @@ def _site_from_meta(meta: dict) -> Site:
         "plate_scale and sun-avoidance radii are restored from metadata when "
         "present (older files fall back to FYST defaults).",
         PointingWarning,
-        stacklevel=2,
+        stacklevel=3,
     )
     return Site(
         name=str(meta.get("site_name", "custom")),
@@ -547,7 +572,6 @@ def _site_from_meta(meta: dict) -> Site:
         latitude=lat,
         longitude=lon,
         elevation=alt,
-        atmosphere=None,
         telescope_limits=TelescopeLimits(
             azimuth=AxisLimits(
                 min=fyst.telescope_limits.azimuth.min,

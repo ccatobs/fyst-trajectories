@@ -1,0 +1,6 @@
+{
+  "include": ["check_public_api.py"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportUnnecessaryTypeIgnoreComment": "error"
+}

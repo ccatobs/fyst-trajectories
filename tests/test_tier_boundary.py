@@ -28,14 +28,15 @@ import pytest
 from _tiers import (
     OVERHEAD,
     PACKAGE,
+    SRC,
     TIMELINE_PLOTS,
     VISUALIZATION,
+    _module_name,
+    _package_of,
     has_prefix,
     imported_names,
     is_simulator_tier,
 )
-
-SRC = Path(__file__).resolve().parents[1] / "src" / PACKAGE
 
 # What a consumer of the library tier may import without loading the
 # simulator. The visualization subpackage is included deliberately: its
@@ -49,14 +50,6 @@ LIBRARY_TIER_IMPORTS = (
     f"{PACKAGE}.observability",
     VISUALIZATION,
 )
-
-
-def _module_name(path: Path) -> str:
-    """Dotted module name of a source file under the package root."""
-    parts = path.relative_to(SRC).with_suffix("").parts
-    if parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join((PACKAGE, *parts))
 
 
 def _library_tier_modules() -> list[Path]:
@@ -82,11 +75,6 @@ def _forbidden_prefixes(module: str) -> tuple[str, ...]:
     return (OVERHEAD, VISUALIZATION)
 
 
-def _package_of(module: str, path: Path) -> str:
-    """Package a source file's relative imports resolve against."""
-    return module if path.name == "__init__.py" else module.rpartition(".")[0]
-
-
 def _offending_imports(module: str, package: str, source: str) -> list[str]:
     """Names a library-tier module imports that cross the boundary."""
     forbidden = _forbidden_prefixes(module)
@@ -103,14 +91,27 @@ def test_library_tier_module_imports_nothing_from_the_simulator(path: Path):
     assert not offending, f"{module} imports the simulator tier: {offending}"
 
 
+@pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=lambda p: _module_name(p))
+def test_only_the_visualization_subpackage_imports_matplotlib(path: Path):
+    """No module outside ``visualization`` names matplotlib, lazily or not."""
+    module = _module_name(path)
+    if has_prefix(module, (VISUALIZATION,)):
+        return
+    names = imported_names(path.read_text(encoding="utf-8"), package=_package_of(module, path))
+    offending = sorted(n for n in names if has_prefix(n, ("matplotlib",)))
+    assert not offending, f"{module} imports matplotlib: {offending}"
+
+
 def test_scan_sees_every_module_and_resolves_relative_imports():
     """The scan covers the tree and its resolver reads a relative import correctly."""
     modules = {_module_name(p) for p in _library_tier_modules()}
     assert PACKAGE in modules
     assert f"{PACKAGE}.planning.source_ces" in modules
     assert not any(is_simulator_tier(m) for m in modules)
-    source_ces = SRC / "planning" / "source_ces.py"
-    names = imported_names(source_ces.read_text(encoding="utf-8"), package=f"{PACKAGE}.planning")
+    source_ces = SRC / "planning" / "source_ces" / "__init__.py"
+    names = imported_names(
+        source_ces.read_text(encoding="utf-8"), package=f"{PACKAGE}.planning.source_ces"
+    )
     assert f"{PACKAGE}.exceptions" in names
 
 

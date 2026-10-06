@@ -6,6 +6,7 @@ import numpy as np
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
+from .._validation import _require_non_negative, _require_positive
 from ..coordinates import Coordinates
 from ..patterns.configs import ConstantElScanConfig
 from ..site import AtmosphericConditions, Site
@@ -25,12 +26,13 @@ from ._sun_safety import (
 from ._types import ConstantElComputedParams, FieldRegion, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import SunSafePredicate
 
 
 def plan_constant_el_scan(
     field: FieldRegion,
+    *,
     elevation: float,
     velocity: float,
     site: Site,
@@ -46,20 +48,24 @@ def plan_constant_el_scan(
     step_seconds: float = 30.0,
     lsa_window: tuple[float, float] | list[float] | None = None,
     sun_safe: "SunSafePredicate | None" = None,
-) -> ScanBlock:
+) -> ScanBlock[ConstantElComputedParams]:
     """Plan a constant-elevation scan that covers a FieldRegion.
 
-    Auto-computes the azimuth range and observation duration from the
-    field geometry, matching the algorithm used by the FYST scan strategy
-    planning tools.
+    Auto-computes the azimuth range and observation duration from the field
+    geometry (the duration from ``lsa_window`` instead, when given). The
+    azimuth range is the projection of the whole field over the whole pass,
+    which is wider than an elevation-band drift corridor; which of the two a
+    constant-elevation survey scan should use awaits FYST-team confirmation.
 
     The function:
 
     1. Finds when the RA edges of the (optionally rotated) field cross
-       the target elevation (determines start/end time and duration).
+       the target elevation (determines start/end time and duration);
+       with ``lsa_window`` the window sets them instead.
     2. Computes the azimuth range that covers the entire field at that
-       elevation at the midpoint of the observation.
-    3. Computes n_scans from the duration and single-leg sweep time.
+       elevation at the start, midpoint and end of the observation.
+    3. Computes n_scans from the duration, the single-leg sweep time and
+       the turnaround time between legs.
     4. Builds and returns a ScanBlock.
 
     Parameters
@@ -96,10 +102,14 @@ def plan_constant_el_scan(
         If provided, adjust the trajectory for this detector offset.
     az_padding : float, optional
         Extra azimuth padding in degrees on each side of the computed
-        range. Default is 2.0.
+        range. Default is 2.0. Must be non-negative.
     atmosphere : AtmosphericConditions or None, optional
-        Atmospheric conditions for refraction correction. If None,
-        no refraction is applied.
+        Refraction model for the elevation-crossing search and the azimuth
+        range; the commanded ``elevation`` itself is never refracted.
+        ``None`` (default) solves the pass on vacuum elevations, which is
+        what a scan sent to the telescope must use, since refraction is
+        applied downstream at execution time. Pass one only for planning
+        or simulation output.
     max_search_hours : float, optional
         Maximum time to search forward in hours for elevation crossings.
         Default is 12.0.
@@ -117,18 +127,16 @@ def plan_constant_el_scan(
         ``ScanBlock.duration`` is that span quantised to whole azimuth
         legs, so it is a little shorter again.
         Wrap-around windows where ``max_lsa < min_lsa`` are supported
-        (e.g. ``(310.0, 10.0)`` is a 60°/15 = 4 hour scan crossing the
+        (e.g. ``(310.0, 10.0)`` is a 60 deg / (15 deg/h) = 4 hour scan crossing the
         LSA = 0/360 boundary). Both endpoints must lie in ``[0, 360)``
         and must not be equal. The window fixes both the timing and the
         azimuth range, so ``rising`` has nothing left to choose and
         passing it alongside is rejected. ``max_search_hours`` and
-        ``step_seconds`` still bound the search horizon. Use this for
-        operator-driven LSA-windowed scheduling (e.g. ACT/Deep56-style
-        constant-elevation patches). Default is ``None``, which
-        preserves the elevation-crossing behavior.
+        ``step_seconds`` still bound the search horizon. Default is
+        ``None``, which times the scan from the elevation crossings.
     sun_safe : SunSafePredicate or None, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
         forwarded to the field-center pre-flight check(s). ``None``
         (default) keeps the built-in scalar exclusion-radius check; an
         injected predicate is consulted instead, so the directional
@@ -149,13 +157,16 @@ def plan_constant_el_scan(
     Raises
     ------
     ValueError
-        If ``velocity`` is not positive, if the elevation crossings
-        cannot be found within the search window, if ``rising`` and
-        ``lsa_window`` are supplied together, or if ``lsa_window``
-        is supplied with equal endpoints or values outside ``[0, 360)``.
+        If ``velocity`` is not positive, if ``az_padding`` is negative, if
+        ``rising`` and ``lsa_window`` are supplied together, or if
+        ``lsa_window`` is supplied with equal endpoints or values outside
+        ``[0, 360)``.
     PointingError
-        If ``lsa_window`` is supplied and LST never increases through
-        ``min_lsa`` within ``max_search_hours`` of ``start_time``.
+        If the elevation crossings cannot be found within the search window
+        or the two field edges cross on different passes, if the field lies
+        within 0.57 deg of a celestial pole, or if ``lsa_window`` is supplied
+        and LST never increases through ``min_lsa`` within
+        ``max_search_hours`` of ``start_time``.
     AzimuthBoundsError
         If the computed azimuth range exceeds telescope limits.
     ElevationBoundsError
@@ -167,7 +178,7 @@ def plan_constant_el_scan(
     a cheap instant check that runs before the search, at ``start_time``,
     and again at the resolved ``obs_start`` when ``lsa_window`` delays the
     observation (the LSA branch can push it hours later, during which the
-    Sun moves ~15°/hour). Once the pass is resolved, the planner then
+    Sun moves ~15 deg/hour). Once the pass is resolved, the planner then
     sweeps it: the commanded azimuth envelope (the swept window widened by
     the turnaround overshoot on each side) is sampled at the fixed
     ``elevation`` across the whole run, so a multi-hour block that starts
@@ -205,8 +216,8 @@ def plan_constant_el_scan(
     ...     lsa_window=(310.0, 10.0),
     ... )
     """
-    if velocity <= 0:
-        raise ValueError(f"velocity must be positive, got {velocity}")
+    _require_positive(velocity, "velocity")
+    _require_non_negative(az_padding, "az_padding")
     if lsa_window is not None and rising is not None:
         raise ValueError(
             "rising is not accepted with lsa_window: the sidereal window fixes both "

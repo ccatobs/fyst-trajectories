@@ -11,12 +11,12 @@ observing patches and produces a complete timeline with calibration injection.
 
    The retune events emitted by :class:`CalibrationPolicy` (between
    subscans / iterations) are independent of the in-scan retune samples
-   that :func:`fyst_trajectories.trajectory_utils.inject_retune` injects on a single
+   that :func:`fyst_trajectories.retune.inject_retune` injects on a single
    :class:`~fyst_trajectories.trajectory.Trajectory`. Both sets of retune
    knobs belong to the instrument team (see :doc:`/overhead_integration`),
    but they time different operations and are not kept in sync. Nothing in
    this subpackage calls
-   :func:`~fyst_trajectories.trajectory_utils.inject_retune`: a block rebuilt by
+   :func:`~fyst_trajectories.retune.inject_retune`: a block rebuilt by
    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` carries no
    retune samples.
 
@@ -95,22 +95,24 @@ from .exceptions import BlockNotReconstructableError, ScanParamsSchemaError
 from .io import read_timeline, write_timeline
 from .models import (
     BlockType,
-    CalibrationBlockMetadata,
     CalibrationPolicy,
     CalibrationSpec,
     CalibrationType,
-    CEScanParams,
-    DaisyScanParams,
-    EmptyBlockMetadata,
     ObservingPatch,
     ObservingTimeline,
     OverheadModel,
+    TimelineBlock,
+)
+from .schemas import (
+    CalibrationBlockMetadata,
+    CEScanParams,
+    DaisyScanParams,
+    EmptyBlockMetadata,
     PongScanParams,
     ScanGeometryRecord,
     ScanParamsDict,
     ScienceBlockMetadata,
     SourceCESScanParams,
-    TimelineBlock,
     TimelineBlockMetadata,
     TransitionRecord,
     validate_scan_params,
@@ -125,13 +127,6 @@ from .simulation import (
 )
 from .timeline import generate_timeline
 from .transitions import DeferralReason, Transition, plan_escape, plan_transition
-from .utils import (
-    compute_nasmyth_rotation,
-    estimate_slew_time,
-    get_max_elevation,
-    get_observable_windows,
-    get_transit_time,
-)
 
 __all__ = [
     "BOOTSTRAP_POSE",
@@ -187,13 +182,8 @@ __all__ = [
     "advance_idle",
     "commit_visit",
     "compute_budget",
-    "compute_nasmyth_rotation",
     "dispatch_sheet",
-    "estimate_slew_time",
     "generate_timeline",
-    "get_max_elevation",
-    "get_observable_windows",
-    "get_transit_time",
     "list_candidates",
     "load_scan_tables",
     "plan_calibration_night",

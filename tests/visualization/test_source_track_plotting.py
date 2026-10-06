@@ -1,9 +1,10 @@
 """Tests for ``plot_source_track``.
 
 The whole file skips when matplotlib is not installed; the import-isolation
-test in test_overhead_plotting.py covers this module too.
+test in test_plotting.py covers this module too.
 """
 
+import dataclasses
 import warnings
 
 import numpy as np
@@ -45,6 +46,30 @@ def jupiter_pass():
     return site, block
 
 
+@pytest.fixture(scope="module")
+def fixed_source_pass():
+    """One single-module rising pass of a fixed RA/Dec source on the same night."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return plan_source_ces(
+            ra=83.82,
+            dec=-5.39,
+            footprint="c",
+            el_bore=40.0,
+            night=Time("2026-03-15T00:00:00", scale="utc"),
+            mode="rising",
+            site=get_fyst_site(),
+        )
+
+
+def _with_metadata(block, **changes):
+    """Return ``block`` with its trajectory metadata fields replaced."""
+    meta = dataclasses.replace(block.trajectory.metadata, **changes)
+    return dataclasses.replace(
+        block, trajectory=dataclasses.replace(block.trajectory, metadata=meta)
+    )
+
+
 class TestPlotSourceTrack:
     """Layout from the registry, track from the planner, composition rules."""
 
@@ -61,7 +86,7 @@ class TestPlotSourceTrack:
             i1 = get_primecam_offset("i1")
             assert (round(i1.dx_deg, 6), round(i1.dy_deg, 6)) in centres
             labels = {t.get_text() for t in ax.texts}
-            assert {"Center", "I1", "I6"} <= labels
+            assert {"center", "i1", "i6"} <= labels
         finally:
             plt.close(fig)
 
@@ -120,6 +145,23 @@ class TestPlotSourceTrack:
             source_ces_focal_plane_track(pong, site=site)
         with pytest.raises(ValueError, match="plan_source_ces"):
             plot_source_track(pong, site=site, show=False)
+
+    @pytest.mark.parametrize("label", ["Mars", "RA=1", "Jupiter (cal)", None])
+    def test_relabelling_leaves_the_track_unchanged(self, jupiter_pass, fixed_source_pass, label):
+        """The track follows ``pattern_params["body"]``; ``target_name`` is display only."""
+        site = jupiter_pass[0]
+        for block in (jupiter_pass[1], fixed_source_pass):
+            xi, eta = source_ces_focal_plane_track(block, site=site)
+            relabelled = _with_metadata(block, target_name=label)
+            xi_r, eta_r = source_ces_focal_plane_track(relabelled, site=site)
+            assert np.array_equal(xi_r, xi) and np.array_equal(eta_r, eta)
+
+    def test_rejects_a_block_without_the_body_key(self, jupiter_pass):
+        site, block = jupiter_pass
+        params = dict(block.trajectory.metadata.pattern_params)
+        params.pop("body", None)
+        with pytest.raises(ValueError, match="plan_source_ces"):
+            source_ces_focal_plane_track(_with_metadata(block, pattern_params=params), site=site)
 
     def test_bad_radius_and_empty_modules(self, jupiter_pass):
         site, block = jupiter_pass

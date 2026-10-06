@@ -1,18 +1,26 @@
 Retune Events
 =============
 
-Stamp detector-retune gaps into a built trajectory.
-:func:`~fyst_trajectories.trajectory_utils.inject_retune` has two modes, a
+Mark detector-retune intervals in a built trajectory, for coverage and
+overhead studies. Only ``scan_flag`` changes: the positions are untouched
+and the Go TCS ``/path`` body carries no flags, so a retuned trajectory
+drives the telescope exactly as the original does. At the telescope,
+retunes are detector operations scheduled outside this library.
+:func:`~fyst_trajectories.retune.inject_retune` has two modes, a
 uniform cadence and a caller-supplied event list, and both populate
 :attr:`~fyst_trajectories.trajectory.Trajectory.retune_events`, so
-introspection and the ECSV round trip work the same either way.
+introspection works the same either way.
 What the field records differs by mode: the event list records the caller's
-request (an event past the trajectory end stays in the tuple, unapplied), the
-uniform cadence records the placements it made. ``scan_flag`` is the single
-record of what was applied.
+request (an event starting at or after the trajectory end stays in the tuple,
+unapplied), the uniform cadence records the placements it made.
+``scan_flag`` is the single record of what was applied.
 
 Dual-mode API
 -------------
+
+The examples take ``traj``, any built
+:class:`~fyst_trajectories.trajectory.Trajectory` (for instance
+``plan_constant_el_scan(...).trajectory`` from :doc:`planning`).
 
 Uniform cadence:
 
@@ -26,6 +34,12 @@ Uniform cadence:
         retune_duration=5.0,
     )
 
+``retune_interval`` runs from the end of one retune to the start of the
+next, so retunes start ``retune_interval + retune_duration`` apart. The
+interval, and the per-module staggering below, are among the parameters
+pending instrument-team confirmation (see
+:ref:`index-pending-verification`).
+
 Two more uniform-cadence knobs, both off by default:
 
 - ``prefer_turnarounds=True`` snaps each due retune to a nearby
@@ -36,7 +50,7 @@ Two more uniform-cadence knobs, both off by default:
   ``n_modules=7`` only one module is retuning at a time, as long as
   ``retune_duration`` is shorter than ``retune_interval / n_modules``
   (it is, at the defaults). The per-module duty cost is unchanged;
-  :func:`~fyst_trajectories.trajectory_utils.inject_retune` states what
+  :func:`~fyst_trajectories.retune.inject_retune` states what
   staggering buys, the instrument-team premise it rests on, and how to
   compose it in event-list mode.
 
@@ -64,7 +78,7 @@ Either mode overwrites only ``SCAN_FLAG_SCIENCE`` samples with
 Sampled event lists
 -------------------
 
-:func:`~fyst_trajectories.trajectory_utils.sample_retune_events` draws a
+:func:`~fyst_trajectories.retune.sample_retune_events` draws a
 non-overlapping event list from caller-supplied samplers, for Monte Carlo
 studies of retune overhead. No distribution is baked in:
 
@@ -86,9 +100,9 @@ studies of retune overhead. No distribution is baked in:
 Retune schedules from a CSV
 ---------------------------
 
-Retune schedules are commonly kept as ``t_start_s,duration_s``
-CSV. fyst-trajectories ships no reader for them; read one into a list of
-:class:`~fyst_trajectories.trajectory.RetuneEvent` with the standard library:
+fyst-trajectories ships no reader for a retune schedule kept as a
+``t_start_s,duration_s`` CSV; the standard library reads one into a list of
+:class:`~fyst_trajectories.trajectory.RetuneEvent`:
 
 .. code-block:: python
 
@@ -109,9 +123,11 @@ CSV. fyst-trajectories ships no reader for them; read one into a list of
     retuned = inject_retune(traj, retune_events=events)
 
 A file that also carries a module column is applied per module: group the rows
-and call :func:`~fyst_trajectories.trajectory_utils.inject_retune` once for
+and call :func:`~fyst_trajectories.retune.inject_retune` once for
 each, since event-list mode requires the default ``module_index=0`` /
 ``n_modules=1``.
 
-Retune events survive the ECSV round trip; see "Retune events" in
-:doc:`overhead_io`.
+An offline-simulator timeline can carry the events through its ECSV file,
+but nothing copies them there: set a block's ``metadata["retune_events"]``
+from ``trajectory.retune_events`` before writing (see "Retune events" in
+:doc:`overhead_io`).

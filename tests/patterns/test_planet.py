@@ -24,24 +24,22 @@ class TestPlanetTrackPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
         assert trajectory.start_time == start_time
         assert trajectory.pattern_type == "planet"
-        assert trajectory.pattern_params is not None
         assert trajectory.pattern_params["body"] == "mars"
 
-    @pytest.mark.slow
     def test_planet_track_has_motion(self, site):
-        """An hour of Moon tracking produces more than 1 degree of total motion.
+        """An hour of Moon tracking produces more than 10 degrees of total motion.
 
         Apparent Az/El motion is dominated by Earth's rotation, of order 15 degrees
         per hour, not by the Moon's own ~0.5 deg/hour drift against the stars. How
         that motion splits between azimuth and elevation depends on where the Moon
-        is, so assert only that the combined motion is well over 1 degree.
+        is, so assert only that the combined motion exceeds 10 degrees (13 degrees at
+        this epoch). A 10 s timestep samples the hour as finely as the check needs.
         """
         # Use a fixed time when Moon is observable from FYST
         start_time = Time("2026-01-15T10:00:00", scale="utc")
-        config = PlanetTrackConfig(timestep=0.1, body="moon")
+        config = PlanetTrackConfig(timestep=10.0, body="moon")
         pattern = PlanetTrackPattern(config=config)
 
         trajectory = pattern.generate(site, duration=3600.0, start_time=start_time)
@@ -49,10 +47,8 @@ class TestPlanetTrackPattern:
         az_range = trajectory.az.max() - trajectory.az.min()
         el_range = trajectory.el.max() - trajectory.el.min()
 
-        # The Moon should move significantly in at least one coordinate over 1 hour
-        # Combined motion should be well over 1 degree
         total_motion = np.sqrt(az_range**2 + el_range**2)
-        assert total_motion > 1.0, (
+        assert total_motion > 10.0, (
             f"Expected significant motion, got az_range={az_range:.2f}, "
             f"el_range={el_range:.2f}, total={total_motion:.2f}"
         )
@@ -72,31 +68,6 @@ class TestPlanetTrackPattern:
         param_names = list(sig.parameters.keys())
         assert "ra" not in param_names
         assert "dec" not in param_names
-
-    def test_finite_positions(self, site):
-        start_time = Time("2026-01-15T14:00:00", scale="utc")
-        config = PlanetTrackConfig(timestep=0.1, body="venus")
-        pattern = PlanetTrackPattern(config=config)
-
-        trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
-
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
-        assert np.all(np.isfinite(trajectory.az_vel))
-        assert np.all(np.isfinite(trajectory.el_vel))
-
-    def test_metadata_has_radec_after_generate(self, site):
-        start_time = Time("2026-01-15T14:00:00", scale="utc")
-        config = PlanetTrackConfig(timestep=0.1, body="mars")
-        pattern = PlanetTrackPattern(config=config)
-
-        trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
-
-        assert trajectory.center_ra is not None
-        assert trajectory.center_dec is not None
-        # RA must be in [0, 360), Dec in [-90, 90]
-        assert 0.0 <= trajectory.center_ra < 360.0
-        assert -90.0 <= trajectory.center_dec <= 90.0
 
     def test_get_metadata_without_args_has_no_radec(self):
         config = PlanetTrackConfig(timestep=0.1, body="jupiter")
@@ -123,7 +94,7 @@ class TestPlanetTrackPattern:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            adjusted = apply_detector_offset(trajectory, offset, site)
+            adjusted = apply_detector_offset(trajectory, offset, site=site)
 
         assert adjusted.n_points == trajectory.n_points
 
@@ -153,3 +124,38 @@ class TestPlanetTrackPattern:
         az_m, el_m = coords.get_body_altaz("mars", midpoint_time)
         sep_arcsec = np.hypot((az_c - az_m) * np.cos(np.deg2rad(el_m)), el_c - el_m) * 3600.0
         assert sep_arcsec < 1.0
+        # The stored RA is also normalised to [0, 360).
+        assert 0.0 <= trajectory.center_ra < 360.0
+
+
+class TestPlanetTrackBodyCasing:
+    """The config stores ``body`` lower-cased, like ``SatelliteTrackConfig``."""
+
+    def test_config_lowercases_body(self):
+        """A mixed-case body is stored lower-case and equals the lower-case config."""
+        lower = PlanetTrackConfig(timestep=1.0, body="jupiter")
+        for spelling in ("Jupiter", "JUPITER", "jUpItEr"):
+            config = PlanetTrackConfig(timestep=1.0, body=spelling)
+            assert config.body == "jupiter"
+            assert config == lower
+            assert hash(config) == hash(lower)
+            assert repr(config) == "PlanetTrackConfig(timestep=1.0, body='jupiter')"
+
+    def test_trajectory_metadata_is_lowercase(self, site):
+        """The built trajectory records the lower-case body; its arrays do not change."""
+        start_time = Time("2026-03-15T00:00:00", scale="utc")
+        mixed = PlanetTrackPattern(PlanetTrackConfig(timestep=1.0, body="Jupiter"))
+        lower = PlanetTrackPattern(PlanetTrackConfig(timestep=1.0, body="jupiter"))
+
+        trajectory = mixed.generate(site, duration=60.0, start_time=start_time)
+        reference = lower.generate(site, duration=60.0, start_time=start_time)
+
+        assert trajectory.pattern_params["body"] == "jupiter"
+        assert trajectory.metadata.target_name == "jupiter"
+        np.testing.assert_array_equal(trajectory.az, reference.az)
+        np.testing.assert_array_equal(trajectory.el, reference.el)
+
+    def test_unknown_body_message_echoes_input(self):
+        """The refusal names the body as the caller spelled it."""
+        with pytest.raises(ValueError, match="Unknown body 'Pluto'"):
+            PlanetTrackConfig(timestep=1.0, body="Pluto")

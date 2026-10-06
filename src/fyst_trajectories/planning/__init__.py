@@ -28,7 +28,7 @@ from .constant_el import plan_constant_el_scan
 from .daisy import plan_daisy_scan
 from .daisy_altaz import plan_daisy_altaz_scan
 from .footprints import inflate_footprint, offset_footprint_eta, resolve_footprint
-from .pong import plan_pong_rotation_sequence, plan_pong_scan
+from .pong import plan_pong_rotation_scans, plan_pong_rotation_sequence, plan_pong_scan
 from .pong_altaz import plan_pong_altaz_scan
 from .source_ces import (
     compute_source_ces_params,
@@ -55,6 +55,7 @@ __all__ = [
     "plan_daisy_altaz_scan",
     "plan_daisy_scan",
     "plan_pong_altaz_scan",
+    "plan_pong_rotation_scans",
     "plan_pong_rotation_sequence",
     "plan_pong_scan",
     "plan_source_ces",

@@ -26,6 +26,31 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+  # pyright over tests/typing/check_public_api.py, which uses the public
+  # surface the way the dispatch layer does and pins every planner's return
+  # type with assert_type. Only that file is checked, not src/. The pin is
+  # exact here and a floor in the dev extra of pyproject.toml; bump both
+  # together, since a newer pyright adds checks. The nodejs extra installs
+  # Node as a wheel, so nothing is downloaded at run time.
+  typing:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . "pyright[nodejs]==1.1.408"
+
+      - name: Type-check the public surface
+        run: pyright -p tests/typing
+
   # The fast suite is split in two by the ``offline`` marker (registered in
   # pyproject.toml). A test module carries it when the module, or a conftest
   # above it, imports the simulator tier; the doc guards classify their pages
@@ -88,7 +113,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,overhead]"
 
       - name: Run simulator-tier tests
         run: pytest -m offline --cov=fyst_trajectories --cov-report=xml
@@ -130,13 +155,15 @@ jobs:
       # (test_planning_pong_altaz, test_planning_daisy_altaz) skip because the
       # ``scanning`` package is not installed here; they run in the dedicated
       # ``oracle-tests`` job below, which does install it. And
-      # test_cross_validate_so_make_source_ces skips because it needs so3g plus
-      # schedlib and a ``schedlib.policies.fyst`` module
-      # (importorskip; so3g has no Windows wheels) - a documented skip that
-      # stays skipped everywhere.
+      # test_cross_validate_so_make_source_ces skips because it needs so3g and
+      # upstream schedlib (importorskip; so3g has no Windows wheels), which
+      # this job does not install; it runs in ``oracle-tests`` below.
+      # The slow tier is 85 tests; the planet-pass rebuild sweep and the
+      # time-scale rebuild cases make it about three times the 57-test tier
+      # that ran here in under ten minutes.
       - name: Run slow tests
         run: pytest -m slow --run-slow
-        timeout-minutes: 15
+        timeout-minutes: 60
 
   oracle-tests:
     runs-on: ubuntu-latest
@@ -162,38 +189,61 @@ jobs:
 
       # Install the scan_patterns cross-validation oracle (imported as
       # ``scanning``). ``--no-deps`` is mandatory: scan_patterns pins
-      # ``fyst-trajectories @ ...@v0.5.1`` in its install_requires, and without
+      # ``fyst-trajectories @ ...@v0.9.0`` in its install_requires, and without
       # ``--no-deps`` pip would resolve that URL and clobber the editable
       # checkout under test. pandas and fast-histogram are the runtime imports
       # ``--no-deps`` skips, so they are installed explicitly.
       - name: Install scan_patterns oracle
         run: |
           pip install pandas fast-histogram
-          pip install --no-deps "git+https://github.com/ccatobs/scan_patterns.git@6e18650e9dbcbb389a5ab92cd0d23927a8f70d9c"
+          pip install --no-deps "git+https://github.com/ccatobs/scan_patterns.git@bf68d9758c567ac2119d9de4592fc8d09cdd9446"
 
-      # Hard env check: fail red, not skip-green, if the oracle install is
-      # broken. Assert ``scanning`` imports and that fyst_trajectories still
-      # resolves to the editable checkout rather than a site-packages copy a
-      # dependency might have pulled in.
+      # Install the SO source-CES oracle that
+      # test_cross_validate_so_make_source_ces compares against: so3g and
+      # upstream schedlib (simonsobs/scheduler), pinned to the pair the test
+      # was verified against. so3g ships Linux wheels with spt3g bundled, so
+      # spt3g needs no separate install. jax is pinned to 0.10.1, the version
+      # the test was verified with: jax 0.11 and later require Python 3.12,
+      # so unpinned, pip would pick whichever 0.10 release is newest on this
+      # job's Python 3.11, an untested one. schedlib is not on PyPI, so it
+      # installs from git at a fixed commit, and with ``--no-deps``: its
+      # install_requires pull the SO operations stack (socs, ocs, pixell,
+      # equinox), none of which the parity test imports. jax, ephem and
+      # pandas are the schedlib imports it does reach, so they are installed
+      # explicitly.
+      - name: Install SO source-CES oracle
+        run: |
+          pip install "so3g==0.2.7" "jax==0.10.1" ephem pandas
+          pip install --no-deps \
+            git+https://github.com/simonsobs/scheduler.git@88def2dc73484fb95d5138daa815695f2701038b
+
+      # Hard env check: fail red, not skip-green, if an oracle install is
+      # broken. Assert ``scanning``, so3g and the two schedlib modules the SO
+      # parity test uses import, and that fyst_trajectories still resolves to
+      # the editable checkout rather than a site-packages copy a dependency
+      # might have pulled in.
       - name: Verify oracle environment
         run: |
-          python -c "import scanning, fyst_trajectories as f; assert 'site-packages' not in f.__file__, f.__file__; print('oracle env OK', f.__version__)"
+          python -c "import scanning, so3g, schedlib.source, schedlib.instrument
+          import fyst_trajectories as f
+          assert 'site-packages' not in f.__file__, f.__file__
+          print('oracle env OK', f.__version__)"
 
-      # Runs the three scan_patterns parity tests now that ``scanning`` is
-      # installed: the two AltAz ones plus the projection-parity test in
-      # test_offsets.py, the only cross-package check of the absolute
-      # field-rotation sign (a flip of it shipped undetected once), which ran
-      # in no job before. test_cross_validate_so_make_source_ces still skips
-      # here (it needs so3g + schedlib.policies.fyst); expect 2 passed,
-      # 1 skipped, 1 xfailed, and one warning from the oracle, which the
-      # projection test deliberately drives outside its declared 30-75 deg
-      # validity band. The xfail is the projection-parity test: the pinned
-      # oracle revision still carries the sign flip (the fix lives in the
-      # oracle's working copy, unpushed), and the test reports that state as
-      # expected rather than as a new disagreement. Bump the pin past the
-      # fix and delete the gate in the test; it then reads 3 passed.
+      # Runs the five oracle parity tests: the two scan_patterns AltAz ones,
+      # the two scan_patterns projection-parity tests in
+      # test_offsets_projection.py (the only cross-package check of the
+      # absolute field-rotation sign, a flip of which shipped undetected once,
+      # and a round trip through both of the oracle's projection calls), and
+      # test_cross_validate_so_make_source_ces against SO's make_source_ces.
+      # Expect 5 passed; ``-rs`` names any skip, so a missing oracle cannot
+      # pass silently. The projection tests drive the scan_patterns oracle
+      # outside its declared 30-75 deg validity band on purpose and filter
+      # the warning the oracle raises for it.
       - name: Run oracle tests
-        run: pytest -m slow --run-slow tests/test_planning_pong_altaz.py tests/test_planning_daisy_altaz.py tests/test_planning_source_ces.py tests/test_offsets.py
+        run: |
+          pytest -m slow --run-slow -rs tests/test_planning_pong_altaz.py \
+            tests/test_planning_daisy_altaz.py tests/test_planning_source_ces.py \
+            tests/test_offsets_projection.py
         timeout-minutes: 10
 
       # The second out-of-index oracle: the shared sun-avoidance library that
@@ -210,8 +260,12 @@ jobs:
 
       # Without the library this surface skips green and says nothing: the 17
       # record-replay tests that detect behaviour drift at the pinned
-      # revision, 9 of the 133 executable documentation blocks (including
-      # four of the six on the sun-avoidance page) and 2 doctests. The doc
+      # revision, the 6 end-to-end CAD tests (slew safety, the simulator's
+      # Sun-model seam, the sky-view and visibility renderers, and the
+      # sky-view documentation figure), 9 of the 122 executable documentation
+      # blocks (including four of the six on the sun-avoidance page) and 2
+      # doctests. No other job installs the library, so this step is the only
+      # place any of them runs. The doc
       # guards drop their gated blocks with a silent ``continue``, so their
       # pass counts are identical either way; this step is the only place the
       # gap is stated. The offline half of the parity fixture, which pins both
@@ -219,9 +273,14 @@ jobs:
       - name: Run sun-avoidance oracle tests
         run: |
           if [ -z "$SUN_AVOIDANCE_DEPLOY_TOKEN" ]; then
-            echo "::warning title=sun-avoidance not installed::No SUN_AVOIDANCE_DEPLOY_TOKEN secret: skipping 17 record-replay tests, 9 documentation blocks and 2 doctests that need the shared library. Only the scalar sun model is covered by this run."
+            echo "::warning title=sun-avoidance not installed::No SUN_AVOIDANCE_DEPLOY_TOKEN secret: skipping 17 record-replay tests, 6 end-to-end CAD tests, 9 documentation blocks and 2 doctests that need the shared library. Only the scalar sun model is covered by this run."
             exit 0
           fi
           python -c "import sun_avoidance; import fyst_trajectories.sun_models as m; print('sun-avoidance oracle OK, pinned', m.SUN_AVOIDANCE_PINNED_SHA)"
-          pytest tests/test_sun_models_live.py tests/test_doc_examples_rst.py tests/test_docstring_examples.py
+          pytest tests/test_sun_models_live.py tests/test_doc_examples_rst.py \
+            tests/test_docstring_examples.py tests/test_slew_safety.py \
+            tests/overhead/test_sun_model_seam.py \
+            tests/visualization/test_sky_view_plotting.py \
+            tests/visualization/test_visibility_plotting.py
+          pytest tests/test_docs_figures.py -k sky_view_sun_zone
         timeout-minutes: 15

@@ -139,7 +139,7 @@ class CalibrationState:
         planet_targets: tuple[str, ...],
         current_time: Time,
         coords: Coordinates | None,
-        min_elevation: float = 20.0,
+        min_elevation: float,
     ) -> str | None:
         """Return the first visible planet target.
 
@@ -158,7 +158,7 @@ class CalibrationState:
             ``None`` if none are visible.
         min_elevation : float
             Minimum altitude in degrees for a planet to be considered
-            visible. Default is 20.0 degrees.
+            visible.
 
         Returns
         -------
@@ -182,9 +182,10 @@ class CalibrationState:
         """Return a new state with the given calibration type updated.
 
         Looks up :attr:`CalibrationType.state_field` to find the
-        matching ``last_*`` attribute on this dataclass; both this
-        method and :meth:`OverheadModel.get_calibration_duration` share
-        a single mapping table so the two APIs cannot drift out of sync.
+        matching ``last_*`` attribute on this dataclass. The state and
+        duration lookup tables sit side by side in ``models.py``, keyed on
+        :class:`CalibrationType`, so a new member's two entries are added
+        together.
 
         Parameters
         ----------

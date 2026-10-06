@@ -55,13 +55,6 @@ class TestPongGenerateOffsets:
         assert np.abs(x_off).max() > 0.1
         assert np.abs(y_off).max() > 0.1
 
-    def test_all_values_finite(self, pong_pattern):
-        times, x_off, y_off = pong_pattern.generate_offsets(duration=60.0)
-
-        assert np.all(np.isfinite(times))
-        assert np.all(np.isfinite(x_off))
-        assert np.all(np.isfinite(y_off))
-
     def test_generate_uses_generate_offsets(self, pong_pattern, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         duration = 60.0
@@ -105,7 +98,10 @@ class TestPongGenerateOffsets:
         _, x0, y0 = p0.generate_offsets(duration=60.0)
         _, x45, y45 = p45.generate_offsets(duration=60.0)
 
-        assert not np.allclose(x0, x45)
+        # ``angle`` rotates the unrotated path counter-clockwise, x toward y.
+        cos_a, sin_a = np.cos(np.radians(45.0)), np.sin(np.radians(45.0))
+        np.testing.assert_allclose(x45, x0 * cos_a - y0 * sin_a, atol=1e-12)
+        np.testing.assert_allclose(y45, x0 * sin_a + y0 * cos_a, atol=1e-12)
 
 
 class TestDaisyGenerateOffsets:
@@ -158,13 +154,6 @@ class TestDaisyGenerateOffsets:
         assert 0.1 < np.abs(x_off).max() < envelope
         assert 0.1 < np.abs(y_off).max() < envelope
 
-    def test_all_values_finite(self, daisy_pattern):
-        times, x_off, y_off = daisy_pattern.generate_offsets(duration=60.0)
-
-        assert np.all(np.isfinite(times))
-        assert np.all(np.isfinite(x_off))
-        assert np.all(np.isfinite(y_off))
-
     def test_generate_uses_generate_offsets(self, daisy_pattern, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         duration = 60.0
@@ -208,4 +197,7 @@ class TestDaisyGenerateOffsets:
         _, x0, y0 = p0.generate_offsets(duration=60.0)
         _, x_off, y_off = p_off.generate_offsets(duration=60.0)
 
+        # ``y_offset`` is where the rosette starts on the y axis.
+        assert y0[0] == pytest.approx(0.0)
+        assert y_off[0] == pytest.approx(0.2)
         assert not np.allclose(y0, y_off)

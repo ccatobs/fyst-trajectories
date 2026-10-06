@@ -17,8 +17,14 @@ def start_time():
 
 
 class TestPlanDaisyScan:
-    """Block shape, the rosette's two-axis spread, axis bounds, and the refusal."""
+    """Block shape, the rosette's two-axis spread, and the refusal."""
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory azimuth acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_basic_plan(self, site, start_time):
         """plan_daisy_scan returns a ScanBlock with daisy config."""
         block = plan_daisy_scan(
@@ -53,8 +59,15 @@ class TestPlanDaisyScan:
         assert np.ptp(dx) > 0.5  # spans 2-D, not collinear
         assert np.ptp(dy) > 0.5
 
-    def test_trajectory_has_valid_bounds(self, site, start_time):
-        block = plan_daisy_scan(
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory azimuth acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
+    def test_default_timestep_equals_explicit(self, site, start_time):
+        """Omitting ``timestep`` plans exactly what ``timestep=0.1`` plans."""
+        common = dict(
             ra=180.0,
             dec=-30.0,
             radius=0.5,
@@ -64,16 +77,16 @@ class TestPlanDaisyScan:
             start_acceleration=0.5,
             site=site,
             start_time=start_time,
-            timestep=0.1,
             duration=60.0,
         )
+        defaulted = plan_daisy_scan(**common)
+        explicit = plan_daisy_scan(**common, timestep=0.1)
 
-        traj = block.trajectory
-        limits = site.telescope_limits
-        assert traj.el.min() >= limits.elevation.min
-        assert traj.el.max() <= limits.elevation.max
-        assert traj.az.min() >= limits.azimuth.min
-        assert traj.az.max() <= limits.azimuth.max
+        assert defaulted.config == explicit.config
+        for name in ("times", "az", "el", "az_vel", "el_vel"):
+            np.testing.assert_array_equal(
+                getattr(defaulted.trajectory, name), getattr(explicit.trajectory, name)
+            )
 
     def test_unobservable_target_raises(self, site, start_time):
         with pytest.raises(TargetNotObservableError):

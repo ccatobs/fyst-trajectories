@@ -36,16 +36,3 @@ Constraints
 .. autoclass:: fyst_trajectories.overhead.MinDurationConstraint
    :members:
    :show-inheritance:
-
-Utilities
----------
-
-.. autofunction:: fyst_trajectories.overhead.estimate_slew_time
-
-.. autofunction:: fyst_trajectories.overhead.get_observable_windows
-
-.. autofunction:: fyst_trajectories.overhead.get_transit_time
-
-.. autofunction:: fyst_trajectories.overhead.get_max_elevation
-
-.. autofunction:: fyst_trajectories.overhead.compute_nasmyth_rotation

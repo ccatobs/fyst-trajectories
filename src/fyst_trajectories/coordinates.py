@@ -26,8 +26,8 @@ Trajectory generation (vacuum; refraction is applied downstream):
 >>> coords = Coordinates(get_fyst_site())
 >>> obstime = Time("2026-01-15T02:00:00", scale="utc")
 >>> az, el = coords.radec_to_altaz(83.633, 22.014, obstime=obstime)  # Crab Nebula
->>> print(f"Az: {az:.2f}°, El: {el:.2f}°")
-Az: 9.40°, El: 44.44°
+>>> print(f"Az: {az:.2f} deg, El: {el:.2f} deg")
+Az: 9.40 deg, El: 44.44 deg
 
 Planning with refraction (visibility checks, not sent to ACU):
 
@@ -39,7 +39,6 @@ Planning with refraction (visibility checks, not sent to ACU):
 import importlib.util
 import os
 import warnings
-from dataclasses import dataclass
 from types import MappingProxyType
 
 import erfa
@@ -50,15 +49,8 @@ from astropy.time import Time, TimeDelta
 
 from .site import AtmosphericConditions, Site
 
-# ``erfa`` (PyPI: ``pyerfa``) ships ``ErfaWarning`` in every release reachable
-# from any astropy>=5.0 install (the dependency floor in pyproject.toml), so
-# the import and attribute lookup are unconditional. A defensive try/except
-# falling back to ``UserWarning`` would silently demote real ERFA messages if
-# it ever fired, a worse signal than failing loudly.
-_erfa_warning_cls = erfa.ErfaWarning
-
 # Supported solar system bodies for ephemeris
-SOLAR_SYSTEM_BODIES = [
+SOLAR_SYSTEM_BODIES = (
     "sun",
     "moon",
     "mercury",
@@ -68,7 +60,7 @@ SOLAR_SYSTEM_BODIES = [
     "saturn",
     "uranus",
     "neptune",
-]
+)
 """Solar-system bodies resolvable through astropy's built-in ephemeris.
 
 Accepted by the body-tracking coordinate methods (for example
@@ -259,8 +251,9 @@ def _parallactic_angle_from_altaz(
     formula. Shared rather than duplicated because two entry points
     publish the same quantity from different inputs:
     :meth:`Coordinates.get_field_rotation` takes RA/Dec and
-    ``overhead.compute_nasmyth_rotation`` takes an already-transformed
-    horizon position, and both add the mechanical Nasmyth term to it.
+    :meth:`Coordinates.get_field_rotation_from_altaz` takes an
+    already-transformed horizon position, and both add the mechanical
+    Nasmyth term to it.
 
     Parameters
     ----------
@@ -291,37 +284,47 @@ def _parallactic_angle_from_altaz(
     return np.rad2deg(np.arctan2(numerator, denominator))
 
 
-# Not re-exported from the package root, so importing it names the module it
-# lives in.
-@dataclass(frozen=True)
-class AltAzCoord:
-    """Horizontal coordinate (Altitude-Azimuth).
+def _build_time_grid(time: Time, horizon_hours: float, step_minutes: float) -> Time:
+    """Build the sample grid. Length 1 (just ``time``) when ``horizon_hours <= 0``."""
+    if horizon_hours and horizon_hours > 0:
+        horizon_s = horizon_hours * 3600.0
+        step_s = step_minutes * 60.0
+        # Cover [time, time + horizon] with uniform step_s spacing. ceil so the
+        # interval is fully covered; n >= 2 so a positive horizon is always a real
+        # interval (never a degenerate length-1 grid). The final sample is clipped
+        # to land exactly on time + horizon (no sample past the horizon), so the
+        # last cell may be shorter than step_s. Endpoints therefore land on grid
+        # samples spaced <= step_minutes apart.
+        n = max(2, int(np.ceil(horizon_s / step_s)) + 1)
+        offsets_s = np.minimum(np.arange(n) * step_s, horizon_s)
+    else:
+        offsets_s = np.zeros(1)
+    return time + TimeDelta(offsets_s, format="sec")
 
-    A caller-side convenience container: no method in this module
-    returns or accepts it (the transform methods work with plain
-    ``(az, alt)`` tuples).
 
-    Parameters
-    ----------
-    az : float
-        Azimuth in degrees (N=0, E=90).
-    alt : float
-        Altitude (elevation) in degrees above the horizon.
-    obstime : Time, optional
-        Observation time.
+def _threshold_crossings(
+    values: np.ndarray, grid: Time, threshold: float, *, rising: bool
+) -> list[Time]:
+    """Linearly interpolated times where ``values`` crosses ``threshold``.
+
+    ``rising=True`` finds upward crossings (``values[i] < threshold <=
+    values[i+1]``); ``rising=False`` downward ones (``values[i] >= threshold >
+    values[i+1]``). The two masks partition each grid cell, so one cell yields
+    at most one crossing and a value exactly at the threshold is never counted
+    twice. Interpolation uses the actual per-cell spacing, so a clipped final
+    grid cell (see :func:`_build_time_grid`) is handled exactly.
     """
-
-    az: float
-    alt: float
-    obstime: Time | None = None
-
-    @property
-    def el(self) -> float:
-        """Alias for altitude (elevation)."""
-        return self.alt
-
-    def __repr__(self) -> str:
-        return f"AltAzCoord(az={self.az:.4f}°, alt={self.alt:.4f}°)"
+    below, above = values[:-1], values[1:]
+    if rising:
+        mask = (below < threshold) & (above >= threshold)
+    else:
+        mask = (below >= threshold) & (above < threshold)
+    times: list[Time] = []
+    for i in np.flatnonzero(mask):
+        denom = values[i + 1] - values[i]
+        frac = 0.0 if abs(denom) < 1e-12 else (threshold - values[i]) / denom
+        times.append(grid[i] + frac * (grid[i + 1] - grid[i]))
+    return times
 
 
 class Coordinates:
@@ -403,7 +406,7 @@ class Coordinates:
         -------
         AltAz
             Astropy AltAz frame configured for the site. When the
-            atmosphere has ``obswl > 100 µm``, astropy automatically
+            atmosphere has ``obswl > 100`` (microns), astropy automatically
             uses the radio refraction model instead of optical.
         """
         kwargs = {
@@ -452,6 +455,11 @@ class Coordinates:
             Azimuth in degrees (N=0, E=90).
         alt : float or array
             Altitude (elevation) in degrees above the horizon.
+
+        Raises
+        ------
+        ValueError
+            If ``frame`` names the horizontal frame (``"HORIZON"``).
 
         Examples
         --------
@@ -505,6 +513,11 @@ class Coordinates:
             Right Ascension in degrees.
         dec : float or array
             Declination in degrees.
+
+        Raises
+        ------
+        ValueError
+            If ``frame`` names the horizontal frame (``"HORIZON"``).
         """
         altaz_frame = self._get_altaz_frame(obstime)
         altaz = SkyCoord(az=az * u.deg, alt=alt * u.deg, frame=altaz_frame)
@@ -664,7 +677,8 @@ class Coordinates:
         # get_body returns a GCRS position carrying the body's finite
         # (topocentric) distance. Taking ``.icrs`` reprojects that finite-distance
         # vector to the barycentric frame, yielding the SSB->body direction
-        # (e.g. the anti-solar point for the Sun), NOT the apparent sky
+        # (for the Moon, close to the anti-solar point; for the Sun, a direction
+        # set by the planets' pull on the barycentre), NOT the apparent sky
         # position. Instead, project to the site's *vacuum* horizontal frame and
         # back to ICRS so the result is the apparent place, consistent with
         # get_body_altaz and with get_parallactic_angle's pressure=0 transform.
@@ -757,11 +771,16 @@ class Coordinates:
         Notes
         -----
         The scalar form is the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract, and
-        that is the only form dispatch uses. Array inputs are an extension
-        for grid work: the verdict then broadcasts to the shape of the
-        inputs, except with avoidance disabled, where the answer is a plain
-        ``True`` whatever the input shape.
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract.
+        The array form broadcasts the verdict to the shape of the inputs,
+        except with avoidance disabled, where the answer is a plain ``True``
+        whatever the input shape. The scalar model ``make_sun_safe("scalar")``
+        builds, the default Sun test of
+        :func:`~fyst_trajectories.dispatch.choose_encoder_solution`, gives the
+        same verdicts and adds the vectorised ``batch`` extension.
+
+        The Sun position is computed with this instance's atmosphere
+        (vacuum by default), so pass ``az``/``el`` in the same frame.
         """
         if not self.site.sun_avoidance.enabled:
             return True
@@ -805,21 +824,21 @@ class Coordinates:
         if not limits.elevation.is_in_range(el):
             return (
                 False,
-                f"Elevation {el:.1f}° outside limits "
+                f"Elevation {el:.1f} deg outside limits "
                 f"[{limits.elevation.min}, {limits.elevation.max}]",
             )
 
         if not limits.azimuth.is_in_range(az):
             return (
                 False,
-                f"Azimuth {az:.1f}° outside limits [{limits.azimuth.min}, {limits.azimuth.max}]",
+                f"Azimuth {az:.1f} deg outside limits [{limits.azimuth.min}, {limits.azimuth.max}]",
             )
 
         if check_sun and self.site.sun_avoidance.enabled:
             sun_az, sun_alt = self.get_sun_altaz(obstime)
             sep = self.angular_separation(az, el, sun_az, sun_alt)
             if sep <= self.site.sun_avoidance.exclusion_radius:
-                return False, f"Position too close to Sun (separation: {sep:.1f}°)"
+                return False, f"Position too close to Sun (separation: {sep:.1f} deg)"
 
         return True, ""
 
@@ -865,10 +884,19 @@ class Coordinates:
             None if the source is circumpolar or never sets within the
             search window.
 
+        Raises
+        ------
+        ValueError
+            If ``step_hours`` or ``max_search_hours`` is not a finite value > 0.
+
         Notes
         -----
         Returns (None, None) for circumpolar or never-visible sources.
-        Finds the FIRST rise, then the FIRST set after that rise.
+        Finds the FIRST rise, then the FIRST set at or after that rise.
+
+        The search covers ``[start_time, start_time + max_search_hours]``:
+        the grid steps by ``step_hours`` and its last sample lands on
+        ``start_time + max_search_hours``, so the last step may be shorter.
 
         Refraction is disabled (pressure=0). Calculated times
         may differ from observed rise/set by a few minutes (~0.5 deg
@@ -917,8 +945,11 @@ class Coordinates:
         """
         source = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
 
-        n_steps = int(max_search_hours / step_hours) + 1
-        times = start_time + np.arange(n_steps) * TimeDelta(step_hours * u.hour)
+        if not (np.isfinite(step_hours) and step_hours > 0):
+            raise ValueError(f"step_hours must be a finite value > 0, got {step_hours}")
+        if not (np.isfinite(max_search_hours) and max_search_hours > 0):
+            raise ValueError(f"max_search_hours must be a finite value > 0, got {max_search_hours}")
+        times = _build_time_grid(start_time, max_search_hours, step_hours * 60.0)
 
         altaz_frame = AltAz(
             obstime=times,
@@ -927,27 +958,12 @@ class Coordinates:
         )
         altitudes = source.transform_to(altaz_frame).alt.to_value(u.deg)
 
-        rise_time = None
-        set_time = None
-
-        rise_indices = np.where((altitudes[:-1] < horizon) & (altitudes[1:] >= horizon))[0]
-
-        if len(rise_indices) > 0:
-            i_rise = rise_indices[0]
-            denom = altitudes[i_rise + 1] - altitudes[i_rise]
-            frac = 0.0 if abs(denom) < 1e-12 else (horizon - altitudes[i_rise]) / denom
-            rise_time = times[i_rise] + frac * (times[i_rise + 1] - times[i_rise])
-
-            set_indices = np.where((altitudes[:-1] >= horizon) & (altitudes[1:] < horizon))[0]
-
-            after_rise = set_indices[set_indices >= i_rise]
-
-            if len(after_rise) > 0:
-                i_set = after_rise[0]
-                denom = altitudes[i_set + 1] - altitudes[i_set]
-                frac = 0.0 if abs(denom) < 1e-12 else (horizon - altitudes[i_set]) / denom
-                set_time = times[i_set] + frac * (times[i_set + 1] - times[i_set])
-
+        rises = _threshold_crossings(altitudes, times, horizon, rising=True)
+        if not rises:
+            return None, None
+        rise_time = rises[0]
+        sets = _threshold_crossings(altitudes, times, horizon, rising=False)
+        set_time = next((t for t in sets if t >= rise_time), None)
         return rise_time, set_time
 
     def get_lst(self, obstime: Time) -> float | np.ndarray:
@@ -1001,7 +1017,8 @@ class Coordinates:
         ``HA = LST - RA`` pairs the apparent-equinox local sidereal time
         (``sidereal_time("apparent")``) with the supplied RA. When that RA is a
         catalogue (ICRS/J2000) value, the result carries the precession of RA
-        since J2000 (dec-dependent, ~0.3° in 2026, growing ~0.018°/yr): it is
+        since J2000 (about 0.34 deg in 2026 on the celestial equator, growing
+        about 0.014 deg/yr there; both vary with RA and declination): it is
         the hour angle relative to the *mean* catalogue position, not the
         apparent place. That is adequate for the coarse scheduling uses in this
         library (transit finding, rising/setting sign) but **not** for
@@ -1051,17 +1068,17 @@ class Coordinates:
         The parallactic angle is derived from the *transformed* horizontal
         coordinates (Az, El), using the IAU North-through-East AltAz form
 
-        tan(q) = (-sin(A) cos(φ)) / (sin(φ) cos(a) - cos(φ) sin(a) cos(A))
+        tan(q) = (-sin(A) cos(phi)) / (sin(phi) cos(a) - cos(phi) sin(a) cos(A))
 
-        where ``A`` is azimuth, ``a`` is elevation and ``φ`` is the site
+        where ``A`` is azimuth, ``a`` is elevation and ``phi`` is the site
         latitude. RA/Dec are transformed to Az/El first, so the full
         precession/nutation/aberration chain is folded into the geometry and
         the result is referenced to the **apparent** celestial pole. Computing
         the angle from ``HA = LST - RA`` instead would mix the apparent-equinox
-        LST with the catalogue (ICRS/J2000) RA, leaving an uncorrected
-        precession term (~0.3° in 2026, growing ~0.013-0.018°/yr depending on
-        declination) in the parallactic angle. This is the same AltAz form used by
-        ``overhead.utils.compute_nasmyth_rotation``, so the two paths agree.
+        LST with the catalogue (ICRS/J2000) RA, leaving the RA precession since
+        J2000 (see :meth:`get_hour_angle`) uncorrected. This is the same AltAz
+        form used by
+        :meth:`get_field_rotation_from_altaz`, so the two paths agree.
 
         A vacuum (zero-pressure) transform is used regardless of the
         atmosphere configured on this ``Coordinates`` instance, so the
@@ -1069,15 +1086,15 @@ class Coordinates:
 
         Near the zenith the parallactic angle is ill-conditioned: it is
         undefined exactly at the zenith, and at transit it swings through
-        180° at a rate set by the transit zenith distance (roughly 820 s
+        180 deg at a rate set by the transit zenith distance (roughly 820 s
         per degree, so seconds only within a few hundredths of a degree
-        of the zenith-crossing declination, over an hour 5° away).
+        of the zenith-crossing declination, over an hour 5 deg away).
         ``arctan2`` keeps the computation
-        finite, but the result is **not** ≈ 0 there; downstream consumers that
+        finite, but the result is **not** close to 0 there; downstream consumers that
         depend on PA continuity (e.g. focal-plane rotation rate) should be
-        aware. FYST's lat = -22.99° puts sources with dec ≈ -18° to -28° in
-        this regime; the ``el_min = 20°`` constraint mitigates but does not
-        eliminate the issue.
+        aware. FYST's lat = -22.99 deg puts sources with dec of about -18 to -28 deg in
+        this regime, and the site's elevation limits (20 to 90 deg) do not keep a
+        pointing away from the zenith.
 
         Examples
         --------
@@ -1085,8 +1102,8 @@ class Coordinates:
         >>> coords = Coordinates(site)
         >>> obstime = Time("2026-01-15T02:00:00", scale="utc")
         >>> pa = coords.get_parallactic_angle(83.633, 22.014, obstime=obstime)
-        >>> print(f"Parallactic angle: {pa:.2f}°")
-        Parallactic angle: -170.66°
+        >>> print(f"Parallactic angle: {pa:.2f} deg")
+        Parallactic angle: -170.66 deg
         """
         # Transform RA/Dec -> vacuum Az/El, then take the AltAz-form PA (see
         # Notes): this references the result to the apparent pole and keeps it
@@ -1150,7 +1167,7 @@ class Coordinates:
         This is the RA/Dec entry point to one quantity that the package
         publishes under two names, both of which share a single
         parallactic-angle kernel and agree to machine precision:
-        ``overhead.compute_nasmyth_rotation`` returns the same sum from an
+        :meth:`get_field_rotation_from_altaz` returns the same sum from an
         already-transformed horizon position and is what stamps a timeline
         block's ``boresight_angle``. This method is the canonical one: it
         owns the vacuum transform the geometry is defined in.
@@ -1171,9 +1188,6 @@ class Coordinates:
 
         Notes
         -----
-        The field rotation rate is highest when the object transits
-        near the zenith and lowest near the horizon.
-
         The Nasmyth sign is +1 for Right Nasmyth, -1 for Left Nasmyth,
         and 0 for Cassegrain (no elevation-dependent rotation).
 
@@ -1211,6 +1225,65 @@ class Coordinates:
             return float(field_rotation)
         return field_rotation
 
+    def get_field_rotation_from_altaz(
+        self,
+        az: float | np.ndarray,
+        el: float | np.ndarray,
+    ) -> float | np.ndarray:
+        """Calculate sky field rotation from a horizon position.
+
+        Returns ``site.nasmyth_sign * el + parallactic_angle`` for a pose
+        that is already in azimuth and elevation: the same quantity
+        :meth:`get_field_rotation` returns from RA/Dec, the sky orientation
+        of the Nasmyth-mounted focal plane. Both methods take the
+        parallactic angle from one shared kernel, so they agree to machine
+        precision for the same pose. This is the value a timeline block
+        records as its ``boresight_angle``.
+
+        Pass the geometric (vacuum) pose, the one a ``Coordinates`` built
+        without refraction returns. The method uses the pose as given, so
+        the atmosphere configured on this instance has no effect; a
+        refracted elevation moves the result, by more the lower the pose
+        and the nearer it is to the celestial pole.
+
+        Parameters
+        ----------
+        az : float or array
+            Azimuth in degrees.
+        el : float or array
+            Elevation in degrees.
+
+        Returns
+        -------
+        float or array
+            Field rotation in degrees (nasmyth_sign * elevation + parallactic
+            angle). A float when both inputs are scalars, otherwise an array
+            of the broadcast shape.
+
+        See Also
+        --------
+        :meth:`get_field_rotation` : The same quantity from RA/Dec and a time.
+        :func:`~fyst_trajectories.offsets.compute_focal_plane_rotation` :
+            Mechanical (horizon-frame) focal-plane rotation; the parallactic
+            angle is an optional argument there.
+
+        Examples
+        --------
+        >>> from astropy.time import Time
+        >>> coords = Coordinates(site)
+        >>> t = Time("2026-03-15T04:00:00", scale="utc")
+        >>> az, el = coords.radec_to_altaz(83.633, 22.014, t)
+        >>> fr = coords.get_field_rotation_from_altaz(az, el)
+        >>> abs(fr - coords.get_field_rotation(83.633, 22.014, t)) < 1e-9
+        True
+        """
+        pa = _parallactic_angle_from_altaz(np.radians(az), np.radians(el), self.site.latitude)
+        field_rotation = self.site.nasmyth_sign * np.asarray(el, dtype=float) + pa
+
+        if np.isscalar(az) and np.isscalar(el):
+            return float(field_rotation)
+        return field_rotation
+
     def radec_to_altaz_with_pm(
         self,
         ra: float,
@@ -1222,7 +1295,7 @@ class Coordinates:
         distance: float | None = None,
         radial_velocity: float | None = None,
         frame: str = "icrs",
-    ) -> tuple[float, float]:
+    ) -> tuple[float | np.ndarray, float | np.ndarray]:
         """Convert RA/Dec to Az/El with proper motion correction.
 
         Propagates the position from the reference epoch to the observation
@@ -1244,25 +1317,34 @@ class Coordinates:
             Reference epoch for the catalog coordinates (e.g., J2000.0 or
             the Gaia observation epoch).
         obstime : Time
-            Observation time to compute position for.
+            Observation time to compute position for: a scalar, or an array
+            of times, each propagated from ``ref_epoch`` in one call.
         distance : float, optional
             Distance in parsecs. If provided along with radial_velocity,
             enables full 3D space motion propagation. If None, only 2D proper
             motion on the sky is used.
         radial_velocity : float, optional
             Radial velocity in km/s (positive = receding). Used for full 3D
-            space motion propagation when distance is also provided.
+            space motion propagation when distance is also provided, and
+            ignored without one.
         frame : str, optional
             Input coordinate frame. Default is "icrs". Passed through
-            :func:`normalize_frame`; ``"HORIZON"`` is refused, since this
-            method reads ``ra``/``dec``.
+            :func:`normalize_frame`; ``"HORIZON"`` and ``"B1950"`` are refused,
+            since this method reads ``ra``/``dec`` and astropy cannot apply
+            space motion in the ``fk4`` frame.
 
         Returns
         -------
-        az : float
-            Azimuth in degrees at observation time.
-        alt : float
-            Altitude (elevation) in degrees at observation time.
+        az : float or array
+            Azimuth in degrees at each observation time; a float for a
+            scalar ``obstime``.
+        alt : float or array
+            Altitude (elevation) in degrees at each observation time.
+
+        Raises
+        ------
+        ValueError
+            If ``frame`` names the horizontal frame or ``"B1950"`` (``fk4``).
 
         Examples
         --------
@@ -1275,10 +1357,16 @@ class Coordinates:
         >>> ref_epoch = Time("J2000.0")
         >>> obs_time = Time("2026-06-15T04:00:00")
         >>> az, el = coords.radec_to_altaz_with_pm(
-        ...     ra, dec, pmra, pmdec, ref_epoch, obstime=obs_time, distance=1.8
+        ...     ra, dec, pmra, pmdec, ref_epoch, obstime=obs_time
         ... )
         """
         frame = _radec_frame(frame)
+        if frame == "fk4":
+            raise ValueError(
+                "frame='B1950' (fk4) is not supported here: astropy cannot apply "
+                "space motion in a frame with its own obstime. Convert the catalogue "
+                "position to ICRS or FK5 first."
+            )
         coord_kwargs = {
             "ra": ra * u.deg,
             "dec": dec * u.deg,
@@ -1290,50 +1378,24 @@ class Coordinates:
 
         if distance is not None:
             coord_kwargs["distance"] = distance * u.pc
-        if radial_velocity is not None:
-            coord_kwargs["radial_velocity"] = radial_velocity * u.km / u.s
+            if radial_velocity is not None:
+                coord_kwargs["radial_velocity"] = radial_velocity * u.km / u.s
 
-        coord = SkyCoord(**coord_kwargs)
-
-        if distance is not None:
-            coord_at_obs = coord.apply_space_motion(new_obstime=obstime)
-        else:
-            # Without a real distance, use a large dummy distance (1 Mpc)
-            # to leverage astropy's spherical proper motion propagation.
-            # This is the documented workaround for the no-distance case
-            # (see astropy issue #10092 and PR #10296) and avoids the
-            # cos(dec) singularity of a naive linear approach at the
-            # celestial poles. The Barnard's Star regression test in
-            # tests/test_coordinates.py guards against future astropy
-            # behaviour drift here; if astropy ever gains a first-class
-            # no-distance code path, the test will catch the change.
-            dummy_coord = SkyCoord(
-                ra=ra * u.deg,
-                dec=dec * u.deg,
-                pm_ra_cosdec=pm_ra * u.mas / u.yr,
-                pm_dec=pm_dec * u.mas / u.yr,
-                distance=1e6 * u.pc,
-                frame=frame,
-                obstime=ref_epoch,
+        # Without a distance, ERFA pmsafe propagates on the sphere and warns
+        # "distance overridden" for every time; the filter silences that. It is
+        # process-global for its duration, so a concurrent thread can lose an
+        # unrelated ERFA warning for the length of one call.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=".*distance overridden.*",
+                category=erfa.ErfaWarning,
             )
-            # The warning filter this installs is process-global for its
-            # duration, so a concurrent thread can lose an unrelated ERFA
-            # warning for the length of one call. The standard library
-            # offers no thread-local alternative, and the dummy-distance
-            # workaround above is what raises the warning, so this is a
-            # known limitation rather than an oversight. Nothing on the
-            # dispatch path reaches it: proper motion is a catalogue-side
-            # correction applied before a scan is planned.
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=".*distance overridden.*",
-                    category=_erfa_warning_cls,
-                )
-                coord_at_obs = dummy_coord.apply_space_motion(new_obstime=obstime)
+            coord_at_obs = SkyCoord(**coord_kwargs).apply_space_motion(new_obstime=obstime)
 
         return self.radec_to_altaz(
-            float(coord_at_obs.ra.deg),
-            float(coord_at_obs.dec.deg),
+            coord_at_obs.ra.deg,
+            coord_at_obs.dec.deg,
             obstime=obstime,
+            frame=frame,
         )

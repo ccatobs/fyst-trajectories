@@ -15,6 +15,7 @@ def quintic_turnaround(
     """Compute position and velocity for a smooth polynomial turnaround.
 
     Uses a degree-4 polynomial that satisfies six boundary conditions:
+
     - p(0) = 0, p(T) = 0  (returns to entry position)
     - p'(0) = +v, p'(T) = -v  (reverses velocity)
     - p''(0) = 0, p''(T) = 0  (zero acceleration at boundaries)
@@ -28,6 +29,7 @@ def quintic_turnaround(
     is degree 4.
 
     Key properties:
+
     - Peak displacement: 5*v*T/16 at t=T/2
     - Peak acceleration: 3*v/T = 1.5 * a_avg
     - Velocity passes through zero at t=T/2

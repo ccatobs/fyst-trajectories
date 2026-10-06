@@ -1,13 +1,17 @@
 Planning Module
 ===============
 
-Astronomer-friendly wrappers that translate field coordinates, elevation
-constraints, and scan velocities into full pattern configurations.
+The planners turn an astronomer's description of a scan (a field or a
+source, an elevation, a speed) into pattern parameters and, for most, a
+built trajectory returned in a
+:class:`~fyst_trajectories.planning.ScanBlock`. Sequencing scans across a
+night belongs to the scheduler; the offline simulator
+(:doc:`overhead_quickstart`) models it for planning studies.
 
 Quick Start
 -----------
 
-Plan a Pong survey scan over a 2x2 degree field::
+Plan a Pong survey scan over a 2° × 2° field::
 
     from astropy.time import Time
 
@@ -30,6 +34,23 @@ Plan a Pong survey scan over a 2x2 degree field::
     print(block.summary)
     print(f"Duration: {block.duration:.1f}s ({block.duration / 3600:.1f}h)")
     print(f"Trajectory: {block.trajectory.n_points} points")
+
+.. figure:: figures/pong_scan.png
+   :alt: Four panels for one Pong period. Above, azimuth against time,
+      elevation against time, and the az/el track, a raster turned relative
+      to the horizon axes. Below, the boresight's hit density in right
+      ascension and declination: the whole field covered, in a fine lattice
+      of denser and sparser spots, brighter along its edges and brightest in
+      its corners.
+   :width: 100%
+
+   The block above: one Pong period over the 2° × 2° field. Azimuth and
+   elevation oscillate together, and the raster is turned relative to the
+   horizon axes because the field is laid out in RA and Dec. On sky
+   (``plot_hit_map``, boresight hits lightly smoothed) the same period
+   covers the whole field, in a fine lattice of denser and sparser spots,
+   with extra hits along the edges and in the corners, where the pattern
+   turns around.
 
 A planning function wraps each scan type an astronomer specifies by sky
 geometry; how much it computes between those inputs and the pattern config
@@ -59,7 +80,7 @@ by its center coordinates and angular extent::
     field = FieldRegion(
         ra_center=0.0,     # deg
         dec_center=-2.0,   # deg
-        width=10.0,        # RA extent in degrees
+        width=10.0,        # on-sky angular width in degrees, not the RA span
         height=6.0,        # Dec extent in degrees
     )
 
@@ -94,7 +115,7 @@ the Quick Start call it takes a pattern rotation and a cycle count::
         n_cycles=3,      # observe 3 full Pong periods
     )
 
-``detector_offset`` shifts the boresight so an off-axis PrimeCam module
+``detector_offset`` shifts the boresight so an off-axis Prime-Cam module
 tracks the field::
 
     from fyst_trajectories.primecam import get_primecam_offset
@@ -108,24 +129,56 @@ tracks the field::
 Multi-Rotation Pong Tiling
 --------------------------
 
+:func:`~fyst_trajectories.planning.plan_pong_rotation_scans` plans
+``n_rotations`` Pong scans of one field at the angles
+``i * 180 / n_rotations`` (the pattern is invariant under a 180° rotation),
+back to back from ``start_time``: each rotation starts when the one before
+it ends. Every other keyword goes to
+:func:`~fyst_trajectories.planning.plan_pong_scan`::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_pong_rotation_scans
+
+    site = get_fyst_site()
+    field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
+    blocks = plan_pong_rotation_scans(
+        field,
+        n_rotations=4,
+        start_time=Time("2026-03-15T01:00:00", scale="utc"),
+        velocity=0.3,
+        spacing=0.1,
+        site=site,
+    )
+    for block in blocks:
+        print(block.config.angle, block.trajectory.start_time.isot)
+    # 0.0 2026-03-15T01:00:00.000
+    # 45.0 2026-03-15T01:05:20.000
+    # 90.0 2026-03-15T01:10:40.000
+    # 135.0 2026-03-15T01:16:00.000
+
+The blocks are a plan: consecutive rotations meet in time and position, but
+the direction of motion changes at each boundary, so each block is a
+separate scan, and a dispatcher re-plans each rotation at its own dispatch
+time.
+
+For the builder path,
 :func:`~fyst_trajectories.planning.plan_pong_rotation_sequence` returns
 ``n_rotations`` copies of a base
 :class:`~fyst_trajectories.patterns.PongScanConfig` with the ``angle``
-field overridden to a uniform ``180° / n_rotations`` sequence. Each
-returned config is passed individually through
-:func:`~fyst_trajectories.planning.plan_pong_scan`::
+field overridden to the same sequence; each goes straight to
+:meth:`~fyst_trajectories.patterns.TrajectoryBuilder.with_config`::
 
-    from fyst_trajectories import PongScanConfig, get_fyst_site
+    from fyst_trajectories import PongScanConfig
     from fyst_trajectories.planning import plan_pong_rotation_sequence
 
-    site = get_fyst_site()
     base = PongScanConfig(
         timestep=0.1, width=2.0, height=2.0,
         spacing=0.1, velocity=0.35, num_terms=4, angle=0.0,
     )
 
-    # 8 rotations at 22.5 deg spacing, each scheduled by its own
-    # plan_pong_scan(..., angle=c.angle) call.
+    # 8 rotations at 22.5 deg spacing.
     configs = plan_pong_rotation_sequence(base, n_rotations=8)
     print([c.angle for c in configs])
     # [0.0, 22.5, 45.0, 67.5, 90.0, 112.5, 135.0, 157.5]
@@ -137,11 +190,16 @@ Planning an AltAz Pong Scan
 Curvy-Pong pattern as :func:`~fyst_trajectories.planning.plan_pong_scan`, but
 about a fixed horizon-frame center (``az_center``, ``el_center``) with no sky
 tracking. The on-sky tangent-plane offsets are mapped into telescope
-coordinates by::
+coordinates by
 
-    az = x_offset / cos(radians(el_center)) + az_center
-    el = y_offset + el_center
+.. math::
 
+   \mathrm{az} = \frac{x}{\cos \mathrm{el}_c} + \mathrm{az}_c,
+   \qquad
+   \mathrm{el} = y + \mathrm{el}_c,
+
+with :math:`(x, y)` the tangent-plane offsets and :math:`\mathrm{az}_c`,
+:math:`\mathrm{el}_c` the ``az_center`` and ``el_center`` arguments,
 so ``width``, ``height``, ``spacing``, and ``velocity`` keep their on-sky
 meaning from the celestial Pong. Budget ``velocity`` against the mount
 azimuth rate limit accordingly.
@@ -157,7 +215,7 @@ Basic usage::
 
     block = plan_pong_altaz_scan(
         az_center=120.0,     # deg
-        el_center=60.0,      # deg (fixed; no sky tracking)
+        el_center=50.0,      # deg (fixed; no sky tracking)
         width=2.0,           # deg on-sky
         height=2.0,          # deg on-sky
         spacing=0.1,         # deg between scan lines
@@ -173,7 +231,9 @@ The duration defaults to one full Pong period; pass ``n_cycles`` to observe
 several. ``num_terms``, ``angle``, ``timestep`` and ``detector_offset``
 behave as in :func:`~fyst_trajectories.planning.plan_pong_scan`;
 ``start_time`` anchors the trajectory and fixes the instant of the warn-only
-Sun pre-flight check, which is taken on the horizon-frame center directly.
+Sun pre-flight check, which is taken on the horizon-frame center at
+``start_time``; the built trajectory is then screened over the whole block,
+since the Sun moves about 15° per hour against the fixed pattern.
 
 Planning a Constant-Elevation Scan
 -----------------------------------
@@ -186,13 +246,17 @@ from the next crossing of the target elevation by the field's RA edges
 at or after ``start_time``, so the scan begins at that crossing rather
 than literally at ``start_time``.
 
+``velocity`` here is the mount-frame azimuth rate, not an on-sky speed as
+in the Pong and Daisy planners: on sky the scan moves at
+``velocity * cos(elevation)``.
+
 Other knobs: ``az_padding`` (extra azimuth margin on each side, default
-2.0 deg here; the source-CES planner's same-named knob defaults to
+2.0° here; the source-CES planner's same-named knob defaults to
 0.5), ``az_accel`` (the turnaround acceleration, in mount-frame azimuth
-degrees per second squared rather than on-sky; default 1.0), and
+deg/s² rather than on-sky; default 1.0), and
 ``max_search_hours`` (how far past ``start_time`` the crossing search
 looks, 12 h by default; a field whose crossing lies beyond it raises
-``ValueError``).
+:class:`~fyst_trajectories.exceptions.PointingError`).
 
 Basic usage::
 
@@ -205,7 +269,7 @@ Basic usage::
     block = plan_constant_el_scan(
         field=field,
         elevation=45.0,          # fixed elevation in degrees
-        velocity=0.5,            # az scan speed in deg/s
+        velocity=0.5,            # mount-frame azimuth rate in deg/s
         site=site,
         start_time="2026-09-15T00:00:00",
         rising=True,             # use rising crossing
@@ -216,6 +280,17 @@ Basic usage::
     print(f"Az range: [{block.computed_params['az_start']:.1f}, "
           f"{block.computed_params['az_stop']:.1f}]")
 
+.. figure:: figures/constant_el_scan.png
+   :alt: Coverage of the centre module in right ascension and declination for
+      the rising constant-elevation pass: a band slanted along the field's
+      drift.
+   :width: 100%
+
+   The rising pass on sky (``plot_hit_map``, centre module, averaged over
+   its field of view). The telescope sweeps a fixed azimuth range at
+   45° elevation while the field rises through it, so the covered sky is a
+   band slanted along the drift rather than the field's rectangle.
+
 ``detector_offset`` behaves as in
 :func:`~fyst_trajectories.planning.plan_pong_scan`.
 
@@ -224,8 +299,14 @@ LSA-windowed timing
 
 Instead of deriving timing from RA-edge elevation crossings, pass
 ``lsa_window=(min_lsa, max_lsa)`` (degrees) to pin the scan to a Local
-Sidereal Angle window. The scan spans ``((max_lsa - min_lsa) mod 360) / 15``
-hours of UTC, about 0.3 percent longer than the sidereal window it names,
+Sidereal Angle window. The scan lasts
+
+.. math::
+
+   T = \frac{(\mathrm{LSA}_\mathrm{max} - \mathrm{LSA}_\mathrm{min}) \bmod 360^\circ}
+            {15^\circ}\ \mathrm{h}
+
+of UTC, about 0.3 percent longer than the sidereal window it names,
 and ``block.duration`` is that span quantised to whole azimuth legs.
 Wrap-around windows (``max_lsa < min_lsa``, e.g. ``(310.0, 10.0)``) are
 supported. The window fixes the timing and the azimuth range together, so
@@ -280,16 +361,31 @@ position rather than a ``FieldRegion``::
 
     print(block.summary)
 
+.. figure:: figures/daisy_scan.png
+   :alt: Boresight hit density in right ascension and declination for the
+      five-minute daisy: petals that all cross at the tracked position.
+   :width: 70%
+
+   The same block on sky (``plot_hit_map``, boresight hits lightly
+   smoothed): every petal passes through the tracked position.
+
 Planning an AltAz Daisy Scan
 ----------------------------
 
 :func:`~fyst_trajectories.planning.plan_daisy_altaz_scan` runs the same
 Constant-Velocity Daisy pattern as
 :func:`~fyst_trajectories.planning.plan_daisy_scan` about a fixed
-horizon-frame center, under the same ``1 / cos(el_center)`` azimuth
-mapping; the azimuth-coordinate extent is about ``2 * r_max /
-cos(el_center)``, where the petal's reach ``r_max = sqrt(radius**2 +
-turn_radius**2) + turn_radius``::
+horizon-frame center, under the same :math:`1 / \cos \mathrm{el}_c`
+azimuth mapping. The azimuth-coordinate extent is about
+
+.. math::
+
+   \Delta\mathrm{az} \approx \frac{2\,r_\mathrm{max}}{\cos \mathrm{el}_c},
+   \qquad
+   r_\mathrm{max} = \sqrt{r^2 + r_t^2} + r_t,
+
+with :math:`r` the ``radius``, :math:`r_t` the ``turn_radius`` and
+:math:`r_\mathrm{max}` the petal's reach::
 
     from astropy.time import Time
 
@@ -300,7 +396,7 @@ turn_radius**2) + turn_radius``::
 
     block = plan_daisy_altaz_scan(
         az_center=120.0,        # deg
-        el_center=60.0,         # deg (fixed; no sky tracking)
+        el_center=50.0,         # deg (fixed; no sky tracking)
         radius=0.5,
         velocity=0.3,
         turn_radius=0.2,
@@ -329,7 +425,7 @@ that keeps the swept window on the source while its own elevation motion
 carries it across the array. It mirrors Simons Observatory's
 ``schedlib.source.make_source_ces``.
 
-Worked example, Jupiter rising across the full PrimeCam array::
+Worked example, Jupiter rising across the full Prime-Cam array::
 
     from astropy.time import Time
 
@@ -350,7 +446,7 @@ Worked example, Jupiter rising across the full PrimeCam array::
 
     print(block.summary)
     cp = block.computed_params
-    print(f"Source pass: {cp['t0_iso'][:19]} → {cp['t1_iso'][:19]}")
+    print(f"Source pass: {cp['t0_iso'][:19]} -> {cp['t1_iso'][:19]}")
     print(f"Az drift:    {cp['v_az']:+.5f} deg/s")
     print(f"Az range:    [{cp['az_start']:.2f}, {cp['az_start'] + cp['az_throw']:.2f}] deg")
 
@@ -369,14 +465,19 @@ Select the time window with either ``night`` + ``mode`` (``"rising"`` or
 
 Other knobs: ``boresight_rot`` (mechanical boresight rotation, deg),
 ``v_az`` (override the solved drift rate), ``az_padding`` (extra azimuth
-margin, default 0.5 deg), ``az_branch`` (centre of the azimuth wrap branch),
+margin, default 0.5°), ``az_branch`` (centre of the azimuth wrap branch),
 and ``allow_partial`` (clip to the observable arc and warn instead of
-raising when the source does not fully cover the footprint at ``el_bore``).
+raising when the source does not fully cover the footprint at ``el_bore``;
+a source that reaches no vertex of the cover, or a single vertex with
+``az_padding=0`` and no ``az_throw``, leaves nothing to sweep and still
+raises :class:`~fyst_trajectories.exceptions.PointingError`).
 A sidereal source takes ``ra=`` / ``dec=`` (optionally ``pm_ra`` /
 ``pm_dec`` / ``ref_epoch``) in place of ``body=``.
 
-By default the pass is a slow drag: the telescope sweeps the solved window
-once down and up over the whole footprint crossing. Three optional inputs
+By default the pass is a slow drag: the per-leg speed is chosen so that a
+single azimuth leg would span the whole footprint crossing, floored at a
+slow minimum speed, so a planet crossing usually runs many legs
+(``computed_params["n_scans"]`` reports how many). Three optional inputs
 turn it into a faster, narrower or shorter measurement while keeping the
 same drift solve and Sun check: ``az_speed`` (deg/s) sets the per-leg
 speed of the sweep, distinct from the drift rate ``v_az`` that keeps the
@@ -384,7 +485,11 @@ window on the source; ``az_throw`` (deg) replaces the solved, padded
 window with an explicit one re-centred on it (not combinable with an
 explicit ``az_padding``; narrower than the footprint crossing warns); and
 ``dwell`` (s) narrows the pass symmetrically about the crossing midpoint
-(longer than the crossing is rejected, shorter warns as a partial pass).
+(one longer than the crossing is rejected with
+:class:`~fyst_trajectories.exceptions.DwellExceedsCrossingError`, which
+carries both durations, and one shorter than ``sampling_step_seconds`` with
+``ValueError``; any other value shorter than the crossing warns as a partial
+pass).
 ``computed_params`` records the speed used as ``az_speed`` and the full
 crossing as ``crossing_seconds`` whether or not the inputs were given.
 
@@ -393,6 +498,17 @@ planned pass, :func:`~fyst_trajectories.planning.source_ces_focal_plane_track`
 returns its ``(xi, eta)`` coordinates per trajectory sample, and
 :func:`~fyst_trajectories.visualization.plot_source_track` draws them over
 the module layout (see :doc:`api/visualization`).
+
+.. figure:: figures/source_ces_track.png
+   :alt: The seven Prime-Cam module circles in the focal plane with Jupiter's
+      sawtooth track crossing the array from bottom to top.
+   :width: 70%
+
+   The worked example's pass (``plot_source_track``): each sweep leg carries
+   Jupiter across the swept window while its rise moves it up through the
+   array, so the envelope crosses all seven modules. Drawn for the default
+   right Nasmyth port and the commissioning module geometry, both awaiting
+   instrument-team confirmation (see :ref:`index-pending-verification`).
 
 Anchoring to an approximate start time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -456,7 +572,7 @@ The result is a time-ordered ``list`` of ordinary source-CES blocks::
 
     passes = plan_source_ces_passes(
         body="jupiter",
-        footprint="c",          # one PrimeCam module
+        footprint="c",          # one Prime-Cam module
         el_bore=35.0,
         n_passes=3,             # three drift passes tiling the module in eta
         night=Time("2026-03-15T00:00:00", scale="utc"),
@@ -480,7 +596,9 @@ successive passes interleave rather than painting disjoint bands. The
 ``el_bore`` moves between passes; below the extent the passes pack closer,
 their source windows overlap in time, and the planner warns. Each block
 carries its ``pass_index``, ``pass_eta_offset_deg`` and
-``pass_el_bore_deg`` in ``trajectory.metadata.pattern_params``.
+``pass_el_bore_deg`` in ``trajectory.metadata.pattern_params``, beside the
+``body`` every source-CES block records there (the lower-case body name, or
+``None`` for an RA/Dec source).
 
 Params-only mode (emit-time)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -494,8 +612,8 @@ price many candidate scans cheaply (feasibility, duration, azimuth throw)
 without building a trajectory, which the execution layer generates once at
 dispatch.
 
-Worked example, the same Jupiter input as the section above, scalars
-only::
+Worked example, the full-array Jupiter input that opens the source-CES
+section (reusing its ``modules``, ``site`` and ``Time``), scalars only::
 
     from fyst_trajectories.planning import compute_source_ces_params
 
@@ -518,12 +636,17 @@ for the same inputs.
 Shared Parameters: Sun Safety and Refraction
 --------------------------------------------
 
+The planners take at most their target positionally (the field,
+``ra, dec``, ``az_center, el_center``, or the base config of
+``plan_pong_rotation_sequence``) and every other argument by keyword,
+and ``timestep`` defaults to 0.1 s in every planner that builds a
+trajectory.
 Every planner on this page except ``plan_pong_rotation_sequence``
 (which only produces configs) accepts two cross-cutting keyword
 parameters.
 
-``sun_safe=`` injects a Sun-safety predicate
-(:class:`~fyst_trajectories.dispatch.SunSafePredicate`) into the
+``sun_safe=`` injects a sun-safety predicate
+(:class:`~fyst_trajectories.sun_protocols.SunSafePredicate`) into the
 planner's pre-flight check in place of the built-in scalar radius. This
 is the injection point for the directional CAD-derived model::
 
@@ -565,9 +688,10 @@ Scan Block Output
 The six single-scan planners (``plan_pong_scan``, ``plan_constant_el_scan``,
 ``plan_daisy_scan``, ``plan_pong_altaz_scan``, ``plan_daisy_altaz_scan`` and
 ``plan_source_ces``) return a
-:class:`~fyst_trajectories.planning.ScanBlock`. The other three entry
-points do not: ``plan_source_ces_passes`` returns a list of these blocks
-(one per pass), ``plan_pong_rotation_sequence`` returns a list of configs,
+:class:`~fyst_trajectories.planning.ScanBlock`. The other four entry
+points do not: ``plan_source_ces_passes`` and ``plan_pong_rotation_scans``
+return a list of these blocks (one per pass or rotation),
+``plan_pong_rotation_sequence`` returns a list of configs,
 and ``compute_source_ces_params`` returns a bare dict, as shown in their
 sections above.
 

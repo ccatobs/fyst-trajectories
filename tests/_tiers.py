@@ -20,7 +20,10 @@ from here so they cannot drift apart:
 
 The scan reads imports rather than paths because the rule it enforces is about
 imports: a test that never names the simulator does not exercise it, wherever
-it happens to live.
+it happens to live. The source readers here (:func:`imported_names`,
+:func:`_module_name`, :func:`_package_of`) also serve
+``test_private_imports.py``, which checks the private names one part of the
+package imports from another.
 """
 
 from __future__ import annotations
@@ -38,6 +41,22 @@ TIMELINE_PLOTS = f"{VISUALIZATION}.overhead"
 SIMULATOR_TIER = (OVERHEAD, TIMELINE_PLOTS)
 
 _TESTS_ROOT = Path(__file__).resolve().parent
+
+#: The package's source directory, whose modules the import scans read.
+SRC = _TESTS_ROOT.parent / "src" / PACKAGE
+
+
+def _module_name(path: Path) -> str:
+    """Dotted module name of a source file under the package root."""
+    parts = path.relative_to(SRC).with_suffix("").parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join((PACKAGE, *parts))
+
+
+def _package_of(module: str, path: Path) -> str:
+    """Package a source file's relative imports resolve against."""
+    return module if path.name == "__init__.py" else module.rpartition(".")[0]
 
 
 def has_prefix(name: str, prefixes: tuple[str, ...]) -> bool:

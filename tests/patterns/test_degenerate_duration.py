@@ -1,17 +1,20 @@
 """Regression tests for degenerate-duration guards in pattern generation.
 
-Every pattern samples on ``n_points = round(duration / timestep) + 1``. A
-duration that is zero, negative, or shorter than ``timestep`` collapses to a
-single sample. Unguarded, that either fails opaquely in ``np.gradient``
+The patterns sample on ``n_points = round(duration / timestep) + 1`` (daisy
+downsamples its integrator grid and can land one short, see
+``TestDaisyEqualsTimestepRaises``). A duration that is zero, negative, or
+shorter than half a ``timestep`` collapses to a single sample. Unguarded, that
+either fails opaquely in ``np.gradient``
 (an unhelpful ``IndexError``) or, for the AltAz patterns that set
 velocities directly (linear, constant_el), *silently* returns a wrong
 1-point trajectory. These tests pin the contract: such durations raise a
-clear ``PointingError`` (a ``ValueError`` subclass), via both the public
-``TrajectoryBuilder`` path and the direct ``.generate()`` /
-``.generate_offsets()`` path, while a normal duration generates.
+clear plain ``ValueError`` (a malformed request, so not a ``PointingError``),
+via both the public ``TrajectoryBuilder`` path and the direct ``.generate()``
+/ ``.generate_offsets()`` path, while a normal duration generates.
 
 Six of the nine registered patterns are driven below. The AltAz Pong and Daisy
-patterns raise the same error on the same durations and are not repeated here.
+patterns and the satellite track raise the same error on the same durations and
+are not repeated here.
 """
 
 import pytest
@@ -127,6 +130,11 @@ def _generate(pattern, site, duration, needs_start_time, start=_START):
     return pattern.generate(site, duration, start_time)
 
 
+def _assert_plain_value_error(exc_info):
+    """Assert the refusal is an argument error: a ``ValueError``, not a ``PointingError``."""
+    assert not isinstance(exc_info.value, PointingError)
+
+
 class TestDegenerateDurationDirect:
     """Degenerate durations raise via the direct ``.generate()`` path."""
 
@@ -135,19 +143,32 @@ class TestDegenerateDurationDirect:
     def test_nonpositive_duration_raises(
         self, pattern_factory, config, needs_start, obs_start, duration, site
     ):
-        """Zero or negative duration raises a clear PointingError, not IndexError."""
+        """Zero or negative duration raises a clear ValueError, not IndexError."""
         pattern = pattern_factory()
-        with pytest.raises(PointingError, match="fewer than 2 samples"):
+        with pytest.raises(ValueError, match="fewer than 2 samples") as exc_info:
             _generate(pattern, site, duration, needs_start)
+        _assert_plain_value_error(exc_info)
 
     @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     def test_sub_timestep_duration_raises(
         self, pattern_factory, config, needs_start, obs_start, site
     ):
-        """A sub-timestep duration raises a clear PointingError, not IndexError."""
+        """A sub-timestep duration raises a clear ValueError, not IndexError."""
         pattern = pattern_factory()
-        with pytest.raises(PointingError, match="fewer than 2 samples"):
+        with pytest.raises(ValueError, match="fewer than 2 samples") as exc_info:
             _generate(pattern, site, config.timestep / 2.0, needs_start)
+        _assert_plain_value_error(exc_info)
+
+    @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
+    @pytest.mark.parametrize("duration", [float("nan"), float("inf")])
+    def test_non_finite_duration_raises(
+        self, pattern_factory, config, needs_start, obs_start, duration, site
+    ):
+        """A NaN or infinite duration raises a clear ValueError, not a ``round`` failure."""
+        pattern = pattern_factory()
+        with pytest.raises(ValueError, match="duration must be finite") as exc_info:
+            _generate(pattern, site, duration, needs_start)
+        _assert_plain_value_error(exc_info)
 
     @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
     def test_normal_duration_still_works(
@@ -180,6 +201,12 @@ class TestDegenerateDurationBuilder:
             builder.build()
 
     @pytest.mark.parametrize("pattern_factory, config, needs_start, obs_start", _PATTERNS)
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_normal_duration_still_works(
         self, pattern_factory, config, needs_start, obs_start, site
     ):
@@ -200,33 +227,17 @@ class TestDaisyEqualsTimestepRaises:
     (valid for pong/linear/constant_el), but daisy's ``[::sample_every]``
     downsampling drops the final partial step, collapsing to 1 sample. That
     is the case daisy's half-guard lets through into ``np.gradient``, so it
-    must raise a clear PointingError.
+    must raise a clear ValueError.
     """
 
     def test_daisy_generate_offsets_equals_timestep_raises(self):
         pattern = _daisy()
-        with pytest.raises(PointingError, match="fewer than 2 samples"):
+        with pytest.raises(ValueError, match="fewer than 2 samples") as exc_info:
             pattern.generate_offsets(pattern.config.timestep)
+        _assert_plain_value_error(exc_info)
 
     def test_daisy_generate_equals_timestep_raises(self, site):
         pattern = _daisy()
-        with pytest.raises(PointingError, match="fewer than 2 samples"):
+        with pytest.raises(ValueError, match="fewer than 2 samples") as exc_info:
             pattern.generate(site, pattern.config.timestep, _START)
-
-
-class TestAltAzNoSilentOnePoint:
-    """linear and constant_el must not silently return a 1-point trajectory.
-
-    These two patterns set velocities directly (no ``np.gradient``), so an
-    unguarded degenerate duration produces a wrong 1-point Trajectory with no
-    error, the worst failure mode. They must raise instead.
-    """
-
-    @pytest.mark.parametrize(
-        "pattern_factory", [_linear, _constant_el], ids=["linear", "constant_el"]
-    )
-    @pytest.mark.parametrize("duration", [0.0, -1.0, _TIMESTEP / 2.0])
-    def test_no_silent_one_point_trajectory(self, pattern_factory, duration, site):
-        pattern = pattern_factory()
-        with pytest.raises(PointingError, match="fewer than 2 samples"):
-            pattern.generate(site, duration)
+        _assert_plain_value_error(exc_info)

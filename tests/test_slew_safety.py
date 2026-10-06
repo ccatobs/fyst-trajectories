@@ -159,8 +159,9 @@ def test_plain_scalar_predicate_swept_per_sample(sun_evening):
         return abs(((az - sun_az) + 180.0) % 360.0 - 180.0) > 20.0
 
     slew_safe = make_slew_safe(plain_point)
-    assert not slew_safe(sun_az - 60.0, 30.0, sun_az + 60.0, 30.0, T_EVENING)
-    assert calls  # the per-sample loop actually ran
+    safe, az_path, _, _ = slew_safe.evaluate(sun_az - 60.0, 30.0, sun_az + 60.0, 30.0, T_EVENING)
+    assert not safe
+    assert len(calls) == len(az_path)  # one consultation per path sample
 
 
 def test_slew_perf_budget():
@@ -323,7 +324,7 @@ def test_detour_rejects_bounds_outside_the_mount_range():
 def test_a_nan_elevation_bound_is_refused(bound):
     """NaN fails every comparison, so it needs the same guard as an out-of-range bound.
 
-    Unguarded it fell through both range tests and died inside the
+    Unguarded, it would fall through both range tests and fail inside the
     elevation grid as ``arange: cannot compute length``, several frames from
     the caller.
     """

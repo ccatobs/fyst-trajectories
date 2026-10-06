@@ -1,11 +1,13 @@
 """Tests for DaisyAltAzScanPattern and DaisyAltAzScanConfig."""
 
 import math
+from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from fyst_trajectories.exceptions import PointingWarning, TrajectoryBoundsError
+from fyst_trajectories.exceptions import ElevationBoundsError, PointingWarning
 from fyst_trajectories.patterns import (
     DaisyAltAzScanConfig,
     DaisyAltAzScanPattern,
@@ -14,7 +16,8 @@ from fyst_trajectories.patterns import (
     TrajectoryBuilder,
     get_pattern,
 )
-from fyst_trajectories.patterns.daisy import _DAISY_SCIENCE_SPEED_THRESHOLD
+from fyst_trajectories.patterns.utils import _SCIENCE_SPEED_FRACTION
+from fyst_trajectories.planning import plan_daisy_altaz_scan
 
 
 def _base_config(**overrides):
@@ -43,7 +46,7 @@ class TestDaisyAltAzScanConfig:
 
     def test_frozen(self):
         config = _base_config()
-        with pytest.raises((AttributeError, TypeError)):
+        with pytest.raises(FrozenInstanceError):
             config.az_center = 200.0
 
     @pytest.mark.parametrize("field", ["radius", "velocity", "turn_radius"])
@@ -94,11 +97,7 @@ class TestDaisyAltAzScanPattern:
         pattern = DaisyAltAzScanPattern(_base_config())
         trajectory = pattern.generate(site, duration=100.0)
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "daisy_altaz"
-        assert trajectory.coordsys == "altaz"
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
 
     def test_start_time_not_required(self, site):
         pattern = DaisyAltAzScanPattern(_base_config())
@@ -116,54 +115,22 @@ class TestDaisyAltAzScanPattern:
         assert az_mid == pytest.approx(130.0, abs=0.05)
         assert el_mid == pytest.approx(55.0, abs=0.05)
 
-    def test_mapping_matches_hand_formula(self, site):
-        """Az/el extents follow az = x/cos(el0)+az0, el = y+el0 exactly.
+    @pytest.mark.parametrize("avoidance_radius", [0.0, 0.1])
+    @pytest.mark.parametrize("y_offset", [0.0, 0.3])
+    @pytest.mark.parametrize(("az_center", "el_center"), [(100.0, 45.0), (120.0, 60.0)])
+    def test_pointwise_mapping(self, site, az_center, el_center, y_offset, avoidance_radius):
+        """Every sample obeys az = x / cos(el0) + az0, el = y + el0 against the reused offsets.
 
-        The pattern must reproduce the pinned legacy mapping. With
-        el_center=60 deg the azimuth coordinate is stretched by
-        1/cos(60 deg) = 2, so the azimuth extent equals the offset x-extent
-        times 2, and the elevation extent equals the offset y-extent. Both
-        are checked against the offsets pulled from the reused celestial
-        Daisy, to float tolerance.
+        The comparison is exact: the AltAz pattern must reproduce the celestial
+        Daisy's offsets and flags bit for bit, with or without a petal offset
+        and an avoidance radius.
         """
-        config = _base_config(el_center=60.0)
-        pattern = DaisyAltAzScanPattern(config)
-        duration = 200.0
-        trajectory = pattern.generate(site, duration=duration)
-
-        # Offsets from the exact same machinery the pattern reuses.
-        offset_daisy = DaisyScanPattern(
-            ra=0.0,
-            dec=0.0,
-            config=DaisyScanConfig(
-                timestep=config.timestep,
-                radius=config.radius,
-                velocity=config.velocity,
-                turn_radius=config.turn_radius,
-                avoidance_radius=config.avoidance_radius,
-                start_acceleration=config.start_acceleration,
-                y_offset=config.y_offset,
-            ),
+        config = _base_config(
+            el_center=el_center,
+            az_center=az_center,
+            y_offset=y_offset,
+            avoidance_radius=avoidance_radius,
         )
-        _, x_off, y_off = offset_daisy.generate_offsets(duration)
-
-        cos60 = math.cos(math.radians(60.0))
-        assert cos60 == pytest.approx(0.5)
-
-        # Azimuth extent = x-offset extent / cos(el_center); elevation
-        # extent = y-offset extent (no stretch).
-        expected_az_extent = np.ptp(x_off) / cos60
-        expected_el_extent = np.ptp(y_off)
-        assert np.ptp(trajectory.az) == pytest.approx(expected_az_extent, abs=1e-6)
-        assert np.ptp(trajectory.el) == pytest.approx(expected_el_extent, abs=1e-6)
-
-        # The azimuth stretch factor is exactly 1/cos(60 deg) = 2, applied to
-        # the x-offset extent.
-        assert np.ptp(trajectory.az) == pytest.approx(2.0 * np.ptp(x_off), rel=1e-6)
-
-    def test_pointwise_mapping(self, site):
-        """Every sample obeys the mapping against the reused offsets."""
-        config = _base_config(el_center=45.0, az_center=100.0)
         pattern = DaisyAltAzScanPattern(config)
         duration = 100.0
         trajectory = pattern.generate(site, duration=duration)
@@ -181,16 +148,20 @@ class TestDaisyAltAzScanPattern:
                 y_offset=config.y_offset,
             ),
         )
-        _, x_off, y_off = offset_daisy.generate_offsets(duration)
+        times, x_off, y_off = offset_daisy.generate_offsets(duration)
 
-        cos45 = math.cos(math.radians(45.0))
-        expected_az = x_off / cos45 + 100.0
-        expected_el = y_off + 45.0
+        cos_el = math.cos(math.radians(el_center))
+        expected_az = x_off / cos_el + az_center
+        expected_el = y_off + el_center
+        speed = np.sqrt(np.gradient(x_off, times) ** 2 + np.gradient(y_off, times) ** 2)
+        expected_flag = np.full(len(times), 2, dtype=np.int8)  # SCAN_FLAG_TURNAROUND
+        expected_flag[speed >= _SCIENCE_SPEED_FRACTION * config.velocity] = 1
 
         # az is used as provided by the AltAz mapping (no normalization), so a
         # direct comparison is expected here.
-        np.testing.assert_allclose(trajectory.az, expected_az, atol=1e-6)
-        np.testing.assert_allclose(trajectory.el, expected_el, atol=1e-6)
+        np.testing.assert_array_equal(trajectory.az, expected_az)
+        np.testing.assert_array_equal(trajectory.el, expected_el)
+        np.testing.assert_array_equal(trajectory.scan_flag, expected_flag)
 
     def test_scan_flags_match_celestial_daisy(self, site):
         """Flags mirror the celestial Daisy: SCIENCE dominates, ramp is not.
@@ -231,7 +202,7 @@ class TestDaisyAltAzScanPattern:
         times, x_off, y_off = offset_daisy.generate_offsets(duration)
         speed = np.hypot(np.gradient(x_off, times), np.gradient(y_off, times))
         expected = np.full(len(times), 2, dtype=np.int8)  # SCAN_FLAG_TURNAROUND
-        expected[speed >= _DAISY_SCIENCE_SPEED_THRESHOLD * config.velocity] = 1
+        expected[speed >= _SCIENCE_SPEED_FRACTION * config.velocity] = 1
         np.testing.assert_array_equal(trajectory.scan_flag, expected)
 
     def test_metadata_stored(self, site):
@@ -257,13 +228,14 @@ class TestDaisyAltAzScanPattern:
         validation must raise. (The radius is chosen so the realized petal
         extent, not merely R0, clears 90.)
         """
-        config = _base_config(
-            el_center=87.0,
-            radius=6.0,
-            turn_radius=0.5,
-        )
+        with pytest.warns(PointingWarning, match="Azimuth-coordinate velocity"):
+            config = _base_config(
+                el_center=87.0,
+                radius=6.0,
+                turn_radius=0.5,
+            )
         pattern = DaisyAltAzScanPattern(config)
-        with pytest.raises(TrajectoryBoundsError):
+        with pytest.raises(ElevationBoundsError, match=r"92\.7"):
             pattern.generate(site, duration=400.0)
 
 
@@ -273,38 +245,65 @@ class TestRegistryAndBuilderIntegration:
     def test_registered_under_name(self):
         assert get_pattern("daisy_altaz") is DaisyAltAzScanPattern
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning"
+    )
     def test_builder_infers_pattern_from_config(self, site):
         """TrajectoryBuilder builds the pattern from the config type alone."""
         trajectory = TrajectoryBuilder(site).with_config(_base_config()).duration(100.0).build()
         assert trajectory.pattern_type == "daisy_altaz"
-        assert trajectory.coordsys == "altaz"
 
 
-class TestDelegateConfigIsBuiltOnce:
-    """The equivalent celestial config is built once per pattern instance.
+def _config_advisories(recwarn):
+    """Return the configuration advisories ("... is unusually large") recorded so far."""
+    return [
+        w
+        for w in recwarn.list
+        if issubclass(w.category, PointingWarning) and "unusually large" in str(w.message)
+    ]
 
-    Rebuilding it re-runs the celestial config's validation, so an advisory it
-    carries would be emitted once per construction rather than once per
-    pattern.
+
+class TestAdvisoriesAreNotRepeated:
+    """A configuration advisory is emitted once, where the configuration is built.
+
+    The pattern hands its own configuration to the celestial Daisy, so building
+    and inspecting a pattern re-runs no validation, and the planner builds one
+    configuration for the trajectory.
     """
 
-    def test_advisory_is_emitted_once_per_pattern(self, site, recwarn):
+    def test_pattern_route_emits_no_advisory(self, site, recwarn):
         config = _base_config(velocity=12.0)
         recwarn.clear()
         pattern = DaisyAltAzScanPattern(config)
         pattern.generate(site, duration=20.0)
         pattern.generate(site, duration=20.0)
         pattern.get_metadata()
-        advisories = [
-            w
-            for w in recwarn.list
-            if issubclass(w.category, PointingWarning) and "unusually large" in str(w.message)
-        ]
-        assert len(advisories) == 1, [str(w.message) for w in advisories]
+        advisories = _config_advisories(recwarn)
+        assert advisories == [], [str(w.message) for w in advisories]
 
-    def test_the_same_object_is_reused(self):
-        """Both consumers see one delegate config."""
-        pattern = DaisyAltAzScanPattern(_base_config())
-        first = pattern._offset_pattern().config
-        assert first is pattern._delegate_config
-        assert pattern._offset_pattern().config is first
+    def test_planner_emits_each_advisory_once(self, site, recwarn):
+        recwarn.clear()
+        plan_daisy_altaz_scan(
+            az_center=120.0,
+            el_center=60.0,
+            radius=0.5,
+            velocity=6.0,
+            turn_radius=0.2,
+            avoidance_radius=0.0,
+            start_acceleration=0.5,
+            site=site,
+            start_time="2026-03-15T01:00:00",
+            timestep=0.1,
+            duration=60.0,
+        )
+        advisories = _config_advisories(recwarn)
+        messages = [str(w.message) for w in advisories]
+        assert len(messages) == 2, messages
+        assert len(set(messages)) == 2, messages
+        assert any(m.startswith("Scan velocity 6.0 deg/s") for m in messages), messages
+        assert any(m.startswith("Azimuth-coordinate velocity") for m in messages), messages
+        for w in advisories:
+            assert (
+                Path(w.filename).as_posix().endswith("fyst_trajectories/planning/daisy_altaz.py")
+            ), w.filename

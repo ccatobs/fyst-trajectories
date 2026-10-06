@@ -36,7 +36,7 @@ classifiers = [
 ]
 dependencies = [
     "astropy>=5.0",
-    "numpy>=1.20",
+    "numpy>=1.21",
     "pyyaml>=6.0",
     "scipy>=1.9",
 ]
@@ -58,22 +58,25 @@ docs = [
     "sphinx>=8,<9",
     "sphinx-rtd-theme>=2.0",
     "sphinx-autodoc-typehints>=3,<3.6",
-    "matplotlib>=3.5",
 ]
 dev = [
     "matplotlib>=3.5",
     "numba>=0.57",
-    "pytest>=7.0",
+    "pytest>=8.0",
     "pytest-cov>=4.0",
     "ruff>=0.9",
     "pylint>=4.0",
+    # Bump together with the exact pin of the typing job in
+    # .github/workflows/tests.yml: newer pyright releases add checks.
+    "pyright>=1.1.408",
     "skyfield>=1.45",
     "jplephem>=2.18",
     "hypothesis>=6.0",
     "pre-commit>=3.0",
 ]
 all = [
-    "fyst-trajectories[ephemeris,plotting,docs,dev,performance,overhead]",
+    "fyst-trajectories[ephemeris,plotting,docs,dev,performance]",
+    "healpy>=1.16; sys_platform != 'win32'",
 ]
 
 [project.urls]
@@ -93,6 +96,10 @@ include = [
     "/src",
     "/tests",
     "/examples",
+    "/docs/*.rst",
+    "/docs/api",
+    "/docs/make_figures.py",
+    "/docs/figures",
 ]
 
 [tool.pytest.ini_options]
@@ -103,17 +110,22 @@ markers = [
     "offline: exercises the simulator tier (overhead, its plots, the pages and examples that run them); CI runs it as its own job, -m 'not offline' is the library-tier suite",
 ]
 filterwarnings = [
-    "ignore::fyst_trajectories.exceptions.PointingWarning",
+    "error::fyst_trajectories.exceptions.PointingWarning",
 ]
-# The far-future EOP warnings (dubious year, degraded accuracy, polar motions
+# The library's own advisories (PointingWarning and its velocity and
+# acceleration subclasses) fail the test that emits them. A test whose
+# subject is an advisory asserts it with pytest.warns; a test that meets one
+# incidentally carries a filterwarnings mark naming the message. The
+# far-future EOP warnings (dubious year, degraded accuracy, polar motions
 # past the vendored table) belong to one skyfield-agreement test that samples
 # 2026-2035 on purpose, and are filtered there with a mark rather than
-# suppressed suite-wide, so the fast suite runs warning-clean and a new
-# warning is visible.
+# suppressed suite-wide, so a new warning of any kind is visible.
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# docs/reviews/ is gitignored working material; keep ruff's walk out of it on every platform.
+extend-exclude = ["docs/reviews"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "D"]

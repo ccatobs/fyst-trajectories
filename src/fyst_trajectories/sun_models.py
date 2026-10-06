@@ -1,7 +1,7 @@
 """Selectable sun-avoidance models, including the shared ``sun-avoidance`` library.
 
 This module is the single place where a caller chooses *which* sun-avoidance
-model drives the ``sun_safe`` seam (:class:`~fyst_trajectories.dispatch.SunSafePredicate`)
+model drives the ``sun_safe`` seam (:class:`~fyst_trajectories.sun_protocols.SunSafePredicate`)
 threaded through :func:`~fyst_trajectories.observability.check_observability`,
 the planners, and :func:`~fyst_trajectories.dispatch.choose_encoder_solution`:
 
@@ -54,7 +54,7 @@ kinematics, and detour search are deliberately not used. Path-level slew
 safety is built here instead: :func:`make_slew_safe` sweeps a point model
 along the FYST trapezoidal kinematic path (the FYST axis limits, the Sun
 ephemeris advanced along the motion) to satisfy the
-:class:`~fyst_trajectories.dispatch.SlewSafePredicate` contract, and
+:class:`~fyst_trajectories.sun_protocols.PathSlewSafePredicate` contract, and
 :func:`find_sun_safe_detour` plans elevation-bounded two-leg reroutes for
 the caller (dispatch itself rejects rather than auto-rerouting, by
 design).
@@ -85,7 +85,6 @@ import numpy as np
 from astropy.time import Time, TimeDelta
 
 from .coordinates import Coordinates
-from .dispatch import SlewSafePredicate, SunSafePredicate
 from .exceptions import PointingWarning
 from .site import (
     FYST_AZ_MAX_ACCELERATION,
@@ -94,6 +93,13 @@ from .site import (
     FYST_EL_MAX_VELOCITY,
     Site,
     get_fyst_site,
+)
+from .sun_protocols import (
+    PathSlewSafePredicate,
+    SlewSafePredicate,
+    SunSafePredicate,
+    ZonedSunSafePredicate,
+    _sun_verdicts,
 )
 
 if TYPE_CHECKING:
@@ -111,12 +117,14 @@ __all__ = [
 SUN_AVOIDANCE_PINNED_SHA = "e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
 """ccatobs/sun-avoidance revision the adapter and parity fixtures are built against."""
 
-CAD_TABLE_SHA256 = "ecdf86e2d9d091c01cf1d9d67490e46edeb77af5bafd08c0ab1e7bc18a4d4a46"
-"""SHA-256 of ``sa_safe_CAD_20231030.csv`` at the pinned revision.
+CAD_TABLE_SHA256 = "bdac30878877b20d14fe20fff5d1bd12531306a50eb879a4babfe57ef4216f3b"
+"""SHA-256 of ``sa_safe_CAD_20231030.csv`` at the pinned revision, over LF line endings.
 
-The loader refuses a table whose bytes differ: a revised CAD model must
-arrive as a deliberate re-pin (new SHA, regenerated parity fixtures), never
-as a silent behaviour change.
+The loader folds CRLF to LF before hashing, so a Windows checkout
+(``core.autocrlf``) and a Linux one of the same revision agree. It refuses a
+table whose bytes differ otherwise: a revised CAD model must arrive as a
+deliberate re-pin (new SHA, regenerated parity fixtures), never as a silent
+behaviour change.
 """
 
 #: Module names the pinned library maps to a nonzero boresight-to-module
@@ -137,15 +145,21 @@ def _import_sun_avoidance():
     try:
         import sun_avoidance
     except ImportError:
-        raise RuntimeError(
+        raise ModuleNotFoundError(
             "the shared sun-avoidance library is required for the 'cone' and 'cad' "
             "sun models. Install the pinned revision (the repository is "
             "CCAT-internal and needs collaboration access):\n"
             "  pip install git+https://github.com/ccatobs/sun-avoidance@"
             f"{SUN_AVOIDANCE_PINNED_SHA}\n"
-            "The default 'scalar' model needs no extra dependency."
+            "The default 'scalar' model needs no extra dependency.",
+            name="sun_avoidance",
         ) from None
     return sun_avoidance
+
+
+def _table_sha256(path: pathlib.Path) -> str:
+    """Return the SHA-256 of a text table with CRLF line endings folded to LF."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def load_avoidance_data(model: str = "cad", *, radius: float | None = None) -> AvoidanceData:
@@ -168,9 +182,11 @@ def load_avoidance_data(model: str = "cad", *, radius: float | None = None) -> A
 
     Raises
     ------
+    ModuleNotFoundError
+        If the shared library is not installed; the message names the
+        pinned install command.
     RuntimeError
-        If the shared library is not installed, or the CAD table's bytes do
-        not match the pinned SHA-256.
+        If the CAD table's bytes do not match the pinned SHA-256.
     ValueError
         On an unknown ``model``, a missing/invalid cone ``radius``, or a
         ``radius`` given with ``model="cad"``.
@@ -191,7 +207,7 @@ def load_avoidance_data(model: str = "cad", *, radius: float | None = None) -> A
 
     if model == "cad":
         table = pathlib.Path(lib.__file__).parent / "data" / "sa_safe_CAD_20231030.csv"
-        digest = hashlib.sha256(table.read_bytes()).hexdigest()
+        digest = _table_sha256(table)
         if digest != CAD_TABLE_SHA256:
             raise RuntimeError(
                 f"CAD table {table} has SHA-256 {digest}, expected {CAD_TABLE_SHA256} "
@@ -224,13 +240,19 @@ class _BaseSunModel:
         self._sun_cache: dict[float, tuple[float, float]] = {}
 
     def __call__(self, az_deg: float, el_deg: float, time: Time) -> bool:
-        """Scalar :class:`~fyst_trajectories.dispatch.SunSafePredicate` verdict."""
+        """Scalar :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` verdict."""
         verdict = self.batch(az_deg, el_deg, time)
         if verdict.size != 1:
             raise ValueError(
                 "the scalar predicate call takes one (az, el, time) point; use batch() for arrays."
             )
         return bool(verdict[0])
+
+    def batch(
+        self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
+    ) -> np.ndarray:
+        """Vectorized verdicts, True where clear of the Sun; every model overrides it."""
+        raise NotImplementedError
 
     def _broadcast_with_sun(
         self, az_deg: float | np.ndarray, el_deg: float | np.ndarray, times: Time
@@ -314,7 +336,7 @@ class _ScalarSunModel(_BaseSunModel):
     def __init__(self, site: Site):
         super().__init__(site)
         self.describe = (
-            f"scalar {site.sun_avoidance.exclusion_radius:g}°"
+            f"scalar {site.sun_avoidance.exclusion_radius:g} deg"
             if self._enabled
             else "scalar (disabled)"
         )
@@ -367,9 +389,9 @@ class _LibrarySunModel(_BaseSunModel):
         self._maxoffset = maxoffset
         self._tracking_module = tracking_module
         zone = (
-            f"cone {data.deltaMin:g}°"
+            f"cone {data.deltaMin:g} deg"
             if model == "cone"
-            else f"CAD zone {data.deltaMin:g}-{data.deltaMax:g}°"
+            else f"CAD zone {data.deltaMin:g}-{data.deltaMax:g} deg"
         )
         self.describe = zone if self._enabled else f"{zone} (disabled)"
 
@@ -449,17 +471,18 @@ def make_sun_safe(
     island_check: bool = False,
     maxoffset: float = 0.0,
     tracking_module: str = "center",
-) -> SunSafePredicate:
+) -> ZonedSunSafePredicate:
     """Build a sun-safety predicate for a named avoidance model.
 
     The returned object satisfies the scalar
-    :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract
+    :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract
     (``(az_deg, el_deg, time) -> bool``) so it can be passed to every
     ``sun_safe=`` seam unchanged, and additionally exposes
     ``batch(az, el, times) -> ndarray[bool]`` and
-    ``threshold(az, el, times) -> ndarray[float]`` for grid consumers:
-    :func:`~fyst_trajectories.observability.check_observability` uses
-    ``batch`` automatically when present, and the visibility renderer's
+    ``threshold(az, el, times) -> ndarray[float]`` for grid consumers (the
+    :class:`~fyst_trajectories.sun_protocols.ZonedSunSafePredicate`
+    extension): :func:`~fyst_trajectories.observability.check_observability`
+    uses ``batch`` automatically, and the visibility renderer's
     ``sun_model`` parameter requires both extensions.
 
     Parameters
@@ -502,7 +525,7 @@ def make_sun_safe(
 
     Returns
     -------
-    SunSafePredicate
+    ZonedSunSafePredicate
         A predicate satisfying the scalar contract, additionally exposing
         ``batch``/``threshold``/``model``/``describe`` attributes. When the
         site has Sun avoidance disabled, every model reports all-safe and
@@ -510,9 +533,11 @@ def make_sun_safe(
 
     Raises
     ------
+    ModuleNotFoundError
+        If ``model`` needs the shared library and it is not installed; the
+        message names the pinned install command.
     RuntimeError
-        If ``model`` needs the shared library and it is not installed, or
-        the installed CAD table fails the SHA pin.
+        If the installed CAD table fails the SHA pin.
     ValueError
         On an unknown model, an invalid ``radius`` combination, a
         ``min_solar_altitude`` outside [-90, 90], or a negative/non-finite
@@ -528,7 +553,7 @@ def make_sun_safe(
     --------
     >>> sun_safe = make_sun_safe("cone", radius=50.0)
     >>> sun_safe.describe
-    'cone 50°'
+    'cone 50 deg'
     """
     site = get_fyst_site() if site is None else site
     # Bounded, not merely finite: a value above the Sun's own altitude range
@@ -566,20 +591,20 @@ def make_sun_safe(
     )
 
 
-# ── Path-level slew safety ───────────────────────────────────────────────────
+# --- Path-level slew safety --------------------------------------------------
 def _axis_slew_duration(distance: float, vmax: float, amax: float) -> float:
     """Trapezoidal-profile travel time (s) for one axis over ``distance`` deg.
 
     The axis accelerates at ``amax`` to at most ``vmax``, cruises, and
-    decelerates symmetrically. A non-positive limit describes an axis that
-    cannot move, so the profile is a zero-duration hold.
+    decelerates symmetrically. ``vmax`` and ``amax`` are finite and
+    positive: ``AxisLimits`` and ``make_slew_safe`` refuse anything else.
 
-    This is the package's single definition of the profile: the offline
-    simulator's slew estimator calls it rather than carrying a second copy,
-    so the duration a scan is priced with and the duration its Sun sweep is
-    sampled over cannot drift apart.
+    This is the package's single definition of the profile: the slew
+    estimator ``dispatch.estimate_slew_time`` calls it rather than carrying
+    a second copy, so the duration a scan is priced with and the duration
+    its Sun sweep is sampled over cannot drift apart.
     """
-    if distance <= 0.0 or vmax <= 0.0 or amax <= 0.0:
+    if distance <= 0.0:
         return 0.0
     t_accel = vmax / amax
     d_accel = vmax * t_accel  # accelerate + decelerate distance
@@ -623,8 +648,8 @@ def _axis_positions(delta: float, vmax: float, amax: float, t: np.ndarray) -> np
 class _SlewSafeModel:
     """Direct-slew path evaluator sweeping a point model along the motion.
 
-    Satisfies :class:`~fyst_trajectories.dispatch.SlewSafePredicate`. The
-    path is the literal encoder travel on each axis under the trapezoidal
+    Satisfies :class:`~fyst_trajectories.sun_protocols.PathSlewSafePredicate`.
+    The path is the literal encoder travel on each axis under the trapezoidal
     kinematic profile (simultaneous axis starts, each axis holding at its
     goal once arrived), sampled at ``step_seconds``, with the Sun advanced
     along the path; one vectorized point-model ``batch`` call decides.
@@ -656,7 +681,7 @@ class _SlewSafeModel:
         goal_el: float,
         time: Time,
     ) -> bool:
-        """Path verdict per the :class:`SlewSafePredicate` contract."""
+        """Path verdict per :class:`~fyst_trajectories.sun_protocols.SlewSafePredicate`."""
         safe, _, _, _ = self.evaluate(current_az, current_el, goal_az, goal_el, time)
         return safe
 
@@ -686,24 +711,7 @@ class _SlewSafeModel:
         az_path = float(current_az) + _axis_positions(d_az, self._az_speed, self._az_accel, dt)
         el_path = float(current_el) + _axis_positions(d_el, self._el_speed, self._el_accel, dt)
         times = time + TimeDelta(dt, format="sec")
-        if hasattr(self._model, "batch"):
-            verdicts = np.atleast_1d(
-                np.asarray(self._model.batch(az_path, el_path, times), dtype=bool)
-            )
-            if verdicts.shape != (n,):
-                raise ValueError(
-                    f"point model batch returned shape {verdicts.shape}, expected ({n},) "
-                    "verdicts for the slew path"
-                )
-        else:
-            # Plain SunSafePredicate: consult it per path sample.
-            verdicts = np.array(
-                [
-                    bool(self._model(float(az_path[i]), float(el_path[i]), times[i]))
-                    for i in range(n)
-                ],
-                dtype=bool,
-            )
+        verdicts = _sun_verdicts(self._model, az_path, el_path, times, what="slew path")
         return bool(np.all(verdicts)), az_path, el_path, times
 
 
@@ -721,7 +729,7 @@ def make_slew_safe(
     el_speed: float = FYST_EL_MAX_VELOCITY,
     el_accel: float = FYST_EL_MAX_ACCELERATION,
     step_seconds: float = 1.0,
-) -> SlewSafePredicate:
+) -> PathSlewSafePredicate:
     """Build a path-level slew-safety predicate for a named avoidance model.
 
     Sweeps a point model (:func:`make_sun_safe`) along the direct encoder
@@ -740,11 +748,14 @@ def make_slew_safe(
         configuration then applies and the model-related keyword arguments
         here must be left at their defaults; a predicate exposing ``batch``
         is evaluated in one vectorized call per path, a plain
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` per sample).
-    radius, site, min_solar_altitude, island_check, maxoffset, tracking_module
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` per sample).
+    radius, site, min_solar_altitude, maxoffset, tracking_module
         Forwarded to :func:`make_sun_safe` when ``model`` is a name; see
-        there. ``island_check`` may be turned on here: reachability is a
-        legitimate path-level concern.
+        there.
+    island_check : bool, optional
+        Forwarded like the above. Default False, as for the point
+        predicate; this is the place to turn it on, because reachability
+        is a path-level concern.
     az_speed, az_accel, el_speed, el_accel : float, optional
         Axis kinematics in deg/s and deg/s^2. Default: the FYST
         operational limits
@@ -756,13 +767,18 @@ def make_slew_safe(
 
     Returns
     -------
-    SlewSafePredicate
+    PathSlewSafePredicate
         A predicate with ``__call__(current_az, current_el, goal_az,
         goal_el, time) -> bool`` plus an ``evaluate`` method returning
         ``(safe, az_path, el_path, times)``.
 
     Raises
     ------
+    ModuleNotFoundError
+        If ``model`` names a model that needs the shared library (the
+        default ``"cad"`` does) and it is not installed.
+    RuntimeError
+        If the installed CAD table fails the SHA pin.
     ValueError
         On non-positive/non-finite kinematics or ``step_seconds``, or a
         point predicate passed together with model-building keywords.
@@ -854,8 +870,9 @@ def find_sun_safe_detour(
     time : Time
         Slew start time (scalar).
     slew_safe : SlewSafePredicate
-        The path evaluator (from :func:`make_slew_safe`); it must expose
-        ``evaluate`` for arrival-time propagation.
+        The path evaluator (from :func:`make_slew_safe`); it must be a
+        :class:`~fyst_trajectories.sun_protocols.PathSlewSafePredicate`
+        (expose ``evaluate``) for arrival-time propagation.
     site : Site, optional
         Site providing the default elevation bounds. Defaults to
         :func:`~fyst_trajectories.site.get_fyst_site`.
@@ -883,7 +900,7 @@ def find_sun_safe_detour(
     """
     if not time.isscalar:
         raise ValueError("find_sun_safe_detour takes a scalar start time")
-    if not hasattr(slew_safe, "evaluate"):
+    if not isinstance(slew_safe, PathSlewSafePredicate):
         raise ValueError(
             "slew_safe must expose evaluate() (build it with make_slew_safe) so the "
             "second leg can start at the first leg's arrival time."
@@ -923,7 +940,8 @@ def find_sun_safe_detour(
         ok1, _, _, times1 = slew_safe.evaluate(current_az, current_el, az_mid, el_mid, time)
         if not ok1:
             return False
-        return bool(slew_safe(az_mid, el_mid, goal_az, goal_el, times1[-1]))
+        arrival = times1[-1]
+        return bool(slew_safe(az_mid, el_mid, goal_az, goal_el, arrival))  # type: ignore[arg-type]
 
     coarse = np.arange(lo, hi + 1e-9, coarse_step)
     if hi not in coarse:

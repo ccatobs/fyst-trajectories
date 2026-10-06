@@ -1,7 +1,7 @@
 Trajectory Utilities
 ====================
 
-Validation, export, retune injection, and formatted display for
+Validation, export, and formatted display for
 :class:`~fyst_trajectories.trajectory.Trajectory` objects.
 
 .. automodule:: fyst_trajectories.trajectory_utils
@@ -11,14 +11,6 @@ Validation, export, retune injection, and formatted display for
 
 Common Operations
 -----------------
-
-**Validation**::
-
-    from fyst_trajectories import get_fyst_site
-    from fyst_trajectories.trajectory_utils import validate_trajectory
-
-    site = get_fyst_site()
-    validate_trajectory(trajectory, site)  # Raises if out of bounds, warns if dynamics exceeded
 
 **Export formats**::
 
@@ -61,35 +53,36 @@ Common Operations
     print_trajectory(trajectory, head=10)     # Customize display
 
 Plotting lives in the :doc:`visualization subpackage <visualization>`
-(``fyst_trajectories.visualization.plot_trajectory``); retune injection
-has its own topic page, :doc:`../retune_events`.
+(``fyst_trajectories.visualization.plot_trajectory``), and retune injection
+in :doc:`retune`, which has its own topic page, :doc:`../retune_events`.
 
 Validation Functions
 --------------------
 
 ``validate_trajectory`` is the recommended entry point: it runs the bounds
 check, the dynamics check, and (when ``check_sun=True``) the advisory sun
-check. The low-level checks can also be called directly; bounds and
-dynamics::
+check. The low-level checks can also be called directly::
 
+    from fyst_trajectories import get_fyst_site
     from fyst_trajectories.trajectory_utils import (
+        validate_trajectory,
         validate_trajectory_bounds,
         validate_trajectory_dynamics,
     )
 
-    az_array, el_array = trajectory.az, trajectory.el
-    times_array = trajectory.times
+    site = get_fyst_site()
+    validate_trajectory(trajectory, site)  # raises out of bounds, warns on dynamics or Sun
 
     # Check only position bounds (raises exception if out of range)
-    validate_trajectory_bounds(site, az_array, el_array)
+    validate_trajectory_bounds(site, trajectory.az, trajectory.el)
 
     # Check only dynamics (emits warning if limits exceeded)
-    validate_trajectory_dynamics(site, az_array, el_array, times_array)
+    validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
 
-Sun avoidance is advisory: it warns but never raises, and it is subsampled at
-roughly 60 s, so a fast scan can cross the exclusion zone between samples
-without a warning. Telescope control systems must enforce their own hard
-sun-avoidance limits independently::
+Sun avoidance is advisory: a violation warns and never raises, and the check
+is subsampled at roughly 60 s, so a fast scan can cross the exclusion zone
+between samples without a warning. Telescope control systems must enforce
+their own hard sun-avoidance limits independently::
 
     from fyst_trajectories import get_fyst_site, validate_sun_avoidance
     from fyst_trajectories.trajectory_utils import get_absolute_times

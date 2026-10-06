@@ -17,25 +17,28 @@ import dataclasses
 import math
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from astropy.time import Time, TimeDelta
 
+from ...coordinates import Coordinates
 from ...exceptions import PointingError, PointingWarning
 from ...planning import plan_source_ces_passes
-from .._moves import plan_escape_move
+from ...sun_models import make_sun_safe
+from ...trajectory_utils import get_absolute_times
+from .._moves import plan_escape_move, sweep_sun_safe
 from ..models import (
     BlockType,
     CalibrationSpec,
     CalibrationType,
     ObservingPatch,
     TimelineBlock,
-    validate_scan_params,
 )
+from ..schemas import validate_scan_params
 from ..simulation import _generate_trajectory_for_block
 from ..transitions import DeferralReason, plan_transition
-from ..utils import compute_nasmyth_rotation
+from ..utils import _canonical_module_name, _normalize_az, _search_start_record
 from .helpers import (
     _CE_READY_SLEW_ALLOWANCE_SEC,
     _ce_swept_az_envelope,
@@ -43,14 +46,16 @@ from .helpers import (
     _compute_az_range,
     _compute_scan_duration,
     _evaluate_patch,
-    _normalize_az,
+    _min_subscan_duration,
+    _pong_period,
 )
 from .state import SchedulerState
 
 if TYPE_CHECKING:
     from ...planning import ScanBlock
     from ...site import Site
-    from ..models import SourceCESScanParams
+    from ..schemas import SourceCESScanParams
+    from ..transitions import Transition
     from .state import SchedulerContext
 
 __all__ = [
@@ -275,6 +280,8 @@ def _planet_cal_pass_block(
     scan_index: int,
     subscan_index: int,
     site: Site,
+    az_shift: float,
+    search_start: Time,
 ) -> tuple[TimelineBlock, Time, float, float]:
     """Build one planet-calibration CALIBRATION block from a source-CES pass.
 
@@ -285,17 +292,25 @@ def _planet_cal_pass_block(
     position. The sequence is one scan, so the passes share ``scan_index``
     and are told apart by ``subscan_index``, their position in it.
 
-    The block's ``t_start`` is supplied by the caller (the scheduler clock
-    for the first pass, the previous pass's ``t1`` afterwards), so the
-    inter-pass repointing gap and the anchor-to-scan lead fold into the
-    block as acquisition time. The true scan start is recorded in
-    ``metadata["t0_scan"]``. The azimuth bounds are the honest executed
-    envelope: the min/max over the pass trajectory's azimuth samples
-    (drift included), read from the planned trajectory itself rather
-    than re-derived from the scalar parameters. The drag ends on
+    The block's ``t_start`` is supplied by the caller (the arrival of the
+    acquisition slew for the first pass, the previous pass's ``t1``
+    afterwards), so the inter-pass repointing gap and the arrival-to-scan
+    lead fold into the block as acquisition time. The true scan start is
+    recorded in ``metadata["t0_scan"]``. The azimuth bounds are the honest
+    executed envelope: the min/max over the pass trajectory's azimuth
+    samples (drift included), read from the planned trajectory itself
+    rather than re-derived from the scalar parameters. The drag ends on
     whichever leg endpoint its last turnaround left it on, generally
     neither bound, so that azimuth is recorded separately as the block's
     ``az_final``.
+
+    ``az_shift`` is the multiple of 360 degrees the acquisition slew's
+    wrap applies to the planner's azimuths; the envelope and ``az_final``
+    are recorded in that wrap, the one the telescope executes, while
+    ``scan_params`` keep the planner's own solution, so a rebuild returns
+    the pass in the planner's wrap. ``search_start`` is the anchor the
+    planner searched from, recorded beside ``scan_params`` so a rebuild
+    repeats that search.
     """
     cp = pass_block.computed_params
     pp = pass_block.trajectory.metadata.pattern_params
@@ -306,13 +321,13 @@ def _planet_cal_pass_block(
     el_bore = float(cp["el_bore"])
     mode = str(cp["mode"])
 
-    env_lo = float(np.min(pass_block.trajectory.az))
-    env_hi = float(np.max(pass_block.trajectory.az))
-    az_final = float(pass_block.trajectory.az[-1])
+    env_lo = float(np.min(pass_block.trajectory.az)) + az_shift
+    env_hi = float(np.max(pass_block.trajectory.az)) + az_shift
+    az_final = float(pass_block.trajectory.az[-1]) + az_shift
 
     scan_params: SourceCESScanParams = {
         "body": str(cal_spec.target),
-        "footprint": footprint,
+        "footprint": _canonical_module_name(footprint),
         "el_bore": el_bore,
         "mode": mode,
         "window": [t0_iso, t1_iso],
@@ -339,8 +354,81 @@ def _planet_cal_pass_block(
         scan_params=scan_params,
         t0_scan=t0_iso,
         rising=(mode == "rising"),
+        extra_metadata={"search_start": _search_start_record(search_start)},
     )
     return block, t_stop, az_final, el_bore
+
+
+def _plan_planet_cal_acquisition(
+    state: SchedulerState,
+    ctx: SchedulerContext,
+    planner_kwargs: dict[str, Any],
+) -> tuple[list[ScanBlock], Transition, Time] | None:
+    """Plan a planet calibration's passes and the slew to the first one.
+
+    Returns ``(kept, transition, anchor)``: the whole passes that finish
+    before ``ctx.end_time``, the commandable slew to the first one, which
+    arrives no later than that pass starts, and the anchor the passes were
+    planned from. Returns ``None`` when the planner raises
+    :class:`~fyst_trajectories.exceptions.PointingError`, no pass fits, the
+    slew is refused, or it still arrives late after the second plan.
+    ``planner_kwargs`` are the arguments of
+    :func:`~fyst_trajectories.planning.plan_source_ces_passes` except
+    ``start_time``.
+    """
+    # Plan at the clock; when the slew arrives after the first pass would
+    # start, plan once more anchored at the arrival. The planner starts a
+    # pass at or after its anchor, and the arrival already includes the
+    # settle time, so the second plan needs no slack.
+    anchor = state.current_time
+    for _ in range(2):
+        try:
+            passes = plan_source_ces_passes(start_time=anchor, **planner_kwargs)
+        except PointingError:
+            return None
+
+        # End-of-night: keep only whole passes that finish before the window
+        # closes. n_passes in the recorded scan_params stays the requested
+        # total so a truncated sequence is visible. Both ends have to clear
+        # the window: ``t1_iso`` is what the emitted block's ``t_stop`` is
+        # set to, while the trajectory runs for the leg-quantised duration
+        # from ``t0_iso``, and quantisation moves the two apart in either
+        # direction by up to half a leg plus turnaround.
+        kept = [
+            b
+            for b in passes
+            if max(
+                Time(str(b.computed_params["t1_iso"]), scale="utc").unix,
+                Time(str(b.computed_params["t0_iso"]), scale="utc").unix + float(b.duration),
+            )
+            <= ctx.end_time.unix
+        ]
+        if not kept:
+            return None
+
+        first = kept[0]
+        transition = plan_transition(
+            state.current_az,
+            state.current_el,
+            float(first.trajectory.az[0]),
+            float(first.computed_params["el_bore"]),
+            state.current_time,
+            ctx.site,
+            sun_safe=ctx.sun_safe,
+            slew_safe=ctx.slew_safe,
+            goal_az_span=(
+                min(float(np.min(b.trajectory.az)) for b in kept),
+                max(float(np.max(b.trajectory.az)) for b in kept),
+            ),
+            settle_time=ctx.overhead_model.settle_time,
+            hold=float(first.duration),
+        )
+        if not transition.safe:
+            return None
+        if (transition.arrival - first.trajectory.start_time).sec <= 0.0:
+            return kept, transition, anchor
+        anchor = transition.arrival
+    return None
 
 
 def _emit_planet_cal_passes(
@@ -350,30 +438,64 @@ def _emit_planet_cal_passes(
 ) -> tuple[bool, list[TimelineBlock], SchedulerState]:
     """Plan a planet calibration as a multi-pass source-CES sequence.
 
-    Returns ``(emitted, blocks, new_state)``. ``emitted`` is ``False`` when
-    the sequence is infeasible (any
-    :class:`~fyst_trajectories.exceptions.PointingError`) or when no pass finishes
-    before ``ctx.end_time``; in that case ``blocks`` is empty and
-    ``new_state`` is the unchanged input state. The caller then neither
-    emits nor marks the cadence, so the calibration stays due and is
-    retried on the next scheduler iteration, exactly like a planet cal with
-    no visible planet.
+    Returns ``(emitted, blocks, new_state)``. The target is the first entry
+    of ``policy.planet_targets`` above ``policy.planet_min_elevation``
+    whose own position is clear of the Sun now (the context's ``sun_safe``
+    model, or the site's scalar radius), so a planet inside the zone is
+    passed over for the next one. The passes are planned anchored at
+    ``state.current_time``, and the slew to the first pass is planned with
+    :func:`~fyst_trajectories.overhead.plan_transition` from the current
+    pose, as :class:`SlewPhase` plans a science slew: the encoder wrap must
+    hold every pass's azimuths, the direct path must clear the Sun zone
+    and the first pass's start pose must stay clear for that pass's
+    duration after arrival; no detour is attempted. When the slew arrives
+    after the first pass would start, the passes are planned once more
+    anchored at the arrival. Every pass, placed in the slew's wrap, is
+    then swept against the Sun model with
+    :func:`~fyst_trajectories.overhead._moves.sweep_sun_safe`.
+
+    ``emitted`` is ``False`` when no target is clear, the sequence is
+    infeasible (any :class:`~fyst_trajectories.exceptions.PointingError`),
+    no pass finishes before ``ctx.end_time``, the slew is refused or still
+    arrives late after the second plan, or any pass sample is inside the
+    Sun zone; in that case ``blocks`` is empty and ``new_state`` is the
+    unchanged input state. The caller then neither emits nor marks the
+    cadence, so the calibration stays due and is retried on the next
+    scheduler iteration, exactly like a planet cal with no visible planet.
 
     On success the blocks tile ``[state.current_time, last_pass_t1]`` with
-    no gaps, ``new_state`` advances ``current_time`` to the last pass's
-    ``t1`` and ``current_az`` / ``current_el`` to its end pose, and the
-    planet-cal cadence is marked at the (pre-scan) ``state.current_time``,
-    matching the parked path. The whole sequence is one scan: the blocks
-    share ``state.scan_counter`` and carry their position in the sequence
-    as ``subscan_index``, so each pass has its own identity.
+    no gaps: a SLEW block named ``slew_to_<planet>`` when the move takes
+    more than 1 second, then one CALIBRATION block per pass, the first
+    starting at the slew's arrival. ``new_state`` advances
+    ``current_time`` to the last pass's ``t1`` and ``current_az`` /
+    ``current_el`` to its end pose, and the planet-cal cadence is marked
+    at the (pre-slew) ``state.current_time``, matching the parked path.
+    The whole sequence is one scan: the blocks share
+    ``state.scan_counter`` and the passes carry their position in the
+    sequence as ``subscan_index``, so each pass has its own identity.
     """
     policy = ctx.calibration_policy
+    sun_safe = ctx.sun_safe if ctx.sun_safe is not None else make_sun_safe("scalar", site=ctx.site)
+
+    # The first listed planet that is up and clear of the Sun now. One
+    # point query per target here spares planning passes the sweep below
+    # would refuse, on every iteration the calibration stays due.
+    target = None
+    for name in policy.planet_targets:
+        body_az, body_el = ctx.coords.get_body_altaz(name, state.current_time)
+        if float(body_el) > policy.planet_min_elevation and sun_safe(
+            float(body_az), float(body_el), state.current_time
+        ):
+            target = name
+            break
+    if target is None:
+        return False, [], state
+    cal_spec = dataclasses.replace(cal_spec, target=target)
 
     kwargs = dict(
-        body=cal_spec.target,
+        body=target,
         footprint=policy.planet_cal_footprint,
         n_passes=policy.planet_cal_passes,
-        start_time=state.current_time,
         site=ctx.site,
         timestep=_SOURCE_CES_TIMESTEP_SEC,
         # The injected sun model reaches the planet-cal planner too (None
@@ -383,32 +505,36 @@ def _emit_planet_cal_passes(
     if policy.planet_cal_el_step is not None:
         kwargs["el_step"] = policy.planet_cal_el_step
 
-    try:
-        passes = plan_source_ces_passes(**kwargs)
-    except PointingError:
+    acquisition = _plan_planet_cal_acquisition(state, ctx, kwargs)
+    if acquisition is None:
         return False, [], state
+    kept, transition, anchor = acquisition
 
-    # End-of-night: keep only whole passes that finish before the window
-    # closes. n_passes in the recorded scan_params stays the requested total
-    # so a truncated sequence is visible. Both ends have to clear the window:
-    # ``t1_iso`` is what the emitted block's ``t_stop`` is set to, while the
-    # trajectory runs for the leg-quantised duration from ``t0_iso``, and
-    # quantisation moves the two apart in either direction by up to half a
-    # leg plus turnaround.
-    kept = [
-        b
-        for b in passes
-        if max(
-            Time(str(b.computed_params["t1_iso"]), scale="utc").unix,
-            Time(str(b.computed_params["t0_iso"]), scale="utc").unix + float(b.duration),
-        )
-        <= ctx.end_time.unix
-    ]
-    if not kept:
-        return False, [], state
+    # The transition's hold checks the first pass's start pose at three
+    # instants; the sweep certifies every sample of every pass, in the
+    # executed wrap.
+    shift = transition.az_shift
+    for b in kept:
+        az = np.asarray(b.trajectory.az) + shift
+        if not sweep_sun_safe(sun_safe, az, b.trajectory.el, get_absolute_times(b.trajectory)):
+            return False, [], state
 
     blocks: list[TimelineBlock] = []
     t_start = state.current_time
+    if transition.duration > 1.0:
+        blocks.append(
+            TimelineBlock.slew(
+                t_start=state.current_time,
+                duration=transition.duration,
+                az_start=state.current_az,
+                az_end=transition.az_to,
+                el=transition.el_to,
+                site=ctx.site,
+                scan_index=state.scan_counter,
+                patch_name=f"slew_to_{target}",
+            )
+        )
+        t_start = transition.arrival
     end_az = state.current_az
     end_el = state.current_el
     for position, pass_block in enumerate(kept):
@@ -420,6 +546,8 @@ def _emit_planet_cal_passes(
             scan_index=state.scan_counter,
             subscan_index=position,
             site=ctx.site,
+            az_shift=shift,
+            search_start=anchor,
         )
         blocks.append(block)
         t_start = t_stop
@@ -452,6 +580,36 @@ def _due_retune_spec(state: SchedulerState, ctx: SchedulerContext) -> Calibratio
         if spec.name == CalibrationType.RETUNE:
             return spec
     return None
+
+
+def _shortest_subscan_fits(
+    patch: ObservingPatch, state: SchedulerState, ctx: SchedulerContext, center_el: float
+) -> bool:
+    """Return whether a pong or daisy visit starting at ``state.current_time`` can scan.
+
+    The visit books the retune due at that time and then its shortest
+    subscan (``min_scan_duration``, or one pattern period for a pong when
+    that is longer), and both have to fit the budget
+    :class:`ScienceScanPhase` gives it from that time: the time the whole
+    pattern stays inside the elevation limits after the retune, clipped by
+    the Sun and the end of the schedule. :class:`PatchSelectionPhase` asks
+    at the tick, and :class:`SlewPhase` again at the slew's planned
+    arrival, when the visit actually starts.
+    """
+    due = _due_retune_spec(state, ctx)
+    retune_lead = 0.0 if due is None else due.duration
+    budget = _compute_scan_duration(
+        patch,
+        state.current_time,
+        ctx.end_time,
+        ctx.site,
+        ctx.coords,
+        ctx.overhead_model,
+        center_el,
+        sun_safe=ctx.sun_safe,
+        retune_lead=retune_lead,
+    )
+    return budget >= retune_lead + _min_subscan_duration(patch, ctx.overhead_model)
 
 
 def _emit_retune_block(
@@ -500,9 +658,13 @@ class CalibrationPhase(Phase):
 
     When ``CalibrationPolicy.planet_cal_scan`` is set, a due
     ``planet_cal`` is instead planned as a multi-pass source-CES
-    sequence anchored at the scheduler clock (one CALIBRATION block per
-    pass). An infeasible sequence is skipped and left due, so the
-    calibration retries on a later iteration.
+    sequence on the first listed planet that is up and clear of the Sun:
+    a SLEW block named ``slew_to_<planet>``, planned with
+    :func:`~fyst_trajectories.overhead.plan_transition` as a science slew
+    is, then one CALIBRATION block per pass from the slew's arrival. A
+    sequence that cannot be planned, reached, or swept clear of the Sun
+    is skipped and left due, so the calibration retries on a later
+    iteration.
     """
 
     def run(
@@ -577,8 +739,18 @@ class PatchSelectionPhase(Phase):
     A patch that pins ``elevation`` is scored at the azimuth the field
     is at now and the elevation the scan will command, which is the
     pose the rest of the visit is judged at (:class:`SlewPhase` slews
-    there and every emitted block records it). The field's own
-    elevation still decides when it sets.
+    there and every emitted block records it). The field's own track
+    still decides when its pattern leaves the elevation limits.
+
+    A pong or daisy patch is selectable only while its shortest subscan
+    (``min_scan_duration``, or one whole pattern period for a pong when
+    that is longer), plus a boundary retune that is due, fits the budget
+    :class:`ScienceScanPhase` would give it from now. That budget lasts
+    while the whole pattern, not only the field centre, stays inside the
+    telescope elevation limits, so a patch whose pattern edge is below
+    the lower limit (a rising field) or reaches it before a subscan fits
+    (a setting one) is passed over. :class:`SlewPhase` asks the same
+    question again at the slew's arrival.
 
     If no patch scores above zero, emits an IDLE block advancing by
     ``ctx.time_step`` and sets ``skip_to_next_iter=True``: the outer
@@ -648,6 +820,19 @@ class PatchSelectionPhase(Phase):
                 if plan is None:
                     score = 0.0
 
+            # A pong or daisy patch is selectable only while its shortest
+            # subscan, plus a boundary retune that is due, fits the budget a
+            # visit from now would get: the time its whole pattern stays
+            # inside the elevation limits, clipped by the Sun and the window.
+            # Without this gate a patch whose pattern edge is under the limit
+            # is slewed to and idled on, tick after tick.
+            if (
+                score > 0.0
+                and patch.scan_type in ("pong", "daisy")
+                and not _shortest_subscan_fits(patch, state, ctx, el)
+            ):
+                score = 0.0
+
             if score > best_score:
                 best_score = score
                 best_patch = patch
@@ -677,7 +862,7 @@ class SlewPhase(Phase):
     pose is planned with
     :func:`~fyst_trajectories.overhead.plan_transition`: the encoder wrap
     is chosen so the whole azimuth envelope the visit will occupy stays
-    inside the azimuth limits (:meth:`_visit_az_envelope`), the
+    inside the azimuth limits, the
     direct path is clear of the Sun zone (the context's ``sun_safe``
     model, or the site's scalar radius) and the pose still clears it one
     scheduler tick after arrival, and the duration is the kinematic
@@ -710,6 +895,15 @@ class SlewPhase(Phase):
     moved. No detour is attempted. A patch whose scan range is pinned to
     one placement (an explicit window) is refused the same way when only
     another wrap is reachable, since the science range cannot follow.
+
+    The visit starts when the slew arrives, so a pong or daisy patch is
+    slewed to only if its shortest subscan, after the retune due on
+    arrival, still fits the budget :class:`ScienceScanPhase` will give it
+    then (the selection phase asks the same question at the tick, before
+    the slew's length is known). When it no longer fits, because the
+    pattern reaches an elevation limit, the Sun clip closes or the
+    schedule ends within the slew, the tick idles at the unmoved pose
+    with ``metadata["reason"]`` set to ``unplannable``.
 
     A telescope the Sun zone has overtaken while it sat still is moved
     out first (:func:`~fyst_trajectories.overhead.plan_escape`, emitted
@@ -783,18 +977,29 @@ class SlewPhase(Phase):
                 return _emit_idle_tick(state, ctx, reason=str(DeferralReason.NO_WRAP))
             best_az += shift
 
+        moves = transition.duration > 1.0
+        arrival = transition.arrival if moves else state.current_time
+        if moves and arrival.unix >= ctx.end_time.unix:
+            return PhaseResult(
+                state=state,
+                blocks=[],
+                selection=best_patch,
+                best_az=best_az,
+                best_el=best_el,
+                stop=True,
+            )
+
+        # The visit starts when the slew arrives. A pong or daisy whose
+        # shortest subscan no longer fits by then is not slewed to: the
+        # selection gate asked at the tick, before the slew's length was
+        # known, and a setting window can close within the slew.
+        if best_patch.scan_type in ("pong", "daisy") and not _shortest_subscan_fits(
+            best_patch, state.advanced(current_time=arrival), ctx, best_el
+        ):
+            return _emit_idle_tick(state, ctx, reason=str(DeferralReason.UNPLANNABLE))
+
         blocks: list[TimelineBlock] = []
-        if transition.duration > 1.0:
-            slew_end = state.current_time + TimeDelta(transition.duration, format="sec")
-            if slew_end.unix >= ctx.end_time.unix:
-                return PhaseResult(
-                    state=state,
-                    blocks=[],
-                    selection=best_patch,
-                    best_az=best_az,
-                    best_el=best_el,
-                    stop=True,
-                )
+        if moves:
             slew_block = TimelineBlock.slew(
                 t_start=state.current_time,
                 duration=transition.duration,
@@ -807,7 +1012,7 @@ class SlewPhase(Phase):
             )
             blocks.append(slew_block)
             state = state.advanced(
-                current_time=slew_end,
+                current_time=arrival,
                 current_az=transition.az_to,
                 current_el=transition.el_to,
             )
@@ -864,7 +1069,7 @@ class SlewPhase(Phase):
         return env_lo + 360.0 * turns, env_hi + 360.0 * turns
 
 
-def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock:
+def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock | None:
     """Re-record a science subscan's azimuths from its own trajectory.
 
     A subscan is emitted with the tick's scalar estimate of its azimuth
@@ -877,11 +1082,12 @@ def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock:
     so a recorded block and a rebuilt one cannot disagree. This is the
     same rule the swept calibration blocks follow.
 
-    The block is returned unchanged when the trajectory cannot be built
-    (the same best-effort contract the reconstruction path itself keeps)
-    or when it holds no samples. ``az_final`` stays ``None`` when the
-    sweep does end on the envelope's upper bound, leaving that bound as
-    the recorded pose.
+    Returns ``None`` when the trajectory cannot be built (any refusal the
+    reconstruction path itself would log and skip): the planner cannot
+    execute this subscan, so the caller does not emit it. The block is
+    returned unchanged when the trajectory holds no samples.
+    ``az_final`` stays ``None`` when the sweep does end on the envelope's
+    upper bound, leaving that bound as the recorded pose.
 
     The build is a probe, so its advisories are suppressed: they describe
     the patch geometry the caller already configured, and a consumer who
@@ -892,7 +1098,7 @@ def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock:
             warnings.simplefilter("ignore", PointingWarning)
             scan_block = _generate_trajectory_for_block(block, site)
     except (ValueError, KeyError, TypeError):
-        return block
+        return None
     az = scan_block.trajectory.az
     if az.size == 0:
         return block
@@ -905,8 +1111,72 @@ def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock:
         az_final=None if az_final == env_hi else az_final,
         # The factory evaluates the boresight angle at the midpoint of the
         # recorded range, so the widened range moves it too.
-        boresight_angle=compute_nasmyth_rotation(0.5 * (env_lo + env_hi), block.elevation, site),
+        boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
+            0.5 * (env_lo + env_hi), block.elevation
+        ),
     )
+
+
+def _plan_science_subscan(
+    patch: ObservingPatch,
+    *,
+    t_start: Time,
+    available: float,
+    period: float | None,
+    az_start: float,
+    az_end: float,
+    el: float,
+    site: Site,
+    scan_index: int,
+    subscan_index: int,
+    rising: bool,
+    t0_scan: str | None,
+) -> tuple[TimelineBlock, float] | None:
+    """Build one science subscan at ``t_start`` and probe it with the planner.
+
+    A constant-elevation or daisy subscan lasts ``available`` seconds. A
+    pong subscan (``period`` given) holds the most whole pattern periods
+    that fit ``available``, capped by the patch's own
+    ``scan_params["n_cycles"]``, and records the count as the block's
+    ``n_cycles``; when the planner refuses it, it is retried with one
+    period fewer, down to one.
+
+    Returns the block, with the azimuths its own trajectory records (see
+    :func:`_record_executed_azimuth`), and its duration in seconds, or
+    ``None`` when the planner refuses every attempt.
+    """
+    if period is None:
+        counts: list[int | None] = [None]
+    else:
+        n_max = math.floor(available / period)
+        cap = patch.scan_params.get("n_cycles")
+        if cap is not None:
+            n_max = min(n_max, int(cap))
+        counts = list(range(n_max, 0, -1))
+
+    for n_cycles in counts:
+        duration = available if n_cycles is None else n_cycles * period
+        block = TimelineBlock.science(
+            patch=patch,
+            t_start=t_start,
+            duration=duration,
+            az_start=az_start,
+            az_end=az_end,
+            el=el,
+            site=site,
+            scan_index=scan_index,
+            subscan_index=subscan_index,
+            rising=rising,
+            t0_scan=t0_scan,
+        )
+        if n_cycles is not None:
+            metadata = dict(block.metadata)
+            metadata["scan_params"] = {**block.metadata["scan_params"], "n_cycles": n_cycles}
+            block = dataclasses.replace(block, metadata=metadata)
+        recorded = _record_executed_azimuth(block, site)
+        if recorded is not None:
+            return recorded, duration
+    return None
 
 
 class ScienceScanPhase(Phase):
@@ -919,9 +1189,12 @@ class ScienceScanPhase(Phase):
     skipped. The observable duration is a wall-clock budget the whole
     visit shares: the boundary retunes run inside it, so the last
     subscan is clipped rather than pushing the visit past the pass
-    close, the field's set time or the Sun-safe window it was scored
-    against. For constant-elevation patches the rising flag comes from
-    the crossing pass chosen by ``_ce_visit_plan``, and the visit's own
+    close, the time a pong or daisy pattern first reaches an elevation
+    limit, or the Sun-safe window (for a constant-elevation patch, the
+    window over its whole swept azimuth corridor; for pong and daisy,
+    over the field centre's track). For constant-elevation patches the
+    rising flag comes from the crossing pass the visit was planned on,
+    and the visit's own
     start time is stamped on every subscan as ``metadata["t0_scan"]`` so
     each one reconstructs from the same anchor; other scan types fall
     back to the hour-angle sign. Every block of the visit,
@@ -929,11 +1202,26 @@ class ScienceScanPhase(Phase):
     elevation: the patch's pinned ``elevation`` when it has one,
     otherwise the field centre's elevation at selection time.
 
+    A pong subscan holds a whole number of pattern periods, the most that
+    fit the budget after its boundary retune (capped by the patch's own
+    ``scan_params["n_cycles"]``), and records the count as
+    ``scan_params["n_cycles"]``, which
+    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` forwards
+    to :func:`~fyst_trajectories.planning.plan_pong_scan`; a rebuilt pong
+    block therefore runs exactly its own length.
+
     Every subscan records the azimuth envelope of its own trajectory and
-    the pose that trajectory ends at (:func:`_record_executed_azimuth`).
+    the pose that trajectory ends at.
     The tick's scalar range estimate only places the visit and labels the
     boundary retunes: a retune sweeps nothing, and the range it inherits
     is geometry for the ECSV round trip rather than an executed envelope.
+
+    Each subscan is planned before its boundary retune is booked. A
+    subscan the planner refuses is not emitted, nor is its retune, and the
+    visit ends there; a pong subscan is first retried with one period
+    fewer, down to one. A visit that emits nothing idles one tick, with
+    ``metadata["reason"]`` set to ``unplannable`` when the planner refused
+    its first subscan or a pong period no longer fits after the slew.
     """
 
     def run(
@@ -946,6 +1234,9 @@ class ScienceScanPhase(Phase):
         """Emit science subscans + inter-subscan retune blocks."""
         best_patch, best_az, best_el = _unpack_selection(selection, "ScienceScanPhase")
 
+        # A pong or daisy pattern has to be inside the elevation limits only
+        # once its subscan starts, after the boundary retune booked first.
+        due = _due_retune_spec(state, ctx)
         scan_duration = _compute_scan_duration(
             best_patch,
             state.current_time,
@@ -957,6 +1248,7 @@ class ScienceScanPhase(Phase):
             ce_cache=ctx.ce_corridors,
             ce_ready_lead=ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC,
             sun_safe=ctx.sun_safe,
+            retune_lead=0.0 if due is None else due.duration,
         )
 
         ce_plan = None
@@ -976,21 +1268,17 @@ class ScienceScanPhase(Phase):
             )
 
         if scan_duration < ctx.overhead_model.min_scan_duration:
-            advance = min(ctx.time_step, (ctx.end_time - state.current_time).sec)
-            new_state = state.advanced(
-                current_time=state.current_time + TimeDelta(advance, format="sec"),
-            )
-            return PhaseResult(state=new_state, blocks=[], skip_to_next_iter=True)
+            return _emit_idle_tick(state, ctx)
 
         n_subscans = max(1, math.ceil(scan_duration / ctx.overhead_model.max_scan_duration))
         subscan_duration = scan_duration / n_subscans
 
         # The observable duration is a WALL-CLOCK budget, not a science-only
-        # one: it ends when the crossing pass closes, when the field sets,
-        # or when the Sun catches it. Boundary retunes run inside it, so the
-        # visit is capped at this deadline rather than letting each retune
-        # push the remaining subscans past the window they were scored
-        # against.
+        # one: it ends when the crossing pass closes, when the pattern
+        # reaches an elevation limit, or when the Sun catches it. Boundary
+        # retunes run inside it, so the visit is capped at this deadline
+        # rather than letting each retune push the remaining subscans past
+        # the window they were scored against.
         deadline = min(
             ctx.end_time,
             state.current_time + TimeDelta(scan_duration, format="sec"),
@@ -1006,7 +1294,7 @@ class ScienceScanPhase(Phase):
 
         az_start_sci, az_end_sci = _compute_az_range(best_patch, best_az, best_el, ctx.site)
 
-        state, sub_blocks = self._emit_subscans_with_retunes(
+        state, sub_blocks, refusal = self._emit_subscans_with_retunes(
             state=state,
             ctx=ctx,
             best_patch=best_patch,
@@ -1023,14 +1311,12 @@ class ScienceScanPhase(Phase):
         if not sub_blocks:
             # The room checks ended the visit before any block fit (for
             # example a sliver window where the boundary retune plus a
-            # minimum-duration subscan no longer fit together); tick
-            # forward like the too-short-scan path so the outer loop
-            # cannot spin in place.
-            advance = min(ctx.time_step, (ctx.end_time - state.current_time).sec)
-            new_state = state.advanced(
-                current_time=state.current_time + TimeDelta(advance, format="sec"),
-            )
-            return PhaseResult(state=new_state, blocks=[], skip_to_next_iter=True)
+            # minimum-duration subscan no longer fit together, or a pong
+            # period that no longer fits after the slew), or the planner
+            # refused the first subscan; idle one tick like the
+            # too-short-scan path, labelled with the refusal, so the outer
+            # loop cannot spin in place and the timeline stays tiled.
+            return _emit_idle_tick(state, ctx, reason=refusal)
 
         # The visit leaves the mount wherever its last sweep stopped, which
         # is generally neither envelope bound; the next slew is priced,
@@ -1060,33 +1346,59 @@ class ScienceScanPhase(Phase):
         az_end_sci: float,
         deadline: Time,
         t0_scan: str | None = None,
-    ) -> tuple[SchedulerState, list[TimelineBlock]]:
+    ) -> tuple[SchedulerState, list[TimelineBlock], str | None]:
         """Emit ``n_subscans`` science blocks with retunes at scan boundaries.
 
         Retune rule: **before every subscan**, query the cadence tracker;
         if a retune is due (always, under the cadence-0 "every scan
         boundary" convention), emit it and advance ``current_time`` before
-        the subscan starts. A boundary retune is booked only when a
-        minimum-duration subscan still fits after it before ``deadline``,
-        so a visit can never end on a dangling retune or push one past the
-        window it was scored against.
+        the subscan starts. A boundary retune is booked only together with
+        the subscan after it: a minimum-duration subscan must still fit
+        after it before ``deadline``, and that subscan, built at its
+        post-retune start, must be one the planner can plan. So a visit
+        can never end on a dangling retune or push one past the window it
+        was scored against.
+
+        For a pong the minimum subscan is one pattern period (or
+        ``min_scan_duration``, whichever is longer), and a subscan holds
+        the most whole periods that fit what the deadline leaves after its
+        retune, up to the slice ``subscan_duration``. A subscan the planner
+        refuses (a pong only after retrying with one period fewer, down to
+        one) is not emitted, nor is its retune, and the visit ends there.
 
         ``deadline`` is the end of the visit's observable window (the
         schedule end, or the point where the crossing pass closes, the
-        field sets or the Sun catches it, whichever comes first). Every
-        block emitted here, retunes included, fits inside it: the retunes
+        pattern reaches an elevation limit or the Sun catches it,
+        whichever comes first). Every block emitted here, retunes
+        included, fits inside it: the retunes
         share the budget with the science rather than extending it, so the
         final subscan is clipped to whatever the retunes left.
 
         A retune that becomes due during the final subscan is not injected
         here; the next visit's leading boundary (or, for nonzero cadences,
         :class:`CalibrationPhase`) picks it up.
+
+        Returns
+        -------
+        state : SchedulerState
+            The state advanced past every emitted block.
+        blocks : list of TimelineBlock
+            The emitted retune and science blocks, possibly empty.
+        refusal : str or None
+            ``"unplannable"`` when nothing was emitted because the planner
+            refused the first subscan or a pong period no longer fits the
+            window; ``None`` otherwise.
         """
         blocks: list[TimelineBlock] = []
+        unplannable = str(DeferralReason.UNPLANNABLE)
 
-        if subscan_duration < ctx.overhead_model.min_scan_duration:
-            # Splitting produced sub-minimum slices; nothing can be emitted.
-            return state, blocks
+        period = _pong_period(best_patch) if best_patch.scan_type == "pong" else None
+        min_subscan = _min_subscan_duration(best_patch, ctx.overhead_model)
+
+        if subscan_duration < min_subscan:
+            # Splitting produced sub-minimum slices (for a pong, slices
+            # shorter than one period); nothing can be emitted.
+            return state, blocks, None if period is None else unplannable
 
         # The whole visit sits at the science elevation (the slew already
         # drove there), so boundary retunes are stamped at it too.
@@ -1098,20 +1410,19 @@ class ScienceScanPhase(Phase):
             retune_dur = retune_spec.duration if retune_spec is not None else 0.0
             # The boundary retune plus a minimum-duration subscan must both
             # fit inside the window; otherwise the visit ends here.
-            if remaining < retune_dur + ctx.overhead_model.min_scan_duration:
+            if remaining < retune_dur + min_subscan:
+                if not blocks and period is not None:
+                    return state, blocks, unplannable
                 break
-            if retune_spec is not None:
-                state, retune_block = _emit_retune_block(
-                    state, ctx, retune_spec, az_start_sci, az_end_sci, sci_el
-                )
-                blocks.append(retune_block)
 
-            actual_duration = min(subscan_duration, (deadline - state.current_time).sec)
-
-            science_block = TimelineBlock.science(
-                patch=best_patch,
-                t_start=state.current_time,
-                duration=actual_duration,
+            # Plan the subscan at its post-retune start before booking the
+            # retune, so a refused subscan leaves neither block behind.
+            sci_start = state.current_time + TimeDelta(retune_dur, format="sec")
+            planned = _plan_science_subscan(
+                best_patch,
+                t_start=sci_start,
+                available=min(subscan_duration, (deadline - sci_start).sec),
+                period=period,
                 az_start=az_start_sci,
                 az_end=az_end_sci,
                 el=sci_el,
@@ -1121,10 +1432,18 @@ class ScienceScanPhase(Phase):
                 rising=rising,
                 t0_scan=t0_scan,
             )
-            science_block = _record_executed_azimuth(science_block, ctx.site)
+            if planned is None:
+                return state, blocks, None if blocks else unplannable
+            science_block, duration = planned
+
+            if retune_spec is not None:
+                state, retune_block = _emit_retune_block(
+                    state, ctx, retune_spec, az_start_sci, az_end_sci, sci_el
+                )
+                blocks.append(retune_block)
             blocks.append(science_block)
             state = state.advanced(
-                current_time=state.current_time + TimeDelta(actual_duration, format="sec"),
+                current_time=state.current_time + TimeDelta(duration, format="sec"),
             )
 
-        return state, blocks
+        return state, blocks, None

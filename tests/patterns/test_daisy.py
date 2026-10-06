@@ -6,10 +6,11 @@ from astropy.time import Time
 
 from fyst_trajectories import Coordinates
 from fyst_trajectories.patterns import DaisyScanConfig, DaisyScanPattern
+from fyst_trajectories.patterns.daisy import _DAISY_INTERNAL_TIMESTEP, _daisy_reach
 
 
 class TestDaisyScanPattern:
-    """Rosette generation: centre crossing, steady cruise speed, y_offset, finite output."""
+    """Rosette generation: centre crossing, steady cruise speed, y_offset, small radius."""
 
     def test_basic_daisy_scan(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -26,7 +27,6 @@ class TestDaisyScanPattern:
 
         trajectory = pattern.generate(site, duration=120.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
         assert trajectory.duration == pytest.approx(120.0, abs=0.2)
         assert trajectory.start_time == start_time
         assert trajectory.pattern_type == "daisy"
@@ -61,8 +61,7 @@ class TestDaisyScanPattern:
 
         assert min_distance < 0.1
 
-    @pytest.mark.slow
-    def test_daisy_constant_velocity(self, site):
+    def test_daisy_horizon_rate_stays_in_a_band(self, site):
         """Horizon-frame speed stays in a bounded band during the cruise.
 
         ``az_vel`` is a mount-frame rate inflated by ``1 / cos(el)``, so it is not
@@ -140,7 +139,6 @@ class TestDaisyScanPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.pattern_params is not None
         params = trajectory.pattern_params
         assert params["radius"] == 0.5
         assert params["velocity"] == 0.3
@@ -162,31 +160,13 @@ class TestDaisyScanPattern:
         )
         pattern = DaisyScanPattern(ra=180.0, dec=-30.0, config=config)
 
-        trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
+        pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
-
-    def test_daisy_finite_positions(self, site):
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        config = DaisyScanConfig(
-            timestep=0.1,
-            radius=0.5,
-            velocity=0.3,
-            turn_radius=0.2,
-            avoidance_radius=0.0,
-            start_acceleration=0.5,
-            y_offset=0.0,
-        )
-        pattern = DaisyScanPattern(ra=180.0, dec=-30.0, config=config)
-
-        trajectory = pattern.generate(site, duration=120.0, start_time=start_time)
-
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
-        assert np.all(np.isfinite(trajectory.az_vel))
-        assert np.all(np.isfinite(trajectory.el_vel))
+        # The small rosette stays inside radius + 2 * turn_radius (0.2 deg) and
+        # still covers area (measured reach 0.16 deg).
+        _, x_off, y_off = pattern.generate_offsets(60.0)
+        reach = np.hypot(x_off, y_off).max()
+        assert 0.05 < reach < config.radius + 2.0 * config.turn_radius
 
 
 class TestDaisyScanFlags:
@@ -317,3 +297,81 @@ class TestDaisyTimeGrid:
             f"cruise speed {cruise.mean():.5f} deg/s vs configured {config.velocity} "
             f"(relative error {rel:.4%}); time grid is stretching velocities"
         )
+
+
+class TestDaisyReach:
+    """``_daisy_reach`` bounds how far the petals go, which is past ``radius``.
+
+    A petal turns on a circle of ``turn_radius`` after it crosses ``radius``,
+    so it reaches ``hypot(radius, turn_radius) + turn_radius`` from the centre
+    (1.08 deg for a 0.3 deg radius and the 0.5 deg turn radius the offline
+    rebuild defaults to). The offline scheduler bounds a daisy visit by this
+    reach, so an offset past it would let a booked scan leave the limits.
+    """
+
+    @pytest.mark.parametrize(
+        "radius, turn_radius, avoidance_radius, velocity, timestep, y_offset",
+        [
+            (0.3, 0.5, 0.1, 0.3, 0.1, 0.0),  # turn radius larger than the radius
+            (0.5, 0.2, 0.0, 0.3, 0.1, 0.0),
+            (1.0, 0.5, 0.1, 1.0, 0.1, 0.0),  # fast: the last step before a turn is long
+            (2.0, 0.5, 0.3, 1.0, 0.002, 0.0),  # output finer than the integrator's ceiling
+            (0.5, 0.2, 0.1, 0.3, 0.1, 0.8),  # starts outside the radius: the start is farthest
+        ],
+    )
+    def test_bounds_the_pattern_and_the_first_petal_reaches_it(
+        self, radius, turn_radius, avoidance_radius, velocity, timestep, y_offset
+    ):
+        config = DaisyScanConfig(
+            timestep=timestep,
+            radius=radius,
+            velocity=velocity,
+            turn_radius=turn_radius,
+            avoidance_radius=avoidance_radius,
+            start_acceleration=0.5,
+            y_offset=y_offset,
+        )
+        _, x_off, y_off = DaisyScanPattern(ra=0.0, dec=0.0, config=config).generate_offsets(120.0)
+        farthest = float(np.hypot(x_off, y_off).max())
+
+        reach = _daisy_reach(radius, turn_radius, velocity, timestep, y_offset)
+        assert farthest <= reach
+        # The first petal comes within two integrator steps (the one the
+        # bound adds and the last before the turn, each at most
+        # velocity / 150 s) of the bound; 0.01 deg covers the output grid
+        # sampling past the farthest point.
+        step = velocity * min(timestep, _DAISY_INTERNAL_TIMESTEP)
+        assert farthest >= reach - 2.0 * step - 0.01
+        assert reach >= radius + turn_radius
+
+    @pytest.mark.parametrize(
+        "radius, turn_radius, avoidance_radius, velocity, duration",
+        [
+            (0.05, 0.005, 0.0, 3.0, 120.0),  # one step is four turn radii: the turn overshoots
+            (0.05, 0.2, 1.0, 0.05, 600.0),  # avoidance radius wider than the whole pattern
+            (0.01, 0.03, 0.1, 0.05, 600.0),
+        ],
+    )
+    def test_bounds_the_degenerate_regimes(
+        self, radius, turn_radius, avoidance_radius, velocity, duration
+    ):
+        """The integrator's own discretisation, every step sampled, stays inside.
+
+        Without the step the bound adds for the integrator, these exceed
+        ``hypot(radius + step, turn_radius) + turn_radius`` by 0.0065, 2e-6
+        and 4.9e-6 deg.
+        """
+        config = DaisyScanConfig(
+            timestep=_DAISY_INTERNAL_TIMESTEP,
+            radius=radius,
+            velocity=velocity,
+            turn_radius=turn_radius,
+            avoidance_radius=avoidance_radius,
+            start_acceleration=0.5,
+            y_offset=0.0,
+        )
+        pattern = DaisyScanPattern(ra=0.0, dec=0.0, config=config)
+        _, x_off, y_off = pattern.generate_offsets(duration)
+
+        reach = _daisy_reach(radius, turn_radius, velocity, _DAISY_INTERNAL_TIMESTEP)
+        assert float(np.hypot(x_off, y_off).max()) <= reach

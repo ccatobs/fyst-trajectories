@@ -15,18 +15,16 @@ import numpy as np
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
-from ..coordinates import Coordinates
-from ..exceptions import ElevationBoundsError, TargetNotObservableError
-from ..offsets import InstrumentOffset
-from ..site import AtmosphericConditions, Site
-
-# Module-object import, NOT ``from .source_ces import ...``: source_ces imports
-# three entry points from here, so the cycle stays broken only because this
-# binds the module mid-import and resolves each attribute at call time.
-from . import source_ces
-from ._helpers import _coerce_start_time
-from ._types import ArrayFootprint
-from .footprints import resolve_footprint
+from ..._validation import _require_non_negative, _require_positive
+from ...coordinates import Coordinates
+from ...exceptions import ElevationBoundsError, PointingWarning, TargetNotObservableError
+from ...offsets import InstrumentOffset
+from ...site import AtmosphericConditions, Site
+from .._helpers import _coerce_start_time
+from .._types import ArrayFootprint
+from ..footprints import resolve_footprint
+from ._kernel import _DEFAULT_SEARCH_HORIZON_HOURS, _compute_source_ces_core
+from ._source import _SourceSpec
 
 # --- Approximate-start-time ("anchor") resolution constants ---------------
 # These support the ``start_time`` keyword on the source-CES entry points,
@@ -44,10 +42,11 @@ _ANCHOR_SLOPE_DT_SEC = 60.0
 # Elevation buffer added on top of the footprint's angular radius from the
 # boresight when choosing the probe el_bore. The projected elevation extent
 # of any cover vertex is bounded by its angular distance from the boresight,
-# so a probe el_bore this far beyond the anchor elevation keeps the whole
-# projected cover inside the reachable arc (no window-edge clip) while
-# keeping the probe close enough that the geometry it measures matches the
-# final solve.
+# so a probe el_bore this far beyond the anchor elevation puts the whole
+# projected cover beyond the anchor elevation (no clip at the window's
+# opening edge) while keeping the probe close enough that the geometry it
+# measures matches the final solve. Near culmination the cover's far side can
+# still lie beyond the source's arc, which the probe's allow_partial absorbs.
 _ANCHOR_PROBE_BUFFER_DEG = 0.1
 
 # Deliberate elevation lead applied to the derived el_bore so the resolved
@@ -79,23 +78,16 @@ def _source_el_at(
     coords: Coordinates,
     obstime: Time,
     *,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
-    pm_ra: float,
-    pm_dec: float,
-    ref_epoch: Time | None,
+    source: _SourceSpec,
 ) -> float:
     """Sample the source elevation (degrees) at a single instant.
 
-    Wraps :func:`_sample_source_altaz` with a one-element time array so the
-    body / ra-dec / proper-motion dispatch stays identical to the search,
+    Wraps :meth:`_SourceSpec.sample_altaz` with a one-element time array so
+    the body / ra-dec / proper-motion dispatch stays identical to the search,
     then returns the scalar elevation.
     """
     arr = obstime + TimeDelta(np.array([0.0]) * u.s)
-    _, el = source_ces._sample_source_altaz(
-        coords, arr, body=body, ra=ra, dec=dec, pm_ra=pm_ra, pm_dec=pm_dec, ref_epoch=ref_epoch
-    )
+    _, el = source.sample_altaz(coords, arr)
     return float(np.asarray(el, dtype=float)[0])
 
 
@@ -103,12 +95,7 @@ def _probe_anchor_slope(
     coords: Coordinates,
     anchor: Time,
     *,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
-    pm_ra: float,
-    pm_dec: float,
-    ref_epoch: Time | None,
+    source: _SourceSpec,
 ) -> tuple[float, float]:
     """Return ``(el_at_anchor_deg, el_slope_deg_per_s)`` for the source at ``anchor``.
 
@@ -119,16 +106,7 @@ def _probe_anchor_slope(
     the elevation-crossing search.
     """
     probe_times = anchor + TimeDelta(np.array([0.0, _ANCHOR_SLOPE_DT_SEC]) * u.s)
-    _, el = source_ces._sample_source_altaz(
-        coords,
-        probe_times,
-        body=body,
-        ra=ra,
-        dec=dec,
-        pm_ra=pm_ra,
-        pm_dec=pm_dec,
-        ref_epoch=ref_epoch,
-    )
+    _, el = source.sample_altaz(coords, probe_times)
     el = np.asarray(el, dtype=float)
     el_at_anchor = float(el[0])
     slope = (float(el[1]) - el_at_anchor) / _ANCHOR_SLOPE_DT_SEC
@@ -139,9 +117,7 @@ def _anchored_el_limits_error(
     *,
     anchor: Time,
     el_at_anchor: float,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
+    source: _SourceSpec,
     site: Site,
 ) -> TargetNotObservableError:
     """Build the anchored-derivation elevation-limits error.
@@ -152,7 +128,7 @@ def _anchored_el_limits_error(
     the source's elevation at the anchor and the telescope limits, rather
     than an internally derived boresight elevation the caller never supplied.
     """
-    label = source_ces._describe_source(body, ra, dec)
+    label = source.label
     el_limits = site.telescope_limits.elevation
     return TargetNotObservableError(
         target=label,
@@ -180,12 +156,7 @@ def _derive_anchored_el_bore(
     mode: Literal["rising", "setting"],
     coords: Coordinates,
     fp: ArrayFootprint,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
-    pm_ra: float,
-    pm_dec: float,
-    ref_epoch: Time | None,
+    source: _SourceSpec,
     boresight_rot: float | None,
     site: Site,
     atmosphere: AtmosphericConditions | None,
@@ -200,47 +171,67 @@ def _derive_anchored_el_bore(
     crosses the footprint's lower/upper projected elevation edge, so
     ``el_bore = el(anchor)`` would centre the pass on the anchor and begin it
     earlier. This runs one probe of the params-only kernel at a lifted
-    ``el_bore`` (far enough from the anchor that the whole cover is reachable),
-    reads the source elevation at the probe's resolved start, and shifts
-    ``el_bore`` so that crossing lands on the anchor. A small
-    :data:`_ANCHOR_START_LEAD_DEG` lead is added in the drift direction so the
-    resolved start settles just after the anchor, clear of the search-window
-    boundary. One probe, no iteration. The anchor places the full footprint
-    crossing; a ``dwell`` narrows the pass about that crossing's midpoint
-    afterwards, so a dwell-limited pass starts half the cut after the anchor
-    (placing the narrowed start on the anchor would open the crossing before
-    the search window and trip the cover-vs-arc guard).
+    ``el_bore`` (far enough past the anchor elevation that the source meets
+    the cover only after the anchor), reads the source elevation at the
+    probe's resolved start, and shifts ``el_bore`` so that crossing lands on
+    the anchor. A small :data:`_ANCHOR_START_LEAD_DEG` lead is added in the
+    drift direction so the resolved start settles just after the anchor,
+    clear of the search-window boundary. One probe, no iteration. The anchor
+    places the full footprint crossing; a ``dwell`` narrows the pass about
+    that crossing's midpoint afterwards, so a dwell-limited pass starts half
+    the cut after the anchor (placing the narrowed start on the anchor would
+    open the crossing before the search window and trip the cover-vs-arc
+    guard).
+
+    The probe sweeps with the kernel's default padding, never the caller's
+    ``az_padding``, which it does not need. So that padding is checked here,
+    with the two arguments the kernel checks ahead of it and in the same
+    order, before the probe runs: a malformed one is the kernel's
+    ``ValueError`` wherever the probe would refuse the anchor.
 
     Raises :class:`TargetNotObservableError` (anchor-relative message) when
     the probe or the derived ``el_bore`` falls outside the telescope
     elevation limits, e.g. the source is below the elevation floor at the
     anchor; the probe's :class:`ElevationBoundsError` is preserved as the
-    ``__cause__``.
+    ``__cause__``. The probe's other refusals propagate unchanged: a
+    :class:`TargetNotObservableError` when the source never reaches the
+    probe's elevation, an ``OffsetInversionError`` when the off-centre
+    boresight inverse fails there, and a ``PointingError`` when, near
+    culmination, the source reaches none of the lifted cover's vertices.
     """
+    _require_positive(sampling_step_seconds, "sampling_step_seconds")
+    _require_positive(az_accel, "az_accel")
+    _require_non_negative(az_padding, "az_padding")
     drift_sign = 1.0 if mode == "rising" else -1.0
     # The projected elevation deviation of any cover vertex is bounded by its
     # angular distance from the boresight (focal-plane origin), so lifting the
-    # probe el_bore by more than that distance keeps the whole cover inside
-    # the reachable arc regardless of the field rotation.
+    # probe el_bore by more than that distance puts the whole cover beyond the
+    # anchor elevation regardless of the field rotation, and the crossing
+    # begins after the window opens. Near culmination the source can turn
+    # back before it crosses all of the cover, which allow_partial tolerates.
     r_bore = float(np.hypot(fp.cover_xi_deg, fp.cover_eta_deg).max())
     margin = r_bore + _ANCHOR_PROBE_BUFFER_DEG
     el_bore_probe = el_at_anchor + drift_sign * margin
 
-    horizon = TimeDelta(source_ces._DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
+    horizon = TimeDelta(_DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
     probe_window = (anchor, anchor + horizon)
     try:
         with warnings.catch_warnings():
             # The probe is an internal measurement; v_az=0 skips the optimiser
-            # (t0 does not depend on it) and allow_partial keeps it robust. The
-            # authoritative warnings come from the real solve, so silence these.
-            warnings.simplefilter("ignore")
-            probe = source_ces._compute_source_ces_core(
-                body=body,
-                ra=ra,
-                dec=dec,
-                pm_ra=pm_ra,
-                pm_dec=pm_dec,
-                ref_epoch=ref_epoch,
+            # and screen=False the Sun sweep and the peak-speed advisory (t0
+            # depends on none of them), and allow_partial keeps it robust. It
+            # takes the kernel's default padding, not the caller's, since t0
+            # does not depend on that either: near culmination the source can
+            # meet the partial cover at a single vertex, and with no padding
+            # the kernel refuses that sweep for having no width. The
+            # authoritative warnings come from the real solve, so silence the
+            # probe's own, which allow_partial can still raise. The filter is
+            # process-global while installed, so a PointingWarning another
+            # thread raises meanwhile is lost too; it is narrowed to that
+            # category so no other warning is.
+            warnings.simplefilter("ignore", PointingWarning)
+            probe = _compute_source_ces_core(
+                source=source,
                 footprint=fp,
                 el_bore=el_bore_probe,
                 boresight_rot=boresight_rot,
@@ -251,22 +242,19 @@ def _derive_anchored_el_bore(
                 atmosphere=atmosphere,
                 sampling_step_seconds=sampling_step_seconds,
                 az_accel=az_accel,
-                az_padding=az_padding,
                 az_branch=az_branch,
                 allow_partial=True,
                 v_az=0.0,
-                sun_safe=None,
+                screen=False,
             )
     except ElevationBoundsError as err:
         # The kernel only raises a bare ElevationBoundsError for an el_bore
         # outside the telescope limits, and here that el_bore is the internal
         # probe value; report the failure in the caller's terms instead.
         raise _anchored_el_limits_error(
-            anchor=anchor, el_at_anchor=el_at_anchor, body=body, ra=ra, dec=dec, site=site
+            anchor=anchor, el_at_anchor=el_at_anchor, source=source, site=site
         ) from err
-    el_at_probe_t0 = _source_el_at(
-        coords, probe.t0, body=body, ra=ra, dec=dec, pm_ra=pm_ra, pm_dec=pm_dec, ref_epoch=ref_epoch
-    )
+    el_at_probe_t0 = _source_el_at(coords, probe.t0, source=source)
     derived = el_bore_probe + (el_at_anchor - el_at_probe_t0) + drift_sign * _ANCHOR_START_LEAD_DEG
     # The probe sits farther from the anchor elevation than the derived value
     # in most geometries, but not in all of them; pre-check the derived
@@ -275,7 +263,7 @@ def _derive_anchored_el_bore(
     el_limits = site.telescope_limits.elevation
     if not (el_limits.min <= derived <= el_limits.max):
         raise _anchored_el_limits_error(
-            anchor=anchor, el_at_anchor=el_at_anchor, body=body, ra=ra, dec=dec, site=site
+            anchor=anchor, el_at_anchor=el_at_anchor, source=source, site=site
         )
     return derived
 
@@ -285,9 +273,7 @@ def _anchor_drift_guard(
     *,
     anchor: Time,
     el_at_anchor: float,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
+    source: _SourceSpec,
     el_limits_min: float,
     el_limits_max: float,
 ) -> None:
@@ -298,7 +284,7 @@ def _anchor_drift_guard(
     """
     if abs(slope) >= _MIN_ANCHOR_EL_DRIFT_DEG_S:
         return
-    label = source_ces._describe_source(body, ra, dec)
+    label = source.label
     raise TargetNotObservableError(
         target=label,
         time_info=str(anchor.iso),
@@ -324,12 +310,7 @@ def _resolve_anchor_prefix(
     mode: Literal["rising", "setting"] | None,
     night: Time | None,
     window: tuple[Time, Time] | None,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
-    pm_ra: float,
-    pm_dec: float,
-    ref_epoch: Time | None,
+    source: _SourceSpec,
     site: Site,
     atmosphere: AtmosphericConditions | None,
 ) -> tuple[Time, Coordinates, Literal["rising", "setting"], float]:
@@ -355,16 +336,7 @@ def _resolve_anchor_prefix(
     resolved_mode = mode
     el_at_anchor = 0.0
     if el_bore is None or mode is None:
-        el_at_anchor, slope = _probe_anchor_slope(
-            coords,
-            anchor,
-            body=body,
-            ra=ra,
-            dec=dec,
-            pm_ra=pm_ra,
-            pm_dec=pm_dec,
-            ref_epoch=ref_epoch,
-        )
+        el_at_anchor, slope = _probe_anchor_slope(coords, anchor, source=source)
         if resolved_mode is None:
             resolved_mode = "rising" if slope >= 0.0 else "setting"
         if el_bore is None:
@@ -373,9 +345,7 @@ def _resolve_anchor_prefix(
                 slope,
                 anchor=anchor,
                 el_at_anchor=el_at_anchor,
-                body=body,
-                ra=ra,
-                dec=dec,
+                source=source,
                 el_limits_min=el_limits.min,
                 el_limits_max=el_limits.max,
             )
@@ -392,12 +362,7 @@ def _resolve_start_time_anchor(
     night: Time | None,
     window: tuple[Time, Time] | None,
     footprint: InstrumentOffset | str | Sequence[InstrumentOffset] | ArrayFootprint,
-    body: str | None,
-    ra: float | None,
-    dec: float | None,
-    pm_ra: float,
-    pm_dec: float,
-    ref_epoch: Time | None,
+    source: _SourceSpec,
     boresight_rot: float | None,
     site: Site,
     atmosphere: AtmosphericConditions | None,
@@ -422,17 +387,12 @@ def _resolve_start_time_anchor(
         mode=mode,
         night=night,
         window=window,
-        body=body,
-        ra=ra,
-        dec=dec,
-        pm_ra=pm_ra,
-        pm_dec=pm_dec,
-        ref_epoch=ref_epoch,
+        source=source,
         site=site,
         atmosphere=atmosphere,
     )
 
-    horizon = TimeDelta(source_ces._DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
+    horizon = TimeDelta(_DEFAULT_SEARCH_HORIZON_HOURS * 3600.0 * u.s)
     resolved_window = (anchor, anchor + horizon)
 
     if el_bore is None:
@@ -442,12 +402,7 @@ def _resolve_start_time_anchor(
             mode=resolved_mode,
             coords=coords,
             fp=resolve_footprint(footprint),
-            body=body,
-            ra=ra,
-            dec=dec,
-            pm_ra=pm_ra,
-            pm_dec=pm_dec,
-            ref_epoch=ref_epoch,
+            source=source,
             boresight_rot=boresight_rot,
             site=site,
             atmosphere=atmosphere,

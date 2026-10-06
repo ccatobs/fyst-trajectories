@@ -4,21 +4,22 @@ from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
-from ..patterns.configs import PongAltAzScanConfig, PongScanConfig
+from ..patterns.configs import PongAltAzScanConfig
 from ..patterns.pong import compute_pong_period
 from ..site import AtmosphericConditions, Site
 from ._helpers import _build_altaz_trajectory, _coerce_start_time
-from ._sun_safety import _check_altaz_center_sun_safety
+from ._sun_safety import _check_altaz_center_sun_safety, _check_trajectory_sun_safety
 from ._types import PongAltAzComputedParams, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import SunSafePredicate
 
 
 def plan_pong_altaz_scan(
     az_center: float,
     el_center: float,
+    *,
     width: float,
     height: float,
     spacing: float,
@@ -32,7 +33,7 @@ def plan_pong_altaz_scan(
     detector_offset: "InstrumentOffset | None" = None,
     atmosphere: AtmosphericConditions | None = None,
     sun_safe: "SunSafePredicate | None" = None,
-) -> ScanBlock:
+) -> ScanBlock[PongAltAzComputedParams]:
     """Plan a Curvy-Pong scan about a fixed AltAz center.
 
     Generates the same on-sky Pong pattern as :func:`plan_pong_scan`, but
@@ -77,8 +78,9 @@ def plan_pong_altaz_scan(
         Telescope site configuration.
     start_time : str or Time
         Observation start time. Accepts an ISO string or
-        ``astropy.time.Time``. Used to anchor the trajectory timestamp and
-        to place the Sun for the center's sun-safety pre-flight check.
+        ``astropy.time.Time``. Used to anchor the trajectory timestamp, to
+        place the Sun for the center's sun-safety pre-flight check, and to
+        time the Sun screen of the built block.
     num_terms : int, optional
         Number of Fourier terms for smooth turnarounds. Default is 4.
         Must be >= 1.
@@ -98,10 +100,13 @@ def plan_pong_altaz_scan(
         for parity with the other planners. Default is None.
     sun_safe : SunSafePredicate or None, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
-        forwarded to the center pre-flight check. ``None`` (default) keeps
-        the built-in scalar exclusion-radius check; an injected predicate is
-        consulted instead, so the directional sun-avoidance model (see
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
+        forwarded to the center pre-flight check and to the screen of the
+        built block. ``None`` (default) keeps the built-in scalar
+        exclusion-radius check, which screens every sample of the block; an
+        injected predicate is consulted instead, on the center and on about
+        600 evenly spaced samples of the block, both ends included, so the
+        directional sun-avoidance model (see
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored
         end-to-end. Warn-only.
 
@@ -116,10 +121,24 @@ def plan_pong_altaz_scan(
     ------
     ValueError
         If n_cycles is less than 1, or if any config field is invalid
-        (non-positive width/height/spacing/velocity, num_terms < 1, or
+        (non-positive width/height/spacing/velocity/timestep, num_terms < 1, or
         el_center outside ``(0, 90)``).
     TrajectoryBoundsError
         If the trajectory exceeds telescope limits.
+
+    Warns
+    -----
+    PointingWarning
+        If the center is inside the Sun exclusion zone at ``start_time``,
+        and separately if the built trajectory enters it at any point of
+        the block (the Sun moves about 15 deg per hour against the fixed
+        horizon-frame pattern); the second warning names the closest
+        approach, or with an injected ``sun_safe`` the earliest unsafe
+        sample. Neither refuses the plan. A ``PointingWarning`` also flags a
+        high elevation that cuts the on-sky azimuth speed.
+    VelocityLimitWarning, AccelerationLimitWarning
+        The built trajectory exceeds an axis velocity or acceleration limit
+        (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).
 
     Examples
     --------
@@ -129,7 +148,7 @@ def plan_pong_altaz_scan(
     >>> site = get_fyst_site()
     >>> block = plan_pong_altaz_scan(
     ...     az_center=120.0,
-    ...     el_center=60.0,
+    ...     el_center=50.0,
     ...     width=2.0,
     ...     height=2.0,
     ...     spacing=0.1,
@@ -165,20 +184,10 @@ def plan_pong_altaz_scan(
         sun_safe=sun_safe,
     )
 
-    # The period depends only on the on-sky geometry, which is shared with the
-    # celestial Pong, so reuse ``compute_pong_period`` via the equivalent
-    # PongScanConfig rather than duplicating the Pong period math.
-    period, x_numvert, y_numvert = compute_pong_period(
-        PongScanConfig(
-            timestep=timestep,
-            width=width,
-            height=height,
-            spacing=spacing,
-            velocity=velocity,
-            num_terms=num_terms,
-            angle=angle,
-        )
-    )
+    # The period depends only on the on-sky geometry, which the AltAz config
+    # shares with the celestial Pong, so ``compute_pong_period`` reads it from
+    # this config rather than duplicating the Pong period math.
+    period, x_numvert, y_numvert = compute_pong_period(config)
 
     duration = period * n_cycles
 
@@ -189,6 +198,13 @@ def plan_pong_altaz_scan(
         start_time=start_time,
         atmosphere=atmosphere,
         detector_offset=detector_offset,
+    )
+
+    _check_trajectory_sun_safety(
+        site=site,
+        trajectory=trajectory,
+        scan_label=f"AltAz Pong scan at az={az_center:.3f}, el={el_center:.3f}",
+        sun_safe=sun_safe,
     )
 
     computed_params: PongAltAzComputedParams = {

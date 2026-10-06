@@ -11,13 +11,14 @@ from ._sun_safety import _check_field_sun_safety
 from ._types import DaisyComputedParams, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import SunSafePredicate
 
 
 def plan_daisy_scan(
     ra: float,
     dec: float,
+    *,
     radius: float,
     velocity: float,
     turn_radius: float,
@@ -25,13 +26,13 @@ def plan_daisy_scan(
     start_acceleration: float,
     site: Site,
     start_time: str | Time,
-    timestep: float,
     duration: float,
+    timestep: float = 0.1,
     y_offset: float = 0.0,
     detector_offset: "InstrumentOffset | None" = None,
     atmosphere: AtmosphericConditions | None = None,
     sun_safe: "SunSafePredicate | None" = None,
-) -> ScanBlock:
+) -> ScanBlock[DaisyComputedParams]:
     """Plan a Daisy scan centered on a single RA/Dec position.
 
     Parameters
@@ -57,20 +58,24 @@ def plan_daisy_scan(
     start_time : str or Time
         Observation start time (required for celestial patterns).
         Accepts an ISO string or ``astropy.time.Time``.
-    timestep : float
-        Time between trajectory points in seconds. Must be positive.
     duration : float
         Observation duration in seconds. Must be positive.
+    timestep : float, optional
+        Time between trajectory points in seconds. Default is 0.1. Must be
+        positive.
     y_offset : float, optional
         Initial y offset in on-sky degrees. Default is 0.0 (start at center).
     detector_offset : InstrumentOffset or None, optional
         If provided, adjust the trajectory for this detector offset.
     atmosphere : AtmosphericConditions or None, optional
-        Atmospheric conditions for refraction correction. If None,
-        no refraction is applied.
+        Refraction model for the celestial-to-horizon transform. ``None``
+        (default) produces vacuum az/el, which is what a trajectory sent to
+        the telescope must carry: refraction is applied downstream at
+        execution time, so a refracted trajectory would be refracted twice.
+        Pass one only for planning or simulation output.
     sun_safe : SunSafePredicate or None, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
         forwarded to the field-center pre-flight check. ``None`` (default)
         keeps the built-in scalar exclusion-radius check; an injected
         predicate is consulted instead, so the directional sun-avoidance
@@ -87,8 +92,9 @@ def plan_daisy_scan(
     ------
     ValueError
         If any config field is invalid (non-positive ``radius``,
-        ``velocity``, ``turn_radius``, or ``start_acceleration``, or a
-        negative ``avoidance_radius``).
+        ``velocity``, ``turn_radius``, ``start_acceleration`` or
+        ``timestep``, or a negative ``avoidance_radius``), or if
+        ``duration`` is not positive.
     TargetNotObservableError
         If the target is not observable at the requested time.
     TrajectoryBoundsError

@@ -6,9 +6,11 @@ the numeric claims the documentation states:
 - the pong velocity-overshoot band (``PongScanConfig.velocity`` docstring):
   roughly 9 to 18 percent for ``num_terms >= 4``, about 27 percent at
   ``num_terms=1``, oscillating rather than converging;
-- the staggered-retune arithmetic (``inject_retune`` docstring): the
-  per-module cost is ``retune_duration / retune_interval``, about 1.7 percent
-  at the shipped defaults of 5 s every 300 s;
+- the staggered-retune arithmetic (``inject_retune`` docstring): retunes start
+  ``retune_interval + retune_duration`` apart (the first three at 300, 605 and
+  910 s with the shipped defaults), so each module loses
+  ``retune_duration / (retune_interval + retune_duration)``, about 1.6 percent,
+  measured on a long all-science trajectory;
 - the slew-row ``azmin`` / ``azmax`` semantics (``write_timeline`` and the
   ECSV schema page): from/to azimuths, preserved unordered;
 - the two rendered tables of code-derived numbers (the PrimeCam inner-ring
@@ -16,7 +18,13 @@ the numeric claims the documentation states:
   page), cell by cell against the constants they are printed from;
 - the LSA-window duration claim (``planning.rst`` and the
   ``plan_constant_el_scan`` docstring): the window is solar hours, and
-  ``ScanBlock.duration`` is that window quantised to whole azimuth legs.
+  ``ScanBlock.duration`` is that window quantised to whole azimuth legs;
+- the transit field-rotation rate (``get_parallactic_angle`` Notes): roughly
+  820 s per degree of transit zenith distance;
+- the midsummer Sun cap (``sun_avoidance.rst``): the Sun peaks within half a
+  degree of the zenith and caps safe elevations near 45 deg;
+- the calibration-night figures (``overhead_calibration_night.rst``): the
+  turnaround peak, the science fraction and the scan-table widths.
 """
 
 import inspect
@@ -32,7 +40,7 @@ from astropy.time import Time, TimeDelta
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.patterns.configs import PongScanConfig
 from fyst_trajectories.patterns.pong import PongScanPattern
-from fyst_trajectories.trajectory_utils import DEFAULT_RETUNE_DURATION_SEC, inject_retune
+from fyst_trajectories.retune import DEFAULT_RETUNE_DURATION_SEC, inject_retune
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
@@ -104,7 +112,8 @@ class TestRenderedTables:
 
         text = (DOCS / "instrument_offsets.rst").read_text(encoding="utf-8")
         radius_arcmin = INNER_RING_RADIUS_MM * FYST_PLATE_SCALE / 60.0
-        assert f"({radius_arcmin / 60.0:.2f} deg = {radius_arcmin:.1f} arcmin from center)" in text
+        ring = f"({radius_arcmin / 60.0:.2f}\u00b0 = {radius_arcmin:.1f} arcmin from center)"
+        assert ring in text
         printed = {}
         for line in text.splitlines():
             if not line.startswith("| i"):
@@ -132,8 +141,8 @@ class TestRenderedTables:
                 site.FYST_EL_MAX_ACCELERATION,
             ],
             "Plate scale": [site.FYST_PLATE_SCALE],
-            "PrimeCam inner ring radius": [primecam.INNER_RING_RADIUS_MM],
-            "Per-module FOV radius (PrimeCam)": [primecam.MODULE_FOV_RADIUS_DEG],
+            "Prime-Cam inner-ring radius": [primecam.INNER_RING_RADIUS_MM],
+            "Per-module FOV radius (Prime-Cam)": [primecam.MODULE_FOV_RADIUS_DEG],
             "Retune interval (in-scan)": [interval],
         }
         assert set(expected) <= set(cells)
@@ -161,7 +170,10 @@ class TestRenderedSimulatorDefaults:
                 policy.planet_cal_cadence,
             ],
             "Planet-calibration scan geometry": [float(policy.planet_cal_passes)],
-            "Calibration-night scan tables and slew rates": [night.az_speed, night.az_accel],
+            "Calibration-night scan tables and scan azimuth speed / acceleration": [
+                night.az_speed,
+                night.az_accel,
+            ],
         }
         assert set(expected) <= set(cells)
         for parameter, values in expected.items():
@@ -190,14 +202,48 @@ class TestPongOvershootBand:
 
 
 class TestRetuneArithmetic:
-    """The inject_retune docstring's 'about 1.7% at the defaults, 5 s every 300 s'."""
+    """The inject_retune docstring's cadence: starts 305 s apart, about 1.6% per module.
+
+    The next retune is due ``retune_interval`` after the previous one ends, so at
+    the defaults retunes start at 300, 605 and 910 s and each module loses 5 s in
+    every 305 s, ``retune_duration / (retune_interval + retune_duration)``. Both
+    defaults are instrument-team placeholders: the 300 s interval is listed under
+    "Pending instrument verification" in ``docs/index.rst`` and the 5 s gap awaits
+    on-sky tune timing. These pins move with those answers, together with the
+    docstring's numbers.
+    """
 
     def test_defaults_match_the_stated_numbers(self):
         assert DEFAULT_RETUNE_DURATION_SEC == 5.0
         default_interval = inspect.signature(inject_retune).parameters["retune_interval"].default
         assert default_interval == 300.0
-        fraction = DEFAULT_RETUNE_DURATION_SEC / default_interval
-        assert abs(fraction - 0.017) < 0.001
+
+    def test_realised_cadence_and_cost_at_the_defaults(self):
+        from fyst_trajectories.trajectory import SCAN_FLAG_RETUNE, Trajectory
+
+        # Ten hours of all-science samples (no scan_flag) on an exact 0.5 s grid.
+        times = np.arange(72_001) * 0.5
+        n = times.size
+        trajectory = Trajectory(
+            times=times,
+            az=100.0 + 0.01 * times,
+            el=np.full(n, 45.0),
+            az_vel=np.full(n, 0.01),
+            el_vel=np.zeros(n),
+        )
+        result = inject_retune(trajectory)
+        starts = np.array([event.t_start for event in result.retune_events])
+        np.testing.assert_allclose(starts[:3], [300.0, 605.0, 910.0])
+        np.testing.assert_allclose(np.diff(starts), 305.0)
+        fraction = np.count_nonzero(result.scan_flag == SCAN_FLAG_RETUNE) / n
+        # The band rejects the 5/300 a cadence measured start to start would give.
+        assert fraction == pytest.approx(5.0 / 305.0, rel=0.005)
+        assert f"{fraction:.1%}" == "1.6%"
+        # The docstring states these measured numbers, so a drift on either side fails here.
+        doc = " ".join((inspect.getdoc(inject_retune) or "").split())
+        gap, spacing = DEFAULT_RETUNE_DURATION_SEC, np.diff(starts)[0]
+        assert f"the first three at {starts[0]:.0f}, {starts[1]:.0f} and {starts[2]:.0f} s" in doc
+        assert f"about {fraction:.1%} at the defaults, {gap:.0f} s in every {spacing:.0f} s" in doc
 
 
 class TestLsaWindowDuration:
@@ -332,13 +378,33 @@ class TestSummerSunCap:
 
 @pytest.mark.offline
 class TestCalibrationNightNumbers:
-    """overhead_calibration_night.rst: the turnaround peak, the duty cycle, the table width."""
+    """overhead_calibration_night.rst: the turnaround peak, the duty cycle, the table width.
+
+    The leg is built from the shipped ``CalibrationNightPolicy`` rates and the
+    throw solved for the page's first pass (one module width over the cosine
+    of its 61.5 deg elevation), so these numbers move with those defaults.
+    The 1.5 deg/s and 1.0 deg/s^2 rates are commissioning values pending
+    instrument-team ratification ("Pending instrument verification" in
+    ``docs/index.rst``); a change fails here until the page's figures move with it.
+    """
 
     def _leg(self):
-        from fyst_trajectories import ConstantElScanConfig, TrajectoryBuilder, get_fyst_site
+        from fyst_trajectories import (
+            MODULE_FOV_RADIUS_DEG,
+            ConstantElScanConfig,
+            TrajectoryBuilder,
+            get_fyst_site,
+        )
+        from fyst_trajectories.overhead.calibration_night import CalibrationNightPolicy
 
+        night = CalibrationNightPolicy()
         config = ConstantElScanConfig(
-            timestep=0.1, az_start=0.0, az_stop=2.44, elevation=45.0, az_speed=1.5, az_accel=1.5
+            timestep=0.1,
+            az_start=0.0,
+            az_stop=2.0 * MODULE_FOV_RADIUS_DEG / math.cos(math.radians(61.5)),
+            elevation=45.0,
+            az_speed=night.az_speed,
+            az_accel=night.az_accel,
         )
         return (
             TrajectoryBuilder(get_fyst_site())
@@ -348,15 +414,18 @@ class TestCalibrationNightNumbers:
         )
 
     def test_quintic_turnaround_peaks_at_one_and_a_half_times_nominal(self):
-        """'the default 1.5 deg/s^2 reaches 2.25 deg/s^2' (measured on the sampled leg)."""
+        """'the default 1.0 deg/s^2 peaks at the site's 1.5 deg/s^2' (the sampled leg)."""
+        from fyst_trajectories import get_fyst_site
+
         traj = self._leg()
         az_vel = np.gradient(np.unwrap(traj.az, period=360.0), traj.times)
         peak = float(np.abs(np.gradient(az_vel, traj.times)).max())
-        assert peak == pytest.approx(2.25, abs=0.05)
+        assert peak == pytest.approx(1.5, abs=0.05)
+        assert peak <= get_fyst_site().telescope_limits.azimuth.max_acceleration
 
     def test_science_fraction_at_the_instrument_defaults(self):
-        """'a 2.44 deg leg spends about 45 percent of its samples in science'."""
-        assert self._leg().science_mask.mean() == pytest.approx(0.45, abs=0.02)
+        """'That leg spends about 38 percent of its samples in science'."""
+        assert self._leg().science_mask.mean() == pytest.approx(0.38, abs=0.02)
 
     def test_table_widths_are_one_point_six_module_widths_on_sky(self):
         """The shipped widths are a constant on-sky extent of 1.6 module widths (2.08 deg)."""

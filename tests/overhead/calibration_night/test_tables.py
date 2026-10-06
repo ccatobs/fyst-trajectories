@@ -73,7 +73,11 @@ class TestScanParameterTable:
 
 
 class TestDefaultTables:
-    """The shipped instrument-team defaults, as transcribed."""
+    """The shipped instrument-team defaults, as transcribed.
+
+    These are commissioning values, not ratified ones: the pins record the
+    transcription and move whenever the instrument team revises its table.
+    """
 
     def test_shared_table(self):
         shared = DEFAULT_SCAN_TABLES["default"]

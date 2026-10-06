@@ -4,12 +4,14 @@ These functions run at *dispatch* (command) time in the execution layer (for
 example inside a typed scan task, just before it slews to a scan's start
 point), not at planning time. They turn a goal sky position into a concrete encoder
 command, choosing among the telescope's redundant azimuth-wrap solutions so the
-commanded slew is sun-safe.
+commanded slew is sun-safe, and estimate how long that slew takes.
 
 The sun-safety test is injected via the ``sun_safe`` predicate so the directional
 sun-avoidance model (bound in :mod:`fyst_trajectories.sun_models`) plugs in
-without changing call sites. The default binding is the scalar exclusion check
-:meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe`.
+without changing call sites; its contracts are in
+:mod:`fyst_trajectories.sun_protocols`. The default binding is the scalar model
+``make_sun_safe("scalar")`` builds from the site's exclusion radius, whose
+verdicts are those of :meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe`.
 
 Why this lives here and not in the scheduler: CCAT's schedule can be overridden
 by the instrument at runtime, so the telescope's current position can differ from
@@ -19,156 +21,14 @@ broadcast), which is a dispatch-time concern.
 """
 
 import math
-from typing import Protocol, runtime_checkable
 
 import numpy as np
 from astropy.time import Time
 
-from .coordinates import Coordinates
 from .exceptions import EncoderSolutionError
 from .site import Site
-
-
-@runtime_checkable
-class SunSafePredicate(Protocol):
-    """The build-to contract for FYST's pluggable sun-avoidance model.
-
-    This is **the** interface a sun-avoidance check must implement to be injected
-    into :func:`choose_encoder_solution` via its ``sun_safe`` parameter. It is a
-    structural :class:`typing.Protocol`, so any callable with the matching
-    signature satisfies it; no base class or registration is required.
-
-    The default binding is the scalar exclusion check
-    :meth:`fyst_trajectories.coordinates.Coordinates.is_sun_safe` (one isotropic
-    radius). The directional alternative, ``make_sun_safe("cad")``
-    (:mod:`fyst_trajectories.sun_models`, FYST's own 50-90 deg
-    direction-dependent zone from the shared sun-avoidance library), implements
-    this same signature, so swapping models changes no call site.
-
-    The query is instantaneous, a single ``(az, el, time)`` point. A caller may
-    query it at several instants to cover a dwell window (see
-    :func:`choose_encoder_solution`'s array-valued ``obstime``); implementations
-    stay single-instant. Dwell / exit-window ("how soon does the Sun enter this
-    wrap") logic is *not* part of this contract; it belongs to the directional
-    model's internal state, not its per-point verdict.
-
-    **Optional batch extension.** An implementation MAY additionally expose
-    ``batch(az_deg, el_deg, times) -> numpy.ndarray[bool]`` (vectorized
-    verdicts over broadcastable inputs).
-    :func:`~fyst_trajectories.observability.check_observability` uses
-    ``batch`` when present and falls back to per-sample scalar calls
-    otherwise; the visibility renderer's ``sun_model`` parameter *requires*
-    the ``batch``/``threshold`` extensions; dispatch uses ``batch`` when
-    present and falls back to per-point scalar calls otherwise. The
-    predicates built by
-    :func:`~fyst_trajectories.sun_models.make_sun_safe` implement all of
-    it.
-
-    This contract judges a POINT. Whether the *slew path* to that point
-    stays clear is the separate :class:`SlewSafePredicate` contract.
-    """
-
-    def __call__(self, az_deg: float, el_deg: float, time: Time) -> bool:
-        """Return whether an encoder position is clear of the Sun.
-
-        Parameters
-        ----------
-        az_deg : float
-            Encoder azimuth in degrees (telescope range, not astropy
-            ``[0, 360)`` sky range).
-        el_deg : float
-            Encoder elevation in degrees.
-        time : Time
-            Time at which to locate the Sun.
-
-        Returns
-        -------
-        bool
-            ``True`` when the position is clear of the Sun (safe to command),
-            ``False`` when it is inside the avoidance zone.
-        """
-        ...
-
-
-@runtime_checkable
-class SlewSafePredicate(Protocol):
-    """The path-level sibling of :class:`SunSafePredicate`.
-
-    Judges whether the telescope's DIRECT slew from the current encoder
-    position to a goal encoder position stays clear of the Sun for the
-    whole motion, with the Sun advanced along the path. A correct
-    single-point predicate is necessarily invariant under ``az -> az +
-    360`` (same sky direction), so it can never *choose* an azimuth wrap;
-    the paths to two wraps differ, which is exactly what this contract
-    evaluates. Built by
-    :func:`~fyst_trajectories.sun_models.make_slew_safe`, which sweeps a
-    point model along the trapezoidal kinematic path using the FYST axis
-    velocity/acceleration limits.
-
-    Consumed by :func:`choose_encoder_solution`'s optional ``slew_safe``
-    parameter to rank admissible wraps by path safety. When no direct path is
-    clear the dispatch layer raises rather than auto-rerouting; a caller wanting
-    a two-leg reroute plans it explicitly via
-    :func:`~fyst_trajectories.sun_models.find_sun_safe_detour`.
-    """
-
-    def __call__(
-        self,
-        current_az: float,
-        current_el: float,
-        goal_az: float,
-        goal_el: float,
-        time: Time,
-    ) -> bool:
-        """Return whether the direct slew is clear of the Sun throughout.
-
-        Parameters
-        ----------
-        current_az, current_el : float
-            Current encoder position in degrees.
-        goal_az, goal_el : float
-            Goal encoder position in degrees (``goal_az`` in the
-            telescope encoder range; the path is the literal encoder
-            travel, no wrapping).
-        time : Time
-            Slew start time (scalar); implementations advance the Sun
-            along the path from here.
-
-        Returns
-        -------
-        bool
-            ``True`` when the whole path is clear of the Sun.
-        """
-        ...
-
-
-class _SiteScalarSunSafe:
-    """Default sun test for :func:`choose_encoder_solution`.
-
-    Point-for-point identical to
-    :meth:`~fyst_trajectories.coordinates.Coordinates.is_sun_safe` (the
-    site's scalar exclusion radius, at-radius counting as unsafe), and
-    additionally exposes the optional vectorised ``batch`` extension of the
-    :class:`SunSafePredicate` contract. The wrap gate uses ``batch`` so the
-    Sun ephemeris is solved once for the whole dwell grid instead of once
-    per (wrap, time) pair.
-    """
-
-    def __init__(self, site: Site) -> None:
-        self._coords = Coordinates(site)
-
-    def __call__(self, az_deg: float, el_deg: float, obstime: Time) -> bool:
-        """Return whether one encoder position is clear of the Sun."""
-        return bool(self._coords.is_sun_safe(az_deg, el_deg, obstime))
-
-    def batch(self, az_deg: np.ndarray, el_deg: np.ndarray, obstime: Time) -> np.ndarray:
-        """Return the per-sample verdicts for a whole grid of positions."""
-        verdict = np.asarray(self._coords.is_sun_safe(az_deg, el_deg, obstime), dtype=bool)
-        shape = np.shape(az_deg)
-        if verdict.shape != shape:
-            # The disabled-avoidance branch answers with a scalar ``True``.
-            verdict = np.full(shape, bool(verdict))
-        return verdict
+from .sun_models import _axis_slew_duration, make_sun_safe
+from .sun_protocols import SlewSafePredicate, SunSafePredicate, _sun_verdicts
 
 
 class EncoderSolution(tuple):
@@ -176,17 +36,13 @@ class EncoderSolution(tuple):
 
     A two-element tuple of ``(az, el)`` in degrees, also readable as the
     properties of those names, so ``az, el = choose_encoder_solution(...)``
-    reads exactly as before. It additionally carries the azimuth wrap the
-    pose belongs to.
+    unpacks it. It additionally carries the azimuth wrap the pose belongs to.
 
-    Attributes
-    ----------
-    az_shift : float
-        The multiple of 360 degrees that carries the caller's goal azimuth
-        frame onto the chosen wrap. Add it to every azimuth of the commanded
-        trajectory before sending it, which is what
-        :func:`~fyst_trajectories.patterns.rewrap_trajectory_azimuth`
-        does; ``0.0`` when the trajectory is already in the chosen wrap.
+    The value is immutable. Equality and hashing are those of the
+    ``(az, el)`` tuple and ignore ``az_shift``, which depends on the frame
+    the caller's goal azimuth was given in rather than on the pose, so a
+    solution compares equal to the bare pair; compare
+    ``(tuple(solution), solution.az_shift)`` when the shift matters.
 
     Examples
     --------
@@ -196,11 +52,25 @@ class EncoderSolution(tuple):
     (-160.0, -360.0)
     """
 
+    az_shift: float
+    """The multiple of 360 degrees that carries the caller's goal azimuth frame onto
+    the chosen wrap. Add it to every azimuth of the commanded trajectory before
+    sending it, which is what
+    :func:`~fyst_trajectories.patterns.rewrap_trajectory_azimuth` does; ``0.0``
+    when the trajectory is already in the chosen wrap."""
+
     def __new__(cls, az: float, el: float, az_shift: float) -> "EncoderSolution":
         """Build the pose tuple and attach the wrap shift."""
         solution = super().__new__(cls, (float(az), float(el)))
-        solution.az_shift = float(az_shift)
+        # The one assignment; __setattr__ refuses every later one.
+        object.__setattr__(solution, "az_shift", float(az_shift))
         return solution
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(f"EncoderSolution is immutable; cannot set {name!r}")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f"EncoderSolution is immutable; cannot delete {name!r}")
 
     def __getnewargs__(self) -> tuple[float, float, float]:
         """Return the arguments that rebuild this value (``copy``/``pickle``)."""
@@ -248,23 +118,19 @@ def _wraps_sun_safe(
     -------
     np.ndarray
         Boolean array, one entry per candidate azimuth.
+
+    Raises
+    ------
+    ValueError
+        If ``sun_safe.batch`` returns a result of the wrong shape.
     """
     n_az = az_candidates.size
     n_t = len(check_times)
-    batch = getattr(sun_safe, "batch", None)
-    if batch is not None:
-        az_grid = np.repeat(az_candidates, n_t)
-        el_grid = np.full(n_az * n_t, float(goal_el))
-        time_grid = check_times[np.tile(np.arange(n_t), n_az)]
-        verdict = np.asarray(batch(az_grid, el_grid, time_grid), dtype=bool)
-        return verdict.reshape(n_az, n_t).all(axis=1)
-    return np.array(
-        [
-            all(sun_safe(float(az), goal_el, check_times[i]) for i in range(n_t))
-            for az in az_candidates
-        ],
-        dtype=bool,
-    )
+    az_grid = np.repeat(az_candidates, n_t)
+    el_grid = np.full(n_az * n_t, float(goal_el))
+    time_grid = check_times[np.tile(np.arange(n_t), n_az)]
+    verdict = _sun_verdicts(sun_safe, az_grid, el_grid, time_grid, what="wrap and dwell grid")
+    return verdict.reshape(n_az, n_t).all(axis=1)
 
 
 def choose_encoder_solution(
@@ -329,18 +195,22 @@ def choose_encoder_solution(
         Telescope site, providing the azimuth/elevation limits and (for the
         default ``sun_safe``) the sun-avoidance configuration.
     sun_safe : SunSafePredicate, optional
-        Sun-safety predicate implementing the :class:`SunSafePredicate` contract,
+        Sun-safety predicate implementing the
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the encoder
-        position is clear of the Sun. Defaults to
-        :meth:`~fyst_trajectories.coordinates.Coordinates.is_sun_safe` (a scalar
-        exclusion radius). This is the seam for the directional sun-avoidance
-        model (e.g. :func:`~fyst_trajectories.sun_models.make_sun_safe`): pass
-        that model's predicate here and the call sites do not change. See
-        :class:`SunSafePredicate` for the contract. A model exposing the
-        optional vectorised ``batch`` extension is consulted once for the
-        whole ``(wrap, time)`` grid rather than per pair, which is what keeps
-        a long dwell grid off the dispatch critical path; the default does
-        expose it.
+        position is clear of the Sun. Defaults to the scalar model
+        ``make_sun_safe("scalar", site=site)`` builds (the site's exclusion
+        radius, with the verdicts of
+        :meth:`~fyst_trajectories.coordinates.Coordinates.is_sun_safe`). This is
+        the seam for the directional sun-avoidance model (e.g.
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`): pass that model's
+        predicate here and the call sites do not change. See
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` for the
+        contract. A model exposing the optional vectorised ``batch`` extension
+        (:class:`~fyst_trajectories.sun_protocols.BatchSunSafePredicate`) is
+        consulted once for the whole ``(wrap, time)`` grid rather than per
+        pair, which is what keeps a long dwell grid off the dispatch critical
+        path; the default does expose it.
     slew_safe : SlewSafePredicate, optional
         Path-level sun-safety check (e.g. from
         :func:`~fyst_trajectories.sun_models.make_slew_safe`). When given,
@@ -378,10 +248,17 @@ def choose_encoder_solution(
     Raises
     ------
     ValueError
-        If ``goal_az_span`` is given with ``span_min > span_max`` or with
+        If ``current_az``, ``current_el``, ``goal_az``, ``goal_el`` or an
+        endpoint of ``goal_az_span`` is NaN or infinite (a lost position
+        read is refused rather than turned into a wrap choice), if
+        ``goal_az_span`` is given with ``span_min > span_max`` or with
         ``goal_az`` outside ``[span_min, span_max]`` by more than a small
-        tolerance, or if ``obstime`` is an empty ``Time`` array (the sun gate
-        fails closed rather than passing every wrap vacuously).
+        tolerance, if ``obstime`` is an empty ``Time`` array (the sun gate
+        fails closed rather than passing every wrap vacuously), if the default
+        Sun test is given a ``goal_el`` outside [-90, 90] deg (possible only on
+        a custom ``Site`` whose elevation limits extend past it, Sun avoidance
+        enabled or not), or if ``sun_safe.batch`` returns a result of the
+        wrong shape.
     EncoderSolutionError
         A :class:`~fyst_trajectories.exceptions.PointingError` whose
         ``cause`` names the refusing stage: ``"goal_elevation"`` if
@@ -403,10 +280,11 @@ def choose_encoder_solution(
 
     **Over-the-top (el > 90) is not enumerated.** The library caps elevation at
     ``FYST_EL_MAX`` (90 deg; Prime-Cam does not point over the top), so the third
-    (el > 90, az + 180) encoder solution is intentionally omitted.
+    (el > 90, az + 180) encoder solution is intentionally omitted, and the default
+    Sun test refuses a goal elevation above 90 deg.
 
-    **The default sun test is instantaneous.** ``Coordinates.is_sun_safe`` checks
-    the angular separation at one instant; it has no notion of how soon the Sun
+    **The default sun test is instantaneous.** The scalar model checks the
+    angular separation at one instant; it has no notion of how soon the Sun
     enters a wrap (dwell / exit-window). Passing several ``obstime`` elements
     covers a dwell only by sampling; that ``min_sun_time``-style logic belongs in
     a richer non-trapping model supplied via ``sun_safe``.
@@ -428,6 +306,20 @@ def choose_encoder_solution(
     >>> az, el
     (200.0, 45.0)
     """
+    # Refuse a NaN or infinite pose or span endpoint here, naming the argument:
+    # past this point a NaN fails every comparison silently, and an infinity can
+    # overflow the wrap enumeration or make every slew distance equal.
+    for name, value in (
+        ("current_az", current_az),
+        ("current_el", current_el),
+        ("goal_az", goal_az),
+        ("goal_el", goal_el),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value}")
+    if goal_az_span is not None and not all(math.isfinite(v) for v in goal_az_span):
+        raise ValueError(f"goal_az_span must be finite, got {goal_az_span}")
+
     el_limits = site.telescope_limits.elevation
     az_limits = site.telescope_limits.azimuth
 
@@ -441,7 +333,7 @@ def choose_encoder_solution(
         )
 
     if sun_safe is None:
-        sun_safe = _SiteScalarSunSafe(site)
+        sun_safe = make_sun_safe("scalar", site=site)
 
     # A bare goal is the degenerate point span (goal_az, goal_az); every check
     # below runs on the resolved endpoints.
@@ -557,3 +449,65 @@ def choose_encoder_solution(
 
     encoder_az, az_shift = min(safe, key=lambda c: (abs(c[0] - current_az), -_limit_margin(c[1])))
     return EncoderSolution(encoder_az, goal_el, az_shift)
+
+
+def estimate_slew_time(
+    az1: float,
+    el1: float,
+    az2: float,
+    el2: float,
+    site: Site,
+) -> float:
+    """Estimate telescope slew time between two positions.
+
+    Uses a trapezoidal motion profile (accelerate to max velocity, cruise,
+    decelerate). Returns the maximum of azimuth and elevation slew times
+    since axes move simultaneously.
+
+    Azimuth distance is the direct path ``abs(az2 - az1)`` when both
+    positions are within the telescope's azimuth range, respecting the
+    cable wrap constraint. The telescope cannot take a shorter modular
+    path if it would require passing through the cable wrap boundary.
+
+    .. note::
+
+       ``az1`` and ``az2`` must be expressed in one **coherent**
+       cable-wrap frame, not merely both inside the telescope's
+       ``[az_min, az_max] = [-180, 360]`` window: that window is 540
+       degrees wide, so two in-window values can denote the same sky
+       azimuth a full turn apart, and this function then reports a
+       phantom unwind; mixing raw astropy ``[0, 360]`` azimuth with
+       telescope-normalised azimuth has the same effect. Encoder
+       azimuths form a coherent frame: the current encoder azimuth and
+       the azimuth :func:`choose_encoder_solution` returns for a slew
+       from it can be passed as they are. Otherwise place ``az2`` on the
+       in-limits 360-degree representative nearest ``az1``. The function
+       does not enforce or check this.
+
+    Parameters
+    ----------
+    az1, el1 : float
+        Starting azimuth and elevation in degrees.
+    az2, el2 : float
+        Ending azimuth and elevation in degrees.
+    site : Site
+        Observatory site with telescope limits.
+
+    Returns
+    -------
+    float
+        Estimated slew time in seconds. No settle time is included; the
+        caller adds its own.
+    """
+    az_limits = site.telescope_limits.azimuth
+    el_limits = site.telescope_limits.elevation
+
+    # Direct path respecting cable wrap limits.  Both positions should
+    # already be within [az_min, az_max]; the direct distance is the
+    # actual motor travel without wrapping around 360 deg.
+    az_dist = abs(az2 - az1)
+    az_time = _axis_slew_duration(az_dist, az_limits.max_velocity, az_limits.max_acceleration)
+    el_time = _axis_slew_duration(
+        abs(el2 - el1), el_limits.max_velocity, el_limits.max_acceleration
+    )
+    return max(az_time, el_time)

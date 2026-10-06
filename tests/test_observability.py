@@ -16,22 +16,16 @@ from _sun_stubs import allow_everything, block_everything
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import Coordinates, get_fyst_site
+from fyst_trajectories.coordinates import _build_time_grid
 from fyst_trajectories.observability import (
-    ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG,
-    CIVIL_TWILIGHT_ALTITUDE_DEG,
-    NAUTICAL_TWILIGHT_ALTITUDE_DEG,
-    SUN_RISE_SET_ALTITUDE_DEG,
+    FLUX_CALIBRATORS,
     AvoidZone,
     ReasonCode,
-    SunEventKind,
     Target,
     TargetKind,
     _all_windows,
-    _build_time_grid,
-    _threshold_crossings,
     check_observability,
     resolve_target,
-    sun_events,
 )
 
 T_NIGHT = Time("2026-06-15T05:00:00", scale="utc")
@@ -44,7 +38,6 @@ def _near_zenith_fixed(coords, t, name="zen"):
     return Target(name, TargetKind.FIXED, ra_deg=float(lst), dec_deg=coords.site.latitude + 5.0)
 
 
-# 1
 def test_instant_happy_path(coordinates):
     t = T_NIGHT
     _, sun_el = coordinates.get_sun_altaz(t)
@@ -60,7 +53,6 @@ def test_instant_happy_path(coordinates):
     assert r.position_approximate is False
 
 
-# 2
 def test_horizon_window(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -75,7 +67,6 @@ def test_horizon_window(coordinates):
     assert r.total_observable_hours >= first.duration_hours
 
 
-# 3
 def test_below_el_min(coordinates):
     t = T_NIGHT
     # dec = +80 deg is never visible from FYST (lat ~ -23 deg): always below the horizon.
@@ -86,7 +77,6 @@ def test_below_el_min(coordinates):
     assert r.el_deg < 20.0
 
 
-# 4
 def test_above_el_max(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)  # el ~ 85
@@ -95,7 +85,6 @@ def test_above_el_max(coordinates):
     assert ReasonCode.ABOVE_EL_MAX in r.reasons
 
 
-# 5
 def test_sun_too_close(coordinates):
     t = T_DAY
     sun_az, sun_el = coordinates.get_sun_altaz(t)
@@ -108,10 +97,9 @@ def test_sun_too_close(coordinates):
     assert r.sun_clear is False
     assert ReasonCode.SUN_TOO_CLOSE in r.reasons
     assert r.observable is False
-    assert r.sun_separation_deg < 45.0
+    assert r.sun_separation_deg == pytest.approx(0.0, abs=1e-6)
 
 
-# 6
 def test_avoid_pass(coordinates):
     t = T_NIGHT
     jra, jdec = coordinates.get_body_radec("jupiter", t)
@@ -124,7 +112,6 @@ def test_avoid_pass(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE not in r.reasons
 
 
-# 7
 def test_avoid_fail(coordinates):
     t = T_NIGHT
     jaz, jel = coordinates.get_body_altaz("jupiter", t)
@@ -137,7 +124,6 @@ def test_avoid_fail(coordinates):
     assert r.observable is False
 
 
-# 7b
 def test_avoid_zone_at_exactly_its_radius_is_clear(coordinates):
     """A target exactly at an AvoidZone radius is CLEAR (``sep >= zone_deg``).
 
@@ -169,7 +155,6 @@ def test_avoid_zone_at_exactly_its_radius_is_clear(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE in wider.reasons
 
 
-# 8
 def test_both_avoidance_kinds_reported_separately(coordinates):
     t = T_DAY
     sun_az, sun_el = coordinates.get_sun_altaz(t)
@@ -187,7 +172,6 @@ def test_both_avoidance_kinds_reported_separately(coordinates):
     assert all(s.body != "sun" for s in r.avoid_separations)
 
 
-# 9
 def test_self_exclusion(coordinates):
     t = T_NIGHT
     # Observing Jupiter while avoiding Jupiter: must not self-exclude.
@@ -202,7 +186,6 @@ def test_self_exclusion(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE not in r2.reasons
 
 
-# 10
 def test_empty_avoid(coordinates):
     t = T_NIGHT
     for avoid in (None, []):
@@ -211,7 +194,6 @@ def test_empty_avoid(coordinates):
         assert ReasonCode.AVOID_TOO_CLOSE not in r.reasons
 
 
-# 11
 def test_name_resolution_and_aliases():
     assert resolve_target("LUNA").name == "moon"
     assert resolve_target("Jupiter").name == "jupiter"
@@ -222,7 +204,14 @@ def test_name_resolution_and_aliases():
     assert r.name == "moon"
 
 
-# 12
+def test_flux_calibrator_catalog_is_read_only():
+    """No caller can add or replace a calibrator for every other caller."""
+    with pytest.raises(TypeError):
+        FLUX_CALIBRATORS["ceres"] = Target("mars", TargetKind.BODY)
+    with pytest.raises(TypeError):
+        FLUX_CALIBRATORS["mars"] = Target("jupiter", TargetKind.BODY)
+
+
 def test_fixed_target(coordinates):
     t = T_NIGHT
     lst = coordinates.get_lst(t)
@@ -239,7 +228,12 @@ def test_fixed_target(coordinates):
     assert r.windows
 
 
-# 13
+def test_fixed_target_rejects_non_finite_ra():
+    """A FIXED target with a NaN ra_deg is refused at construction."""
+    with pytest.raises(ValueError, match="finite"):
+        Target("nan_ra", TargetKind.FIXED, ra_deg=float("nan"), dec_deg=-30.0)
+
+
 def test_avoid_zone_requires_radius():
     with pytest.raises(TypeError):
         AvoidZone("jupiter")  # missing required radius
@@ -253,7 +247,6 @@ def test_avoid_zone_requires_radius():
     assert AvoidZone.from_pair(("moon", 5)).zone_deg == 5.0
 
 
-# 14
 def test_titan_saturn_proxy(coordinates):
     t = T_NIGHT
     r = check_observability(["titan"], t, site=coordinates.site)[0]
@@ -266,7 +259,6 @@ def test_titan_saturn_proxy(coordinates):
     assert r.el_deg == pytest.approx(sat_el, abs=0.0)
 
 
-# 15
 def test_order_and_count(coordinates):
     t = T_NIGHT
     names = ["mars", "jupiter", "uranus"]
@@ -275,10 +267,7 @@ def test_order_and_count(coordinates):
     assert len(reports) == 3
 
 
-# 16: the import-direction guard lives in tests/test_tier_boundary.py
-
-
-# 17 - regression: SATELLITE self-exclusion keys on the resolved position body
+# Regression: SATELLITE self-exclusion keys on the resolved position body
 def test_satellite_self_exclusion(coordinates):
     # Titan is proxied by Saturn, so AVOIDing Saturn must self-exclude (Titan IS
     # at Saturn's position), otherwise Titan is silently un-schedulable.
@@ -294,7 +283,7 @@ def test_satellite_self_exclusion(coordinates):
     assert [s.body for s in r2.avoid_separations] == ["jupiter"]
 
 
-# 18 - _all_windows returns EVERY contiguous run in time order (deterministic, no ephemeris)
+# _all_windows returns EVERY contiguous run in time order (deterministic, no ephemeris)
 def test_all_windows_returns_every_run():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = t0 + TimeDelta(np.arange(7) * 600.0, format="sec")  # 7 samples, 10 min apart
@@ -324,7 +313,7 @@ def test_all_windows_returns_every_run():
     assert interior[0].duration_hours == pytest.approx(20.0 / 60.0)  # true window ~40 min
 
 
-# 19 - window_step_minutes must be positive when a horizon is requested
+# window_step_minutes must be positive when a horizon is requested
 def test_window_step_must_be_positive(coordinates):
     tgt = _near_zenith_fixed(coordinates, T_NIGHT)
     with pytest.raises(ValueError):
@@ -340,13 +329,20 @@ def test_window_step_must_be_positive(coordinates):
     assert r.windows is None
 
 
-# 20 - el_min > el_max is a caller error
+# el_min > el_max is a caller error
 def test_el_min_gt_el_max_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(["mars"], T_NIGHT, site=coordinates.site, el_min=80.0, el_max=20.0)
 
 
-# 21 - the Sun is never an AvoidZone
+def test_non_finite_el_limits_raise(coordinates):
+    """A NaN elevation limit is refused, not read as an empty elevation check."""
+    for limits in ({"el_min": float("nan")}, {"el_max": float("nan")}):
+        with pytest.raises(ValueError, match="finite"):
+            check_observability(["mars"], T_NIGHT, site=coordinates.site, **limits)
+
+
+# The Sun is never an AvoidZone
 def test_avoid_zone_rejects_sun():
     with pytest.raises(ValueError):
         AvoidZone("sun", 30.0)
@@ -354,7 +350,7 @@ def test_avoid_zone_rejects_sun():
         AvoidZone("SUN", 30.0)
 
 
-# 22 - disabled Sun avoidance: sun_clear True, no SUN_TOO_CLOSE, separation still set
+# Disabled Sun avoidance: sun_clear True, no SUN_TOO_CLOSE, separation still set
 def test_sun_avoidance_disabled():
     site = get_fyst_site(sun_avoidance_enabled=False)
     coords = Coordinates(site)
@@ -364,15 +360,15 @@ def test_sun_avoidance_disabled():
     r = check_observability([tgt], T_DAY, site=site)[0]
     assert r.sun_clear is True
     assert ReasonCode.SUN_TOO_CLOSE not in r.reasons
-    assert r.sun_separation_deg < 1.0  # still populated
+    assert r.sun_separation_deg == pytest.approx(0.0, abs=1e-6)  # still populated
 
 
-# 23 - empty target list
+# Empty target list
 def test_empty_targets(coordinates):
     assert check_observability([], T_NIGHT, site=coordinates.site) == []
 
 
-# 24 - multiple distinct AVOID bodies each get an entry
+# Multiple distinct AVOID bodies each get an entry
 def test_multiple_avoid_bodies(coordinates):
     r = check_observability(
         ["mars"],
@@ -383,7 +379,7 @@ def test_multiple_avoid_bodies(coordinates):
     assert sorted(s.body for s in r.avoid_separations) == ["jupiter", "moon"]
 
 
-# 25 - an AVOID body outside SOLAR_SYSTEM_BODIES raises a clear error
+# An AVOID body outside SOLAR_SYSTEM_BODIES raises a clear error
 def test_invalid_avoid_body_raises(coordinates):
     with pytest.raises(ValueError):
         check_observability(
@@ -391,7 +387,7 @@ def test_invalid_avoid_body_raises(coordinates):
         )
 
 
-# 26 - .summary text for both branches
+# .summary text for both branches
 def test_summary_text(coordinates):
     good = check_observability(
         [_near_zenith_fixed(coordinates, T_NIGHT)], T_NIGHT, site=coordinates.site
@@ -403,7 +399,7 @@ def test_summary_text(coordinates):
     assert "NOT observable" in bad.summary
 
 
-# 27 - windows is EMPTY (not None) when a horizon was evaluated and none exists
+# windows is EMPTY (not None) when a horizon was evaluated and none exists
 def test_windows_empty_when_never_observable(coordinates):
     # dec=+80 deg never rises from FYST; with a horizon, _all_windows finds no run.
     tgt = Target("far_north", TargetKind.FIXED, ra_deg=0.0, dec_deg=80.0)
@@ -414,15 +410,14 @@ def test_windows_empty_when_never_observable(coordinates):
     assert ReasonCode.BELOW_EL_MIN in r.reasons
 
 
-# 28 - Titan proxy is exact, and observable when Saturn is up
+# Titan proxy is exact, and observable when Saturn is up
 def test_titan_proxy_when_saturn_up(coordinates):
     # Find an hour within 24h where Saturn clears el_min, deterministically.
     grid = T_NIGHT + TimeDelta(np.arange(0, 24 * 3600, 3600), format="sec")
     _, sat_el = coordinates.get_body_altaz("saturn", grid)
     el_min = coordinates.site.telescope_limits.elevation.min
     up = np.flatnonzero(np.asarray(sat_el) > el_min + 5.0)
-    if up.size == 0:
-        pytest.skip("Saturn never sufficiently up in the test window")
+    assert up.size, "Saturn never sufficiently up in the test window"
     t = grid[int(up[0])]
     r = check_observability(["titan"], t, site=coordinates.site)[0]
     sat_az, sat_el0 = coordinates.get_body_altaz("saturn", t)
@@ -432,14 +427,14 @@ def test_titan_proxy_when_saturn_up(coordinates):
     assert r.observable is True
 
 
-# 29 - from_pair degree-symbol and whitespace/case normalization
+# from_pair degree-symbol and whitespace/case normalization
 def test_from_pair_unit_and_whitespace():
-    assert AvoidZone.from_pair(("moon", "5°")).zone_deg == 5.0
+    assert AvoidZone.from_pair(("moon", "5\u00b0")).zone_deg == 5.0
     assert AvoidZone.from_pair(("JUPITER", " 3 DEG ")).zone_deg == 3.0
     assert AvoidZone.from_pair(("moon", "3.0")).zone_deg == 3.0
 
 
-# 30 - AVOID body aliases resolve like targets ("luna" -> Moon)
+# AVOID body aliases resolve like targets ("luna" -> Moon)
 def test_avoid_body_alias_resolves(coordinates):
     # "luna" must resolve to the Moon, identical to AvoidZone("moon", ...).
     r_luna = check_observability(
@@ -455,7 +450,7 @@ def test_avoid_body_alias_resolves(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE in r_luna.reasons
 
 
-# 31 - AVOIDing a satellite resolves to its parent; self-excludes the parent target
+# AVOIDing a satellite resolves to its parent; self-excludes the parent target
 def test_avoid_satellite_resolves_to_parent(coordinates):
     # AvoidZone("titan") -> Saturn; observing Saturn must self-exclude.
     r = check_observability(
@@ -465,8 +460,7 @@ def test_avoid_satellite_resolves_to_parent(coordinates):
     assert ReasonCode.AVOID_TOO_CLOSE not in r.reasons
 
 
-# 32 - an unresolvable AVOID body: see test_invalid_avoid_body_raises above
-# 33 - from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
+# from_pair rejects non-numeric / bad-shape inputs with a clear ValueError
 def test_from_pair_rejects_malformed():
     with pytest.raises(ValueError):
         AvoidZone.from_pair(("jupiter", "xy"))  # non-numeric
@@ -478,7 +472,7 @@ def test_from_pair_rejects_malformed():
         AvoidZone.from_pair("xy")  # not a tuple/list pair
 
 
-# 34 - non-finite zone_deg is rejected at construction
+# Non-finite zone_deg is rejected at construction
 def test_avoid_zone_rejects_non_finite():
     with pytest.raises(ValueError):
         AvoidZone("jupiter", float("nan"))
@@ -488,7 +482,7 @@ def test_avoid_zone_rejects_non_finite():
         AvoidZone.from_pair(("jupiter", "nan"))
 
 
-# 35 - a non-divisor step keeps the window within [time, time+horizon]
+# A non-divisor step keeps the window within [time, time+horizon]
 def test_grid_within_horizon_nondivisor_step():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = _build_time_grid(t0, horizon_hours=1.0, step_minutes=7.0)
@@ -499,7 +493,7 @@ def test_grid_within_horizon_nondivisor_step():
     assert len(grid) >= 2
 
 
-# 36 - a sub-step positive horizon still yields a real (n>=2) interval
+# A sub-step positive horizon still yields a real (n>=2) interval
 def test_grid_substep_horizon_not_degenerate():
     t0 = Time("2026-06-15T00:00:00", scale="utc")
     grid = _build_time_grid(t0, horizon_hours=2.0 / 60.0, step_minutes=5.0)  # 2 min horizon
@@ -514,7 +508,7 @@ def test_grid_substep_horizon_not_degenerate():
 # ---------------------------------------------------------------------------
 
 
-# 37 - an injected False predicate flips an otherwise-clear target to
+# An injected False predicate flips an otherwise-clear target to
 # SUN_TOO_CLOSE while leaving the geometric sun_separation_deg untouched.
 def test_injected_predicate_flips_sun_clear(coordinates):
     t = T_NIGHT
@@ -536,7 +530,7 @@ def test_injected_predicate_flips_sun_clear(coordinates):
     assert r_blocked.sun_separation_deg == pytest.approx(r_default.sun_separation_deg, abs=1e-6)
 
 
-# 38 - the predicate is consulted with the target's own (az, el, time).
+# The predicate is consulted with the target's own (az, el, time).
 def test_injected_predicate_receives_target_altaz(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -555,7 +549,7 @@ def test_injected_predicate_receives_target_altaz(coordinates):
     assert el_seen == pytest.approx(r.el_deg, abs=1e-6)
 
 
-# 39 - the predicate drives the horizon-window computation too.
+# The predicate drives the horizon-window computation too.
 def test_injected_predicate_drives_window(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -572,7 +566,7 @@ def test_injected_predicate_drives_window(coordinates):
     assert ReasonCode.SUN_TOO_CLOSE in r_blocked.reasons
 
 
-# 40 - a permissive predicate clears a daytime target the scalar rejects.
+# A permissive predicate clears a daytime target the scalar rejects.
 def test_injected_allow_predicate_overrides_daytime(coordinates):
     t = T_DAY
     _, sun_el = coordinates.get_sun_altaz(t)
@@ -593,7 +587,7 @@ def test_injected_allow_predicate_overrides_daytime(coordinates):
     assert ReasonCode.SUN_TOO_CLOSE not in r_allowed.reasons
 
 
-# 41 - sun_safe=None reproduces the built-in scalar verdict exactly.
+# sun_safe=None reproduces the built-in scalar verdict exactly.
 def test_injected_predicate_default_none_unchanged(coordinates):
     t = T_NIGHT
     tgt = _near_zenith_fixed(coordinates, t)
@@ -605,7 +599,7 @@ def test_injected_predicate_default_none_unchanged(coordinates):
     assert r_explicit_none.sun_separation_deg == pytest.approx(r_implicit.sun_separation_deg)
 
 
-# 42 - a 24 h horizon catches BOTH daily passes of a transiting source (a
+# A 24 h horizon catches BOTH daily passes of a transiting source (a
 # single-window report would hide the second one).
 def test_two_daily_passes_both_reported(coordinates):
     t = T_NIGHT
@@ -624,83 +618,7 @@ def test_two_daily_passes_both_reported(coordinates):
     assert r.total_observable_hours == pytest.approx(first.duration_hours + second.duration_hours)
 
 
-# 43 - sun_events: one FYST day from local noon yields the full 8-event
-# sequence, dusk side first, in strict time order with sane times.
-def test_sun_events_full_day_sequence():
-    t = Time("2026-11-15T16:00:00", scale="utc")  # ~13:00 Chile local
-    events = sun_events(t)
-    kinds = [e.kind for e in events]
-    assert kinds == [
-        SunEventKind.SUNSET,
-        SunEventKind.CIVIL_DUSK,
-        SunEventKind.NAUTICAL_DUSK,
-        SunEventKind.ASTRONOMICAL_DUSK,
-        SunEventKind.ASTRONOMICAL_DAWN,
-        SunEventKind.NAUTICAL_DAWN,
-        SunEventKind.CIVIL_DAWN,
-        SunEventKind.SUNRISE,
-    ]
-    assert [e.rising for e in events] == [False] * 4 + [True] * 4
-    mjds = [e.time.mjd for e in events]
-    assert mjds == sorted(mjds)
-    sunset = events[0]
-    sunrise = events[-1]
-    # Measured with the vendored IERS table: set 22:52:27, rise 09:38:41 UTC.
-    # The windows are two minutes either side, deliberately tight enough to
-    # exclude the geometric (0 deg) crossings at 22:48:35 and 09:42:33, so a
-    # revert from the almanac convention to the geometric one fails here.
-    assert Time("2026-11-15T22:50:30", scale="utc") <= sunset.time
-    assert sunset.time <= Time("2026-11-15T22:54:30", scale="utc")
-    assert Time("2026-11-16T09:36:40", scale="utc") <= sunrise.time
-    assert sunrise.time <= Time("2026-11-16T09:40:40", scale="utc")
-
-
-# 43b - the four published altitude constants hold their almanac values, and
-# the solver is wired to them. Test 44 below cannot see either: it compares
-# the Sun's altitude at an event against the threshold the solver was handed,
-# so it holds for any constants. Mutating any of the four leaves the rest of
-# the suite green.
-def test_sun_event_altitude_constants_are_the_almanac_conventions():
-    assert SUN_RISE_SET_ALTITUDE_DEG == -0.8333  # -50': refraction + solar semidiameter
-    assert CIVIL_TWILIGHT_ALTITUDE_DEG == -6.0
-    assert NAUTICAL_TWILIGHT_ALTITUDE_DEG == -12.0
-    assert ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG == -18.0
-    # Wiring, not only values: astronomical dusk on the same night is the
-    # -18 deg crossing, measured 2026-11-16 00:15:03. A threshold paired with
-    # the wrong event kind moves this without touching a constant.
-    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"))
-    dusk = next(e for e in events if e.kind is SunEventKind.ASTRONOMICAL_DUSK)
-    assert dusk.altitude_deg == ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG
-    assert Time("2026-11-16T00:13:00", scale="utc") <= dusk.time
-    assert dusk.time <= Time("2026-11-16T00:17:00", scale="utc")
-
-
-# 44 - sun_events: the Sun's geometric altitude at each event time equals the
-# event's threshold (locks the interpolation and the vacuum convention).
-def test_sun_events_altitude_invariant(site):
-    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"), site=site)
-    coords = Coordinates(site)  # vacuum, matching the implementation
-    assert events
-    for event in events:
-        _, el = coords.get_sun_altaz(event.time)
-        # Locks the "seconds level" interpolation claim: 1e-3 deg is ~0.3 s
-        # of solar altitude motion at FYST twilight rates.
-        assert el == pytest.approx(event.altitude_deg, abs=1e-3)
-
-
-# 45 - sun_events: parameter validation (incl. the NaN/inf hole: NaN passes
-# a bare `<= 0` and would silently return an empty tuple).
-def test_sun_events_validation():
-    t = Time("2026-11-15T16:00:00", scale="utc")
-    for bad_horizon in (0.0, -1.0, float("nan"), float("inf")):
-        with pytest.raises(ValueError):
-            sun_events(t, horizon_hours=bad_horizon)
-    for bad_step in (0.0, -1.0, float("nan"), float("inf")):
-        with pytest.raises(ValueError):
-            sun_events(t, step_minutes=bad_step)
-
-
-# 45b - a predicate exposing the optional `batch` extension is evaluated in
+# A predicate exposing the optional `batch` extension is evaluated in
 # ONE vectorized call; its verdicts flow through to reasons and windows.
 def test_batch_predicate_used_vectorized(coordinates):
     t = T_NIGHT
@@ -747,71 +665,6 @@ def test_batch_predicate_used_vectorized(coordinates):
         check_observability(
             [tgt], t, site=coordinates.site, horizon_hours=6.0, sun_safe=_WrongShapeBatch()
         )
-
-
-# 46 - _threshold_crossings: synthetic arrays lock the crossing partition,
-# the interpolation, and the clipped-final-cell handling (no ephemeris).
-def test_threshold_crossings_synthetic():
-    t0 = Time("2026-06-15T00:00:00", scale="utc")
-    grid4 = t0 + TimeDelta(np.arange(4) * 600.0, format="sec")
-
-    # Plain interior crossing: linear interpolation between samples.
-    up = _threshold_crossings(np.array([-2.0, -1.0, 0.5, 2.0]), grid4, 0.0, rising=True)
-    assert len(up) == 1
-    assert (up[0] - t0).to_value("s") == pytest.approx(600.0 + 600.0 * (1.0 / 1.5), abs=1e-6)
-
-    # A value exactly AT the threshold on a grid sample: exactly one event,
-    # landing exactly on that sample (frac = 1 in the preceding cell).
-    grid3 = t0 + TimeDelta(np.arange(3) * 600.0, format="sec")
-    exact = _threshold_crossings(np.array([-1.0, 0.0, 1.0]), grid3, 0.0, rising=True)
-    assert len(exact) == 1
-    assert abs((exact[0] - grid3[1]).to_value("s")) < 1e-9
-
-    # Plateau at the threshold: still a single event, not one per sample.
-    plateau = _threshold_crossings(np.array([-1.0, 0.0, 0.0, 1.0]), grid4, 0.0, rising=True)
-    assert len(plateau) == 1
-
-    # Tangential touch: landing exactly ON the threshold yields no events
-    # (the >=/< partition), while dipping infinitesimally below yields a
-    # set+rise pair. Pins the boundary semantics.
-    assert _threshold_crossings(np.array([1.0, 0.0, 1.0]), grid3, 0.0, rising=True) == []
-    assert _threshold_crossings(np.array([1.0, 0.0, 1.0]), grid3, 0.0, rising=False) == []
-    dip = np.array([1.0, -1e-9, 1.0])
-    assert len(_threshold_crossings(dip, grid3, 0.0, rising=False)) == 1
-    assert len(_threshold_crossings(dip, grid3, 0.0, rising=True)) == 1
-
-    # No crossings => empty.
-    assert _threshold_crossings(np.array([1.0, 2.0, 3.0]), grid3, 0.0, rising=True) == []
-
-    # Clipped final cell from _build_time_grid (horizon 9 min @ 4 min step =>
-    # cells of 240/240/60 s): interpolation must use the actual 60 s spacing.
-    grid_clip = _build_time_grid(t0, horizon_hours=0.15, step_minutes=4.0)
-    assert (grid_clip[-1] - grid_clip[-2]).to_value("s") == pytest.approx(60.0)
-    clipped = _threshold_crossings(np.array([-3.0, -2.0, -1.0, 1.0]), grid_clip, 0.0, rising=True)
-    assert len(clipped) == 1
-    assert (clipped[0] - t0).to_value("s") == pytest.approx(480.0 + 0.5 * 60.0, abs=1e-6)
-
-
-# 47 - sun_events: a sub-day evening span returns only the dusk side.
-def test_sun_events_subday_dusk_only():
-    events = sun_events(Time("2026-11-15T21:00:00", scale="utc"), horizon_hours=4.0)
-    assert [e.kind for e in events] == [
-        SunEventKind.SUNSET,
-        SunEventKind.CIVIL_DUSK,
-        SunEventKind.NAUTICAL_DUSK,
-        SunEventKind.ASTRONOMICAL_DUSK,
-    ]
-    assert all(e.rising is False for e in events)
-
-
-# 48 - sun_events: a 48 h horizon returns two full days of events, sorted,
-# in alternating dusk-block / dawn-block order.
-def test_sun_events_two_days():
-    events = sun_events(Time("2026-11-15T16:00:00", scale="utc"), horizon_hours=48.0)
-    assert len(events) == 16
-    mjds = [e.time.mjd for e in events]
-    assert mjds == sorted(mjds)
-    assert [e.rising for e in events] == [False] * 4 + [True] * 4 + [False] * 4 + [True] * 4
 
 
 class TestHorizonArgumentFiniteness:

@@ -3,7 +3,7 @@
 These are internal utilities; the public ``plan_*_scan`` entry points
 live in :mod:`fyst_trajectories.planning` (the per-scan-type modules
 ``pong.py``, ``daisy.py``, ``constant_el.py``, ``pong_altaz.py``,
-``daisy_altaz.py``, and ``source_ces.py``).
+``daisy_altaz.py``, and the ``source_ces`` subpackage).
 """
 
 from __future__ import annotations

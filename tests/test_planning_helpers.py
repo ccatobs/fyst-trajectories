@@ -1,18 +1,11 @@
-"""Tests for private planning helpers and cross-plan integration."""
+"""Tests for the private planning helpers and the computed-params validator."""
 
 import math
 
-import numpy as np
 import pytest
-from astropy.time import Time
 
-from fyst_trajectories.exceptions import PointingWarning
-from fyst_trajectories.planning import (
-    FieldRegion,
-    plan_daisy_scan,
-    plan_pong_scan,
-    validate_computed_params,
-)
+from fyst_trajectories.exceptions import PointingError, PointingWarning
+from fyst_trajectories.planning import validate_computed_params
 from fyst_trajectories.planning._ce_geometry import _field_region_corners, _quantize_ce_duration
 
 
@@ -42,49 +35,8 @@ class TestFieldRegionCorners:
 
     def test_near_pole_raises(self):
         """A field within ~0.57 deg of a celestial pole raises (cos(dec) -> 0)."""
-        with pytest.raises(ValueError, match="too close to celestial pole"):
+        with pytest.raises(PointingError, match="too close to celestial pole"):
             _field_region_corners(10.0, 89.5, 4.0, 6.0, 0.0)
-
-
-class TestCrossPlanIntegration:
-    """Cross-plan tests: the area-mapping planners (pong, daisy) on one field."""
-
-    @pytest.fixture
-    def shared_field(self):
-        """Field region usable by the plan functions this file exercises."""
-        return FieldRegion(ra_center=180.0, dec_center=-30.0, width=1.0, height=1.0)
-
-    @pytest.fixture
-    def shared_time(self):
-        return Time("2026-03-15T04:00:00", scale="utc")
-
-    def test_pong_and_daisy_produce_finite_trajectories(self, site, shared_field, shared_time):
-        pong = plan_pong_scan(
-            field=shared_field,
-            velocity=0.5,
-            spacing=0.1,
-            num_terms=4,
-            site=site,
-            start_time=shared_time,
-            timestep=0.1,
-        )
-        daisy = plan_daisy_scan(
-            ra=shared_field.ra_center,
-            dec=shared_field.dec_center,
-            radius=0.5,
-            velocity=0.3,
-            turn_radius=0.2,
-            avoidance_radius=0.0,
-            start_acceleration=0.5,
-            site=site,
-            start_time=shared_time,
-            timestep=0.1,
-            duration=60.0,
-        )
-
-        for block in [pong, daisy]:
-            assert np.all(np.isfinite(block.trajectory.az))
-            assert np.all(np.isfinite(block.trajectory.el))
 
 
 class TestValidateComputedParams:
@@ -120,7 +72,7 @@ class TestValidateComputedParams:
         contributor flips one of them to ``total=False`` (or migrates
         keys to ``NotRequired``) without updating the validator, the
         runtime guard would silently accept ``{}``. This test pins the
-        invariant so the regression fails closed at import-time.
+        invariant so the regression fails here rather than passing silently.
         """
         from fyst_trajectories.planning._types import _SCAN_TYPE_TO_KEYS
 
@@ -158,12 +110,19 @@ class TestQuantizeCEDuration:
         assert abs(actual - duration) <= 0.5 * (t_cruise + t_turn) + 1e-9
 
     def test_counting_legs_by_cruise_time_alone_would_overshoot(self):
-        """Pins the failure mode the fix removed: 184 legs / 848 s for a 300 s window."""
+        """A cruise-only leg count turns a 300 s window into 184 legs and 848 s."""
+        az_throw, velocity, az_accel, duration = 2.44, 1.5, 1.0, 300.0
+        t_cruise = az_throw / velocity
+        t_turn = 2.0 * velocity / az_accel
+        cruise_only = round(duration / t_cruise)
+        assert cruise_only == 184
+        assert cruise_only * t_cruise + (cruise_only - 1) * t_turn == pytest.approx(848.3, abs=0.1)
+
         n_scans, actual = _quantize_ce_duration(
-            az_throw=2.44, velocity=1.5, duration=300.0, az_accel=1.0
+            az_throw=az_throw, velocity=velocity, duration=duration, az_accel=az_accel
         )
-        assert n_scans < 184
-        assert actual < 320.0
+        assert n_scans == 65
+        assert actual == pytest.approx(297.7, abs=0.1)
 
     def test_single_leg_minimum(self):
         n_scans, actual = _quantize_ce_duration(

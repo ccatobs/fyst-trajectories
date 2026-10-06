@@ -1,7 +1,7 @@
 """Daisy (Constant Velocity petal) scan pattern.
 
-See "CV Daisy - JCMT small area scanning pattern" (P. Friberg, Joint
-Astronomy Centre, JCMT TCS/UN/005, 2012) for algorithm details.
+See Friberg 2012, "CV Daisy - JCMT small area scanning pattern", Joint
+Astronomy Centre, JCMT TCS/UN/005, for algorithm details.
 
 Performance
 -----------
@@ -27,31 +27,20 @@ Install numba for production use.
 import math
 
 import numpy as np
-from astropy import units as u
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
 
-from ..coordinates import Coordinates
-from ..exceptions import PointingError
 from ..math_utils import SMALL_DISTANCE_EPSILON
 from ..site import AtmosphericConditions, Site
-from ..trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, Trajectory
-from ..trajectory_utils import validate_trajectory_bounds
-from .base import CelestialPattern, TrajectoryMetadata
-from .configs import DaisyScanConfig
+from ..trajectory import Trajectory, TrajectoryMetadata
+from .base import CelestialPattern
+from .configs import DaisyAltAzScanConfig, DaisyScanConfig
 from .registry import register_pattern
 from .utils import (
-    compute_velocities,
-    normalize_azimuth,
-    sky_offsets_to_altaz,
+    _SCIENCE_SPEED_FRACTION,
+    _celestial_offsets_to_trajectory,
+    _flag_by_offset_speed,
     validate_sample_count,
-    wrap_bounds_error,
 )
-
-# Match Pong's threshold so the two patterns flag turnarounds with the
-# same offset-frame speed criterion. The initial ramp-up phase
-# (controlled by ``DaisyScanConfig.start_acceleration``) falls below this
-# threshold and is correctly classified as non-science.
-_DAISY_SCIENCE_SPEED_THRESHOLD: float = 0.8
 
 try:
     import numba
@@ -190,9 +179,56 @@ else:
     _daisy_loop = _daisy_loop_python
 
 
+def _daisy_reach(
+    radius: float,
+    turn_radius: float,
+    velocity: float,
+    timestep: float,
+    y_offset: float = 0.0,
+) -> float:
+    """Return the farthest a Daisy pattern goes from its centre, in on-sky degrees.
+
+    A petal starts its turn on the first integrator step at or past
+    ``radius``, no more than one step of at most
+    ``velocity * min(timestep, 1/150 s)`` past it, and turns toward the
+    centre on a circle of radius ``turn_radius``. That circle's centre lies
+    no farther than ``hypot(r, turn_radius)`` from the pattern's centre,
+    where ``r`` is where the turn began, so no point of the turn is farther
+    than that plus ``turn_radius``. A petal that leaves the centre radially,
+    as the first does from a zero ``y_offset``, reaches this to within the
+    step, so the pattern goes at least ``turn_radius`` beyond ``radius``. A
+    pattern that starts outside ``radius`` (a ``y_offset`` beyond it) turns
+    at once, heading across the radius, so that first turn stays within the
+    larger of ``abs(y_offset)`` and the bound above. One more step is added
+    for the integrator itself: with an ``avoidance_radius`` wider than the
+    pattern a turn can end tangent at its farthest point and the steps that
+    follow creep outward by microdegrees, and a step comparable to
+    ``turn_radius`` overshoots the turn.
+
+    Parameters
+    ----------
+    radius, turn_radius : float
+        The pattern's characteristic and turn radii, in degrees.
+    velocity : float
+        Scan velocity in sky-offset degrees/second.
+    timestep : float
+        Output timestep in seconds; the integrator steps at most 1/150 s.
+    y_offset : float, optional
+        Initial y offset in degrees.
+
+    Returns
+    -------
+    float
+        An upper bound on the distance of every pattern offset from the
+        centre, in degrees.
+    """
+    step = velocity * min(timestep, _DAISY_INTERNAL_TIMESTEP)
+    return max(abs(y_offset), math.hypot(radius + step, turn_radius) + turn_radius) + step
+
+
 @register_pattern("daisy", config=DaisyScanConfig)
 class DaisyScanPattern(CelestialPattern):
-    """Daisy scan pattern for point source observations.
+    """Daisy (Constant Velocity petal) scan about a tracked RA/Dec center.
 
     Parameters
     ----------
@@ -200,8 +236,11 @@ class DaisyScanPattern(CelestialPattern):
         Right Ascension of pattern center in degrees.
     dec : float
         Declination of pattern center in degrees.
-    config : DaisyScanConfig
-        Pattern configuration.
+    config : DaisyScanConfig or DaisyAltAzScanConfig
+        Pattern configuration. A :class:`DaisyAltAzScanConfig` is accepted
+        for the fields it shares with :class:`DaisyScanConfig`; its
+        horizon-frame centre (``az_center``, ``el_center``) is not read, and
+        the pattern is centred on ``ra`` and ``dec``.
 
     Attributes
     ----------
@@ -209,7 +248,7 @@ class DaisyScanPattern(CelestialPattern):
         Right Ascension in degrees.
     dec : float
         Declination in degrees.
-    config : DaisyScanConfig
+    config : DaisyScanConfig or DaisyAltAzScanConfig
         The configuration for this pattern.
 
     Examples
@@ -234,14 +273,10 @@ class DaisyScanPattern(CelestialPattern):
         self,
         ra: float,
         dec: float,
-        config: DaisyScanConfig,
+        config: DaisyScanConfig | DaisyAltAzScanConfig,
     ):
         super().__init__(ra, dec)
         self.config = config
-
-    @property
-    def name(self) -> str:
-        return "daisy"
 
     def generate_offsets(self, duration: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate scan pattern offsets without coordinate conversion.
@@ -262,6 +297,12 @@ class DaisyScanPattern(CelestialPattern):
             X offsets in the sky-plane tangent frame, in degrees.
         y_offsets : np.ndarray
             Y offsets in the sky-plane tangent frame, in degrees.
+
+        Raises
+        ------
+        ValueError
+            If ``duration`` yields fewer than two samples at the config
+            timestep.
         """
         timestep = self.config.timestep
         validate_sample_count(duration, timestep)
@@ -295,7 +336,7 @@ class DaisyScanPattern(CelestialPattern):
         # sample. Reject that here so daisy fails loud and consistently with
         # the other patterns rather than feeding 1 point into ``np.gradient``.
         if n_points < 2:
-            raise PointingError(
+            raise ValueError(
                 f"duration {duration}s yields fewer than 2 samples at timestep "
                 f"{timestep}s; a scan shorter than one sample is degenerate."
             )
@@ -339,11 +380,18 @@ class DaisyScanPattern(CelestialPattern):
         Raises
         ------
         ValueError
-            If ``start_time`` is None.
+            If ``start_time`` is None, or if ``duration`` yields fewer than
+            two samples at the config timestep.
         TargetNotObservableError
             If the target is below the horizon or outside telescope
             limits at the requested time (bounds violations are
             wrapped into this error).
+
+        Warns
+        -----
+        PointingWarning
+            If no whole-turn shift places the azimuth track inside the
+            telescope's azimuth range.
         """
         if start_time is None:
             raise ValueError(
@@ -351,51 +399,21 @@ class DaisyScanPattern(CelestialPattern):
                 "Provide an astropy Time object."
             )
 
-        coords = Coordinates(site, atmosphere=atmosphere)
-
         times, x_offsets, y_offsets = self.generate_offsets(duration)
-
-        # Flag the initial start_acceleration ramp-up using offset-frame
-        # speed (independent of elevation, matches Pong's convention).
-        # ``generate_offsets`` guarantees at least 2 samples, so ``np.gradient``
-        # is always well-defined here (degenerate durations are rejected with a
-        # clear PointingError before reaching this point).
-        x_vel_offset = np.gradient(x_offsets, times)
-        y_vel_offset = np.gradient(y_offsets, times)
-        speed_offset = np.sqrt(x_vel_offset**2 + y_vel_offset**2)
-        scan_flag = np.full(len(times), SCAN_FLAG_TURNAROUND, dtype=np.int8)
-        scan_flag[speed_offset >= _DAISY_SCIENCE_SPEED_THRESHOLD * self.config.velocity] = (
-            SCAN_FLAG_SCIENCE
+        scan_flag = _flag_by_offset_speed(
+            times, x_offsets, y_offsets, self.config.velocity, _SCIENCE_SPEED_FRACTION
         )
-
-        obstimes = start_time + TimeDelta(times * u.s)
-
-        az, el = sky_offsets_to_altaz(
-            x_offsets,
-            y_offsets,
+        return _celestial_offsets_to_trajectory(
+            site,
             self.ra,
             self.dec,
-            obstimes,
-            coords,
-        )
-        az = normalize_azimuth(az, site)
-
-        az_vel = compute_velocities(az, times, is_angular=True)
-        el_vel = compute_velocities(el, times, is_angular=False)
-
-        with wrap_bounds_error(f"RA={self.ra:.3f} Dec={self.dec:.3f}", start_time.iso):
-            validate_trajectory_bounds(site, az, el)
-
-        return Trajectory(
-            times=times,
-            az=az,
-            el=el,
-            az_vel=az_vel,
-            el_vel=el_vel,
-            start_time=start_time,
-            metadata=self.get_metadata(),
-            coordsys="altaz",
-            scan_flag=scan_flag,
+            times,
+            x_offsets,
+            y_offsets,
+            scan_flag,
+            start_time,
+            atmosphere,
+            self.get_metadata(),
         )
 
     def get_metadata(self) -> TrajectoryMetadata:

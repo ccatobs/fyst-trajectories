@@ -2,7 +2,8 @@ Dispatch-Time Helpers
 =====================
 
 Turn a goal sky position into a concrete, sun-safe encoder command at *dispatch*
-time, just before a scan task slews to its start point.
+time, just before a scan task slews to its start point, and estimate how long
+that slew takes (:func:`~fyst_trajectories.dispatch.estimate_slew_time`).
 
 .. automodule:: fyst_trajectories.dispatch
    :members:
@@ -14,7 +15,8 @@ Usage Examples
 
 Read the telescope's current encoder position from the live broadcast, then
 choose the sun-safe azimuth-wrap / encoder ``(az, el)`` to slew to for a scan's
-first sample::
+first sample. Pass the scan's whole azimuth span, so the wrap chosen holds the
+entire trajectory inside the limits once it is shifted::
 
     from astropy.time import Time
     from fyst_trajectories import get_fyst_site, rewrap_trajectory_azimuth
@@ -26,10 +28,11 @@ first sample::
     solution = choose_encoder_solution(
         current_az=120.0,   # from the live ACU position broadcast
         current_el=45.0,
-        goal_az=200.0,      # first sample of the scan trajectory
-        goal_el=50.0,
+        goal_az=trajectory.az[0],   # first sample of the scan trajectory
+        goal_el=trajectory.el[0],
         obstime=obstime,
         site=site,
+        goal_az_span=(trajectory.az.min(), trajectory.az.max()),
     )
     # Shift the whole trajectory onto the chosen wrap, then command the
     # slew to (solution.az, solution.el) and POST the shifted trajectory.

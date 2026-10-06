@@ -32,8 +32,8 @@ Simulate a night, then write it::
     timeline = generate_timeline(
         patches=patches,
         site=site,
-        start_time="2026-06-15T00:00:00",
-        end_time="2026-06-15T04:00:00",
+        start_time="2026-06-15T06:00:00",
+        end_time="2026-06-15T10:00:00",
     )
 
     write_timeline(timeline, "schedule.ecsv")
@@ -46,14 +46,12 @@ Read it back and check what it holds::
     from fyst_trajectories.overhead import read_timeline
 
     timeline = read_timeline("schedule.ecsv")
-    print(f"Loaded {len(timeline)} blocks")
-    print(f"Efficiency: {timeline.efficiency:.1%}")  # Efficiency: 0.0%
+    print(f"Loaded {len(timeline)} blocks")  # Loaded 30 blocks
+    print(f"Efficiency: {timeline.efficiency:.1%}")  # Efficiency: 45.2%
 
-The efficiency reads ``0.0%`` here, and that is the correct answer rather
-than a broken one: the four-hour window above closes before this patch's
-constant-elevation pass opens, so the honest schedule is the due
-calibrations and idle, with no science in it. A window that contains a
-pass reports a non-zero efficiency (see :doc:`overhead_quickstart`).
+The window holds the patch's constant-elevation pass, so the night has
+science in it. A window that closes before the pass opens reports
+``0.0%``: the honest schedule of calibrations and idle, not a failure.
 
 ECSV Format
 -----------
@@ -144,8 +142,9 @@ hand-written header still loads. Telescope axis limits are not persisted: a
 non-FYST site reloads with the FYST limits and a
 :class:`~fyst_trajectories.exceptions.PointingWarning`.
 
-A timeline with no blocks, which is what a planner returns when nothing is
-observable inside its window, writes one placeholder row, because ECSV
+A timeline with no blocks, which is what
+:func:`~fyst_trajectories.overhead.plan_calibration_night` returns when the
+Sun never sets inside the requested window, writes one placeholder row, because ECSV
 cannot express a typed table with no rows. The header flags it with
 ``timeline_is_empty`` and :func:`~fyst_trajectories.overhead.read_timeline`
 drops the row again, so such a file reads back with no blocks rather than
@@ -177,7 +176,7 @@ Attach them to a block before writing, then read them back:
     events = loaded.blocks[0].metadata["retune_events"]
     # events is a tuple[RetuneEvent, ...]
 
-Plumbing :func:`~fyst_trajectories.trajectory_utils.inject_retune`'s
+Plumbing :func:`~fyst_trajectories.retune.inject_retune`'s
 output (``trajectory.retune_events``) into
 ``TimelineBlock.metadata["retune_events"]`` is manual: the scheduler does
 not propagate a generated event list into each science block.
@@ -201,11 +200,15 @@ To hand TOAST a schedule with no calibration, slew, or idle rows, filter to
 science blocks before writing (the FYST extension columns are still written;
 TOAST ignores them). Replace the block list and nothing else, so the
 timeline's window, models and metadata travel with it; the gaps where the
-removed rows were are what ``validate()`` then reports, by construction::
+removed rows were are what ``validate()`` then reports, by construction. A
+night with no science would write the placeholder row described above, which
+only :func:`~fyst_trajectories.overhead.read_timeline` knows to drop, so
+check that there is something to hand over first::
 
     import dataclasses
 
     from fyst_trajectories.overhead import write_timeline
 
     science_only = dataclasses.replace(timeline, blocks=timeline.science_blocks)
-    write_timeline(science_only, "toast_schedule.ecsv")
+    if science_only.blocks:
+        write_timeline(science_only, "toast_schedule.ecsv")

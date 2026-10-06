@@ -2,12 +2,9 @@
 
 Structure-level checks (figure/axes contents, lane order, guards), not
 pixel-perfect output. The whole file skips when matplotlib is not installed
-(optional extra); the import-isolation test additionally asserts the package
-itself never imports matplotlib eagerly.
+(optional extra).
 """
 
-import subprocess
-import sys
 import warnings
 
 import numpy as np
@@ -21,7 +18,7 @@ matplotlib.use("Agg")  # headless backend
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from fyst_trajectories import Trajectory, get_fyst_site  # noqa: E402
+from fyst_trajectories import Coordinates, Trajectory, get_fyst_site  # noqa: E402
 from fyst_trajectories.overhead import (  # noqa: E402
     CalibrationPolicy,
     ObservingPatch,
@@ -83,6 +80,20 @@ def _make_timeline(blocks=None, start_iso="2026-06-15T02:00:00", hours=2.0):
     )
 
 
+def _calibration_night_timeline():
+    """One hour of planet passes and retunes, no science: the calibration-night title."""
+    start = Time("2026-09-11T06:30:00", scale="utc")
+    blocks = [
+        _block(start, 1, "slew"),
+        _block(start + 1 * u.min, 5, "calibration", scan_type="retune"),
+        _block(start + 6 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
+        _block(start + 18 * u.min, 5, "calibration", scan_type="retune"),
+        _block(start + 23 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
+        _block(start + 35 * u.min, 25, "idle"),
+    ]
+    return _make_timeline(blocks, start_iso=start.isot, hours=1.0)
+
+
 def _make_sky_pairs(n=2):
     """Synthetic (TimelineBlock, ScanBlock) pairs; no planner involved."""
     start = Time("2026-06-15T03:00:00", scale="utc")
@@ -142,16 +153,7 @@ def test_gantt_auto_title_neutral():
 
 def test_gantt_auto_title_for_a_calibration_night():
     """No science and at least one pass: the title counts passes and time on source."""
-    start = Time("2026-09-11T06:30:00", scale="utc")
-    blocks = [
-        _block(start, 1, "slew"),
-        _block(start + 1 * u.min, 5, "calibration", scan_type="retune"),
-        _block(start + 6 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
-        _block(start + 18 * u.min, 5, "calibration", scan_type="retune"),
-        _block(start + 23 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
-        _block(start + 35 * u.min, 25, "idle"),
-    ]
-    fig = plot_timeline_gantt(_make_timeline(blocks, start_iso=start.isot, hours=1.0), show=False)
+    fig = plot_timeline_gantt(_calibration_night_timeline(), show=False)
     title = fig.axes[0].get_title()
     assert "calibration night" in title
     assert "2 passes" in title and "2 detector operations" in title
@@ -175,6 +177,14 @@ def test_gantt_lane_order_contract():
     assert top_to_bottom == ["PatchA", "PatchB", "retune", "pointing_cal", "slew", "idle"]
 
 
+def test_every_calibration_type_has_a_lane_colour():
+    """A calibration type added to the model without a colour fails here."""
+    from fyst_trajectories.overhead import CalibrationType
+    from fyst_trajectories.visualization.overhead import CAL_COLORS
+
+    assert set(CAL_COLORS) == {c.value for c in CalibrationType}
+
+
 def test_gantt_bars_sit_in_their_labeled_lane():
     """Each lane's bars occupy y+0.1..y+0.9 around that lane's y-tick.
 
@@ -194,6 +204,53 @@ def test_gantt_bars_sit_in_their_labeled_lane():
         assert ys.max() == pytest.approx(tick + 0.4, abs=1e-6)  # y + 0.9
 
 
+def _own_figure(timeline, size_in):
+    """Render on the function's own figure, then resize and lay it out as the docs figures do."""
+    fig = plot_timeline_gantt(timeline, show=False)
+    fig.set_size_inches(*size_in)
+    fig.tight_layout()
+    fig.canvas.draw()
+    return fig
+
+
+def _composed_figure(timeline):
+    """Render twice into a caller's 2 x 1 figure, laid out by the caller."""
+    fig, axes = plt.subplots(2, 1, figsize=(8.0, 7.0))
+    for ax in axes:
+        plot_timeline_gantt(timeline, ax=ax, show=False)
+    fig.tight_layout()
+    fig.canvas.draw()
+    return fig
+
+
+@pytest.mark.parametrize("layout", ["own_8x3.6", "composed_2x1"])
+def test_gantt_legend_lies_below_the_time_axis_label(layout):
+    """The legend hangs below the x label at any height, not on top of it."""
+    timeline = _make_timeline()
+    if layout == "own_8x3.6":
+        fig = _own_figure(timeline, (8.0, 3.6))
+    else:
+        fig = _composed_figure(timeline)
+    renderer = fig.canvas.get_renderer()
+    assert fig.axes
+    for ax in fig.axes:
+        legend = ax.get_legend().get_window_extent(renderer)
+        label = ax.xaxis.label.get_window_extent(renderer)
+        assert legend.y1 < label.y0, (legend, label)
+
+
+@pytest.mark.parametrize("night", ["observing", "calibration"])
+def test_gantt_default_title_fits_an_8_inch_axes(night):
+    """The auto-generated title stays inside the axes width at the docs' page width."""
+    timeline = _make_timeline() if night == "observing" else _calibration_night_timeline()
+    fig = _own_figure(timeline, (8.0, 4.8))
+    ax = fig.axes[0]
+    renderer = fig.canvas.get_renderer()
+    title = ax.title.get_window_extent(renderer)
+    axes_box = ax.get_window_extent(renderer)
+    assert axes_box.x0 <= title.x0 and title.x1 <= axes_box.x1, (title, axes_box)
+
+
 def test_gantt_midnight_crossing_ticks():
     """A night straddling UTC midnight labels hours mod 24, never 24:00+."""
     start = Time("2026-06-15T23:00:00", scale="utc")
@@ -209,6 +266,22 @@ def test_gantt_midnight_crossing_ticks():
     assert "01:00" in labels
     for label in labels:
         assert int(label.split(":")[0]) < 24
+
+
+def test_gantt_short_night_keeps_its_span_and_gets_sub_hour_ticks():
+    """The axis spans the night itself, not the whole hours around it."""
+    start = Time("2026-09-11T06:30:00", scale="utc")
+    blocks = [
+        _block(start, 10, "science", patch="PatchA"),
+        _block(start + 10 * u.min, 35, "idle"),
+    ]
+    timeline = _make_timeline(blocks=blocks, start_iso=start.isot, hours=0.75)
+    fig = plot_timeline_gantt(timeline, show=False)
+    ax = fig.axes[0]
+    x0, x1 = ax.get_xlim()
+    assert x0 == pytest.approx(6.5, abs=1e-6)
+    assert x1 == pytest.approx(7.25, abs=1e-6)
+    assert len(ax.get_xticklabels()) >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -280,28 +353,64 @@ def test_sky_missing_start_time_raises_without_figure_leak():
     assert plt.get_fignums() == []
 
 
-# ---------------------------------------------------------------------------
-# package hygiene + end-to-end
-# ---------------------------------------------------------------------------
+def test_sky_track_is_placed_by_its_absolute_times():
+    """A clock that starts at 600 s is measured from its first sample, not from 0."""
+    from fyst_trajectories.trajectory_utils import get_absolute_times
+    from fyst_trajectories.visualization.overhead import _radec_track, _wrap_ra
+
+    times = np.arange(600.0, 640.0, 0.5)
+    traj = Trajectory(
+        times=times,
+        az=np.full(times.size, 120.0),
+        el=np.full(times.size, 50.0),
+        az_vel=np.zeros(times.size),
+        el_vel=np.zeros(times.size),
+        start_time=Time("2026-06-15T03:00:00", scale="utc"),
+    )
+    scan_block = ScanBlock(trajectory=traj, config=ScanConfig(timestep=0.5), duration=40.0)
+    coords = Coordinates(get_fyst_site())
+
+    ra, dec = _radec_track(scan_block, coords, stride=1)
+
+    ra_ref, dec_ref = coords.altaz_to_radec(traj.az, traj.el, get_absolute_times(traj))
+    np.testing.assert_allclose(ra, _wrap_ra(ra_ref), atol=1e-9)
+    np.testing.assert_allclose(dec, dec_ref, atol=1e-9)
 
 
-def test_import_isolation():
-    """Importing the package (incl. overhead and visualization) must not import matplotlib."""
-    code = (
-        "import sys\n"
-        "import fyst_trajectories\n"
-        "import fyst_trajectories.overhead\n"
-        "import fyst_trajectories.visualization\n"
-        "leaked = sorted(m for m in sys.modules if m.startswith('matplotlib'))\n"
-        "sys.exit(1 if leaked else 0)\n"
+def test_sky_track_straddling_ra_180_stays_contiguous():
+    """Scans across RA 180 keep [0, 360) instead of splitting across the axis."""
+    site = get_fyst_site()
+    coords = Coordinates(site)
+    start = Time("2026-06-15T23:00:00", scale="utc")
+    times = np.arange(0.0, 60.0, 0.5)
+    az, el = coords.radec_to_altaz(
+        np.linspace(177.0, 183.0, times.size),
+        np.full(times.size, -30.0),
+        start + times * u.s,
     )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    traj = Trajectory(
+        times=times,
+        az=np.asarray(az, dtype=float),
+        el=np.asarray(el, dtype=float),
+        az_vel=np.zeros(times.size),
+        el_vel=np.zeros(times.size),
+        start_time=start,
     )
-    assert result.returncode == 0, (
-        f"package import eagerly loaded matplotlib\nstdout: {result.stdout}\n"
-        f"stderr: {result.stderr}"
-    )
+    block = _block(start, 1, "science", patch="PatchA")
+    pair = (block, ScanBlock(trajectory=traj, config=ScanConfig(timestep=0.5), duration=60.0))
+
+    fig = plot_sky_coverage(_make_timeline(), pairs=[pair], show=False)
+
+    ax = fig.axes[0]
+    ra = np.concatenate([line.get_xdata() for line in ax.lines])
+    assert np.ptp(ra) < 10.0
+    assert np.all((ra >= 0.0) & (ra < 360.0))
+    assert ax.get_xlabel() == "Right Ascension  [deg]"
+
+
+# ---------------------------------------------------------------------------
+# end-to-end
+# ---------------------------------------------------------------------------
 
 
 def test_sky_auto_pairs_end_to_end():
@@ -319,11 +428,11 @@ def test_sky_auto_pairs_end_to_end():
     timeline = generate_timeline(
         patches=[patch],
         site=get_fyst_site(),
-        start_time="2026-06-15T00:00:00",
-        end_time="2026-06-15T12:00:00",
+        start_time="2026-06-15T07:30:00",
+        end_time="2026-06-15T09:30:00",
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         fig = plot_sky_coverage(timeline, show=False)
     assert isinstance(fig, Figure)
-    assert len(fig.axes[0].lines) > 0
+    assert len(fig.axes[0].lines) == timeline.n_science_scans

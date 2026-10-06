@@ -4,9 +4,10 @@ Calibration Nights
 :func:`~fyst_trajectories.overhead.plan_calibration_night` lays out one
 night of solar-system calibration passes back to back: it walks the
 night, picks whichever planet is up next, plans each visit with the
-source-CES kernel (see :doc:`planning`) on a per-body scan table, checks
-the slew between visits for Sun safety, reserves the detector operations
-before each visit, and returns an ordinary
+source-CES kernel (see :doc:`planning`), which solves each pass's azimuth
+throw from the footprint, checks the slew between visits for Sun safety,
+reserves the detector operations before each visit, and returns an
+ordinary
 :class:`~fyst_trajectories.overhead.ObservingTimeline`. It is an offline
 planning tool for commissioning nights, a sibling of the survey-night
 simulator :func:`~fyst_trajectories.overhead.generate_timeline` that
@@ -16,7 +17,7 @@ cadence loop.
 Quick Start
 -----------
 
-Plan the first hour of a night and read it back::
+Plan 45 minutes of a night and read it back::
 
     from fyst_trajectories import get_fyst_site
     from fyst_trajectories.overhead import (
@@ -41,28 +42,58 @@ Plan the first hour of a night and read it back::
     print(row[:53])
     #      6  2026-09-11 06:46:28     12.3 min  source_scan
 
+.. figure:: figures/calibration_night.png
+   :alt: Gantt chart of the 45-minute calibration night: an opening slew,
+      retunes and a skydip, and two Saturn passes separated by a retune.
+   :width: 100%
+
+   The night above as ``plot_timeline_gantt`` draws it: the detector
+   operations before each visit, then each pass after its short
+   ``waiting_for_pass`` idle.
+
 The summary carries each body's visits, passes, minutes on source, duty
 cycle and geometry; the sheet has one numbered row per block, and the
 pass rows carry the literal ``scan_params`` dict for the execution
 layer's source-scan task. Beside the base keys that dict carries the
-geometry the visit asked for: ``az_speed`` and ``az_accel`` always, and
-``az_throw``, ``dwell`` or ``footprint_margin`` when the table, the
-policy or a per-visit override sets them. Confirm the receiving task
-forwards those keys before dispatching, because a task that reads only
-the base keys drops the rest without a message and runs a different
-scan. The sheet repeats that check on every affected row. Both views are
-rendered from the timeline's blocks and metadata, so a sheet printed
-from a timeline read back from ECSV is byte-identical.
+focal-plane row the pass is planned on (``eta_offset_deg``, 0 on a
+single-pass visit) and the geometry the visit asked for: ``az_speed`` and
+``az_accel`` always; ``az_padding`` of 0 when the pass sweeps the throw
+solved from the footprint, the default, or ``az_throw`` in its place when
+the table (under ``use_table_throw``) or a per-visit override sets the
+throw; and ``dwell`` or ``footprint_margin`` when the table, the policy or
+a per-visit override sets them. The source-scan task, at the revision
+this library is checked against, reads ``az_accel`` and ``az_padding``
+but not ``az_speed``, ``eta_offset_deg``, ``az_throw``, ``dwell`` or
+``footprint_margin``: it drops those without a message and plans the pass
+from its own defaults. A pass row whose dict carries any of them ends with
+a note naming the ones it carries; confirm the receiving task forwards
+them before dispatching. Every pass dict carries ``az_speed`` and
+``eta_offset_deg``, so every pass row has the note::
+
+    notes = {line.strip() for line in dispatch_sheet(timeline).splitlines() if "note:" in line}
+    print(notes)
+    # {'note: confirm the execution layer forwards az_speed, eta_offset_deg'}
+
+Both views are rendered from the timeline's blocks and metadata, so a
+sheet printed from a timeline read back from ECSV is byte-identical.
+
+For complete runnable scripts, see ``examples/planet_night.py`` (a night
+with its summary, dispatch sheet, ECSV and figures) and
+``examples/planet_speed_sweep.py`` (a scripted speed sweep on one body)
+in the repository.
 
 Scan Tables and Policy
 ----------------------
 
-Each body's scan geometry comes from an elevation-binned table: the
-azimuth throw to sweep in each bin, plus a reference dwell that the planner
-shows beside its own solved crossing time and applies only when asked. The
-shipped tables are instrument-team commissioning defaults; a body without
-its own table uses ``"default"``, and above a table's top bin the throw is
-extrapolated at constant on-sky width::
+Each body has an elevation-binned table of reference scan geometry: an
+azimuth throw for each bin, swept only when the policy's
+``use_table_throw`` asks for it, and a reference dwell, the table's scan
+time, applied only when ``use_table_dwell`` asks for it. By default a pass
+sweeps the throw the kernel solves from the footprint instead: one module
+width, plus ``footprint_margin`` on each side, over the cosine of the pass
+elevation. The shipped tables are instrument-team commissioning defaults;
+a body without its own table uses ``"default"``, and above a table's top
+bin the throw is extrapolated at constant on-sky width::
 
     from fyst_trajectories.overhead import DEFAULT_SCAN_TABLES
 
@@ -90,27 +121,29 @@ scan width in degrees of azimuth::
     print(sorted(tables), tables["uranus"].el_range)
     # ['default', 'uranus'] (30.0, 40.0)
 
-The throw is one of three kernel inputs the planner sets per pass; the
-sweep speed and acceleration come from the
+Beside the throw, the sweep speed and acceleration shape a pass; they
+come from the
 :class:`~fyst_trajectories.overhead.CalibrationNightPolicy` (1.5 deg/s
-and 1.5 deg/s^2 by default), and the dwell is solved from the footprint
+and 1.0 deg/s² by default), and the dwell is solved from the footprint
 crossing unless the policy applies the table's reference or a visit
-overrides it. The policy also holds the observing floor (30 deg), the
+overrides it. The policy also holds the observing floor (30°), the
 longest crossing accepted (20 min), the footprint and the on-sky margin
 around it (``footprint_margin``, which a rebuild has to re-apply to land
 on the same crossing), the idle tick and the retry interval, and the tuning policy
 for the detector operations. The quintic turnaround peaks at 1.5 times
-the nominal acceleration, so the default 1.5 deg/s^2 reaches an analytic
-2.25 deg/s^2 against the site's 1.5 deg/s^2 advisory ceiling; the planner
-records the warning on every pass rather than raising it, and the summary
-lists the slightly lower peak the sampled trajectory measures::
+the nominal acceleration, so the default 1.0 deg/s² peaks at the site's
+1.5 deg/s² advisory ceiling and a default night records no acceleration
+advisory. The first pass of the night above sweeps 2.72°, one module width
+over the cosine of its 61.5° elevation::
 
-    print(next(w for w in summary.warnings if "acceleration" in w))
-    # Trajectory azimuth acceleration (2.23 deg/s^2) exceeds limit (1.50 deg/s^2).
+    first = next(b for b in timeline.blocks if b.scan_type == "planet_cal")
+    print(f"{first.metadata['applied']['az_throw']:.2f} {first.elevation:.1f}")
+    # 2.72 61.5
+    print(any("acceleration" in w for w in summary.warnings))
+    # False
 
-A 2.44 deg leg, the throw the shared table gives at the bottom of its
-range, spends about 45 percent of its samples in science at those defaults
-(the rest in turnarounds); a wider throw higher up spends more, and the
+That leg spends about 38 percent of its samples in science at those
+defaults (the rest in turnarounds); a wider throw spends more, and the
 ``science_fraction`` recorded on every pass block reports the actual
 figure.
 
@@ -143,7 +176,11 @@ unplaced entries. Any callable with the
 Stepping Through a Night by Hand
 --------------------------------
 
-The driver loops over four public functions, and a person at an
+The driver loops over four public functions,
+:func:`~fyst_trajectories.overhead.list_candidates`,
+:func:`~fyst_trajectories.overhead.plan_visit`,
+:func:`~fyst_trajectories.overhead.commit_visit` and
+:func:`~fyst_trajectories.overhead.advance_idle`, and a person at an
 interactive session can call them directly to plan a visit, inspect it,
 discard it and re-plan with other overrides. Time comes from the state,
 never from a clock, so a night planned twice is identical::
@@ -174,8 +211,9 @@ never from a clock, so a night planned twice is identical::
 An infeasible visit is returned, never raised: ``plan.reason`` names why
 (the kernel could not plan the anchor, below or above the band, the
 crossing too slow, no whole pass left before the night ends, the retune
-pose or the pass inside the Sun zone, no Sun-safe slew, no azimuth wrap,
-the goal outside the axis limits, or no way out of the zone), and
+pose, a pass or the wait before a later pass inside the Sun zone, no
+sun-safe slew or step between passes, no azimuth wrap, the goal outside
+the axis limits, or no way out of the zone), and
 ``commit_visit`` records a deferral or, for the two geometry reasons (no
 wrap and the axis limits), a drop for the night. A telescope the Sun zone has
 overtaken while it sat still is moved out first, by ``plan_visit`` and
@@ -190,15 +228,29 @@ What a Pass Block Carries
 -------------------------
 
 Each pass is a ``planet_cal`` calibration block whose ``scan_params`` is
-a relative dispatch dict (body, mode, boresight elevation, the geometry
-and override keys, never an absolute window), alongside the pass anchor
-``t0_scan``, three geometry records (``requested``, ``applied`` and
-``solved``), the science fraction, the number of legs, the fraction of the
-pass each module saw the source (``module_crossings``) and the transition
-that preceded it. Every pass rebuilds from its block, and the track of the
-source across the focal plane can be drawn. Rebuilding re-runs the kernel,
-so here the acceleration advisory and, at this elevation, the on-sky
-azimuth speed advisory are raised as warnings rather than recorded::
+a relative dispatch dict (body, module, mode, boresight elevation, the
+geometry and override keys, never an absolute window), alongside the pass
+anchor ``t0_scan``, the instant the kernel's search for the pass began
+(``search_start``, the two parts ``[jd1, jd2]`` of its UTC Julian date,
+which read back from ECSV unchanged), three geometry records
+(``requested``, ``applied`` and ``solved``), the science fraction, the
+number of legs, the fraction of the pass each module saw the source
+(``module_crossings``) and the transition that preceded it. The dict's
+``footprint`` is the module's canonical name, ``"c"`` or ``"i1"`` ..
+``"i6"``, whichever spelling the policy used (``"IM0"`` and ``"Center"``
+are recorded as ``"c"``), since the execution layer compares it as a
+string. Every pass rebuilds from its block, and the track of the source
+across the focal plane can be drawn. Rebuilding re-runs the kernel over the
+search the planner made, the 24 hours from ``search_start``, so the rebuilt
+pass is the planned one sample for sample, its solved throw included. A
+pass block without ``search_start`` is re-solved instead in a window of its
+pass widened by 300 s on each side. That lands within about 0.1 s of the
+planned start and solves the throw again to about 1e-4°, the solver's
+tolerance, but skips the pass when the window misses the source's crossing
+of the boresight elevation (an off-centre module) or part of its crossing
+of the footprint (a dwell that cuts about 300 s or more from it). At this
+elevation the on-sky azimuth speed advisory is raised as a warning rather
+than recorded::
 
     from fyst_trajectories.overhead import schedule_to_trajectories
     from fyst_trajectories.visualization import plot_source_track, plot_timeline_gantt
@@ -224,8 +276,44 @@ assuming a fixed one. Once ``t0_scan`` has passed the crossing has opened
 without the telescope on it, and re-planning the recorded dict from a later
 anchor raises
 :class:`~fyst_trajectories.exceptions.TargetNotObservableError` rather than
-returning a shifted pass: re-plan the next block from
-now with ``plan_visit`` on a state whose time is the actual time, from
-the saved ECSV if the session is gone
-(:func:`~fyst_trajectories.overhead.read_calibration_night_metadata`
-rehydrates the night's inputs).
+returning a shifted pass: re-plan the next block from now with
+``plan_visit`` on a state whose time is the actual time and whose
+``cal_state`` records the detector operations already done, because
+:meth:`~fyst_trajectories.overhead.NightState.initial` records none and a
+fresh state reserves the detector-finding operation and a skydip again.
+
+:meth:`~fyst_trajectories.overhead.NightContext.from_timeline` rebuilds the
+night's context from its timeline, in memory or read back from ECSV, and
+:meth:`~fyst_trajectories.overhead.NightState.from_timeline` replays the
+blocks that ended by a given time into such a state, with the deferrals and
+drops recorded by then; a scripted night is given its own
+:class:`~fyst_trajectories.overhead.ScriptedSelection` to restore its place
+in the script. The replay credits every block as recorded, so it assumes the
+night ran as planned up to that time. The record names the Sun predicates
+without holding them, so a night planned on another model is resumed with
+that model passed in again; a predicate that does not match the record is
+refused, as is a site whose axis limits differ from those the night was
+planned on. A record written before the policy had ``use_table_throw`` is
+read with it set, since that night swept the table's throw. Here the first
+pass's crossing opened a minute before the operator was ready::
+
+    from astropy.time import TimeDelta
+
+    from fyst_trajectories.overhead import read_timeline, write_timeline
+
+    write_timeline(timeline, "night.ecsv")
+    saved = read_timeline("night.ecsv")
+    ctx = NightContext.from_timeline(saved)
+
+    first_pass = next(b for b in saved.blocks if b.scan_type == "planet_cal")
+    state = NightState.from_timeline(saved, first_pass.t_start + TimeDelta(60.0, format="sec"))
+    print(len(state.blocks), state.cal_state.last_skydip is not None)
+    # 5 True
+
+    plan = plan_visit(state, ctx, "saturn")
+    print(plan.feasible, [b.scan_type for b in plan.blocks])
+    # True ['slew', 'retune', 'idle', 'planet_cal']
+
+The five blocks before the pass count as done, the detector-finding
+operation and the skydip among them, so the re-planned visit reserves only
+the retune before its pass.

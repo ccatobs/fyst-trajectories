@@ -53,8 +53,8 @@ class TestZenithSingularity:
             ra, dec = coordinates.altaz_to_radec(180.0, el, obstime=obstime)
             _, el_back = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
 
-            # Azimuth may differ near zenith, but elevation should round-trip
-            assert el_back == pytest.approx(el, abs=0.1), (
+            # Vacuum round trip: closes far below a milliarcsecond even at 89.99 deg.
+            assert el_back == pytest.approx(el, abs=1e-6), (
                 f"Round-trip failed for el={el}: got {el_back}"
             )
 
@@ -86,13 +86,13 @@ class TestHorizonEdge:
         ra, dec = coordinates.altaz_to_radec(az_orig, el_orig, obstime=obstime)
         az_back, el_back = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
 
-        # Vacuum round trip; the tolerance is slack, not a refraction budget.
-        assert el_back == pytest.approx(el_orig, abs=1.0)
+        # Vacuum round trip; closes far below a milliarcsecond.
+        assert el_back == pytest.approx(el_orig, abs=1e-6)
 
         # Azimuth should be close
         az_diff = abs(az_back - az_orig)
         az_diff = min(az_diff, 360 - az_diff)
-        assert az_diff < 1.0
+        assert az_diff < 1e-6
 
 
 class TestCelestialPoles:
@@ -136,7 +136,7 @@ class TestCelestialPoles:
             az, el = coordinates.radec_to_altaz(180.0, dec, obstime=obstime)
             _, dec_back = coordinates.altaz_to_radec(az, el, obstime=obstime)
 
-            assert dec_back == pytest.approx(dec, abs=0.5), (
+            assert dec_back == pytest.approx(dec, abs=1e-6), (
                 f"Round-trip failed for dec={dec}: got {dec_back}"
             )
 
@@ -179,13 +179,13 @@ class TestAzimuthWrapAround:
             ra, dec = coordinates.altaz_to_radec(az_orig, el_orig, obstime=obstime)
             az_back, el_back = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
 
-            assert el_back == pytest.approx(el_orig, abs=0.1)
+            assert el_back == pytest.approx(el_orig, abs=1e-6)
 
             az_orig_norm = az_orig % 360
             az_back_norm = az_back % 360
             az_diff = abs(az_back_norm - az_orig_norm)
             az_diff = min(az_diff, 360 - az_diff)
-            assert az_diff < 0.1
+            assert az_diff < 1e-6
 
     def test_array_input_across_boundary(self, coordinates):
         obstime = Time("2026-06-15T04:00:00", scale="utc")
@@ -199,6 +199,9 @@ class TestAzimuthWrapAround:
         assert len(decs) == 5
         assert all(0 <= ra < 360 for ra in ras)
         assert all(-90 <= dec <= 90 for dec in decs)
+        for az, ra, dec in zip(azs, ras, decs):
+            expected = coordinates.altaz_to_radec(float(az), 45.0, obstime=obstime)
+            assert (ra, dec) == pytest.approx(expected, abs=1e-9)
 
 
 class TestParallacticAngleEdgeCases:

@@ -8,9 +8,9 @@ can silently drift from the prose. This guard extracts the actual ``.rst`` text 
 executes each block, per page, cumulatively in a single namespace (a reader following
 the page top to bottom), inside a temporary working directory.
 
-A few pages assume the reader already holds an object (a built ``trajectory`` / ``traj``,
-a ``timeline``) or a file (``retunes.csv``); the guard seeds those rather than cluttering
-the docs with boilerplate setup.
+A few pages assume the reader already holds a built ``trajectory`` / ``traj`` or a file
+(``retunes.csv``); the guard seeds those rather than cluttering the docs with boilerplate
+setup.
 
 Four guard mechanisms, each closing a class of drift that reached publication:
 
@@ -21,7 +21,8 @@ Four guard mechanisms, each closing a class of drift that reached publication:
    libraries (matplotlib, astropy) are outside the assertion.
 2. **Stdout is captured and checked.** A ``# comment`` stating a print's expected
    output (inline on the ``print(...)`` line, or alone on the next line) must appear in
-   the block's captured stdout, so a wrong-but-running example cannot pass.
+   the block's captured stdout, in the order the prints run, so a wrong-but-running
+   example cannot pass.
 3. **Skipped blocks stay honest.** Blocks in :data:`_SKIP` are not executed (they are
    illustrative by design) but must still parse, their ``fyst_trajectories`` imports
    must resolve, and their calls to those symbols must bind against the real
@@ -47,7 +48,7 @@ from pathlib import Path
 import pytest
 from _sun_stubs import HAVE_SUN_AVOIDANCE, needs_sun_avoidance
 from _tiers import imported_names, is_simulator_tier
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.exceptions import PointingWarning
@@ -146,12 +147,6 @@ def _visualization_symbols(text):
 # Every entry must still parse and bind (see test_skip_blocks_still_parse_and_bind),
 # and must match at least one block on its page (see test_registries_match_blocks).
 _SKIP = {
-    "planning.rst": [
-        (
-            "az = x_offset / cos(radians(el_center)) + az_center",
-            "illustrative horizon-frame mapping formula, not runnable Python",
-        ),
-    ],
     "trajectory_examples.rst": [
         ("import dataclasses", "live HTTP POST to a local TCS server"),
     ],
@@ -163,30 +158,11 @@ _SKIP = {
     ],
 }
 
-# Non-Python blocks (shell commands, ASCII diagrams, literal schemas) that the
-# extractor picks up. A non-compiling block that matches no entry here fails its
-# page test, so a Python block that stops compiling cannot vanish silently.
-_NON_PYTHON = {
-    "installation.rst": [
-        ("pip install", "shell: install commands"),
-        ("git clone", "shell: source checkout"),
-        ("pytest tests/", "shell: test invocation"),
-        ('pytest -m "not offline"', "shell: per-tier test invocation"),
-        ("ruff check", "shell: lint invocation"),
-    ],
-    "overhead_integration.rst": [
-        ("OFFLINE SIM LANE", "ASCII lane diagram"),
-    ],
-    "sun_avoidance.rst": [
-        ("pip install", "shell: pinned sun-avoidance install"),
-    ],
-    "trajectory_examples.rst": [
-        ("scheduling layer --[scan_params]-->", "ASCII dispatch-flow diagram"),
-    ],
-    "api/visualization.rst": [
-        ("pip install", "shell: plotting extra install"),
-    ],
-}
+# Non-Python literal blocks that the extractor picks up (none today: shell
+# commands are ``.. code-block:: bash`` directives, which it skips). A
+# non-compiling block that matches no entry here fails its page test, so a
+# Python block that stops compiling cannot vanish silently.
+_NON_PYTHON: dict[str, list[tuple[str, str]]] = {}
 
 # Library warnings each block is EXPECTED to emit, as a set of
 # PointingWarning-subclass names, keyed by page and matched on the block's first
@@ -196,15 +172,14 @@ _NON_PYTHON = {
 # than declaring the advisory, so pending limit decisions cannot silently change
 # the docs' meaning).
 _EXPECT_WARNINGS: dict = {
-    # Rebuilding the passes re-runs the kernel at the 1.5 deg/s^2 policy default
-    # (a 2.25 deg/s^2 turnaround peak, over the 1.5 advisory
-    # ceiling) at a high elevation (the on-sky azimuth speed advisory); the
-    # page states both. The planner itself records the advisories instead of
-    # raising them, so only this rebuild block trips them.
+    # Rebuilding the passes re-runs the kernel above about 60 deg elevation,
+    # which raises the on-sky azimuth speed advisory; the page states it. The
+    # planner itself records the advisory instead of raising it, so only this
+    # rebuild block trips it.
     "overhead_calibration_night.rst": [
         (
             "from fyst_trajectories.overhead import schedule_to_trajectories",
-            ["AccelerationLimitWarning", "PointingWarning"],
+            ["PointingWarning"],
         ),
     ],
 }
@@ -291,45 +266,13 @@ def _stdout_expectations(code):
     return expectations
 
 
-def _minimal_timeline(site):
-    """Build a one-block :class:`ObservingTimeline` for pages that assume a ``timeline``."""
-    from fyst_trajectories.overhead.models import (
-        CalibrationPolicy,
-        ObservingTimeline,
-        OverheadModel,
-        TimelineBlock,
-    )
-
-    t0 = Time("2026-06-15T02:00:00", scale="utc")
-    block = TimelineBlock(
-        t_start=t0,
-        t_stop=t0 + TimeDelta(300, format="sec"),
-        block_type="science",
-        patch_name="field",
-        az_start=120.0,
-        az_end=180.0,
-        elevation=45.0,
-        scan_index=0,
-        scan_type="pong",
-        metadata={},
-    )
-    return ObservingTimeline(
-        blocks=[block],
-        site=site,
-        start_time=t0,
-        end_time=t0 + TimeDelta(3600, format="sec"),
-        overhead_model=OverheadModel(),
-        calibration_policy=CalibrationPolicy(),
-    )
-
-
 @pytest.fixture(scope="session")
 def _doc_seed_trajectory():
     """Build a >= 700 s trajectory that the retune / export pages assume already exists.
 
     Read-only across pages (``inject_retune`` and ``to_path_format`` do not mutate it),
-    so it is built once per session. Advisories from this scaffolding config (a 60 deg
-    azimuth throw) are test-internal, not published examples, and are suppressed here.
+    so it is built once per session. Any advisory from this scaffolding config is
+    test-internal, not a published example, and is suppressed here.
     """
     site = get_fyst_site()
     with warnings.catch_warnings():
@@ -352,42 +295,12 @@ def _doc_seed_trajectory():
         )
 
 
-class _DocNamespace(dict):
-    """Execution namespace that builds the seeded timeline only when a block uses it.
-
-    Seeding a timeline eagerly imports the simulator tier, which put it in the
-    library-tier job on every page whatever the markers said. It is built on
-    first lookup instead, and a page that reaches for it must be one the
-    marker rule classifies simulator tier, or that job split would be a
-    fiction again.
-    """
-
-    def __init__(self, seed, *, page, simulator_page):
-        super().__init__(seed)
-        self._page = page
-        self._simulator_page = simulator_page
-
-    def __missing__(self, key):
-        if key != "timeline":
-            raise KeyError(key)
-        if not self._simulator_page:
-            pytest.fail(
-                f"{self._page} uses the seeded timeline, but no block it runs imports the "
-                "simulator tier, so the page is classified library tier and the library-tier "
-                "job would load the simulator to run it. Build the timeline in the block that "
-                "uses it, or import the simulator there."
-            )
-        self[key] = _minimal_timeline(self["site"])
-        return self[key]
-
-
-def _seed_namespace(tmp_path, trajectory, site, *, page, simulator_page):
+def _seed_namespace(tmp_path, trajectory):
     """Objects/files the docs assume the reader already has, in the temp cwd."""
     (tmp_path / "retunes.csv").write_text(
         "t_start_s,duration_s,module_index\n30.0,5.0,0\n300.0,5.0,0\n600.0,8.0,0\n"
     )
-    seed = {"site": site, "trajectory": trajectory, "traj": trajectory}
-    return _DocNamespace(seed, page=page, simulator_page=simulator_page)
+    return {"trajectory": trajectory, "traj": trajectory}
 
 
 def _runnable_blocks(text, key):
@@ -467,13 +380,7 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
     except ImportError:
         have_matplotlib = False
     visualization_symbols = _visualization_symbols(text)
-    ns = _seed_namespace(
-        tmp_path,
-        _doc_seed_trajectory,
-        get_fyst_site(),
-        page=key,
-        simulator_page=_runs_simulator_tier(rst, key),
-    )
+    ns = _seed_namespace(tmp_path, _doc_seed_trajectory)
     skips = _SKIP.get(key, [])
     non_python = _NON_PYTHON.get(key, [])
     for lineno, kind, code in _extract_blocks(text):
@@ -523,12 +430,15 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
                 )
             )
         out = _normalize_ws(buf.getvalue())
+        cursor = 0
         for exp in _stdout_expectations(code):
-            if exp not in out:
+            found = out.find(exp, cursor)
+            if found < 0:
                 pytest.fail(
                     f"{key}:{lineno} [{kind}] promises output {exp!r} in a comment, "
                     f"but the block printed:\n{buf.getvalue()}\n--- block ---\n{code}\n--- end ---"
                 )
+            cursor = found + len(exp)
 
 
 def _iter_registry_blocks(registry, only=None):
@@ -570,19 +480,15 @@ def test_registries_match_blocks():
 
 # Blocks that print without their page stating what they print, per page.
 # Guard mechanism 2 checks a print only where a ``#`` comment states its
-# output, so these blocks run but are unverified: 25 of the 43 blocks that
+# output, so these blocks run but are unverified: 16 of the 43 blocks that
 # print. Filling a gap is a documentation edit, one ``# expected output``
 # comment per print; the counts here are upper bounds, so adding a comment
 # (or removing a print) is free and adding an unchecked print is not.
 _UNCHECKED_PRINT_BLOCKS = {
     "api/exceptions.rst": 1,
     "api/observability.rst": 2,
-    "instrument_offsets.rst": 3,
-    "overhead_quickstart.rst": 3,
     "overhead_timeline.rst": 4,
     "planning.rst": 9,
-    "quickstart.rst": 2,
-    "sun_avoidance.rst": 1,
 }
 
 

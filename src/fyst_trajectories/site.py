@@ -54,19 +54,28 @@ from astropy.coordinates import EarthLocation
 #   lat = -22d59m08.30s, lon = -67d44m25.00s, elev = 5611.8 m
 
 FYST_LATITUDE: float = -22.985639
-"""FYST latitude in degrees (South). Source: the FYST telescope control system (astro.go)."""
+"""FYST latitude in degrees (South).
+
+Source: the FYST telescope control system (astro.go).
+"""
 
 FYST_LONGITUDE: float = -67.740278
-"""FYST longitude in degrees (West). Source: the FYST telescope control system (astro.go)."""
+"""FYST longitude in degrees (West).
+
+Source: the FYST telescope control system (astro.go).
+"""
 
 FYST_ELEVATION: float = 5611.8
-"""FYST elevation in meters above sea level.
+"""FYST elevation in meters, used as the height above the WGS84 ellipsoid.
 
 Source: the FYST telescope control system (astro.go).
 """
 
 FYST_PLATE_SCALE: float = 13.89
-"""FYST plate scale in arcsec/mm. Source: optical design."""
+"""FYST plate scale in arcsec/mm.
+
+Source: optical design.
+"""
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
 
 FYST_NASMYTH_PORT: str = "right"
@@ -79,21 +88,30 @@ FYST_NASMYTH_PORT: str = "right"
 # Tier 2: Mechanical limits (from the FYST telescope control system,
 # commands.go). Two envelopes: the ENCODER/SLEW envelope (az [-180, 360],
 # el [-90, 180]) is enforced by Go TCS and matches P-INCM-ICD-0003-A
-# sections 2/5; the narrower OBSERVING envelope (el [20, 90]) is enforced by
-# the planners and validate_trajectory.
+# sections 2 and 5; the narrower OBSERVING envelope (el [20, 90]) is
+# enforced by the planners and validate_trajectory.
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-# The velocity and acceleration limits below are conservative operational
-# values; they may need to be relaxed once commissioning ratifies the TCS
-# hardware limits cited in commands.go.
+# The azimuth velocity equals the TCS bound; the other velocity and
+# acceleration limits below are conservative operational values that may be
+# relaxed once commissioning ratifies the TCS hardware limits in commands.go.
 
 FYST_AZ_MIN: float = -180.0
-"""Minimum azimuth in degrees. Source: the FYST telescope control system (commands.go)."""
+"""Minimum azimuth in degrees.
+
+Source: the FYST telescope control system (commands.go).
+"""
 
 FYST_AZ_MAX: float = 360.0
-"""Maximum azimuth in degrees. Source: the FYST telescope control system (commands.go)."""
+"""Maximum azimuth in degrees.
+
+Source: the FYST telescope control system (commands.go).
+"""
 
 FYST_AZ_MAX_VELOCITY: float = 3.0
-"""Maximum azimuth velocity in degrees/second. Source: the FYST telescope control system."""
+"""Maximum azimuth velocity in degrees/second.
+
+Source: the FYST telescope control system.
+"""
 
 FYST_AZ_MAX_ACCELERATION: float = 1.5
 """Maximum azimuth acceleration in degrees/second^2.
@@ -227,7 +245,7 @@ class AtmosphericConditions:
 
     Most callers should construct via the factory classmethods rather than
     the raw constructor: :meth:`for_fyst` for typical Cerro Chajnantor
-    submm conditions (sets ``obswl=200 µm`` so astropy uses the radio
+    submm conditions (sets ``obswl=200``, in microns, so astropy uses the radio
     refraction model), or :meth:`no_refraction` to explicitly disable
     refraction (vacuum coordinates, equivalent to the default).
 
@@ -250,18 +268,19 @@ class AtmosphericConditions:
     relative_humidity : float
         Relative humidity as a fraction (0-1).
     obswl : float or None, optional
-        Observing wavelength in microns. When ``> 100 µm``, astropy uses
+        Observing wavelength in microns. When ``> 100``, astropy uses
         the radio refraction model instead of optical. The radio model is
-        wavelength-independent, so any value above 100 µm (e.g. 200 µm)
+        wavelength-independent, so any value above 100 um (e.g. 200 um)
         covers all FYST submillimeter bands. Default is ``None``, which
-        preserves astropy's default optical refraction (1.0 µm). Must be
+        preserves astropy's default optical refraction (1.0 um). Must be
         positive when provided.
 
     Raises
     ------
     ValueError
-        If ``relative_humidity`` is outside ``[0, 1]``, ``pressure`` is
-        negative, or ``obswl`` is non-positive.
+        If ``relative_humidity`` is outside ``[0, 1]``, ``pressure`` or
+        ``temperature`` is negative or NaN (a Celsius value passed as Kelvin
+        is the usual cause), or ``obswl`` is non-positive.
 
     See Also
     --------
@@ -288,8 +307,10 @@ class AtmosphericConditions:
         # real silent-garbage path: ERFA's optical-dispersion term evaluates to a
         # finite but wrong refraction constant (~2x over-refraction) rather than
         # erroring; a negative pressure is harmless (ERFA clamps it to vacuum).
-        if self.pressure < 0:
+        if not self.pressure >= 0:
             raise ValueError(f"pressure must be >= 0 hPa, got {self.pressure}")
+        if not self.temperature >= 0:
+            raise ValueError(f"temperature must be >= 0 K, got {self.temperature}")
         if self.obswl is not None and self.obswl <= 0:
             raise ValueError(f"obswl must be > 0 microns, got {self.obswl}")
 
@@ -299,8 +320,6 @@ class AtmosphericConditions:
 
         Setting pressure to zero causes astropy's AltAz frame to skip
         atmospheric refraction, producing geometric (vacuum) coordinates.
-        Useful for cross-validation against backends that don't model
-        refraction, or for testing.
 
         Returns
         -------
@@ -332,18 +351,19 @@ class AtmosphericConditions:
         stay on the vacuum default.
 
         Convenience factory that defaults to a "typical winter night on
-        Cerro Chajnantor" weather profile and forces ``obswl=200 µm`` so
+        Cerro Chajnantor" weather profile and forces ``obswl=200`` (microns) so
         astropy switches to its radio-IR refraction model.
         Without this factory, callers who pass realistic
         pressure/temperature/humidity but forget ``obswl`` silently get
-        astropy's optical (1 µm) refraction model.
+        astropy's optical (1 um) refraction model.
         The pressure/temperature defaults are a representative cold, dry
         winter-night profile rather than a measured value. For context,
-        Cortés, Reeves & Bustos (2016), Radio Science 51,
+        Cort\u00e9s et al. 2016, "Analysis of the distribution of
+        precipitable water vapor in the Chajnantor area", Radio Science 51,
         doi:10.1002/2015RS005929, sec. 2.1, give time-average surface
         conditions of 518 mbar and 268.6 K for Cerro Chajnantor; the
-        defaults here are colder and drier than that annual mean. Pass
-        current weather data when available.
+        defaults here are colder and at lower pressure than that average.
+        Pass current weather data when available.
 
         Parameters
         ----------
@@ -412,7 +432,9 @@ class AxisLimits:
     Raises
     ------
     ValueError
-        If min > max.
+        If ``min`` or ``max`` is not finite, if ``max_velocity`` or
+        ``max_acceleration`` is not a finite number above zero, or if
+        ``min > max``.
     """
 
     min: float
@@ -421,6 +443,15 @@ class AxisLimits:
     max_acceleration: float
 
     def __post_init__(self) -> None:
+        for name, value in (("min", self.min), ("max", self.max)):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value}")
+        for name, value in (
+            ("max_velocity", self.max_velocity),
+            ("max_acceleration", self.max_acceleration),
+        ):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be a finite, positive number, got {value}")
         if self.min > self.max:
             raise ValueError(f"min ({self.min}) must be <= max ({self.max})")
 
@@ -482,10 +513,11 @@ class SunAvoidanceConfig:
     Raises
     ------
     ValueError
-        When ``enabled`` and either ``exclusion_radius < 0`` or
-        ``warning_radius <= exclusion_radius`` (equality would leave an
-        empty warning band: every warning-worthy pointing would already be
-        excluded, silently disabling the warning tier).
+        When ``enabled`` and either radius is not finite,
+        ``exclusion_radius < 0`` or ``warning_radius <= exclusion_radius``
+        (equality would leave an empty warning band: every warning-worthy
+        pointing would already be excluded, silently disabling the warning
+        tier).
     """
 
     enabled: bool
@@ -497,6 +529,14 @@ class SunAvoidanceConfig:
         # inert placeholder radii. Mirrors AxisLimits.__post_init__.
         if not self.enabled:
             return
+        # A NaN radius would make every ``separation <= radius`` test False,
+        # so the Sun checks built on that comparison would pass any pointing.
+        for name, value in (
+            ("exclusion_radius", self.exclusion_radius),
+            ("warning_radius", self.warning_radius),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number when enabled, got {value}")
         if self.exclusion_radius < 0:
             raise ValueError(
                 f"exclusion_radius ({self.exclusion_radius}) must be >= 0 when enabled"
@@ -516,9 +556,8 @@ _NASMYTH_SIGNS: dict[str, int] = {"right": 1, "left": -1, "cassegrain": 0}
 class Site:
     """Telescope site configuration.
 
-    This class encapsulates all site-specific configuration including
-    geographic location, atmospheric conditions, telescope limits,
-    and default operational parameters.
+    This class encapsulates the site-specific configuration: geographic
+    location, telescope limits, and default operational parameters.
 
     Parameters
     ----------
@@ -531,14 +570,7 @@ class Site:
     longitude : float
         Longitude in degrees (negative for West).
     elevation : float
-        Elevation above sea level in meters.
-    atmosphere : AtmosphericConditions or None
-        Atmospheric conditions for refraction corrections. Always
-        ``None`` when constructed by ``get_fyst_site()`` or loaded from
-        config; atmosphere is never read from files. Construct an
-        ``AtmosphericConditions`` instance with current weather data
-        and pass it to ``Coordinates``,
-        ``TrajectoryBuilder.with_atmosphere()``, or planning functions.
+        Height in meters above the WGS84 ellipsoid (the ``EarthLocation`` convention).
     telescope_limits : TelescopeLimits
         Telescope mechanical limits.
     sun_avoidance : SunAvoidanceConfig
@@ -579,7 +611,6 @@ class Site:
     latitude: float
     longitude: float
     elevation: float
-    atmosphere: AtmosphericConditions | None
     telescope_limits: TelescopeLimits
     sun_avoidance: SunAvoidanceConfig
     nasmyth_port: str = "right"
@@ -674,7 +705,7 @@ class Site:
         Notes
         -----
         Required schema (``site.description`` and ``telescope.nasmyth_port``
-        are the only optional keys; atmosphere is never read from a file)::
+        are the only optional keys)::
 
             site:
               name: My Telescope
@@ -697,7 +728,13 @@ class Site:
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        return cls._from_dict(config, config_name=str(config_path.name))
+        try:
+            return cls._from_dict(config, config_name=str(config_path.name))
+        except (TypeError, AttributeError) as exc:
+            # A document of the wrong shape (an empty file, a scalar where a
+            # section mapping belongs, a null nasmyth_port) fails inside the
+            # lookups; report it as the invalid config it is.
+            raise ValueError(f"Config '{config_path.name}' is malformed: {exc}") from exc
 
     @classmethod
     def _from_dict(cls, config: dict, config_name: str = "config") -> "Site":
@@ -794,7 +831,6 @@ class Site:
             latitude=_get_required(loc, "latitude", "site.location", config_name),
             longitude=_get_required(loc, "longitude", "site.location", config_name),
             elevation=_get_required(loc, "elevation", "site.location", config_name),
-            atmosphere=None,
             telescope_limits=telescope_limits,
             sun_avoidance=sun_avoidance,
             nasmyth_port=telescope_config.get("nasmyth_port", "right"),
@@ -811,9 +847,9 @@ def get_fyst_site(
     """Get the default FYST site configuration.
 
     Constructs a ``Site`` from the FYST physical constants defined in
-    this module. Tier 3 parameters (sun avoidance) can be overridden
-    via keyword arguments; Tier 1 and Tier 2 parameters (location, optics,
-    mechanical limits) are fixed constants. Construct a custom ``Site``
+    this module. The sun-avoidance parameters can be overridden via
+    keyword arguments; the location, optics and mechanical limits are
+    fixed constants. Construct a custom ``Site``
     directly for non-FYST telescopes or testing.
 
     Parameters
@@ -849,7 +885,6 @@ def get_fyst_site(
         latitude=FYST_LATITUDE,
         longitude=FYST_LONGITUDE,
         elevation=FYST_ELEVATION,
-        atmosphere=None,
         telescope_limits=TelescopeLimits(
             azimuth=AxisLimits(
                 min=FYST_AZ_MIN,

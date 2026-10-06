@@ -4,6 +4,7 @@ These tests focus on validation logic and ensuring invalid configurations
 are rejected with appropriate error messages.
 """
 
+import warnings
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -11,9 +12,11 @@ import pytest
 from fyst_trajectories import PointingWarning
 from fyst_trajectories.patterns import (
     ConstantElScanConfig,
+    DaisyAltAzScanConfig,
     DaisyScanConfig,
     LinearMotionConfig,
     PlanetTrackConfig,
+    PongAltAzScanConfig,
     PongScanConfig,
     ScanConfig,
 )
@@ -202,6 +205,18 @@ class TestPongScanConfig:
                 angle=0.0,
             )
 
+    @pytest.mark.parametrize(
+        ("config_cls", "kwargs"),
+        [
+            (PongScanConfig, dict(timestep=0.1, angle=0.0)),
+            (PongAltAzScanConfig, dict(az_center=180.0, el_center=45.0)),
+        ],
+    )
+    def test_non_integer_num_terms_is_refused(self, config_cls, kwargs):
+        """A fractional term count is refused by name, not later as a ``TypeError``."""
+        with pytest.raises(ValueError, match="num_terms must be at least 1"):
+            config_cls(width=2.0, height=2.0, spacing=0.1, velocity=0.5, num_terms=2.5, **kwargs)
+
 
 class TestDaisyScanConfig:
     """Rosette geometry must be positive; ``avoidance_radius`` may be zero but not negative."""
@@ -301,16 +316,20 @@ class TestConfigWarnings:
     them fails.
     """
 
-    def test_constant_el_az_throw_warns(self):
-        with pytest.warns(PointingWarning, match="Azimuth throw"):
+    def test_constant_el_wide_az_throw_is_silent(self):
+        """A planner-sized throw (112 deg, a 40 deg wide field drifting) emits no advisory."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             ConstantElScanConfig(
                 timestep=0.1,
-                az_start=0.0,
-                az_stop=40.0,
+                az_start=100.0,
+                az_stop=212.0,
                 elevation=45.0,
                 az_speed=1.0,
                 az_accel=1.0,
             )
+        advisories = [str(w.message) for w in caught if issubclass(w.category, PointingWarning)]
+        assert advisories == []
 
     def test_constant_el_speed_warns(self):
         with pytest.warns(PointingWarning, match="Azimuth speed"):
@@ -429,6 +448,57 @@ class TestConfigsRejectNonFiniteValues:
                 y_offset=0.0,
             )
 
+    _VALID_KWARGS = {
+        ConstantElScanConfig: dict(
+            timestep=0.1, az_start=100.0, az_stop=110.0, elevation=45.0, az_speed=0.5, az_accel=1.0
+        ),
+        PongScanConfig: dict(
+            timestep=0.1, width=2.0, height=2.0, spacing=0.1, velocity=0.5, num_terms=4, angle=0.0
+        ),
+        PongAltAzScanConfig: dict(
+            az_center=180.0, el_center=45.0, width=2.0, height=2.0, spacing=0.1, velocity=0.5
+        ),
+        DaisyScanConfig: dict(
+            timestep=0.1,
+            radius=0.5,
+            velocity=0.5,
+            turn_radius=0.2,
+            avoidance_radius=0.0,
+            start_acceleration=0.5,
+            y_offset=0.0,
+        ),
+        DaisyAltAzScanConfig: dict(
+            az_center=180.0,
+            el_center=45.0,
+            radius=0.5,
+            velocity=0.5,
+            turn_radius=0.2,
+            avoidance_radius=0.0,
+            start_acceleration=0.5,
+        ),
+    }
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    @pytest.mark.parametrize(
+        ("config_cls", "field"),
+        [
+            (ConstantElScanConfig, "az_start"),
+            (ConstantElScanConfig, "az_stop"),
+            (ConstantElScanConfig, "elevation"),
+            (PongScanConfig, "angle"),
+            (PongAltAzScanConfig, "angle"),
+            (PongAltAzScanConfig, "az_center"),
+            (DaisyScanConfig, "y_offset"),
+            (DaisyAltAzScanConfig, "y_offset"),
+            (DaisyAltAzScanConfig, "az_center"),
+        ],
+    )
+    def test_free_field_is_refused(self, config_cls, field, bad):
+        """A field with no sign or range constraint must still be finite, and says so."""
+        kwargs = {**self._VALID_KWARGS[config_cls], field: bad}
+        with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+            config_cls(**kwargs)
+
 
 class TestLinearMotionConfigValidation:
     """``LinearMotionConfig`` validates its own four motion fields.
@@ -471,7 +541,7 @@ class TestAdvisoryWarningAttribution:
     ``warnings.warn`` counts frames from the function that calls it, so an
     advisory one short (``stacklevel=3`` in the helper, ``stacklevel=2`` in
     the turnaround advisory) lands on the dataclass-generated ``__init__``,
-    whose filename astropy reports as ``<string>``. A caller filtering
+    whose filename Python reports as ``<string>``. A caller filtering
     warnings by module then cannot match it.
     """
 
@@ -507,3 +577,29 @@ class TestAdvisoryWarningAttribution:
         ]
         assert advisories, "expected a turnaround advisory"
         assert all(w.filename == __file__ for w in advisories)
+
+    def test_pong_altaz_advisories_name_this_file(self, recwarn):
+        """Both shared-helper advisories of the AltAz Pong land on the construction site."""
+        PongAltAzScanConfig(
+            az_center=180.0, el_center=85.0, width=200.0, height=1.0, spacing=0.5, velocity=0.5
+        )
+        advisories = [w for w in recwarn.list if issubclass(w.category, PointingWarning)]
+        # "Scan width" and "Azimuth-coordinate velocity" (0.5 / cos(85 deg) > 5 deg/s).
+        assert len(advisories) == 2, [str(w.message) for w in advisories]
+        assert all(w.filename == __file__ for w in advisories), [w.filename for w in advisories]
+
+    def test_daisy_altaz_advisories_name_this_file(self, recwarn):
+        """Both shared-helper advisories of the AltAz Daisy land on the construction site."""
+        DaisyAltAzScanConfig(
+            az_center=180.0,
+            el_center=85.0,
+            radius=20.0,
+            velocity=0.5,
+            turn_radius=0.2,
+            avoidance_radius=0.0,
+            start_acceleration=0.5,
+        )
+        advisories = [w for w in recwarn.list if issubclass(w.category, PointingWarning)]
+        # "Daisy radius" and "Azimuth-coordinate velocity" (0.5 / cos(85 deg) > 5 deg/s).
+        assert len(advisories) == 2, [str(w.message) for w in advisories]
+        assert all(w.filename == __file__ for w in advisories), [w.filename for w in advisories]

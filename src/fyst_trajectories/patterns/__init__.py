@@ -57,17 +57,8 @@ Listing available patterns:
  'pong_altaz', 'satellite', 'sidereal']
 """
 
-# Import every pattern module so each one registers itself
-from . import constant_el as constant_el  # noqa: F401  # pylint: disable=useless-import-alias
-from . import daisy as daisy  # noqa: F401  # pylint: disable=useless-import-alias
-from . import daisy_altaz as daisy_altaz  # noqa: F401  # pylint: disable=useless-import-alias
-from . import linear as linear  # noqa: F401  # pylint: disable=useless-import-alias
-from . import planet as planet  # noqa: F401  # pylint: disable=useless-import-alias
-from . import pong as pong  # noqa: F401  # pylint: disable=useless-import-alias
-from . import pong_altaz as pong_altaz  # noqa: F401  # pylint: disable=useless-import-alias
-from . import satellite as satellite  # noqa: F401  # pylint: disable=useless-import-alias
-from . import sidereal as sidereal  # noqa: F401  # pylint: disable=useless-import-alias
-from .base import AltAzPattern, CelestialPattern, ScanPattern, TrajectoryMetadata
+from ..trajectory import TrajectoryMetadata
+from .base import AltAzPattern, CelestialPattern, ScanPattern
 from .builder import TrajectoryBuilder
 from .configs import (
     ConstantElScanConfig,

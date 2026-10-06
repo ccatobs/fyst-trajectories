@@ -12,8 +12,8 @@ fixes its four phases.
 
 .. note::
 
-   The ``generate_timeline`` signature and return type are stable; the
-   phase API below may evolve.
+   Build on :func:`~fyst_trajectories.overhead.generate_timeline` where you
+   can: the phase API below changes more freely than it does.
 
 Scheduler
 ---------

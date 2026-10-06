@@ -1,9 +1,10 @@
 """Pure helpers for the calibration-night planner.
 
-Nothing here holds state or touches a clock: the solar gate, the Sun sweep
-over a planned trajectory, the per-module coverage of a pass, the science
-duty cycle, and the JSON coercions that keep every recorded metadata value
-a builtin.
+Nothing here holds state or touches a clock: the solar gate, the per-module
+coverage of a pass, the science duty cycle, and the JSON coercions that keep
+every recorded metadata value a builtin. The Sun sweep over a planned
+trajectory, :func:`sweep_sun_safe`, is shared with the survey scheduler and
+lives in the simulator's move module; it is imported here for the planner.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from ...planning import ScanBlock, source_ces_focal_plane_track
 from ...primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ...site import Site
 from ...trajectory import Trajectory
-from ..models import ScanGeometryRecord
+from .._moves import sweep_sun_safe
+from ..schemas import ScanGeometryRecord
 
 __all__ = [
     "json_native",
@@ -31,10 +33,6 @@ __all__ = [
     "usable_interval",
     "validate_geometry_record",
 ]
-
-# Per-sample fallback budget for a predicate without ``batch``: a 10 min pass
-# at 0.1 s has 6000 samples; 600 keeps the fail-closed sweep at ~1 s spacing.
-_SWEEP_MAX_SAMPLES = 600
 
 
 def usable_interval(
@@ -98,35 +96,6 @@ def usable_interval(
             run_start = None
     i0, i1 = best_start, best_start + best_len - 1
     return grid[i0], grid[i1]
-
-
-def sweep_sun_safe(sun_safe: Any, az: np.ndarray, el: np.ndarray, times: Time) -> bool:
-    """Whether every sample of a trajectory is clear of the Sun, fail closed.
-
-    Uses the predicate's vectorised ``batch`` when it has one, otherwise
-    evaluates the predicate per sample on an even subsample of at most
-    :data:`_SWEEP_MAX_SAMPLES` points.
-
-    An empty trajectory answers ``False``. There is nothing to screen, so a
-    ``True`` would be a vacuous pass of the Sun gate rather than a verdict,
-    the same hole the dispatch-time wrap gate fails closed on.
-    """
-    az = np.asarray(az, dtype=float)
-    el = np.asarray(el, dtype=float)
-    if az.size == 0:
-        return False
-    batch = getattr(sun_safe, "batch", None)
-    if callable(batch):
-        verdicts = np.asarray(batch(az, el, times), dtype=bool)
-        if verdicts.shape != az.shape:
-            raise ValueError(f"sun_safe.batch returned shape {verdicts.shape}, expected {az.shape}")
-        return bool(verdicts.all())
-    n = az.size
-    stride = max(1, int(np.ceil(n / _SWEEP_MAX_SAMPLES)))
-    index = list(range(0, n, stride))
-    if index[-1] != n - 1:
-        index.append(n - 1)
-    return all(bool(sun_safe(float(az[i]), float(el[i]), times[i])) for i in index)
 
 
 def science_fraction(trajectory: Trajectory) -> float:

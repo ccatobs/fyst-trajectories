@@ -10,14 +10,13 @@ the loop reproduces ``generate_timeline``.
 import warnings
 
 import pytest
-from _sun_stubs import pose_blocker
+from _scheduler_helpers import _initial_state, _make_ctx
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import get_fyst_site
+from fyst_trajectories.exceptions import PointingError
 from fyst_trajectories.overhead import (
     CalibrationPolicy,
-    CalibrationState,
-    ElevationConstraint,
     ObservingPatch,
     OverheadModel,
 )
@@ -27,43 +26,13 @@ from fyst_trajectories.overhead.scheduler import (
     PhaseResult,
     Scheduler,
     SchedulerContext,
-    SchedulerState,
     ScienceScanPhase,
     SlewPhase,
+    phases,
 )
-from fyst_trajectories.overhead.scheduler.helpers import (
-    _compute_az_range,
-    _normalize_az,
-)
-
-
-def _make_ctx(
-    patches,
-    *,
-    start_time="2026-06-15T02:00:00",
-    end_time="2026-06-15T10:00:00",
-    overhead_model=None,
-    calibration_policy=None,
-    time_step=300.0,
-    sun_safe=None,
-    constraints=None,
-):
-    """Build a context with sensible defaults for phase-level tests."""
-    return SchedulerContext.build(
-        patches=patches,
-        site=get_fyst_site(),
-        start_time=Time(start_time, scale="utc"),
-        end_time=Time(end_time, scale="utc"),
-        overhead_model=overhead_model or OverheadModel(),
-        calibration_policy=calibration_policy or CalibrationPolicy(),
-        constraints=constraints,
-        time_step=time_step,
-        sun_safe=sun_safe,
-    )
-
-
-def _initial_state(ctx):
-    return SchedulerState.initial(start_time=ctx.start_time, cal_state=CalibrationState())
+from fyst_trajectories.overhead.scheduler.helpers import _compute_az_range
+from fyst_trajectories.overhead.utils import _normalize_az
+from fyst_trajectories.patterns import PongScanConfig, compute_pong_period
 
 
 def _deep56_ce_patch(name="deep56"):
@@ -78,6 +47,42 @@ def _deep56_ce_patch(name="deep56"):
         velocity=1.0,
         elevation=50.0,
     )
+
+
+def _pong_patch(name="Wide01", width=4.0, height=4.0, **kwargs):
+    """Build a pong patch that is up from 02:00 UTC on the fixture night."""
+    return ObservingPatch(
+        name=name,
+        ra_center=180.0,
+        dec_center=-30.0,
+        width=width,
+        height=height,
+        scan_type="pong",
+        velocity=0.5,
+        **kwargs,
+    )
+
+
+def _pong_period(patch):
+    """One period of ``patch``'s pattern at the rebuild's default spacing."""
+    config = PongScanConfig(
+        timestep=0.1,
+        width=patch.width,
+        height=patch.height,
+        spacing=0.1,
+        velocity=patch.velocity,
+        num_terms=4,
+        angle=0.0,
+    )
+    return compute_pong_period(config)[0]
+
+
+def _kinds(blocks):
+    """Name each block: its calibration type, or its block type."""
+    return [
+        str(b.scan_type) if str(b.block_type) == "calibration" else str(b.block_type)
+        for b in blocks
+    ]
 
 
 def _ce_ready_ctx(patch, **ctx_kwargs):
@@ -111,9 +116,14 @@ class TestCalibrationPhase:
         result = CalibrationPhase().run(state, ctx)
 
         assert isinstance(result, PhaseResult)
-        # At startup, every due cadence fires: retune, pointing_cal,
-        # focus, skydip (and planet_cal when a planet is visible).
-        assert len(result.blocks) >= 4
+        # At startup every due cadence fires, in the canonical order; no
+        # planet is up yet at 02:00 UTC, so planet_cal is not among them.
+        assert [str(b.scan_type) for b in result.blocks] == [
+            "retune",
+            "pointing_cal",
+            "focus",
+            "skydip",
+        ]
         # The state advances past every block.
         assert result.state.current_time.unix > state.current_time.unix
         # The cal state has updated, at least retune is no longer None.
@@ -284,12 +294,11 @@ class TestSlewPhase:
         # The slew establishes the pose downstream blocks are stamped with.
         assert result.state.current_az == selection.best_az
         assert result.state.current_el == ce_patch.elevation
-        # Pin the dominant az move against the ~65 deg expectation stated above
-        # (tolerance covers minor ephemeris drift in the CE corridor anchor).
-        assert abs(block.az_end - block.az_start) == pytest.approx(65.1, abs=1.5)
+        # Pin the dominant az move against the ~65 deg expectation stated above.
+        assert abs(block.az_end - block.az_start) == pytest.approx(65.15, abs=0.01)
         # Time advanced by the slew duration (~29 s for this move).
         assert result.state.current_time.unix > state.current_time.unix
-        assert block.duration == pytest.approx(28.7, abs=1.0)
+        assert block.duration == pytest.approx(28.72, abs=0.01)
 
 
 class TestScienceScanPhase:
@@ -364,7 +373,7 @@ class TestScienceScanPhase:
         )
         state = _initial_state(ctx)  # fresh cal state: cadence-0 retune is due
 
-        state, blocks = ScienceScanPhase._emit_subscans_with_retunes(
+        state, blocks, refusal = ScienceScanPhase._emit_subscans_with_retunes(
             state=state,
             ctx=ctx,
             best_patch=ce_patch,
@@ -378,22 +387,22 @@ class TestScienceScanPhase:
             t0_scan=None,
         )
         assert blocks == []
+        assert refusal is None
 
     def test_boundary_retune_plus_min_subscan_fit(self):
-        """With one retune-width more room, the visit emits retune + science."""
+        """With one retune-width more room, the visit emits retune + science.
+
+        The visit is anchored where Deep56's pass is plannable, since a
+        subscan the planner refuses is not emitted.
+        """
         ce_patch = _deep56_ce_patch()
         overhead = OverheadModel()
-        start = Time("2026-06-15T02:00:00", scale="utc")
+        ctx = _ce_ready_ctx(ce_patch, overhead_model=overhead)
         window = overhead.min_scan_duration + overhead.retune_duration + 1.0
-        ctx = _make_ctx(
-            patches=[ce_patch],
-            start_time=start.isot,
-            end_time=(start + TimeDelta(window, format="sec")).isot,
-            overhead_model=overhead,
-        )
+        deadline = ctx.start_time + TimeDelta(window, format="sec")
         state = _initial_state(ctx)
 
-        state, blocks = ScienceScanPhase._emit_subscans_with_retunes(
+        state, blocks, refusal = ScienceScanPhase._emit_subscans_with_retunes(
             state=state,
             ctx=ctx,
             best_patch=ce_patch,
@@ -403,16 +412,14 @@ class TestScienceScanPhase:
             rising=True,
             az_start_sci=100.0,
             az_end_sci=140.0,
-            deadline=ctx.end_time,
-            t0_scan=None,
+            deadline=deadline,
+            t0_scan=ctx.start_time.isot,
         )
-        kinds = [
-            str(b.scan_type) if str(b.block_type) == "calibration" else "science" for b in blocks
-        ]
-        assert kinds == ["retune", "science"]
+        assert refusal is None
+        assert _kinds(blocks) == ["retune", "science"]
         science = blocks[1]
         assert science.duration >= overhead.min_scan_duration
-        assert science.t_stop.unix <= ctx.end_time.unix + 1e-6
+        assert science.t_stop.unix <= deadline.unix + 1e-6
 
     def test_long_scan_splits_into_subscans(self):
         """When scan_duration > max_scan_duration, emit multiple subscans."""
@@ -434,6 +441,120 @@ class TestScienceScanPhase:
         assert sub_indices == list(range(len(sub_indices)))
 
 
+class TestWholePeriodPong:
+    """A pong subscan holds whole pattern periods and is planned before it is booked.
+
+    The rebuild runs ``n_cycles`` periods of the pattern, so a block sized
+    from the scheduler's budget alone counted science its trajectory never
+    ran, or stopped mid-pattern. A subscan is probed before its boundary
+    retune is booked, so a refusal leaves neither block behind.
+    """
+
+    @staticmethod
+    def _visit(ctx):
+        """Select, slew and scan once from a fresh state; return (slew, science)."""
+        state = _initial_state(ctx)
+        selection = PatchSelectionPhase().run(state, ctx)
+        slew = SlewPhase().run(state, ctx, selection=selection)
+        return slew, ScienceScanPhase().run(slew.state, ctx, selection=slew)
+
+    def test_a_subscan_is_a_whole_number_of_periods(self):
+        """The block lasts ``n_cycles`` periods and rebuilds to its own length."""
+        from fyst_trajectories.overhead.simulation import _generate_trajectory_for_block
+
+        patch = _pong_patch()
+        ctx = _make_ctx(patches=[patch])
+        _, result = self._visit(ctx)
+
+        assert _kinds(result.blocks) == ["retune", "science"]
+        retune, science = result.blocks
+        assert science.t_start.unix == pytest.approx(retune.t_stop.unix, abs=1e-6)
+        n_cycles = science.metadata["scan_params"]["n_cycles"]
+        # The 3600 s budget less the 300 s retune holds four 696 s periods.
+        assert isinstance(n_cycles, int)
+        assert n_cycles == 4
+        assert science.duration == pytest.approx(n_cycles * _pong_period(patch), abs=1e-6)
+        rebuilt = _generate_trajectory_for_block(science, ctx.site).trajectory
+        assert abs(float(rebuilt.times[-1]) - science.duration) <= 0.1  # one timestep
+
+    def test_a_patch_n_cycles_caps_the_count(self):
+        patch = _pong_patch(scan_params={"n_cycles": 2})
+        ctx = _make_ctx(patches=[patch])
+        _, result = self._visit(ctx)
+
+        assert _kinds(result.blocks) == ["retune", "science"]
+        science = result.blocks[1]
+        assert science.metadata["scan_params"]["n_cycles"] == 2
+        assert science.duration == pytest.approx(2 * _pong_period(patch), abs=1e-6)
+
+    @pytest.mark.parametrize("scan_type", ["pong", "constant_el"])
+    def test_a_refused_subscan_books_neither_block(self, monkeypatch, scan_type):
+        """A subscan the planner refuses leaves no retune; the tick idles."""
+
+        def refuse(block, site):
+            raise PointingError("refused for the test")
+
+        monkeypatch.setattr(phases, "_generate_trajectory_for_block", refuse)
+        if scan_type == "pong":
+            ctx = _make_ctx(patches=[_pong_patch()])
+        else:
+            ctx = _ce_ready_ctx(_deep56_ce_patch())
+        slew, result = self._visit(ctx)
+
+        assert _kinds(result.blocks) == ["idle"]
+        assert result.blocks[0].metadata["reason"] == "unplannable"
+        # The boundary retune was never booked: the cadence tracker is untouched.
+        assert result.state.cal_state.last_retune is None
+        assert result.state.scan_counter == slew.state.scan_counter
+        assert result.blocks[0].t_start.unix == pytest.approx(slew.state.current_time.unix)
+
+    def test_a_refused_pong_retries_with_fewer_periods(self, monkeypatch):
+        """A refusal at ``n`` periods emits the largest plannable count below it."""
+        original = phases._generate_trajectory_for_block
+        asked = []
+
+        def refuse_above_two(block, site):
+            n_cycles = block.metadata["scan_params"].get("n_cycles", 1)
+            asked.append(n_cycles)
+            if n_cycles > 2:
+                raise PointingError("too long for the test")
+            return original(block, site)
+
+        monkeypatch.setattr(phases, "_generate_trajectory_for_block", refuse_above_two)
+        patch = _pong_patch()
+        ctx = _make_ctx(patches=[patch])
+        _, result = self._visit(ctx)
+
+        assert asked == [4, 3, 2]
+        assert _kinds(result.blocks) == ["retune", "science"]
+        science = result.blocks[1]
+        assert science.metadata["scan_params"]["n_cycles"] == 2
+        assert science.duration == pytest.approx(2 * _pong_period(patch), abs=1e-6)
+
+    def test_the_gate_passes_over_a_pong_whose_period_no_longer_fits(self):
+        """A pong is selectable only while one period plus the due retune fits."""
+        long_pong = _pong_patch("Long", width=8.0, height=8.0, priority=1.0)
+        short_pong = _pong_patch("Short", priority=10.0)
+        assert _pong_period(long_pong) == pytest.approx(2644.8)
+
+        roomy = _make_ctx(patches=[long_pong, short_pong])
+        result = PatchSelectionPhase().run(_initial_state(roomy), roomy)
+        assert result.selection is not None
+        assert result.selection.name == "Long"
+
+        # 2700 s left: the 2644.8 s period plus the due 300 s retune does not fit.
+        tight = _make_ctx(patches=[long_pong, short_pong], end_time="2026-06-15T02:45:00")
+        result = PatchSelectionPhase().run(_initial_state(tight), tight)
+        assert result.selection is not None
+        assert result.selection.name == "Short"
+
+        # Alone, the long pong is not selected and the tick idles in place.
+        alone = _make_ctx(patches=[long_pong], end_time="2026-06-15T02:45:00")
+        result = PatchSelectionPhase().run(_initial_state(alone), alone)
+        assert result.selection is None
+        assert _kinds(result.blocks) == ["idle"]
+
+
 class TestSchedulerComposition:
     """``Scheduler(ctx).run()`` matches ``generate_timeline`` and tiles its window."""
 
@@ -442,8 +563,10 @@ class TestSchedulerComposition:
 
         ce_patch = _deep56_ce_patch()
         site = get_fyst_site()
-        start = "2026-06-15T02:00:00"
-        end = "2026-06-15T06:00:00"
+        # A window that reaches selection, the slew and science (the pass
+        # opens ~08:02), not only calibrations and idle ticks.
+        start = "2026-06-15T07:30:00"
+        end = "2026-06-15T09:30:00"
 
         ctx = SchedulerContext.build(
             patches=[ce_patch],
@@ -491,6 +614,7 @@ class TestSchedulerComposition:
         assert last.t_stop.unix == pytest.approx(timeline.end_time.unix, abs=0.01)
         assert last.block_type == BlockType.IDLE
         assert last.metadata["reason"] == "window_closed"
+        assert last.duration == pytest.approx(57.0, abs=0.01)
         accounted = (
             timeline.total_science_time
             + timeline.total_calibration_time
@@ -740,19 +864,14 @@ class TestRetuneElevation:
     def test_retune_uses_pinned_elevation(self):
         ce_patch = _deep56_ce_patch()  # pins elevation=50.0
         overhead = OverheadModel()
-        start = Time("2026-06-15T02:00:00", scale="utc")
+        # Anchored where Deep56's pass is plannable, so the subscan is emitted.
+        ctx = _ce_ready_ctx(ce_patch, overhead_model=overhead)
         window = overhead.min_scan_duration + overhead.retune_duration + 1.0
-        ctx = _make_ctx(
-            patches=[ce_patch],
-            start_time=start.isot,
-            end_time=(start + TimeDelta(window, format="sec")).isot,
-            overhead_model=overhead,
-        )
         state = _initial_state(ctx)
 
         # best_el deliberately differs from the pinned elevation so the
         # test discriminates: a retune stamped at best_el would fail here.
-        state, blocks = ScienceScanPhase._emit_subscans_with_retunes(
+        state, blocks, _ = ScienceScanPhase._emit_subscans_with_retunes(
             state=state,
             ctx=ctx,
             best_patch=ce_patch,
@@ -762,383 +881,14 @@ class TestRetuneElevation:
             rising=True,
             az_start_sci=100.0,
             az_end_sci=140.0,
-            deadline=ctx.end_time,
-            t0_scan=None,
+            deadline=ctx.start_time + TimeDelta(window, format="sec"),
+            t0_scan=ctx.start_time.isot,
         )
         retunes = [b for b in blocks if str(b.scan_type) == "retune"]
         science = [b for b in blocks if str(b.block_type) == "science"]
         assert retunes and science
         assert retunes[0].elevation == ce_patch.elevation
         assert science[0].elevation == ce_patch.elevation
-
-
-def _sky_band_blocker(lo: float, hi: float, until: Time | None = None):
-    """Build a point predicate that is unsafe inside a sky-azimuth band.
-
-    The band is open, in degrees on the sky (any encoder wrap maps into
-    it); with ``until`` the band clears at that time, so a refusal can be
-    retried against a Sun that has moved on.
-    """
-
-    def predicate(az, el, t):
-        if until is not None and t >= until:
-            return True
-        return not (lo < float(az) % 360.0 < hi)
-
-    return predicate
-
-
-class TestSlewTransition:
-    """The slew is Sun-checked; a refusal idles the tick instead of raising."""
-
-    def _pong_patch(self, **overrides):
-        params = dict(
-            name="field",
-            ra_center=24.0,
-            dec_center=-32.0,
-            width=10.0,
-            height=10.0,
-            scan_type="pong",
-            velocity=1.0,
-        )
-        params.update(overrides)
-        return ObservingPatch(**params)
-
-    def test_blocked_path_idles_with_the_reason(self):
-        """A blocked direct path emits one idle tick, labelled, at the unmoved pose."""
-        patch = self._pong_patch()
-        # Sky azimuth 115 has a single encoder image, so the blocked band
-        # between the bootstrap pose (180) and the goal leaves no wrap.
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(140.0, 160.0))
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        assert result.skip_to_next_iter is True
-        assert result.stop is False
-        assert result.selection is None
-        (block,) = result.blocks
-        assert str(block.block_type) == "idle"
-        assert block.metadata["reason"] == "sun_path"
-        assert block.duration == pytest.approx(ctx.time_step)
-        assert block.az_start == state.current_az and block.elevation == state.current_el
-        assert result.state.current_az == state.current_az
-        assert result.state.current_time.unix == pytest.approx(
-            state.current_time.unix + ctx.time_step
-        )
-
-    def test_sun_blocked_goal_idles_as_sun_point(self):
-        """A goal inside the zone in every wrap is refused as ``sun_point``."""
-        patch = self._pong_patch()
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(100.0, 130.0))
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        assert result.blocks[0].metadata["reason"] == "sun_point"
-        assert result.skip_to_next_iter is True
-
-    def test_selection_idle_carries_no_reason(self):
-        """The nothing-observable idle keeps its bare metadata."""
-        ctx = _make_ctx(patches=[])
-        state = _initial_state(ctx)
-
-        result = PatchSelectionPhase().run(state, ctx)
-
-        assert result.blocks[0].metadata == {}
-
-    def test_far_wrap_carries_the_science_frame(self):
-        """When only the far wrap has a clear path, best_az follows it.
-
-        Sky azimuth 200 has encoder images 200 and -160. The band blocks
-        the short path from 180 to 200 but not the long way round, so the
-        transition lands on -160 and the science range downstream must be
-        derived on that wrap, not a full turn away from the telescope.
-        """
-        patch = self._pong_patch()
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(185.0, 195.0))
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=200.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        (block,) = result.blocks
-        assert str(block.block_type) == "slew"
-        assert block.az_end == pytest.approx(-160.0)
-        assert result.state.current_az == pytest.approx(-160.0)
-        assert result.best_az == pytest.approx(-160.0)
-        lo, hi = _compute_az_range(patch, result.best_az, result.best_el, ctx.site)
-        assert lo <= result.state.current_az <= hi
-        # The long way round is priced as such.
-        assert block.duration > 100.0
-
-    def test_explicit_window_cannot_follow_the_far_wrap(self):
-        """An explicit window pins the range, so a far-wrap-only slew idles."""
-        patch = self._pong_patch(scan_params={"az_min": 200.0, "az_max": 220.0})
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(185.0, 195.0))
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=210.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        assert result.skip_to_next_iter is True
-        assert result.blocks[0].metadata["reason"] == "no_wrap"
-        assert result.state.current_az == state.current_az
-
-    def test_scheduler_retries_once_the_path_clears(self):
-        """The loop idles on a refusal and slews once the Sun has moved.
-
-        The band between the bootstrap pose and the field clears at a
-        fixed time; every refusal must precede it, each labelled and at
-        the unmoved pose, and the first slew and the science must follow.
-        """
-        from fyst_trajectories.overhead import generate_timeline
-
-        patch = self._pong_patch()
-        clear_at = Time("2026-06-15T08:35:00", scale="utc")
-        timeline = generate_timeline(
-            patches=[patch],
-            site=get_fyst_site(),
-            start_time="2026-06-15T07:50:00",
-            end_time="2026-06-15T09:30:00",
-            sun_safe=_sky_band_blocker(140.0, 160.0, until=clear_at),
-        )
-
-        refused = [b for b in timeline.blocks if b.metadata.get("reason") == "sun_path"]
-        assert len(refused) >= 2
-        assert all(b.t_start.unix < clear_at.unix for b in refused)
-        assert all(b.az_start == 180.0 and str(b.block_type) == "idle" for b in refused)
-        slews = [b for b in timeline.blocks if str(b.block_type) == "slew"]
-        science = [b for b in timeline.blocks if str(b.block_type) == "science"]
-        assert slews and science
-        assert slews[0].t_start.unix >= clear_at.unix
-        assert science[0].t_start.unix > slews[0].t_start.unix
-        assert timeline.validate() == []
-
-
-class TestSunEscape:
-    """A pose the zone has overtaken is moved out before the telescope idles or slews."""
-
-    def _pong_patch(self):
-        return ObservingPatch(
-            name="field",
-            ra_center=24.0,
-            dec_center=-32.0,
-            width=10.0,
-            height=10.0,
-            scan_type="pong",
-            velocity=1.0,
-        )
-
-    def test_overtaken_pose_escapes_before_the_slew(self):
-        """The bootstrap pose is inside the zone: the slew phase escapes and restarts."""
-        patch = self._pong_patch()
-        ctx = _make_ctx(patches=[patch], sun_safe=pose_blocker(180.0, 50.0))
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        (block,) = result.blocks
-        assert str(block.block_type) == "slew" and block.patch_name == "sun_escape"
-        assert block.az_start == 180.0
-        assert result.skip_to_next_iter is True and result.selection is None
-        assert (result.state.current_az, result.state.current_el) == (block.az_end, block.elevation)
-        moved_az = abs(result.state.current_az - 180.0) >= 5.0
-        moved_el = abs(result.state.current_el - 50.0) >= 5.0
-        assert moved_az or moved_el
-        arrival = state.current_time.unix + block.duration
-        assert result.state.current_time.unix == pytest.approx(arrival)
-
-    def test_idle_path_escapes_instead_of_parking_in_the_zone(self):
-        """With nothing observable, the selection idle still moves an overtaken pose."""
-        ctx = _make_ctx(patches=[], sun_safe=pose_blocker(180.0, 50.0))
-        state = _initial_state(ctx)
-
-        result = PatchSelectionPhase().run(state, ctx)
-
-        (block,) = result.blocks
-        assert block.patch_name == "sun_escape"
-        assert result.skip_to_next_iter is True
-        # The next tick idles at the escape pose, with no reason label.
-        again = PatchSelectionPhase().run(result.state, ctx)
-        assert str(again.blocks[0].block_type) == "idle"
-        assert again.blocks[0].az_start == result.state.current_az
-        assert again.blocks[0].metadata == {}
-
-    def test_escape_searches_down_to_the_schedule_elevation_floor(self):
-        """The escape stops at the observing floor, not at the mount limit.
-
-        Only sky at or below 35 deg is clear here, and the schedule's
-        elevation constraint floors it at 40, so there is nowhere to go
-        and the tick idles labelled ``no_escape``. Searching down to the
-        mount limit (20 deg at FYST) instead would park the telescope
-        5 deg below the sky the selection phase is willing to use.
-        """
-        ctx = _make_ctx(
-            patches=[],
-            sun_safe=lambda az, el, t: float(el) <= 35.0,
-            constraints=[ElevationConstraint(el_min=40.0, el_max=90.0)],
-        )
-        assert ctx.el_floor == 40.0
-        assert ctx.slew_safe is not None
-        state = _initial_state(ctx)
-
-        result = PatchSelectionPhase().run(state, ctx)
-
-        (block,) = result.blocks
-        assert str(block.block_type) == "idle"
-        assert block.metadata["reason"] == "no_escape"
-        assert (result.state.current_az, result.state.current_el) == (
-            state.current_az,
-            state.current_el,
-        )
-
-    def test_trapped_pose_idles_with_no_escape(self):
-        ctx = _make_ctx(patches=[], sun_safe=lambda az, el, t: False)
-        state = _initial_state(ctx)
-
-        result = PatchSelectionPhase().run(state, ctx)
-
-        (block,) = result.blocks
-        assert str(block.block_type) == "idle"
-        assert block.metadata["reason"] == "no_escape"
-        assert result.state.current_az == state.current_az
-
-    def test_escape_past_the_window_end_stops_the_loop(self):
-        patch = self._pong_patch()
-        ctx = _make_ctx(
-            patches=[patch],
-            start_time="2026-06-15T02:00:00",
-            end_time="2026-06-15T02:00:10",
-            sun_safe=pose_blocker(180.0, 50.0),
-        )
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        assert result.stop is True and result.blocks == []
-
-    def test_escape_past_the_window_end_on_the_idle_path_stops_cleanly(self):
-        """The idle path's escape can end past the window; the loop must stop, not raise.
-
-        The pose is safe when the loop-top check runs, the opening
-        calibrations then consume the window down to a sliver, and the
-        selection idle finds the pose overtaken with too little time for
-        the escape. That result carries ``stop`` and no selection, which
-        the loop must not hand on to the slew phase.
-        """
-        from fyst_trajectories.overhead import generate_timeline
-
-        start = Time("2026-06-15T02:00:00", scale="utc")
-        overtaken_at = start + TimeDelta(1000.0, format="sec")
-
-        def sun_safe(az, el, t):
-            if t < overtaken_at:
-                return True
-            return not (abs(float(az) - 180.0) < 5.0 and abs(float(el) - 50.0) < 5.0)
-
-        # The four opening calibrations take 1080 s; 20 s then remain,
-        # less than the escape's 35 s.
-        timeline = generate_timeline(
-            patches=[],
-            site=get_fyst_site(),
-            start_time=start.isot,
-            end_time=(start + TimeDelta(1100.0, format="sec")).isot,
-            sun_safe=sun_safe,
-        )
-
-        assert timeline.blocks
-        assert all(b.t_stop.unix <= timeline.end_time.unix + 1e-6 for b in timeline.blocks)
-        assert not any(b.patch_name == "sun_escape" for b in timeline.blocks)
-        assert timeline.validate() == []
-
-    def test_slew_is_refused_when_the_goal_will_not_hold_for_a_tick(self):
-        """A pose the next tick would escape from is not slewed to at all.
-
-        Without the hold the wrap choice sees only the slew instant, so
-        the loop would command a pose, find it overtaken one tick later
-        and escape again: three round trips and no science. The slew
-        phase asks for one scheduler tick of dwell instead, and refuses.
-        """
-        patch = self._pong_patch()
-        start = Time("2026-06-15T02:00:00", scale="utc")
-        closes_at = start + TimeDelta(120.0, format="sec")
-
-        def sun_safe(az, el, t):
-            # The parked pose stays clear; the science pose closes after
-            # two minutes, well inside the 300 s tick.
-            if abs(float(az) - 180.0) < 5.0 and abs(float(el) - 50.0) < 5.0:
-                return True
-            return bool(t < closes_at)
-
-        ctx = _make_ctx(patches=[patch], sun_safe=sun_safe, time_step=300.0)
-        state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
-
-        result = SlewPhase().run(state, ctx, selection=sel)
-
-        (block,) = result.blocks
-        assert str(block.block_type) == "idle"
-        assert block.metadata["reason"] == "sun_point"
-        assert result.skip_to_next_iter is True
-        assert (result.state.current_az, result.state.current_el) == (180.0, 50.0)
-
-    def test_one_pose_and_time_is_searched_once(self, monkeypatch):
-        """The three call sites per tick share one search, and none is dropped.
-
-        The loop top, the idle emitter and the slew phase all have to ask,
-        because the calibration phase can advance the clock inside a tick;
-        the context's memo makes the repeats free instead. On this night
-        every call is a duplicate of the loop top's, so the search count
-        must equal the number of distinct (pose, time) questions.
-        """
-        from fyst_trajectories.overhead import _moves, generate_timeline
-
-        seen = []
-        original = _moves.plan_escape
-
-        def counting(az, el, t, site, **kwargs):
-            seen.append((round(float(az), 6), round(float(el), 6), round(t.unix, 6)))
-            return original(az, el, t, site, **kwargs)
-
-        monkeypatch.setattr(_moves, "plan_escape", counting)
-
-        timeline = generate_timeline(
-            patches=[self._pong_patch()],
-            site=get_fyst_site(),
-            start_time="2026-06-15T02:00:00",
-            end_time="2026-06-15T04:00:00",
-        )
-
-        assert timeline.blocks
-        assert seen  # the check runs at all
-        assert len(seen) == len(set(seen))
-
-    def test_night_escapes_once_then_observes(self):
-        """The loop escapes the overtaken bootstrap pose and the night proceeds normally."""
-        from fyst_trajectories.overhead import generate_timeline
-
-        patch = self._pong_patch()
-        clear_at = Time("2026-06-15T08:35:00", scale="utc")
-        timeline = generate_timeline(
-            patches=[patch],
-            site=get_fyst_site(),
-            start_time="2026-06-15T07:50:00",
-            end_time="2026-06-15T09:30:00",
-            sun_safe=pose_blocker(180.0, 50.0, until=clear_at),
-        )
-
-        escapes = [b for b in timeline.blocks if b.patch_name == "sun_escape"]
-        assert len(escapes) == 1
-        assert escapes[0].t_start.unix == timeline.start_time.unix
-        assert not any(b.metadata.get("reason") for b in timeline.blocks)
-        kinds = [str(b.block_type) for b in timeline.blocks]
-        assert "science" in kinds
-        assert timeline.validate() == []
 
 
 class TestPatchNameUniqueness:
@@ -1172,3 +922,26 @@ class TestPatchNameUniqueness:
         """Two patches differing only in name are accepted."""
         ctx = _make_ctx([_deep56_ce_patch("a"), _deep56_ce_patch("b")])
         assert [p.name for p in ctx.patches] == ["a", "b"]
+
+
+class TestUnpinnedConstantElevation:
+    """A constant-elevation patch must pin its elevation to be scheduled.
+
+    The crossing-pass gate solves at the patch's pinned elevation; an
+    unpinned patch would fall back to the field centre's current elevation,
+    which its leading edge has already crossed, so it would never be selected.
+    """
+
+    def test_build_refuses_an_unpinned_patch(self):
+        """The context refuses to build and names the patch."""
+        patch = ObservingPatch(
+            name="floating",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=40.0,
+            height=10.0,
+            scan_type="constant_el",
+            velocity=1.0,
+        )
+        with pytest.raises(ValueError, match="pinned elevation.*floating"):
+            _make_ctx([patch])

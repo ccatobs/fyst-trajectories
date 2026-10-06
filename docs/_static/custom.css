@@ -1,0 +1,6 @@
+/* The theme keeps every table cell on one line, so a wide table scrolls
+   sideways inside the text column. Let the cells wrap instead. */
+.wy-table-responsive table td,
+.wy-table-responsive table th {
+    white-space: normal;
+}

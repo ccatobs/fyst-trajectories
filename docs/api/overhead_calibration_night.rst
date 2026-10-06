@@ -42,9 +42,10 @@ State and Context
    :members:
 
 .. py:data:: fyst_trajectories.overhead.BOOTSTRAP_POSE
+   :value: (180.0, 50.0)
 
-   The ``(az, el)`` a night starts from when none is given, matching the
-   pose the offline scheduler bootstraps from.
+   The ``(az, el)`` in degrees a night starts from when none is given,
+   matching the pose the offline scheduler bootstraps from.
 
 Policies and Tables
 -------------------

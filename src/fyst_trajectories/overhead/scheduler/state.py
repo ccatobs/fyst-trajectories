@@ -17,17 +17,22 @@ from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
-from .helpers import _default_constraints
+from ..utils import _utc_instant
+from .helpers import _default_constraints, _pong_period
 
 if TYPE_CHECKING:
     from ...coordinates import Coordinates
-    from ...dispatch import SlewSafePredicate, SunSafePredicate
     from ...site import Site
+    from ...sun_protocols import SlewSafePredicate, SunSafePredicate
     from ..calibration_state import CalibrationState
     from ..constraints import Constraint
     from ..models import CalibrationPolicy, ObservingPatch, OverheadModel
 
 __all__ = ["SchedulerContext", "SchedulerState"]
+
+#: The pose a schedule starts from when none is given: roughly the southern
+#: horizon at mid elevation. The calibration-night planner starts there too.
+BOOTSTRAP_POSE: tuple[float, float] = (180.0, 50.0)
 
 
 @dataclass(frozen=True)
@@ -37,7 +42,10 @@ class SchedulerState:
     Attributes
     ----------
     current_time : Time
-        UTC timestamp of the scheduler's current position.
+        UTC timestamp of the scheduler's current position, held as a UTC
+        ``Time`` without a location and with astropy's default
+        ``precision`` and ``out_subfmt`` (one in another scale is converted
+        to UTC).
     current_az : float
         Telescope azimuth (deg) at ``current_time``.
     current_el : float
@@ -56,6 +64,9 @@ class SchedulerState:
     cal_state: CalibrationState
     scan_counter: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "current_time", _utc_instant(self.current_time))
+
     @classmethod
     def initial(cls, start_time: Time, cal_state: CalibrationState) -> SchedulerState:
         """Build the scheduler's initial state.
@@ -72,8 +83,8 @@ class SchedulerState:
         """
         return cls(
             current_time=start_time,
-            current_az=180.0,
-            current_el=50.0,
+            current_az=BOOTSTRAP_POSE[0],
+            current_el=BOOTSTRAP_POSE[1],
             cal_state=cal_state,
             scan_counter=0,
         )
@@ -110,7 +121,9 @@ class SchedulerContext:
     constraints : list of Constraint
         Patch-selection constraints, scored per candidate each tick.
     start_time, end_time : Time
-        The timeline window.
+        The timeline window: :meth:`build` holds each as a UTC ``Time``
+        without a location and with astropy's default ``precision`` and
+        ``out_subfmt`` (one in another scale is converted to UTC).
     time_step : float
         Idle-tick step in seconds.
     """
@@ -124,12 +137,13 @@ class SchedulerContext:
     start_time: Time
     end_time: Time
     time_step: float
-    #: Injected sun-safety model (:class:`~fyst_trajectories.dispatch.SunSafePredicate`,
+    #: Injected sun-safety model (:class:`~fyst_trajectories.sun_protocols.SunSafePredicate`,
     #: e.g. from :func:`~fyst_trajectories.sun_models.make_sun_safe`) driving
-    #: the mid-scan duration clips; ``None`` keeps the scalar site radius.
-    #: The Sun *constraint* is bound at construction time (see ``build``).
+    #: the duration clips, the slew and escape checks and the planet-calibration
+    #: planner; ``None`` keeps the scalar site radius. The Sun *constraint* is
+    #: bound at construction time (see ``build``).
     sun_safe: SunSafePredicate | None = None
-    #: Path-level Sun model (:class:`~fyst_trajectories.dispatch.SlewSafePredicate`)
+    #: Path-level Sun model (:class:`~fyst_trajectories.sun_protocols.SlewSafePredicate`)
     #: swept along a slew. Built once in ``build`` from ``sun_safe`` and the
     #: site's axis limits, so the transition and escape planners are handed
     #: one model instead of rebuilding it on every call.
@@ -137,11 +151,11 @@ class SchedulerContext:
     #: Per-run memo of constant-elevation crossing-pass solves, keyed
     #: ``(patch_name, elevation, rising)`` (name, float, bool) with values
     #: ``("ok", t_open, t_close)`` or ``("miss", solved_from)``. Written
-    #: only by the scheduler helper ``helpers._ce_crossing_corridor``; a
+    #: only by the scheduler's crossing-pass solve; a
     #: cache, not state.
     ce_corridors: dict = field(default_factory=dict)
     #: Per-run memo of escape searches, keyed by pose, time, elevation
-    #: floor and settle time (see ``_moves.plan_escape_move``). The loop
+    #: floor and settle time (see :func:`~fyst_trajectories.overhead.plan_escape`). The loop
     #: asks about one pose and time from three places per tick and each
     #: search costs a Sun ephemeris solve; a cache, not state.
     escapes: dict = field(default_factory=dict)
@@ -189,9 +203,14 @@ class SchedulerContext:
         Raises
         ------
         ValueError
-            If two patches share a name. Names identify a patch in the
-            corridor memo and in every emitted block, so they have to be
-            unique across one schedule.
+            If two patches share a name, a constant-elevation patch has no
+            pinned ``elevation``, or a pong patch's pattern period exceeds
+            what one subscan can hold. Names identify a patch in the corridor
+            memo and in every emitted block, so they have to be unique across
+            one schedule. A pong subscan is a whole number of periods inside
+            ``max_scan_duration``, which at ``retune_cadence=0`` also holds
+            the retune booked before every subscan, so a longer period could
+            never be scanned.
         """
         from ...coordinates import Coordinates
         from ..models import CalibrationPolicy, OverheadModel
@@ -207,11 +226,41 @@ class SchedulerContext:
             raise ValueError(
                 f"Patch names must be unique within a schedule; repeated: {duplicates}."
             )
+        unpinned = sorted(
+            p.name for p in patches if p.scan_type == "constant_el" and p.elevation is None
+        )
+        if unpinned:
+            raise ValueError(
+                "constant-elevation patches need a pinned elevation in the offline "
+                "scheduler, whose crossing-pass gate solves at that elevation; "
+                f"unpinned: {unpinned}"
+            )
 
         if overhead_model is None:
             overhead_model = OverheadModel()
         if calibration_policy is None:
             calibration_policy = CalibrationPolicy()
+        # A pong subscan is a whole number of pattern periods inside
+        # max_scan_duration; at cadence 0 the retune booked before every
+        # subscan shares that budget.
+        boundary_retune = (
+            overhead_model.retune_duration if calibration_policy.retune_cadence == 0.0 else 0.0
+        )
+        room = overhead_model.max_scan_duration - boundary_retune
+        periods = {p.name: _pong_period(p) for p in patches if p.scan_type == "pong"}
+        too_long = sorted(
+            f"{name} ({period:.1f} s)" for name, period in periods.items() if period > room
+        )
+        if too_long:
+            why = (
+                "max_scan_duration less the retune a zero retune_cadence books before every subscan"
+                if boundary_retune
+                else "max_scan_duration"
+            )
+            raise ValueError(
+                f"pong patches need a pattern period that fits the {room:.1f} s one subscan "
+                f"can hold ({why}); too long: {too_long}"
+            )
         if constraints is None:
             constraints = _default_constraints(site, sun_safe=sun_safe)
         if slew_safe is None:
@@ -226,8 +275,8 @@ class SchedulerContext:
             overhead_model=overhead_model,
             calibration_policy=calibration_policy,
             constraints=constraints,
-            start_time=start_time,
-            end_time=end_time,
+            start_time=_utc_instant(start_time),
+            end_time=_utc_instant(end_time),
             time_step=time_step,
             sun_safe=sun_safe,
             slew_safe=slew_safe,

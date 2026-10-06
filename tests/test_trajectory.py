@@ -1,23 +1,35 @@
-"""Tests for the Trajectory container class."""
+"""Tests for the Trajectory container and its export and validation helpers."""
 
+import ast
+import copy
 import dataclasses
 import io
-import warnings
+import json
+import pickle
+from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 from astropy.time import Time
 
+import fyst_trajectories
+import fyst_trajectories.trajectory
 from fyst_trajectories import (
     SCAN_FLAG_SCIENCE,
     SCAN_FLAG_TURNAROUND,
     SCAN_FLAG_UNCLASSIFIED,
     Trajectory,
+    TrajectoryBuilder,
     get_fyst_site,
     print_trajectory,
 )
-from fyst_trajectories.exceptions import AzimuthBoundsError, PointingWarning
-from fyst_trajectories.patterns import TrajectoryMetadata
+from fyst_trajectories.exceptions import (
+    AzimuthBoundsError,
+    PointingWarning,
+    VelocityLimitWarning,
+)
+from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryMetadata
 from fyst_trajectories.trajectory_utils import (
     _format_trajectory,
     get_absolute_times,
@@ -231,6 +243,24 @@ class TestTrajectory:
         traj = self._fine_traj(dt=0.05)
         assert len(to_path_format(traj)) == 3
 
+    def test_builder_grid_at_50ms_is_refused_with_its_true_interval(self):
+        """A builder grid at ``timestep=0.05`` carries round-off just below 50 ms.
+
+        Go TCS refuses it too, so the export does; the message prints the
+        interval at full precision rather than rounding it back to 0.05.
+        """
+        config = ConstantElScanConfig(
+            timestep=0.05,
+            az_start=100.0,
+            az_stop=110.0,
+            elevation=45.0,
+            az_speed=1.0,
+            az_accel=1.0,
+        )
+        traj = TrajectoryBuilder(get_fyst_site()).with_config(config).duration(600.0).build()
+        with pytest.raises(ValueError, match=r"interval 0\.04999999\d* s is below"):
+            to_path_format(traj)
+
     def _flagged_traj(self, scan_flag, start_time=True):
         """Build a trajectory with an explicit scan_flag pattern for TrackPoint tests."""
         n = len(scan_flag)
@@ -380,11 +410,8 @@ class TestTrajectory:
             az_vel=np.full(100, 10.0),
             el_vel=np.zeros(100),
         )
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with pytest.warns(VelocityLimitWarning, match="azimuth velocity"):
             validate_trajectory(traj, site)
-            vel_warnings = [x for x in w if "velocity" in str(x.message).lower()]
-            assert len(vel_warnings) >= 1
 
     def test_trajectory_is_frozen(self):
         """Trajectory is immutable: rebinding raises, replace works, dtype coerces."""
@@ -398,10 +425,11 @@ class TestTrajectory:
 
         with pytest.raises(dataclasses.FrozenInstanceError):
             traj.az = np.zeros(traj.n_points)
+        start = Time("2026-03-15T04:00:00", scale="utc")
         with pytest.raises(dataclasses.FrozenInstanceError):
-            traj.start_time = Time("2026-03-15T04:00:00", scale="utc")
+            traj.start_time = start
 
-        assert dataclasses.replace(traj, coordsys="radec").coordsys == "radec"
+        assert dataclasses.replace(traj, start_time=start).start_time is start
 
         flagged = Trajectory(
             times=np.array([0, 1, 2], dtype=float),
@@ -412,6 +440,49 @@ class TestTrajectory:
             scan_flag=np.array([1, 0, 2]),
         )
         assert flagged.scan_flag.dtype == np.int8
+
+    def test_trajectory_field_order(self):
+        """The field order fixes which field a positional argument binds to."""
+        assert [f.name for f in dataclasses.fields(Trajectory)] == [
+            "times",
+            "az",
+            "el",
+            "az_vel",
+            "el_vel",
+            "start_time",
+            "metadata",
+            "scan_flag",
+            "retune_events",
+        ]
+
+    def test_trajectory_compares_and_hashes_by_identity(self):
+        """Equality and hashing are by identity, on every interpreter.
+
+        The generated ``==`` compared the arrays: it raised ``ValueError`` for
+        two separately built instances, returned ``True`` for a replace copy
+        on Python 3.10 to 3.12 and raised on 3.13, and ``hash`` raised.
+        """
+        traj = Trajectory(
+            times=np.array([0, 1, 2], dtype=float),
+            az=np.array([100, 101, 102], dtype=float),
+            el=np.full(3, 45.0),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+        )
+        twin = Trajectory(
+            times=traj.times,
+            az=traj.az,
+            el=traj.el,
+            az_vel=traj.az_vel,
+            el_vel=traj.el_vel,
+        )
+
+        assert isinstance(hash(traj), int)
+        assert traj in {traj}
+        assert traj == traj
+        assert traj != dataclasses.replace(traj)
+        assert traj != twin
+        assert len({traj, twin}) == 2
 
 
 class TestAccelerationJerkProperties:
@@ -466,21 +537,53 @@ class TestAccelerationJerkProperties:
         np.testing.assert_allclose(traj.az_jerk, 0.0, atol=1e-10)
         np.testing.assert_allclose(traj.el_jerk, 0.0, atol=1e-10)
 
-    def test_jerk_is_derivative_of_acceleration(self):
+    def test_jerk_matches_the_analytic_value(self):
         # Use a trajectory where acceleration varies (quadratic velocity)
         times = np.linspace(0, 5, 501)
         az_vel = 0.1 * times**2  # accel = 0.2*t, jerk = 0.2
-        el_vel = 0.05 * times**2
+        el_vel = 0.05 * times**2  # accel = 0.1*t, jerk = 0.1
         az = np.cumsum(az_vel) * (times[1] - times[0])
         el = 45.0 + np.cumsum(el_vel) * (times[1] - times[0])
         traj = Trajectory(times=times, az=az, el=el, az_vel=az_vel, el_vel=el_vel)
 
-        # Compute jerk two ways: via property and manually
-        jerk_via_property = traj.az_jerk
-        accel_manual = np.gradient(traj.az_vel, traj.times)
-        jerk_manual = np.gradient(accel_manual, traj.times)
+        # np.gradient is second-order in the interior and first-order at the two
+        # edge samples, so the analytic value holds away from the edges.
+        np.testing.assert_allclose(traj.az_jerk[2:-2], 0.2, atol=1e-10)
+        np.testing.assert_allclose(traj.el_jerk[2:-2], 0.1, atol=1e-10)
 
-        np.testing.assert_allclose(jerk_via_property, jerk_manual, atol=1e-10)
+    def test_single_sample_derivatives_are_zeros(self):
+        """A one-sample trajectory has no time step, so its derivatives are zeros."""
+        traj = Trajectory(
+            times=np.array([5.0]),
+            az=np.array([10.0]),
+            el=np.array([40.0]),
+            az_vel=np.array([1.0]),
+            el_vel=np.array([0.5]),
+        )
+        for name in ("az_accel", "el_accel", "az_jerk", "el_jerk"):
+            value = getattr(traj, name)
+            assert value.shape == (1,), name
+            np.testing.assert_array_equal(value, np.zeros(1), err_msg=name)
+
+    @pytest.mark.parametrize("n", [2, 3, 101])
+    def test_multi_sample_derivatives_are_np_gradient(self, n):
+        """Two or more samples give exactly ``np.gradient`` of the velocities."""
+        times = np.linspace(0.0, 10.0, n) ** 1.5
+        az_vel = np.sin(times)
+        el_vel = 0.1 * times**2
+        traj = Trajectory(
+            times=times,
+            az=100.0 + az_vel,
+            el=45.0 + el_vel,
+            az_vel=az_vel,
+            el_vel=el_vel,
+        )
+        az_accel = np.gradient(az_vel, times)
+        el_accel = np.gradient(el_vel, times)
+        np.testing.assert_array_equal(traj.az_accel, az_accel)
+        np.testing.assert_array_equal(traj.el_accel, el_accel)
+        np.testing.assert_array_equal(traj.az_jerk, np.gradient(az_accel, times))
+        np.testing.assert_array_equal(traj.el_jerk, np.gradient(el_accel, times))
 
 
 class TestFormatTrajectory:
@@ -608,6 +711,78 @@ class TestScanFlagValidation:
         np.testing.assert_array_equal(traj.science_mask, expected)
 
 
+class TestArrayCoercion:
+    """The five arrays are stored one-dimensional float64; scan_flag one-dimensional int8."""
+
+    _FIELDS = ("times", "az", "el", "az_vel", "el_vel")
+
+    @staticmethod
+    def _kwargs(n=3):
+        return {
+            "times": np.arange(n, dtype=np.float64),
+            "az": np.linspace(100.0, 102.0, n),
+            "el": np.full(n, 45.0),
+            "az_vel": np.ones(n),
+            "el_vel": np.zeros(n),
+        }
+
+    def test_list_input_is_stored_as_float64(self):
+        traj = Trajectory(
+            times=[0, 1, 2],
+            az=[100, 101, 102],
+            el=[45.0, 45.0, 45.0],
+            az_vel=[1, 1, 1],
+            el_vel=[0, 0, 0],
+        )
+        assert repr(traj) == (
+            "Trajectory(n_points=3, duration=2.0s, az=[100.0, 102.0]deg, el=[45.0, 45.0]deg)"
+        )
+        for name in self._FIELDS:
+            value = getattr(traj, name)
+            assert isinstance(value, np.ndarray), name
+            assert value.dtype == np.float64, name
+
+    def test_integer_input_is_stored_as_float64_with_equal_values(self):
+        kwargs = {name: np.asarray(value, dtype=np.int64) for name, value in self._kwargs().items()}
+        traj = Trajectory(**kwargs)
+        for name in self._FIELDS:
+            value = getattr(traj, name)
+            assert value.dtype == np.float64, name
+            np.testing.assert_array_equal(value, kwargs[name], err_msg=name)
+        # Integer storage would wrap under arithmetic; float storage does not.
+        small = Trajectory(**{name: np.asarray(v, dtype=np.int8) for name, v in kwargs.items()})
+        np.testing.assert_array_equal(small.az + 100, [200.0, 201.0, 202.0])
+
+    def test_float64_input_is_not_copied(self):
+        kwargs = self._kwargs()
+        traj = Trajectory(**kwargs)
+        for name in self._FIELDS:
+            assert getattr(traj, name) is kwargs[name], name
+
+    @pytest.mark.parametrize("name", _FIELDS)
+    def test_two_dimensional_array_raises_naming_the_field(self, name):
+        kwargs = self._kwargs(2)
+        kwargs[name] = kwargs[name][:, None] + np.array([0.0, 0.5])  # shape (2, 2), rows increasing
+        with pytest.raises(ValueError, match=rf"'{name}' must be one-dimensional, got shape"):
+            Trajectory(**kwargs)
+
+    def test_zero_dimensional_times_raises(self):
+        kwargs = self._kwargs(1)
+        kwargs["times"] = np.float64(0.0)
+        with pytest.raises(ValueError, match="'times' must be one-dimensional, got shape"):
+            Trajectory(**kwargs)
+
+    def test_list_scan_flag_is_stored_as_int8(self):
+        traj = Trajectory(**self._kwargs(), scan_flag=[1, 2, 1])
+        assert isinstance(traj.scan_flag, np.ndarray)
+        assert traj.scan_flag.dtype == np.int8
+        np.testing.assert_array_equal(traj.scan_flag, [1, 2, 1])
+
+    def test_two_dimensional_scan_flag_raises(self):
+        with pytest.raises(ValueError, match="'scan_flag' must be one-dimensional, got shape"):
+            Trajectory(**self._kwargs(), scan_flag=np.ones((3, 2), dtype=np.int8))
+
+
 class TestNonFiniteRejection:
     """Trajectory rejects NaN/Inf in its coordinate arrays at construction."""
 
@@ -674,3 +849,107 @@ class TestMonotonicTimes:
         assert traj.n_points == 4
         assert np.all(np.isfinite(traj.az_accel))
         assert np.all(np.isfinite(traj.az_jerk))
+
+
+class TestTrajectoryMetadataHome:
+    """``TrajectoryMetadata`` is defined beside ``Trajectory``, in the container module.
+
+    The container module imports nothing from the package but the private read-only mapping,
+    whose module imports nothing at all, so the class its ``metadata`` field names is defined
+    there and the patterns import it from below.
+    """
+
+    def test_import_paths_return_one_class(self):
+        cls = fyst_trajectories.trajectory.TrajectoryMetadata
+        assert fyst_trajectories.TrajectoryMetadata is cls
+        assert fyst_trajectories.patterns.TrajectoryMetadata is cls
+        assert cls.__module__ == "fyst_trajectories.trajectory"
+
+    def test_trajectory_module_imports_only_the_readonly_leaf(self):
+        source = Path(fyst_trajectories.trajectory.__file__).read_text(encoding="utf-8")
+        intra = [
+            ast.unparse(node)
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ImportFrom)
+            and (node.level > 0 or (node.module or "").startswith("fyst_trajectories"))
+            or isinstance(node, ast.Import)
+            and any(alias.name.startswith("fyst_trajectories") for alias in node.names)
+        ]
+        # tests/test_readonly.py asserts that ``_readonly`` imports nothing.
+        assert intra == ["from ._readonly import ReadOnlyDict"]
+
+
+class TestPatternParamsReadOnly:
+    """``pattern_params`` is a read-only ``dict`` that a trajectory and its copies share."""
+
+    @staticmethod
+    def _trajectory():
+        metadata = TrajectoryMetadata(
+            pattern_type="test_pattern",
+            pattern_params={"width": 2.0, "height": 1.0},
+            center_ra=180.0,
+            center_dec=-30.0,
+        )
+        return Trajectory(
+            times=np.array([0.0, 1.0, 2.0]),
+            az=np.zeros(3),
+            el=np.full(3, 45.0),
+            az_vel=np.zeros(3),
+            el_vel=np.zeros(3),
+            metadata=metadata,
+        )
+
+    def test_item_assignment_raises(self):
+        traj = self._trajectory()
+        with pytest.raises(TypeError, match="read-only"):
+            traj.pattern_params["width"] = 9.0
+        with pytest.raises(TypeError, match="read-only"):
+            traj.metadata.pattern_params.update(width=9.0)
+        assert traj.pattern_params == {"width": 2.0, "height": 1.0}
+
+    def test_construction_copies_the_callers_dict(self):
+        params = {"width": 2.0}
+        metadata = TrajectoryMetadata(pattern_type="test_pattern", pattern_params=params)
+        params["width"] = 9.0
+        assert metadata.pattern_params == {"width": 2.0}
+
+    def test_metadata_is_hashable(self):
+        traj = self._trajectory()
+        same = dataclasses.replace(traj.metadata)
+        assert same == traj.metadata
+        assert hash(same) == hash(traj.metadata)
+
+    def test_pickle_deepcopy_asdict_and_json(self):
+        traj = self._trajectory()
+        restored = pickle.loads(pickle.dumps(traj))
+        assert restored.metadata == traj.metadata
+        assert copy.deepcopy(traj.metadata) == traj.metadata
+        assert dataclasses.asdict(traj.metadata)["pattern_params"] == {"width": 2.0, "height": 1.0}
+        assert json.loads(json.dumps(traj.pattern_params)) == {"width": 2.0, "height": 1.0}
+        assert json.loads(json.dumps(dataclasses.asdict(traj.metadata)))["pattern_type"] == (
+            "test_pattern"
+        )
+
+    def test_yaml_after_dict(self):
+        traj = self._trajectory()
+        dumped = yaml.safe_dump(dict(traj.pattern_params))
+        assert yaml.safe_load(dumped) == {"width": 2.0, "height": 1.0}
+
+    def test_replace_copy_shares_the_metadata_and_neither_edits_it(self):
+        traj = self._trajectory()
+        copy_ = dataclasses.replace(traj, az=traj.az + 1.0)
+        assert copy_.metadata is traj.metadata
+        for owner in (traj, copy_):
+            with pytest.raises(TypeError, match="read-only"):
+                owner.pattern_params["width"] = 9.0
+        assert copy_.pattern_params == {"width": 2.0, "height": 1.0}
+
+    def test_edited_copy_through_replace(self):
+        traj = self._trajectory()
+        edited = dataclasses.replace(
+            traj.metadata, pattern_params={**traj.pattern_params, "width": 3.0}
+        )
+        assert edited.pattern_params == {"width": 3.0, "height": 1.0}
+        assert traj.pattern_params == {"width": 2.0, "height": 1.0}
+        with pytest.raises(TypeError, match="read-only"):
+            edited.pattern_params["width"] = 9.0

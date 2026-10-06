@@ -7,6 +7,13 @@ Instead of every project manually setting up astropy with FYST's
 coordinates and re-implementing the same transformations, this library
 provides a pre-configured, FYST-aware toolkit.
 
+The package root re-exports every public name of the library modules it
+draws from, except the sun-avoidance models (``fyst_trajectories.sun_models``),
+the seam's extension protocols (``fyst_trajectories.sun_protocols``), the
+planning footprint transforms and the visualization functions, which are
+imported from their own modules; the offline simulator is imported from
+``fyst_trajectories.overhead``.
+
 Examples
 --------
 Coordinate transformation (vacuum; refraction is applied downstream):
@@ -51,7 +58,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -62,14 +69,15 @@ from .coordinates import (
 )
 from .dispatch import (
     EncoderSolution,
-    SlewSafePredicate,
-    SunSafePredicate,
     choose_encoder_solution,
+    estimate_slew_time,
 )
 from .exceptions import (
     AccelerationLimitWarning,
     AzimuthBoundsError,
+    DwellExceedsCrossingError,
     ElevationBoundsError,
+    EncoderSolutionCause,
     EncoderSolutionError,
     OffsetInversionError,
     PointingError,
@@ -153,6 +161,7 @@ from .planning import (
     plan_daisy_altaz_scan,
     plan_daisy_scan,
     plan_pong_altaz_scan,
+    plan_pong_rotation_scans,
     plan_pong_rotation_sequence,
     plan_pong_scan,
     plan_source_ces,
@@ -176,6 +185,7 @@ from .primecam import (
     resolve_module_tag,
     resolve_offset,
 )
+from .retune import DEFAULT_RETUNE_DURATION_SEC, inject_retune, sample_retune_events
 from .site import (
     FYST_AZ_MAX,
     FYST_AZ_MAX_ACCELERATION,
@@ -200,6 +210,7 @@ from .site import (
     TelescopeLimits,
     get_fyst_site,
 )
+from .sun_protocols import SlewSafePredicate, SunSafePredicate
 from .trajectory import (
     SCAN_FLAG_RETUNE,
     SCAN_FLAG_SCIENCE,
@@ -209,10 +220,11 @@ from .trajectory import (
     Trajectory,
 )
 from .trajectory_utils import (
+    GO_TCS_MIN_SAMPLE_INTERVAL_SEC,
+    TRACKPOINT_NEW_LEG_GROUP_SIZE,
+    PathPayload,
     get_absolute_times,
-    inject_retune,
     print_trajectory,
-    sample_retune_events,
     to_arrays,
     to_path_format,
     to_path_payload,
@@ -239,7 +251,9 @@ __all__ = [
     "ElevationBoundsError",
     "TargetNotObservableError",
     "EncoderSolutionError",
+    "EncoderSolutionCause",
     "OffsetInversionError",
+    "DwellExceedsCrossingError",
     # Site configuration
     "Site",
     "AtmosphericConditions",
@@ -274,10 +288,11 @@ __all__ = [
     # Dispatch-time helpers (execution layer)
     "choose_encoder_solution",
     "EncoderSolution",
+    "estimate_slew_time",
     "rewrap_trajectory_azimuth",
     "SunSafePredicate",
     "SlewSafePredicate",
-    # Observability (OBSERVE / EXCLUDE primitives)
+    # Observability (OBSERVE / AVOID primitives)
     "check_observability",
     "resolve_target",
     "Target",
@@ -303,6 +318,7 @@ __all__ = [
     "SCAN_FLAG_RETUNE",
     "print_trajectory",
     "inject_retune",
+    "DEFAULT_RETUNE_DURATION_SEC",
     "RetuneEvent",
     "sample_retune_events",
     "validate_sun_avoidance",
@@ -313,7 +329,10 @@ __all__ = [
     "to_arrays",
     "to_path_format",
     "to_path_payload",
+    "PathPayload",
+    "GO_TCS_MIN_SAMPLE_INTERVAL_SEC",
     "to_trackpoint_format",
+    "TRACKPOINT_NEW_LEG_GROUP_SIZE",
     # Pattern registry
     "register_pattern",
     "get_pattern",
@@ -362,6 +381,7 @@ __all__ = [
     "SourceCESComputedParams",
     "plan_pong_scan",
     "plan_pong_altaz_scan",
+    "plan_pong_rotation_scans",
     "plan_pong_rotation_sequence",
     "plan_constant_el_scan",
     "plan_daisy_scan",

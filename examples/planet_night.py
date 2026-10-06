@@ -1,8 +1,8 @@
 """Plan one night of planet calibration passes (offline planning).
 
 This runnable example plans a commissioning night with
-:func:`~fyst_trajectories.overhead.plan_calibration_night` on the shipped
-scan tables, prints the summary and the dispatch sheet, writes the night
+:func:`~fyst_trajectories.overhead.plan_calibration_night` at its default
+policy, prints the summary and the dispatch sheet, writes the night
 as a TOAST-compatible ECSV timeline, and, when matplotlib is installed,
 saves the timeline gantt and the focal-plane track of the first pass. The
 planned night is not a schedule a control system executes on its own; the

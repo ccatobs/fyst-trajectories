@@ -46,6 +46,13 @@ class TestHexagonalSymmetry:
         np.testing.assert_allclose(distances, EXPECTED_DISTANCE_ARCMIN, rtol=1e-6)
 
     def test_distance_is_1_78_degrees(self):
+        """The inner ring sits 1.78 deg off-axis.
+
+        Both inputs, the 461.3 mm ring radius and the 13.89 arcsec/mm plate
+        scale, are listed under "Pending instrument verification" in
+        ``docs/index.rst``; this pin moves when the instrument team confirms
+        or changes either.
+        """
         dist_deg = np.sqrt(PRIMECAM_I1.dx_deg**2 + PRIMECAM_I1.dy_deg**2)
         assert dist_deg == pytest.approx(1.78, abs=0.01)
 
@@ -88,7 +95,7 @@ class TestMirrorSymmetry:
 
 
 class TestAdjacentModuleSeparation:
-    """Adjacent modules should be separated by ~1.78 deg (hexagonal geometry).
+    """Adjacent modules are separated by the ring radius (hexagonal geometry).
 
     In a regular hexagon with circumradius R, adjacent vertices are separated
     by exactly R. So adjacent modules should be separated by the same distance
@@ -100,16 +107,6 @@ class TestAdjacentModuleSeparation:
         ddx = m1.dx_deg - m2.dx_deg
         ddy = m1.dy_deg - m2.dy_deg
         return np.sqrt(ddx**2 + ddy**2)
-
-    def test_i1_i2_separation(self):
-        """I1-I2 separation equals the ring radius (adjacent vertices of a regular hexagon)."""
-        sep = self._angular_separation(PRIMECAM_I1, PRIMECAM_I2)
-        assert sep == pytest.approx(EXPECTED_DISTANCE_DEG, rel=0.01)
-
-    def test_i1_i6_separation(self):
-        """I1-I6 separation should be ~1.78 deg."""
-        sep = self._angular_separation(PRIMECAM_I1, PRIMECAM_I6)
-        assert sep == pytest.approx(EXPECTED_DISTANCE_DEG, rel=0.01)
 
     def test_all_adjacent_separations(self):
         ordered = [PRIMECAM_I1, PRIMECAM_I2, PRIMECAM_I3, PRIMECAM_I4, PRIMECAM_I5, PRIMECAM_I6]
@@ -135,33 +132,33 @@ class TestCartesianPositions:
     """Verify each module's arcminute offset against its millimetre focal-plane position."""
 
     def test_i1_position_mm(self):
-        """I1: (0, -461.3) mm."""
+        """I1: (0, -461.3) mm (the ring radius is pending instrument verification)."""
         assert PRIMECAM_I1.dx == pytest.approx(0.0 * _PLATE_SCALE / 60.0, abs=1e-10)
-        assert PRIMECAM_I1.dy == pytest.approx(-461.3 * _PLATE_SCALE / 60.0, abs=0.01)
+        assert PRIMECAM_I1.dy == pytest.approx(-461.3 * _PLATE_SCALE / 60.0, rel=1e-6)
 
     def test_i2_position_mm(self):
-        """I2: (399.6, -230.65) mm."""
+        """I2: (399.5, -230.65) mm."""
         expected_x_mm = INNER_RING_RADIUS_MM * np.cos(np.deg2rad(-30))
         expected_y_mm = INNER_RING_RADIUS_MM * np.sin(np.deg2rad(-30))
         assert PRIMECAM_I2.dx == pytest.approx(expected_x_mm * _PLATE_SCALE / 60.0, abs=0.01)
         assert PRIMECAM_I2.dy == pytest.approx(expected_y_mm * _PLATE_SCALE / 60.0, abs=0.01)
 
     def test_i3_position_mm(self):
-        """I3: (399.6, 230.65) mm."""
+        """I3: (399.5, 230.65) mm."""
         expected_x_mm = INNER_RING_RADIUS_MM * np.cos(np.deg2rad(30))
         expected_y_mm = INNER_RING_RADIUS_MM * np.sin(np.deg2rad(30))
         assert PRIMECAM_I3.dx == pytest.approx(expected_x_mm * _PLATE_SCALE / 60.0, abs=0.01)
         assert PRIMECAM_I3.dy == pytest.approx(expected_y_mm * _PLATE_SCALE / 60.0, abs=0.01)
 
     def test_i5_position_mm(self):
-        """I5: (-399.6, 230.65) mm."""
+        """I5: (-399.5, 230.65) mm."""
         expected_x_mm = INNER_RING_RADIUS_MM * np.cos(np.deg2rad(150))
         expected_y_mm = INNER_RING_RADIUS_MM * np.sin(np.deg2rad(150))
         assert PRIMECAM_I5.dx == pytest.approx(expected_x_mm * _PLATE_SCALE / 60.0, abs=0.01)
         assert PRIMECAM_I5.dy == pytest.approx(expected_y_mm * _PLATE_SCALE / 60.0, abs=0.01)
 
     def test_i6_position_mm(self):
-        """I6: (-399.6, -230.65) mm."""
+        """I6: (-399.5, -230.65) mm."""
         expected_x_mm = INNER_RING_RADIUS_MM * np.cos(np.deg2rad(-150))
         expected_y_mm = INNER_RING_RADIUS_MM * np.sin(np.deg2rad(-150))
         assert PRIMECAM_I6.dx == pytest.approx(expected_x_mm * _PLATE_SCALE / 60.0, abs=0.01)
@@ -221,6 +218,15 @@ class TestModulesDict:
         """Both 'c' and 'center' should reference the same object."""
         assert PRIMECAM_MODULES["c"] is PRIMECAM_MODULES["center"]
 
+    def test_is_read_only(self):
+        """No caller can add, replace or remove a module for every other caller."""
+        with pytest.raises(TypeError):
+            PRIMECAM_MODULES["i7"] = PRIMECAM_CENTER
+        with pytest.raises(TypeError):
+            PRIMECAM_MODULES["c"] = PRIMECAM_I1
+        with pytest.raises(TypeError):
+            del PRIMECAM_MODULES["i1"]
+
 
 class TestResolveOffset:
     """Module name, custom dx/dy, or boresight - and a refusal when both are given."""
@@ -256,13 +262,6 @@ class TestResolveOffset:
         assert isinstance(result, InstrumentOffset)
         assert result.dx == pytest.approx(0.0)
         assert result.dy == pytest.approx(10.0)
-
-    def test_dy_only_with_dx_none(self):
-        """resolve_offset(dx=None, dy=5.0) should return InstrumentOffset with dx=0.0."""
-        result = resolve_offset(dx=None, dy=5.0)
-        assert isinstance(result, InstrumentOffset)
-        assert result.dx == pytest.approx(0.0)
-        assert result.dy == pytest.approx(5.0)
 
     def test_module_and_dx_raises_value_error(self):
         """resolve_offset(module='i1', dx=10.0) should raise ValueError (ambiguous)."""
@@ -300,12 +299,6 @@ class TestPrimecamGeometryDict:
         for name in ("c", "i1", "i2", "i3", "i4", "i5", "i6"):
             off = PRIMECAM_MODULES[name]
             assert geom[name]["center"] == pytest.approx([off.dx_deg, off.dy_deg])
-
-    def test_i4_up_i1_down_in_elevation(self):
-        """I4 is at +eta (elevation up) and I1 at -eta, matching the ring geometry."""
-        geom = primecam_geometry_dict()
-        assert geom["i4"]["center"][1] > 0  # +y / +el
-        assert geom["i1"]["center"][1] < 0  # -y / -el
 
     def test_boresight_offsets_shift_all_centers(self):
         """Global xi/eta offsets shift every module center by the same amount."""

@@ -3,7 +3,7 @@
 Structure-level checks (figure/axes contents, curve masks, guards), not
 pixel-perfect output, following the conventions of the sibling plotting
 tests. The whole file skips when matplotlib is not installed; the
-import-isolation test in test_overhead_plotting.py covers this module too.
+import-isolation test in test_plotting.py covers this module too.
 """
 
 import dataclasses
@@ -112,7 +112,7 @@ def test_visibility_sun_zone_masks_track_true_separation():
     assert len(warning_overlays) == 2
     at_sun_y = np.asarray(exclusion_overlays[0].get_ydata(), dtype=float)
     anti_sun_y = np.asarray(exclusion_overlays[1].get_ydata(), dtype=float)
-    assert np.isfinite(at_sun_y).sum() > 0  # riding the Sun => flagged
+    assert np.isfinite(at_sun_y).all()  # riding the Sun => flagged for the whole span
     assert np.isfinite(anti_sun_y).sum() == 0  # anti-solar => never flagged
 
 
@@ -123,8 +123,8 @@ def test_visibility_radii_come_from_the_site():
         T0, ["mars"], site=site, panels=("elevation", "sun_separation"), show=False
     )
     labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
-    assert any("\N{LESS-THAN OR EQUAL TO} 30°" in label for label in labels)
-    assert any("\N{LESS-THAN OR EQUAL TO} 37°" in label for label in labels)
+    assert any("<= 30 deg" in label for label in labels)
+    assert any("<= 37 deg" in label for label in labels)
     sep_ax = fig.axes[1]
     hline_ys = {
         line.get_ydata()[0]
@@ -240,7 +240,7 @@ def test_visibility_sun_model_object_drives_overlays():
         ["mars"],
         sun_model=fake_sun_model(
             lambda az, el, t: np.asarray(el, dtype=float) <= 40.0,
-            describe="stub 60°",
+            describe="stub 60 deg",
             threshold=60.0,
         ),
         panels=("elevation", "sun_separation"),
@@ -257,7 +257,7 @@ def test_visibility_sun_model_object_drives_overlays():
     # Legend names the model; separation panel carries the dashed threshold
     # curve at 60 and no fixed 45/50 guide lines.
     labels = [t.get_text() for t in el_ax.get_legend().get_texts()]
-    assert any("unsafe (stub 60°)" in label for label in labels)
+    assert any("unsafe (stub 60 deg)" in label for label in labels)
     assert any("min safe sep" in label for label in labels)
     dashed = [
         line
@@ -296,7 +296,7 @@ def test_visibility_sun_model_cad_renders():
         show=False,
     )
     labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
-    assert any("CAD zone 50-90°" in label for label in labels)
+    assert any("CAD zone 50-90 deg" in label for label in labels)
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +334,19 @@ def test_footprint_is_to_scale(el):
     assert radial[0] == pytest.approx(0.0, abs=1e-9)  # center module
     for r in radial[1:]:
         assert r == pytest.approx(expected, abs=1e-9)
-    # The docstring's falsifiable spans: ~3.6 deg between opposite module
-    # centres, ~4.9 deg edge to edge.
-    assert 2.0 * expected == pytest.approx(3.56, abs=0.01)
-    assert 2.0 * (expected + MODULE_FOV_RADIUS_DEG) == pytest.approx(4.86, abs=0.01)
+
+
+def test_footprint_spans_follow_the_pending_geometry():
+    """The docstring's spans: ~3.6 deg centre to centre, ~4.9 deg edge to edge.
+
+    Both follow from the plate scale, the inner-ring radius and the module
+    FOV radius, which are pending instrument verification (see the table on
+    the documentation index); these pins move with them.
+    """
+    ring = PRIMECAM_MODULES["i1"]
+    rho = float(np.hypot(ring.dx_deg, ring.dy_deg))
+    assert 2.0 * rho == pytest.approx(3.56, abs=0.01)
+    assert 2.0 * (rho + MODULE_FOV_RADIUS_DEG) == pytest.approx(4.86, abs=0.01)
 
 
 def test_footprint_rotates_with_elevation():

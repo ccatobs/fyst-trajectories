@@ -1,6 +1,8 @@
 """Tests for PongAltAzScanPattern and PongAltAzScanConfig."""
 
 import math
+from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,8 +14,11 @@ from fyst_trajectories.patterns import (
     PongScanConfig,
     PongScanPattern,
     TrajectoryBuilder,
+    compute_pong_period,
     get_pattern,
 )
+from fyst_trajectories.patterns.utils import _SCIENCE_SPEED_FRACTION
+from fyst_trajectories.planning import plan_pong_altaz_scan
 
 
 def _base_config(**overrides):
@@ -46,7 +51,7 @@ class TestPongAltAzScanConfig:
 
     def test_frozen(self):
         config = _base_config()
-        with pytest.raises((AttributeError, TypeError)):
+        with pytest.raises(FrozenInstanceError):
             config.az_center = 200.0
 
     @pytest.mark.parametrize("field", ["width", "height", "spacing", "velocity"])
@@ -93,11 +98,7 @@ class TestPongAltAzScanPattern:
         pattern = PongAltAzScanPattern(_base_config())
         trajectory = pattern.generate(site, duration=60.0)
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "pong_altaz"
-        assert trajectory.coordsys == "altaz"
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
 
     def test_start_time_not_required(self, site):
         pattern = PongAltAzScanPattern(_base_config())
@@ -115,80 +116,46 @@ class TestPongAltAzScanPattern:
         assert az_mid == pytest.approx(130.0, abs=0.05)
         assert el_mid == pytest.approx(55.0, abs=0.05)
 
-    def test_mapping_matches_hand_formula(self, site):
-        """Az/el extents follow az = x/cos(el0)+az0, el = y+el0 exactly.
+    @pytest.mark.parametrize("num_terms", [1, 4, 7])
+    @pytest.mark.parametrize("angle", [0.0, -30.0, 17.5])
+    @pytest.mark.parametrize(("az_center", "el_center"), [(100.0, 45.0), (120.0, 60.0)])
+    def test_pointwise_mapping(self, site, az_center, el_center, angle, num_terms):
+        """Every sample obeys az = x / cos(el0) + az0, el = y + el0 against the reused offsets.
 
-        The pattern must reproduce the pinned legacy mapping. With
-        el_center=60 deg the azimuth coordinate is stretched by
-        1/cos(60 deg) = 2, so the azimuth extent equals the offset x-extent
-        times 2, and the elevation extent equals the offset y-extent. Both
-        are checked against the offsets pulled from the reused celestial
-        Pong, to float tolerance.
+        The comparison is exact: the AltAz pattern must reproduce the celestial
+        Pong's offsets, flags and period bit for bit, whatever the rotation and
+        the number of Fourier terms.
         """
-        config = _base_config(el_center=60.0)
-        pattern = PongAltAzScanPattern(config)
-        duration = 200.0
-        trajectory = pattern.generate(site, duration=duration)
-
-        # Offsets from the exact same machinery the pattern reuses.
-        offset_pong = PongScanPattern(
-            ra=0.0,
-            dec=0.0,
-            config=PongScanConfig(
-                timestep=config.timestep,
-                width=config.width,
-                height=config.height,
-                spacing=config.spacing,
-                velocity=config.velocity,
-                num_terms=config.num_terms,
-                angle=config.angle,
-            ),
+        config = _base_config(
+            el_center=el_center, az_center=az_center, angle=angle, num_terms=num_terms
         )
-        _, x_off, y_off = offset_pong.generate_offsets(duration)
-
-        cos60 = math.cos(math.radians(60.0))
-        assert cos60 == pytest.approx(0.5)
-
-        # Azimuth extent = x-offset extent / cos(el_center); elevation
-        # extent = y-offset extent (no stretch).
-        expected_az_extent = np.ptp(x_off) / cos60
-        expected_el_extent = np.ptp(y_off)
-        assert np.ptp(trajectory.az) == pytest.approx(expected_az_extent, abs=1e-6)
-        assert np.ptp(trajectory.el) == pytest.approx(expected_el_extent, abs=1e-6)
-
-        # The azimuth stretch factor is exactly 1/cos(60 deg) = 2, applied to
-        # the x-offset extent (not the y-offset: the Pong x and y extents
-        # differ because the vertex counts differ).
-        assert np.ptp(trajectory.az) == pytest.approx(2.0 * np.ptp(x_off), rel=1e-6)
-
-    def test_pointwise_mapping(self, site):
-        """Every sample obeys the mapping against the reused offsets."""
-        config = _base_config(el_center=45.0, az_center=100.0)
         pattern = PongAltAzScanPattern(config)
         duration = 100.0
         trajectory = pattern.generate(site, duration=duration)
 
-        offset_pong = PongScanPattern(
-            ra=0.0,
-            dec=0.0,
-            config=PongScanConfig(
-                timestep=config.timestep,
-                width=config.width,
-                height=config.height,
-                spacing=config.spacing,
-                velocity=config.velocity,
-                num_terms=config.num_terms,
-                angle=config.angle,
-            ),
+        celestial_config = PongScanConfig(
+            timestep=config.timestep,
+            width=config.width,
+            height=config.height,
+            spacing=config.spacing,
+            velocity=config.velocity,
+            num_terms=config.num_terms,
+            angle=config.angle,
         )
-        _, x_off, y_off = offset_pong.generate_offsets(duration)
+        offset_pong = PongScanPattern(ra=0.0, dec=0.0, config=celestial_config)
+        times, x_off, y_off = offset_pong.generate_offsets(duration)
 
-        cos45 = math.cos(math.radians(45.0))
-        expected_az = x_off / cos45 + 100.0
-        expected_el = y_off + 45.0
+        cos_el = math.cos(math.radians(el_center))
+        expected_az = x_off / cos_el + az_center
+        expected_el = y_off + el_center
+        speed = np.sqrt(np.gradient(x_off, times) ** 2 + np.gradient(y_off, times) ** 2)
+        expected_flag = np.full(len(times), 2, dtype=np.int8)  # SCAN_FLAG_TURNAROUND
+        expected_flag[speed >= _SCIENCE_SPEED_FRACTION * config.velocity] = 1
 
-        np.testing.assert_allclose(trajectory.az, expected_az, atol=1e-6)
-        np.testing.assert_allclose(trajectory.el, expected_el, atol=1e-6)
+        np.testing.assert_array_equal(trajectory.az, expected_az)
+        np.testing.assert_array_equal(trajectory.el, expected_el)
+        np.testing.assert_array_equal(trajectory.scan_flag, expected_flag)
+        assert compute_pong_period(config) == compute_pong_period(celestial_config)
 
     def test_scan_flags_present(self, site):
         """Trajectory carries both SCIENCE and TURNAROUND flags."""
@@ -230,38 +197,63 @@ class TestRegistryAndBuilderIntegration:
     def test_registered_under_name(self):
         assert get_pattern("pong_altaz") is PongAltAzScanPattern
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_builder_infers_pattern_from_config(self, site):
         """TrajectoryBuilder builds the pattern from the config type alone."""
         trajectory = TrajectoryBuilder(site).with_config(_base_config()).duration(60.0).build()
         assert trajectory.pattern_type == "pong_altaz"
-        assert trajectory.coordsys == "altaz"
 
 
-class TestDelegateConfigIsBuiltOnce:
-    """The equivalent celestial config is built once per pattern instance.
+def _config_advisories(recwarn):
+    """Return the configuration advisories ("... is unusually large") recorded so far."""
+    return [
+        w
+        for w in recwarn.list
+        if issubclass(w.category, PointingWarning) and "unusually large" in str(w.message)
+    ]
 
-    Constructing one re-runs the celestial config's validation, so a separate
-    copy in ``_offset_pattern`` and in ``get_metadata`` would emit an advisory
-    it carries twice for a single ``generate`` call.
+
+class TestAdvisoriesAreNotRepeated:
+    """A configuration advisory is emitted once, where the configuration is built.
+
+    The pattern hands its own configuration to the celestial Pong, so building
+    and inspecting a pattern re-runs no validation, and the planner builds one
+    configuration for both the trajectory and the period.
     """
 
-    def test_advisory_is_emitted_once_per_pattern(self, site, recwarn):
+    def test_pattern_route_emits_no_advisory(self, site, recwarn):
         config = _base_config(velocity=12.0)
         recwarn.clear()
         pattern = PongAltAzScanPattern(config)
         pattern.generate(site, duration=20.0)
         pattern.generate(site, duration=20.0)
         pattern.get_metadata()
-        advisories = [
-            w
-            for w in recwarn.list
-            if issubclass(w.category, PointingWarning) and "unusually large" in str(w.message)
-        ]
-        assert len(advisories) == 1, [str(w.message) for w in advisories]
+        advisories = _config_advisories(recwarn)
+        assert advisories == [], [str(w.message) for w in advisories]
 
-    def test_the_same_object_is_reused(self):
-        """Both consumers see one delegate config."""
-        pattern = PongAltAzScanPattern(_base_config())
-        first = pattern._offset_pattern().config
-        assert first is pattern._delegate_config
-        assert pattern._offset_pattern().config is first
+    def test_planner_emits_each_advisory_once(self, site, recwarn):
+        recwarn.clear()
+        plan_pong_altaz_scan(
+            az_center=120.0,
+            el_center=60.0,
+            width=31.0,
+            height=2.0,
+            spacing=0.5,
+            velocity=0.5,
+            site=site,
+            start_time="2026-03-15T01:00:00",
+        )
+        advisories = _config_advisories(recwarn)
+        messages = [str(w.message) for w in advisories]
+        assert len(messages) == 1, messages
+        assert messages[0].startswith("Scan width 31.0 deg is unusually large")
+        assert (
+            Path(advisories[0].filename)
+            .as_posix()
+            .endswith("fyst_trajectories/planning/pong_altaz.py")
+        )

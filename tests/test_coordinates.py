@@ -5,6 +5,8 @@ horizontal coordinate systems, including atmospheric refraction
 corrections and solar system ephemeris calculations.
 """
 
+import math
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,8 @@ from fyst_trajectories import (
     SOLAR_SYSTEM_BODIES,
     AtmosphericConditions,
     Coordinates,
+    InstrumentOffset,
+    compute_focal_plane_rotation,
     normalize_frame,
 )
 
@@ -65,8 +69,9 @@ class TestRadecToAltaz:
         azs, els = coordinates.radec_to_altaz(ras, decs, obstime=obstime)
 
         assert len(azs) == 4
-        assert len(els) == 4
-        assert all(-90 <= el <= 90 for el in els)
+        for ra, dec, az, el in zip(ras, decs, azs, els):
+            expected = coordinates.radec_to_altaz(float(ra), float(dec), obstime=obstime)
+            assert (az, el) == pytest.approx(expected, abs=1e-9)
         assert all(0.0 <= az < 360.0 for az in azs)
 
 
@@ -82,11 +87,11 @@ class TestAltazToRadec:
         az, el = coordinates.radec_to_altaz(original_ra, original_dec, obstime=obstime)
         recovered_ra, recovered_dec = coordinates.altaz_to_radec(az, el, obstime=obstime)
 
-        # Vacuum transform: the round trip closes to well under an arcsec.
+        # Vacuum transform: the round trip closes to far below a milliarcsecond.
         ra_diff = (recovered_ra - original_ra + 180) % 360 - 180
 
-        assert ra_diff == pytest.approx(0, abs=0.02)
-        assert recovered_dec == pytest.approx(original_dec, abs=0.02)
+        assert ra_diff == pytest.approx(0, abs=1e-6)
+        assert recovered_dec == pytest.approx(original_dec, abs=1e-6)
 
     def test_zenith_is_site_dec(self, coordinates, site):
         obstime = Time("2026-03-20T06:00:00", scale="utc")
@@ -148,6 +153,12 @@ class TestSolarSystemBodies:
         assert np.all((dec >= -90.0) & (dec <= 90.0))
         assert np.all((ra >= 0.0) & (ra < 360.0))
 
+    def test_body_catalog_is_a_tuple(self):
+        """No caller can change the bodies every other caller validates against."""
+        assert isinstance(SOLAR_SYSTEM_BODIES, tuple)
+        with pytest.raises(AttributeError):
+            SOLAR_SYSTEM_BODIES.append("ceres")
+
     def test_invalid_body_altaz(self, coordinates):
         obstime = Time("2026-06-15T12:00:00", scale="utc")
         with pytest.raises(ValueError, match="Unknown body"):
@@ -158,23 +169,11 @@ class TestSolarSystemBodies:
         with pytest.raises(ValueError, match="Unknown body"):
             coordinates.get_body_radec("pluto", obstime=obstime)
 
-    @pytest.mark.slow
-    def test_all_bodies_work(self, coordinates):
-        obstime = Time("2026-06-15T12:00:00", scale="utc")
-        for body in SOLAR_SYSTEM_BODIES:
-            az, el = coordinates.get_body_altaz(body, obstime=obstime)
-            assert isinstance(az, float)
-            assert isinstance(el, float)
-
-            ra, dec = coordinates.get_body_radec(body, obstime=obstime)
-            assert isinstance(ra, float)
-            assert isinstance(dec, float)
-
     @pytest.mark.parametrize(
         "epoch",
         ["2026-06-15T16:30:00", "2026-03-15T04:30:00"],
     )
-    @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
+    @pytest.mark.parametrize("body", SOLAR_SYSTEM_BODIES)
     def test_get_body_radec_is_apparent_position(self, coordinates, body, epoch):
         """get_body_radec returns the apparent place, not the barycentric direction.
 
@@ -196,7 +195,7 @@ class TestSolarSystemBodies:
         "epoch",
         ["2026-06-15T16:30:00", "2026-03-15T04:30:00"],
     )
-    @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
+    @pytest.mark.parametrize("body", SOLAR_SYSTEM_BODIES)
     def test_get_body_radec_parallactic_angle_geometric(self, coordinates, body, epoch):
         """get_body_radec feeds get_parallactic_angle to the geometric truth.
 
@@ -246,7 +245,7 @@ class TestSolarSystemBodies:
         assert sep_antisolar > 90.0
 
     @pytest.mark.slow
-    @pytest.mark.parametrize("body", ["moon", "mars", "jupiter", "saturn", "neptune", "sun"])
+    @pytest.mark.parametrize("body", SOLAR_SYSTEM_BODIES)
     def test_get_body_radec_matches_skyfield(self, coordinates, body, skyfield_de421):
         """Cross-check the apparent RA/Dec against skyfield (independent oracle).
 
@@ -265,9 +264,12 @@ class TestSolarSystemBodies:
         sf_names = {
             "sun": "sun",
             "moon": "moon",
+            "mercury": "mercury barycenter",
+            "venus": "venus barycenter",
             "mars": "mars",
             "jupiter": "jupiter barycenter",
             "saturn": "saturn barycenter",
+            "uranus": "uranus barycenter",
             "neptune": "neptune barycenter",
         }
         t = Time("2026-06-15T16:30:00", scale="utc")
@@ -404,34 +406,29 @@ class TestNormalizeFrame:
 
 
 class TestGetLst:
-    """LST is in range, vectorises, and advances ~90 deg in six hours."""
+    """LST matches a closed-form GMST, vectorises, and advances at the sidereal rate."""
 
     def test_lst_at_specific_time(self, coordinates):
-        """LST at a known time lands in the range the equinox estimate implies.
+        """LST matches the linear GMST expression plus the site longitude.
 
-        At midnight UTC on the vernal equinox (March 20), the LST at
-        longitude 0 is approximately 12h (180 deg).
+        ``GMST(0h UT) = 100.4606 + 0.9856474 d`` deg (``d`` days from J2000.0)
+        is independent of astropy and good to a few arcseconds here; FYST's
+        longitude puts the LST near 109.8 deg at 0h UTC on 2026-03-20.
         """
         obstime = Time("2026-03-20T00:00:00", scale="utc")
         lst = coordinates.get_lst(obstime=obstime)
-
-        assert 0 <= lst < 360
+        d = obstime.jd - 2451545.0
+        expected = (100.4606 + 0.9856474 * d + coordinates.site.longitude) % 360.0
         assert isinstance(lst, float)
-
-        # For FYST at longitude ~-67.8 degrees, LST differs from Greenwich
-        # by about -67.8/15 = -4.5 hours. At Greenwich midnight on vernal
-        # equinox, LST ~ 12h, so at FYST it should be ~12h - 4.5h = 7.5h = 112.5 deg
-        # This is approximate due to precession and nutation
-        # We just verify it's a reasonable value
-        assert 50 < lst < 180  # Reasonable range for this time/location
+        assert lst == pytest.approx(expected, abs=0.01)
 
     def test_lst_with_array_time(self, coordinates):
         times = Time(["2026-01-01T00:00:00", "2026-01-01T06:00:00"], scale="utc")
         lst = coordinates.get_lst(obstime=times)
 
         assert isinstance(lst, np.ndarray)
-        assert len(lst) == 2
-        assert all(0 <= val < 360 for val in lst)
+        expected = [coordinates.get_lst(obstime=t) for t in times]
+        assert list(lst) == pytest.approx(expected, abs=1e-9)
 
     def test_lst_increases_with_time(self, coordinates):
         t1 = Time("2026-06-15T00:00:00", scale="utc")
@@ -440,10 +437,44 @@ class TestGetLst:
         lst1 = coordinates.get_lst(obstime=t1)
         lst2 = coordinates.get_lst(obstime=t2)
 
-        # LST should increase by ~90 degrees in 6 hours (sidereal rate)
-        # Account for wrapping at 360
+        # One sidereal rate: 6 h of UT advance LST by 90 * 1.0027379 deg.
         diff = (lst2 - lst1) % 360
-        assert diff == pytest.approx(90, abs=2)  # Within 2 degrees
+        assert diff == pytest.approx(90.0 * 1.00273790935, abs=1e-3)
+
+    def test_position_repeats_after_one_sidereal_day(self, coordinates):
+        """Az/El repeats after one sidereal day, and not after one solar day."""
+        ra, dec = 180.0, -30.0
+        t1 = Time("2026-06-15T04:00:00", scale="utc")
+        az1, el1 = coordinates.radec_to_altaz(ra, dec, obstime=t1)
+        az_s, el_s = coordinates.radec_to_altaz(ra, dec, obstime=t1 + 1.0 * u.sday)
+        az_d, el_d = coordinates.radec_to_altaz(ra, dec, obstime=t1 + 1.0 * u.day)
+        assert coordinates.angular_separation(az1, el1, az_s, el_s) * 3600.0 < 2.0
+        assert coordinates.angular_separation(az1, el1, az_d, el_d) > 0.5
+
+    def test_transformation_stability_over_hour(self, coordinates):
+        """A discontinuity in time handling shows up as a large minute-to-minute step."""
+        ra, dec = 180.0, -30.0
+
+        base_time = Time("2026-06-15T04:00:00", scale="utc")
+        times = base_time + TimeDelta(np.arange(60) * 60, format="sec")
+
+        azs = []
+        els = []
+        for t in times:
+            az, el = coordinates.radec_to_altaz(ra, dec, obstime=t)
+            azs.append(az)
+            els.append(el)
+
+        azs = np.array(azs)
+        els = np.array(els)
+
+        # At ~1 minute intervals, Az/El should change by <1 degree
+        az_diffs = np.abs(np.diff(azs))
+        az_diffs = np.minimum(az_diffs, 360 - az_diffs)
+        el_diffs = np.abs(np.diff(els))
+
+        assert np.all(az_diffs < 1.0), f"Large Az jump detected: {az_diffs.max()}"
+        assert np.all(el_diffs < 1.0), f"Large El jump detected: {el_diffs.max()}"
 
 
 class TestGetHourAngle:
@@ -467,8 +498,8 @@ class TestGetHourAngle:
         ha = coordinates.get_hour_angle(ras, obstime=obstime)
 
         assert isinstance(ha, np.ndarray)
-        assert len(ha) == 4
-        assert all(-180 <= h <= 180 for h in ha)
+        expected = [coordinates.get_hour_angle(float(ra), obstime=obstime) for ra in ras]
+        assert list(ha) == pytest.approx(expected, abs=1e-9)
 
     def test_hour_angle_at_meridian(self, coordinates):
         """HA is 0 when RA equals LST."""
@@ -477,6 +508,25 @@ class TestGetHourAngle:
 
         ha = coordinates.get_hour_angle(lst, obstime=obstime)
         assert ha == pytest.approx(0, abs=0.001)
+
+    def test_catalogue_hour_angle_carries_the_ra_precession(self, coordinates):
+        """On the 2026 equator the catalogue HA leads the apparent one by about 0.34 deg.
+
+        ``get_hour_angle`` pairs the apparent LST with the catalogue RA, so it
+        differs from the hour angle of the apparent place (astropy ``TETE``) by
+        the RA precession since J2000 that its Notes state.
+        """
+        from astropy.coordinates import TETE, SkyCoord
+
+        obstime = Time("2026-06-15T12:00:00", scale="utc")
+        ra = 150.0
+        apparent = SkyCoord(ra=ra * u.deg, dec=0.0 * u.deg, frame="icrs").transform_to(
+            TETE(obstime=obstime)
+        )
+        lst = coordinates.get_lst(obstime=obstime)
+        apparent_ha = (lst - apparent.ra.deg + 180.0) % 360.0 - 180.0
+        offset = coordinates.get_hour_angle(ra, obstime=obstime) - apparent_ha
+        assert 0.30 < offset < 0.36
 
 
 class TestGetParallacticAngle:
@@ -502,11 +552,11 @@ class TestGetParallacticAngle:
         assert pa == pytest.approx(0, abs=1.0)
 
     def test_sign_east_west_of_meridian(self, coordinates):
-        """PA flips sign across the meridian, seen from a southern site.
+        """PA is negative east of the meridian and positive west of it.
 
-        For sources in the southern sky (from a southern site):
-        - East of meridian (negative HA): parallactic angle should be positive
-        - West of meridian (positive HA): parallactic angle should be negative
+        For a source at dec -30 seen from FYST (latitude -23), the IAU form
+        gives about -83 deg at HA = -30 deg (east) and about +83 deg at
+        HA = +30 deg (west).
         """
         obstime = Time("2026-06-15T12:00:00", scale="utc")
         lst = coordinates.get_lst(obstime=obstime)
@@ -519,7 +569,7 @@ class TestGetParallacticAngle:
         ra_west = (lst - 30) % 360  # HA = +30 (west of meridian)
         pa_west = coordinates.get_parallactic_angle(ra_west, dec, obstime=obstime)
 
-        assert pa_east * pa_west < 0, "Parallactic angles should have opposite signs"
+        assert pa_east < 0.0 < pa_west
 
     def test_parallactic_angle_with_array_input(self, coordinates):
         obstime = Time("2026-06-15T12:00:00", scale="utc")
@@ -529,7 +579,11 @@ class TestGetParallacticAngle:
         pa = coordinates.get_parallactic_angle(ras, decs, obstime=obstime)
 
         assert isinstance(pa, np.ndarray)
-        assert len(pa) == 4
+        expected = [
+            coordinates.get_parallactic_angle(float(r), float(d), obstime=obstime)
+            for r, d in zip(ras, decs)
+        ]
+        assert list(pa) == pytest.approx(expected, abs=1e-9)
 
     def test_parallactic_angle_matches_altaz_form(self, coordinates, site):
         """PA equals the IAU AltAz-form computed from the transformed Az/El.
@@ -597,7 +651,7 @@ class TestSunUsesTheEphemerisBody:
     """The Sun comes from ``get_body("sun", ..., location=...)``, not geocentric ``get_sun``."""
 
     def test_sun_altaz_differs_from_the_geocentric_helper(self, coordinates, site):
-        """get_body('sun', location=...) differs from a geocentric get_sun() by ~arcsec.
+        """get_body('sun', location=...) differs from a geocentric get_sun() by milliarcseconds.
 
         The library uses get_body('sun', ..., location=...) rather than the geocentric
         helper astropy.coordinates.get_sun. Both carry a finite distance, so the AltAz
@@ -624,17 +678,7 @@ class TestSunUsesTheEphemerisBody:
 
 
 class TestGetFieldRotation:
-    """Field rotation is elevation plus PA, vectorised, and independent of the atmosphere."""
-
-    def test_field_rotation_with_array_input(self, coordinates):
-        obstime = Time("2026-06-15T08:00:00", scale="utc")
-        ras = np.array([100, 150, 200])
-        decs = np.array([-30, -40, -50])
-
-        fr = coordinates.get_field_rotation(ras, decs, obstime=obstime)
-
-        assert isinstance(fr, np.ndarray)
-        assert len(fr) == 3
+    """Field rotation is independent of the atmosphere."""
 
     def test_field_rotation_atmosphere_invariant(self, coordinates):
         """Field rotation is vacuum/geometric regardless of instance atmosphere.
@@ -690,20 +734,17 @@ class TestProperMotion:
         assert az_pm == pytest.approx(az_static, abs=0.001)
         assert el_pm == pytest.approx(el_static, abs=0.001)
 
-    def test_barnards_star_no_distance_workaround(self, coordinates):
-        """Regression guard for the 1 Mpc dummy-distance ``apply_space_motion`` workaround.
+    def test_barnards_star_no_distance_matches_real_distance(self, coordinates):
+        """Regression guard for the no-distance proper-motion path.
 
         Barnard's Star has the largest known proper motion of any
-        catalogued star (~10.4 arcsec/yr in declination). This test
-        compares the no-distance code path (which uses the 1 Mpc
-        workaround documented in astropy issues #10092 and #10296)
-        against the same call with the real distance (1.83 pc).
-        Agreement to better than the proper-motion accumulation over
-        10 years confirms the workaround tracks the canonical path.
-
-        If astropy ever gains a first-class no-distance code path, the
-        numeric result here will change and force a deliberate review
-        of the Coordinates.radec_to_altaz_with_pm implementation.
+        catalogued star (~10.4 arcsec/yr, almost all of it in
+        declination). This test compares the no-distance code path against
+        the same call with the real distance
+        (1.83 pc). Agreement far inside the proper-motion accumulation over
+        the 25.5 years from J2000 confirms the branch tracks the canonical
+        path. Since astropy 4.0.2 (PR #10296, fixing issue #10092) a
+        no-distance SkyCoord propagates through the same ERFA pmsafe call.
         """
         # Barnard's Star, J2000 catalogue position and proper motion
         ra = 269.452
@@ -720,12 +761,61 @@ class TestProperMotion:
             ra, dec, pm_ra, pm_dec, ref_epoch, obstime=obstime, distance=1.83
         )
 
-        # Both paths should agree to well below the proper-motion
-        # accumulation (~0.03 deg). 0.005 deg is the tightest tolerance the
-        # 1 Mpc workaround can reasonably hit; loosen if astropy or ERFA
-        # changes their PM-propagation precision.
-        assert az_no_dist == pytest.approx(az_with_dist, abs=0.005)
-        assert el_no_dist == pytest.approx(el_with_dist, abs=0.005)
+        # Both paths agree to ~1e-9 arcsec (measured): without a radial velocity
+        # the propagation does not depend on the distance. 1e-7 deg (0.4 mas)
+        # still exposes any change in astropy's no-distance handling.
+        assert az_no_dist == pytest.approx(az_with_dist, abs=1e-7)
+        assert el_no_dist == pytest.approx(el_with_dist, abs=1e-7)
+
+    BARNARD = dict(ra=269.452, dec=4.693, pm_ra=-798.58, pm_dec=10328.12)
+    HOURLY = Time("2026-03-15T00:00:00", scale="utc") + TimeDelta(np.arange(24) * 3600.0 * u.s)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            dict(BARNARD, frame="icrs"),
+            dict(BARNARD, frame="fk5"),
+            dict(ra=10.0, dec=-89.9, pm_ra=-798.58, pm_dec=10328.12),
+            dict(BARNARD, distance=1.83),
+            dict(BARNARD, distance=1.83, radial_velocity=-110.6),
+        ],
+        ids=["icrs", "fk5", "near_pole", "distance", "distance_and_rv"],
+    )
+    def test_array_obstime_matches_scalar_calls(self, coordinates, kwargs):
+        """One call over an array of times equals one scalar call per time."""
+        ref_epoch = Time("J2000.0")
+        az, el = coordinates.radec_to_altaz_with_pm(
+            **kwargs, ref_epoch=ref_epoch, obstime=self.HOURLY
+        )
+        assert isinstance(az, np.ndarray) and az.shape == (24,)
+        assert isinstance(el, np.ndarray) and el.shape == (24,)
+        for i, t in enumerate(self.HOURLY):
+            az_i, el_i = coordinates.radec_to_altaz_with_pm(
+                **kwargs, ref_epoch=ref_epoch, obstime=t
+            )
+            assert az[i] == pytest.approx(az_i, abs=1e-9)
+            assert el[i] == pytest.approx(el_i, abs=1e-9)
+
+    def test_scalar_obstime_returns_floats(self, coordinates):
+        az, el = coordinates.radec_to_altaz_with_pm(
+            **self.BARNARD, ref_epoch=Time("J2000.0"), obstime=self.HOURLY[0]
+        )
+        assert isinstance(az, float) and isinstance(el, float)
+
+    def test_radial_velocity_without_distance_is_ignored(self, coordinates):
+        """A radial velocity needs a distance; without one the call equals the no-RV call."""
+        common = dict(self.BARNARD, ref_epoch=Time("J2000.0"), obstime=self.HOURLY[0])
+        with_rv = coordinates.radec_to_altaz_with_pm(**common, radial_velocity=-110.6)
+        assert with_rv == coordinates.radec_to_altaz_with_pm(**common)
+
+    @pytest.mark.parametrize("obstime", [HOURLY[0], HOURLY], ids=["scalar", "array"])
+    def test_no_distance_call_emits_no_warning(self, coordinates, obstime):
+        """ERFA's "distance overridden" warning for a distance-less source is filtered."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            coordinates.radec_to_altaz_with_pm(
+                **self.BARNARD, ref_epoch=Time("J2000.0"), obstime=obstime
+            )
 
 
 class TestObservingWavelength:
@@ -818,7 +908,7 @@ class TestSunBoundaryParity:
         assert sun_el > 0.0
 
         # Pick an offset direction that keeps the target elevation inside
-        # [20, 90] at this radius: a 50 deg span from a mid-sky Sun leaves
+        # [20, 90] at this radius: an exclusion-radius span from a mid-sky Sun leaves
         # the observable band along the meridian, so sideways offsets are
         # tried too (0.1 deg of guard band covers the +/-0.05 deltas).
         sun = SkyCoord(sun_az * u.deg, sun_el * u.deg, frame="altaz")
@@ -961,8 +1051,11 @@ class TestTitanSatelliteResolver:
         """FYST_SATELLITE_KERNEL resolves Titan when no explicit kwarg is given."""
         monkeypatch.setenv("FYST_SATELLITE_KERNEL", TITAN_KERNEL)
         coords = Coordinates(site)  # no explicit satellite_kernel
-        az, el = coords.get_body_altaz("titan", obstime=Time("2026-06-15T04:00:00", scale="utc"))
-        assert np.isfinite(az) and np.isfinite(el)
+        t = Time("2026-06-15T04:00:00", scale="utc")
+        az, el = coords.get_body_altaz("titan", obstime=t)
+        reference = Coordinates(site, satellite_kernel=TITAN_KERNEL)
+        expected = reference.get_body_altaz("titan", obstime=t)
+        assert (az, el) == pytest.approx(expected, abs=1e-9)
 
     def test_titan_get_body_radec_matches_horizons(self, titan_coords):
         """get_body_radec('titan'), round-tripped through AltAz, matches frozen Horizons.
@@ -1121,6 +1214,31 @@ class TestFrameAliasesReachTheTransforms:
         direct = coordinates.radec_to_altaz_with_pm(**kwargs, frame="icrs")
         assert aliased == pytest.approx(direct)
 
+    def test_proper_motion_transform_keeps_the_caller_frame(self, coordinates):
+        """With zero proper motion, an FK5 position lands where ``radec_to_altaz`` puts it.
+
+        The propagated RA/Dec is handed on in the caller's frame, not reread as ICRS
+        (which moves an FK5 position by about 0.03 arcsec).
+        """
+        moved = coordinates.radec_to_altaz_with_pm(
+            269.452, 4.693, 0.0, 0.0, Time("J2000.0"), obstime=self.OBSTIME, frame="fk5"
+        )
+        static = coordinates.radec_to_altaz(269.452, 4.693, self.OBSTIME, frame="fk5")
+        assert moved == pytest.approx(static, abs=1e-9)
+
+    def test_proper_motion_transform_refuses_b1950_by_name(self, coordinates):
+        """B1950 (``fk4``) is refused with a ``ValueError`` naming it, not astropy's error."""
+        with pytest.raises(ValueError, match="B1950"):
+            coordinates.radec_to_altaz_with_pm(
+                269.452,
+                4.693,
+                -798.58,
+                10328.12,
+                Time("J2000.0"),
+                obstime=self.OBSTIME,
+                frame="B1950",
+            )
+
 
 class TestFieldRotationSharesOneVacuumTransform:
     """The elevation term and the parallactic angle come from one transform.
@@ -1150,3 +1268,194 @@ class TestFieldRotationSharesOneVacuumTransform:
             for r, d in zip(ra, dec)
         ]
         assert vector == pytest.approx(scalars, abs=1e-9)
+
+
+class TestFieldRotationFromAltazSharesOneKernel:
+    """One quantity, two entry points: RA/Dec and an already-transformed pose."""
+
+    @pytest.mark.parametrize(
+        "ra,dec",
+        [(83.633, 22.014), (24.0, -32.0), (150.0, 2.2), (269.452, 4.693)],
+    )
+    def test_it_agrees_with_the_radec_entry_point(self, site, ra, dec):
+        """Both add the Nasmyth term to the same parallactic angle, so they must match.
+
+        Two copies of the formula would let the boresight angle a timeline
+        block records drift from the field rotation the same pose reports.
+        """
+        coords = Coordinates(site)
+        obstime = Time("2026-03-15T04:00:00", scale="utc")
+        az, el = coords.radec_to_altaz(ra, dec, obstime)
+
+        assert coords.get_field_rotation_from_altaz(az, el) == pytest.approx(
+            coords.get_field_rotation(ra, dec, obstime), abs=1e-9
+        )
+
+    def test_scalar_input_returns_a_float(self, coordinates):
+        assert type(coordinates.get_field_rotation_from_altaz(120.0, 55.0)) is float
+
+    def test_array_form_matches_the_scalar_form(self, coordinates):
+        az = np.array([10.0, 120.0, 200.0, -120.0, 300.0])
+        el = np.array([40.0, 55.0, 60.0, 30.0, 75.0])
+        vector = coordinates.get_field_rotation_from_altaz(az, el)
+        scalars = [
+            coordinates.get_field_rotation_from_altaz(float(a), float(e)) for a, e in zip(az, el)
+        ]
+        assert vector.shape == az.shape
+        np.testing.assert_array_equal(vector, scalars)
+
+    def test_the_instance_atmosphere_does_not_change_the_result(self, site):
+        """The method takes the pose it is given; the instance's refraction is irrelevant."""
+        vacuum = Coordinates(site)
+        refracted = Coordinates(site, atmosphere=AtmosphericConditions.for_fyst())
+        az = np.array([10.0, 120.0, 200.0, -120.0, 300.0])
+        el = np.array([40.0, 55.0, 60.0, 7.0, 75.0])
+        np.testing.assert_array_equal(
+            vacuum.get_field_rotation_from_altaz(az, el),
+            refracted.get_field_rotation_from_altaz(az, el),
+        )
+
+    def test_it_differs_from_the_mechanical_rotation_by_the_parallactic_angle(self, site):
+        """The celestial field rotation is the mechanical rotation plus the parallactic angle.
+
+        ``compute_focal_plane_rotation`` with no instrument rotation is the
+        horizon-frame rotation ``nasmyth_sign * el``; the method adds the
+        parallactic angle of the same pose, which is degrees-scale away from
+        the meridian, so the two must differ by exactly that angle.
+        """
+        coords = Coordinates(site)
+        obstime = Time("2026-03-15T04:00:00", scale="utc")
+        ra, dec = np.array([83.633, 24.0, 150.0, 269.452]), np.array([22.014, -32.0, 2.2, 4.693])
+        az, el = coords.radec_to_altaz(ra, dec, obstime)
+        pa = coords.get_parallactic_angle(ra, dec, obstime)
+        assert np.max(np.abs(pa)) > 10.0  # the comparison discriminates
+
+        mechanical = compute_focal_plane_rotation(el, site=site, offset=InstrumentOffset(0.0, 0.0))
+        celestial = coords.get_field_rotation_from_altaz(az, el)
+        np.testing.assert_allclose(celestial - mechanical, pa, rtol=0.0, atol=1e-9)
+
+
+class TestFieldRotationFromAltazConsistency:
+    """The parallactic angle inside ``get_field_rotation_from_altaz`` matches independent forms.
+
+    The method returns ``nasmyth_sign*el + pa``, and both tests below add
+    ``nasmyth_sign*el`` before comparing, so what they pin is the ``pa``
+    inside it.
+
+    The first test checks the AltAz-form kernel against an independent
+    hour-angle formula on pure spherical geometry (no epoch, no transform),
+    to machine precision. The second checks that
+    ``Coordinates.get_parallactic_angle``, which feeds the same kernel from
+    its own vacuum Az/El, agrees with it at a real epoch.
+    """
+
+    def test_altaz_kernel_matches_the_hour_angle_formula(self, site):
+        coords = Coordinates(site)
+        lat_rad = math.radians(site.latitude)
+
+        # Sample (HA, dec) pairs that are well-separated from the zenith.
+        samples = [
+            (-30.0, -40.0),
+            (15.0, -10.0),
+            (75.0, -55.0),
+            (-120.0, -70.0),
+            (45.0, -20.0),
+        ]
+
+        for ha_deg, dec_deg in samples:
+            ha_rad = math.radians(ha_deg)
+            dec_rad = math.radians(dec_deg)
+
+            # Geometric conversion from (HA, dec) to (az, el) at this
+            # latitude (same spherical triangle used by get_parallactic_angle).
+            sin_el = math.sin(lat_rad) * math.sin(dec_rad) + math.cos(lat_rad) * math.cos(
+                dec_rad
+            ) * math.cos(ha_rad)
+            el_rad = math.asin(sin_el)
+            cos_el = math.cos(el_rad)
+            if cos_el < 1e-9:
+                continue  # skip zenith samples
+            sin_az = -math.sin(ha_rad) * math.cos(dec_rad) / cos_el
+            cos_az = (math.sin(dec_rad) - math.sin(el_rad) * math.sin(lat_rad)) / (
+                cos_el * math.cos(lat_rad)
+            )
+            az_deg = math.degrees(math.atan2(sin_az, cos_az))
+            el_deg = math.degrees(el_rad)
+            if el_deg > 85.0:
+                continue
+
+            # Independent oracle: the hour-angle form of the parallactic angle.
+            numerator_ha = math.sin(ha_rad)
+            denominator_ha = math.cos(dec_rad) * math.tan(lat_rad) - math.sin(dec_rad) * math.cos(
+                ha_rad
+            )
+            pa_ha_deg = math.degrees(math.atan2(numerator_ha, denominator_ha))
+            ha_bangle = site.nasmyth_sign * el_deg + pa_ha_deg
+
+            # The AltAz form, through the method's kernel.
+            altaz_bangle = coords.get_field_rotation_from_altaz(az_deg, el_deg)
+
+            diff = math.fmod(altaz_bangle - ha_bangle + 540.0, 360.0) - 180.0
+            assert abs(diff) < 1e-9, (
+                f"PA mismatch at HA={ha_deg} dec={dec_deg}: "
+                f"altaz={altaz_bangle}, ha={ha_bangle}, diff={diff}"
+            )
+
+    def test_field_rotation_from_altaz_matches_coordinates_via_instance(self, site):
+        """The two PA paths agree to machine precision at a non-J2000 epoch.
+
+        ``get_field_rotation_from_altaz`` (AltAz form) and
+        ``Coordinates.get_parallactic_angle`` (RA/Dec offset + source-CES path)
+        both derive the PA from the *transformed* vacuum Az/El, so they are the
+        same computation. An ``HA = apparent LST - ICRS RA`` form instead leaves a
+        precession bias (0.1 to 0.5 deg at these samples in 2026); this pins that
+        the two agree.
+        """
+        coords = Coordinates(site, atmosphere=AtmosphericConditions.no_refraction())
+        time = Time("2026-06-15T05:00:00", scale="utc")
+
+        saw_nonzero = False
+        for ra, dec in [(120.0, -30.0), (200.0, -55.0), (300.0, -10.0)]:
+            az, el = coords.radec_to_altaz(ra, dec, time)
+            if el < 20.0 or el > 80.0:
+                continue
+            pa = coords.get_parallactic_angle(ra, dec, time)
+            if abs(pa) > 1.0:
+                saw_nonzero = True
+
+            altaz_bangle = coords.get_field_rotation_from_altaz(float(az), float(el))
+            ha_bangle = site.nasmyth_sign * float(el) + float(pa)
+            diff = math.fmod(altaz_bangle - ha_bangle + 540.0, 360.0) - 180.0
+            assert abs(diff) < 1e-6, f"PA paths diverge at RA={ra}, dec={dec}: {diff:.6f} deg"
+
+        assert saw_nonzero  # the comparison genuinely exercised a non-zero PA
+
+
+class TestRiseSetSearchGrid:
+    """``get_rise_set_times`` refuses a search grid it cannot step through."""
+
+    START = Time("2026-03-15T00:00:00", scale="utc")
+
+    @pytest.mark.parametrize("step_hours", [0.0, -0.1, float("nan")])
+    def test_non_positive_or_nan_step_is_refused(self, coordinates, step_hours):
+        with pytest.raises(ValueError, match="step_hours"):
+            coordinates.get_rise_set_times(
+                101.29,
+                -16.72,
+                start_time=self.START,
+                horizon=0.0,
+                max_search_hours=24.0,
+                step_hours=step_hours,
+            )
+
+    @pytest.mark.parametrize("max_search_hours", [0.0, -24.0, float("nan")])
+    def test_non_positive_or_nan_search_span_is_refused(self, coordinates, max_search_hours):
+        with pytest.raises(ValueError, match="max_search_hours"):
+            coordinates.get_rise_set_times(
+                101.29,
+                -16.72,
+                start_time=self.START,
+                horizon=0.0,
+                max_search_hours=max_search_hours,
+                step_hours=0.1,
+            )

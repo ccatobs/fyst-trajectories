@@ -1,9 +1,9 @@
 """Pong scan planner (public via :mod:`fyst_trajectories.planning`)."""
 
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
 
 from ..patterns.configs import PongScanConfig
 from ..patterns.pong import compute_pong_period
@@ -13,24 +13,25 @@ from ._sun_safety import _check_field_sun_safety
 from ._types import FieldRegion, PongComputedParams, ScanBlock, validate_computed_params
 
 if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import SunSafePredicate
 
 
 def plan_pong_scan(
     field: FieldRegion,
+    *,
     velocity: float,
     spacing: float,
-    num_terms: int,
     site: Site,
     start_time: str | Time,
-    timestep: float,
+    num_terms: int = 4,
+    timestep: float = 0.1,
     angle: float = 0.0,
     n_cycles: int = 1,
     detector_offset: "InstrumentOffset | None" = None,
     atmosphere: AtmosphericConditions | None = None,
     sun_safe: "SunSafePredicate | None" = None,
-) -> ScanBlock:
+) -> ScanBlock[PongComputedParams]:
     """Plan a Pong scan over a rectangular field region.
 
     Converts astronomer-friendly field specifications into a PongScanConfig
@@ -47,15 +48,17 @@ def plan_pong_scan(
         velocity. Must be positive.
     spacing : float
         Line spacing in degrees. Must be positive.
-    num_terms : int
-        Number of Fourier terms for smooth turnarounds. Must be >= 1.
     site : Site
         Telescope site configuration.
     start_time : str or Time
         Observation start time (required for celestial patterns).
         Accepts an ISO string or ``astropy.time.Time``.
-    timestep : float
-        Time between trajectory points in seconds. Must be positive.
+    num_terms : int, optional
+        Number of Fourier terms for smooth turnarounds. Default is 4.
+        Must be >= 1.
+    timestep : float, optional
+        Time between trajectory points in seconds. Default is 0.1. Must be
+        positive.
     angle : float, optional
         Rotation angle of the scan pattern in degrees. Default is 0.0
         (no rotation).
@@ -65,11 +68,14 @@ def plan_pong_scan(
         If provided, adjust the trajectory so this detector tracks the
         target instead of the boresight.
     atmosphere : AtmosphericConditions or None, optional
-        Atmospheric conditions for refraction correction. If None,
-        no refraction is applied.
+        Refraction model for the celestial-to-horizon transform. ``None``
+        (default) produces vacuum az/el, which is what a trajectory sent to
+        the telescope must carry: refraction is applied downstream at
+        execution time, so a refracted trajectory would be refracted twice.
+        Pass one only for planning or simulation output.
     sun_safe : SunSafePredicate or None, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
         forwarded to the field-center pre-flight check. ``None`` (default)
         keeps the built-in scalar exclusion-radius check; an injected
         predicate is consulted instead, so the directional sun-avoidance
@@ -86,7 +92,9 @@ def plan_pong_scan(
     Raises
     ------
     ValueError
-        If n_cycles is less than 1.
+        If ``n_cycles`` is less than 1, or if any config field is invalid
+        (non-positive ``velocity``, ``spacing`` or ``timestep``, or
+        ``num_terms`` below 1).
     TargetNotObservableError
         If the target is not observable at the requested time.
     TrajectoryBoundsError
@@ -171,14 +179,17 @@ def plan_pong_scan(
 
 def plan_pong_rotation_sequence(
     config: PongScanConfig,
+    *,
     n_rotations: int,
 ) -> list[PongScanConfig]:
     """Generate a sequence of evenly spaced Pong rotations.
 
     Returns ``n_rotations`` copies of ``config`` with ``angle_i = i *
-    180 / n_rotations`` (the Pong pattern is invariant under 180°
-    rotation). Pass each returned config through :func:`plan_pong_scan`
-    in turn.
+    180 / n_rotations`` (the Pong pattern is invariant under a 180 deg
+    rotation). Each returned config goes straight to
+    :meth:`~fyst_trajectories.patterns.TrajectoryBuilder.with_config`.
+    :func:`plan_pong_scan` takes no config; to plan the same rotations on
+    the planner path, call :func:`plan_pong_rotation_scans`.
 
     Parameters
     ----------
@@ -221,3 +232,99 @@ def plan_pong_rotation_sequence(
 
     step = 180.0 / n_rotations
     return [dataclasses.replace(config, angle=i * step) for i in range(n_rotations)]
+
+
+def plan_pong_rotation_scans(
+    field: FieldRegion,
+    *,
+    n_rotations: int,
+    start_time: str | Time,
+    **plan_pong_scan_kwargs: Any,
+) -> list[ScanBlock[PongComputedParams]]:
+    """Plan a multi-rotation Pong tiling of one field as back-to-back blocks.
+
+    Rotation ``i`` is a :func:`plan_pong_scan` block at ``angle = i * 180 /
+    n_rotations`` (the Pong pattern is invariant under a 180 deg rotation),
+    starting when rotation ``i - 1`` ends: the first starts at
+    ``start_time`` and each later one the previous block's ``duration``
+    after the previous start. This is the planner-path counterpart of
+    :func:`plan_pong_rotation_sequence`, which returns configs for the
+    builder path.
+
+    The blocks are a plan, not one command. Consecutive rotations meet in
+    time and position (the pattern starts and ends at the field centre),
+    but the direction of motion changes at every boundary, so each block is
+    a separate scan; a live dispatcher re-plans each rotation at its own
+    dispatch time with ``plan_pong_scan(field, angle=block.config.angle,
+    ...)``. Each boundary instant is the last sample of one block and the
+    first of the next.
+
+    Parameters
+    ----------
+    field : FieldRegion
+        Rectangular field specification (center RA/Dec, width, height).
+    n_rotations : int
+        Number of rotations to plan. Must be at least 1.
+    start_time : str or Time
+        Start of the first rotation. Accepts an ISO string or
+        ``astropy.time.Time``.
+    **plan_pong_scan_kwargs
+        Every other :func:`plan_pong_scan` keyword (``velocity``,
+        ``spacing`` and ``site`` are required there), passed unchanged to
+        each rotation. ``angle`` is not accepted: this function sets it.
+
+    Returns
+    -------
+    list of ScanBlock
+        ``n_rotations`` blocks in rotation order, one per angle.
+
+    Raises
+    ------
+    TypeError
+        If ``angle`` is among the keywords.
+    ValueError
+        If ``n_rotations`` is less than 1, or as :func:`plan_pong_scan`
+        raises it.
+    TargetNotObservableError
+        If the target is not observable at the start of a rotation.
+    TrajectoryBoundsError
+        If a rotation's trajectory exceeds telescope limits.
+
+    Examples
+    --------
+    >>> from astropy.time import Time
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.planning import FieldRegion, plan_pong_rotation_scans
+    >>> site = get_fyst_site()
+    >>> field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
+    >>> blocks = plan_pong_rotation_scans(
+    ...     field,
+    ...     n_rotations=4,
+    ...     start_time=Time("2026-03-15T01:00:00", scale="utc"),
+    ...     velocity=0.3,
+    ...     spacing=0.1,
+    ...     site=site,
+    ... )
+    >>> [block.config.angle for block in blocks]
+    [0.0, 45.0, 90.0, 135.0]
+    >>> [block.trajectory.start_time.isot[11:19] for block in blocks]
+    ['01:00:00', '01:05:20', '01:10:40', '01:16:00']
+    """
+    if "angle" in plan_pong_scan_kwargs:
+        raise TypeError(
+            "plan_pong_rotation_scans() got an unexpected keyword argument 'angle': "
+            "rotation i is planned at angle i * 180 / n_rotations"
+        )
+    if n_rotations < 1:
+        raise ValueError(f"n_rotations must be at least 1, got {n_rotations}")
+
+    rotation_start = _coerce_start_time(start_time)
+    step = 180.0 / n_rotations
+    blocks = []
+    for i in range(n_rotations):
+        block = plan_pong_scan(
+            field, angle=i * step, start_time=rotation_start, **plan_pong_scan_kwargs
+        )
+        blocks.append(block)
+        rotation_start = rotation_start + TimeDelta(block.duration, format="sec")
+    return blocks

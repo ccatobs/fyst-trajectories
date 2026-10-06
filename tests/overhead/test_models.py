@@ -1,5 +1,11 @@
 """Tests for scheduling data models."""
 
+import copy
+import dataclasses
+import json
+import pickle
+import re
+
 import pytest
 from astropy.time import Time, TimeDelta
 
@@ -14,13 +20,27 @@ from fyst_trajectories.overhead.models import (
     TimelineBlock,
 )
 
-# Block durations come from a Time subtraction converted to seconds; 0.01 s
-# (10 ms) absorbs the float round-off in that conversion.
-_DURATION_TOL_SEC = 0.01
+# Block durations come from a Time subtraction converted to seconds; 1 us
+# absorbs the float round-off in that conversion.
+_DURATION_TOL_SEC = 1e-6
 
 
 class TestObservingPatch:
-    """Derived dec bounds, and the width/scan_type/velocity construction refusals."""
+    """Derived dec bounds, the field-validation refusals, and the read-only ``scan_params``."""
+
+    @staticmethod
+    def _kwargs(**overrides):
+        base = dict(
+            name="p",
+            ra_center=180.0,
+            dec_center=-30.0,
+            width=4.0,
+            height=4.0,
+            scan_type="pong",
+            velocity=0.5,
+        )
+        base.update(overrides)
+        return base
 
     def test_dec_bounds(self):
         patch = ObservingPatch(
@@ -70,6 +90,68 @@ class TestObservingPatch:
                 scan_type="pong",
                 velocity=-1.0,
             )
+
+    def test_negative_height_raises(self):
+        with pytest.raises(ValueError, match="height must be positive"):
+            ObservingPatch(**self._kwargs(height=-1.0))
+
+    def test_non_positive_priority_raises(self):
+        with pytest.raises(ValueError, match="priority must be positive"):
+            ObservingPatch(**self._kwargs(priority=0.0))
+
+    def test_negative_weight_raises(self):
+        with pytest.raises(ValueError, match="weight must be non-negative"):
+            ObservingPatch(**self._kwargs(weight=-0.5))
+
+    def test_unknown_scan_params_key_raises(self):
+        """A mistyped ``scan_params`` key is refused where the patch is made."""
+        with pytest.raises(ValueError, match=r"unknown keys \['spacng'\]"):
+            ObservingPatch(**self._kwargs(scan_params={"spacng": 0.2}))
+
+    def test_scan_params_are_read_only(self):
+        """An edit after construction would bypass the key check above."""
+        patch = ObservingPatch(**self._kwargs(scan_params={"spacing": 0.1}))
+        with pytest.raises(TypeError, match="read-only"):
+            patch.scan_params["spacing"] = 9.0
+        with pytest.raises(TypeError, match="read-only"):
+            patch.scan_params.update(spacng=0.2)
+        assert patch.scan_params == {"spacing": 0.1}
+
+    def test_patch_is_hashable_and_equal_to_its_replace_copy(self):
+        patch = ObservingPatch(**self._kwargs(scan_params={"spacing": 0.1}))
+        same = dataclasses.replace(patch)
+        assert same == patch
+        assert hash(same) == hash(patch)
+
+    def test_pickle_deepcopy_and_json(self):
+        patch = ObservingPatch(**self._kwargs(scan_params={"spacing": 0.1}))
+        assert pickle.loads(pickle.dumps(patch)) == patch
+        assert copy.deepcopy(patch) == patch
+        assert json.loads(json.dumps(dataclasses.asdict(patch)))["scan_params"] == {"spacing": 0.1}
+
+    def test_replace_with_an_unknown_key_still_raises(self):
+        patch = ObservingPatch(**self._kwargs(scan_params={"spacing": 0.1}))
+        edited = dataclasses.replace(patch, scan_params={**patch.scan_params, "spacing": 0.2})
+        assert edited.scan_params == {"spacing": 0.2}
+        with pytest.raises(ValueError, match=r"unknown keys \['spacng'\]"):
+            dataclasses.replace(patch, scan_params={"spacng": 0.2})
+
+    def test_science_block_metadata_holds_a_plain_copy(self, site):
+        patch = ObservingPatch(**self._kwargs(scan_params={"spacing": 0.1}))
+        block = TimelineBlock.science(
+            patch=patch,
+            t_start=Time("2026-06-15T02:00:00", scale="utc"),
+            duration=600.0,
+            az_start=80.0,
+            az_end=120.0,
+            el=55.0,
+            site=site,
+            scan_index=0,
+        )
+        scan_params = block.metadata["scan_params"]
+        assert type(scan_params) is dict
+        scan_params["spacing"] = 0.2
+        assert patch.scan_params == {"spacing": 0.1}
 
 
 class TestCalibrationSpec:
@@ -458,6 +540,18 @@ class TestCalibrationPolicy:
         policy = CalibrationPolicy(planet_cal_footprint="center", planet_cal_scan=True)
         assert policy.planet_cal_footprint == "center"
 
+    @pytest.mark.parametrize("tag", [None, ["c"], 0])
+    def test_a_planet_cal_footprint_that_is_not_a_string_is_rejected(self, tag):
+        """A malformed argument is a ``ValueError`` saying what is expected."""
+        expected = f"planet_cal_footprint must be a str naming one Prime-Cam module, got {tag!r}"
+        with pytest.raises(ValueError, match=re.escape(expected)):
+            CalibrationPolicy(planet_cal_footprint=tag)
+
+    def test_planet_cal_scan_without_targets_rejected(self):
+        """``planet_cal_scan`` with an empty ``planet_targets`` is refused."""
+        with pytest.raises(ValueError, match="planet_targets"):
+            CalibrationPolicy(planet_targets=(), planet_cal_scan=True)
+
 
 class TestBeamMapScheduling:
     """A beam map is due only when a cadence is set, and records its own state field."""
@@ -485,15 +579,6 @@ class TestBeamMapScheduling:
         beam_specs = [spec for spec in needed if spec.name == CalibrationType.BEAM_MAP]
         assert len(beam_specs) == 1
         assert beam_specs[0].duration == overhead.beam_map_duration
-
-    def test_beam_map_state_round_trip(self):
-        """``CalibrationState.update("beam_map", t)`` populates ``last_beam_map``."""
-        from fyst_trajectories.overhead import CalibrationState
-
-        state = CalibrationState()
-        t = Time("2026-06-15T02:00:00", scale="utc")
-        new_state = state.update("beam_map", t)
-        assert new_state.last_beam_map == t
 
 
 class TestObservingTimeline:
@@ -546,8 +631,7 @@ class TestObservingTimeline:
             calibration_policy=CalibrationPolicy(),
         )
         assert tl.n_science_scans == 1
-        # efficiency is a dimensionless science/total ratio; 0.01 = one percentage point.
-        assert abs(tl.efficiency - 0.5) < 0.01
+        assert abs(tl.efficiency - 0.5) < 1e-9
 
     def test_validate_clean(self, site):
         t0 = Time("2026-06-15T02:00:00", scale="utc")

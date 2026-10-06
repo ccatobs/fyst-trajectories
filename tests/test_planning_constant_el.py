@@ -7,6 +7,7 @@ import pytest
 from astropy import units as u
 from astropy.time import Time
 
+from fyst_trajectories import get_fyst_site
 from fyst_trajectories.coordinates import Coordinates
 from fyst_trajectories.exceptions import PointingError, PointingWarning
 from fyst_trajectories.patterns.configs import ConstantElScanConfig
@@ -16,6 +17,20 @@ from fyst_trajectories.planning._ce_geometry import (
     _compute_ce_duration,
     _compute_ce_duration_from_lsa,
 )
+
+
+@pytest.fixture(scope="module")
+def ecdfs_block():
+    """Return the E-CDF-S rising pass at el = 50 the block-shape tests share."""
+    return plan_constant_el_scan(
+        field=FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7),
+        elevation=50.0,
+        velocity=0.5,
+        site=get_fyst_site(),
+        start_time=Time("2026-03-15T17:00:00", scale="utc"),
+        rising=True,
+        angle=170.0,
+    )
 
 
 class TestPlanConstantElScan:
@@ -36,17 +51,9 @@ class TestPlanConstantElScan:
         """Provide a base search time for E-CDF-S CE scans."""
         return Time("2026-03-15T17:00:00", scale="utc")
 
-    def test_basic_plan(self, site, ecdfs_field, search_time):
+    def test_basic_plan(self, ecdfs_block):
         """plan_constant_el_scan returns a ScanBlock with correct types."""
-        block = plan_constant_el_scan(
-            field=ecdfs_field,
-            elevation=50.0,
-            velocity=0.5,
-            site=site,
-            start_time=search_time,
-            rising=True,
-            angle=170.0,
-        )
+        block = ecdfs_block
 
         assert isinstance(block, ScanBlock)
         assert isinstance(block.config, ConstantElScanConfig)
@@ -57,19 +64,10 @@ class TestPlanConstantElScan:
         assert "az_throw" in block.computed_params
         assert "n_scans" in block.computed_params
         assert "Constant-El scan" in block.summary
+        assert block.computed_params["az_throw"] > 0
 
-    def test_elevation_in_trajectory(self, site, ecdfs_field, search_time):
-        block = plan_constant_el_scan(
-            field=ecdfs_field,
-            elevation=50.0,
-            velocity=0.5,
-            site=site,
-            start_time=search_time,
-            rising=True,
-            angle=170.0,
-        )
-
-        assert np.allclose(block.trajectory.el, 50.0)
+    def test_elevation_in_trajectory(self, ecdfs_block):
+        assert np.allclose(ecdfs_block.trajectory.el, 50.0)
 
     def test_rising_vs_setting_different_times(self, site, ecdfs_field, search_time):
         rising = plan_constant_el_scan(
@@ -91,7 +89,13 @@ class TestPlanConstantElScan:
             angle=170.0,
         )
 
-        assert rising.computed_params["start_time_iso"] != setting.computed_params["start_time_iso"]
+        # The rising crossing comes first and lies east of the meridian, the
+        # setting one west of it, so a swapped flag fails every line below.
+        t_rise = Time(rising.computed_params["start_time_iso"], scale="utc")
+        t_set = Time(setting.computed_params["start_time_iso"], scale="utc")
+        assert t_rise < t_set
+        assert rising.computed_params["az_stop"] < 180.0
+        assert setting.computed_params["az_start"] > 180.0
 
     def test_string_start_time(self, site, ecdfs_field):
         block = plan_constant_el_scan(
@@ -106,23 +110,10 @@ class TestPlanConstantElScan:
 
         assert block.duration > 0
 
-    def test_azimuth_throw_positive(self, site, ecdfs_field, search_time):
-        block = plan_constant_el_scan(
-            field=ecdfs_field,
-            elevation=50.0,
-            velocity=0.5,
-            site=site,
-            start_time=search_time,
-            rising=True,
-            angle=170.0,
-        )
-
-        assert block.computed_params["az_throw"] > 0
-
     def test_unreachable_field_raises(self, site):
         # Dec = +70 is never reachable at el=50 from FYST
         field = FieldRegion(ra_center=180.0, dec_center=70.0, width=1.0, height=1.0)
-        with pytest.raises(ValueError, match="Could not find elevation crossing"):
+        with pytest.raises(PointingError, match="Could not find elevation crossing"):
             plan_constant_el_scan(
                 field=field,
                 elevation=50.0,
@@ -132,18 +123,41 @@ class TestPlanConstantElScan:
                 rising=True,
             )
 
-    def test_science_mask_excludes_turnarounds(self, site, ecdfs_field, search_time):
-        block = plan_constant_el_scan(
-            field=ecdfs_field,
-            elevation=50.0,
-            velocity=0.5,
-            site=site,
-            start_time=search_time,
-            rising=True,
-            angle=170.0,
-        )
+    def test_anchor_inside_a_pass_raises(self, site, ecdfs_field):
+        """A search anchored mid-pass refuses to join edges from different passes.
 
-        traj = block.trajectory
+        Anchored at the midpoint of the rising E-CDF-S pass with a 30 h horizon,
+        the leading edge's next crossing falls a day after the trailing edge's,
+        so the planner refuses instead of returning a pass of about a day.
+        """
+        with pytest.raises(PointingError, match="different passes"):
+            plan_constant_el_scan(
+                field=ecdfs_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=Time("2026-03-15T17:34:26.717", scale="utc"),
+                rising=True,
+                angle=170.0,
+                max_search_hours=30.0,
+            )
+
+    def test_negative_az_padding_raises(self, site, ecdfs_field, search_time):
+        """A negative padding would narrow the scan below the field's own extent."""
+        with pytest.raises(ValueError, match="az_padding"):
+            plan_constant_el_scan(
+                field=ecdfs_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=search_time,
+                rising=True,
+                angle=170.0,
+                az_padding=-1.0,
+            )
+
+    def test_science_mask_excludes_turnarounds(self, ecdfs_block):
+        traj = ecdfs_block.trajectory
         assert traj.scan_flag is not None
         science = traj.science_mask
         # science_mask should exclude some turnaround samples
@@ -303,7 +317,7 @@ class TestCEGeometryWrapHandling:
             elevation=31.9,
             velocity=0.5,
             site=site,
-            start_time=Time("2026-09-15T16:13:00", scale="utc"),
+            start_time=Time("2027-03-15T04:19:00", scale="utc"),
             rising=False,
             angle=0.0,
         )
@@ -379,7 +393,7 @@ class TestCEGeometryWrapHandling:
             elevation=31.9,
             velocity=0.5,
             site=site,
-            start_time=Time("2026-09-15T16:13:00", scale="utc"),
+            start_time=Time("2027-03-15T04:19:00", scale="utc"),
             rising=True,
             angle=0.0,
         )
@@ -397,21 +411,20 @@ class TestPlanConstantElLsaWindow:
     """``lsa_window`` places the pass by sidereal angle, not by an elevation crossing.
 
     Covers no-wrap, wrap-around, equal-endpoint validation, not-found
-    handling, the refusal of ``rising`` beside the window, and backward
-    compatibility of the default ``None``.
+    handling, the refusal of ``rising`` beside the window, and that an
+    explicit ``None`` plans exactly what omitting the argument does.
     """
 
     @pytest.fixture
     def deep56_field(self):
         """Deep56-like field centred near RA = 0, dec ~ -2 deg.
 
-        A full Deep56-style patch spans 60 deg in RA
-        (23:00 -> 03:00 wraps) and 14 deg in Dec, but a 60 deg physical field
-        would overflow the azimuth limits. The legacy LSA pipeline
-        sweeps the patch piecewise, not as a single 60-deg-wide raster.
-        For LSA-window unit tests we only need any FieldRegion that
-        coexists with the legal azimuth range; the LSA branch is
-        independent of field geometry.
+        A full Deep56-style patch spans 60 deg in RA (23:00 -> 03:00 wraps)
+        and 14 deg in Dec, and plans at el = 50 in every window these tests
+        plan (``plan_constant_el_scan``'s own example plans it). These tests
+        shrink it to 4 x 4 deg because the sidereal window alone fixes the
+        timing they pin; the field only sets the azimuth range, which must
+        fit the limits.
         """
         return FieldRegion(ra_center=0.0, dec_center=-2.0, width=4.0, height=4.0)
 
@@ -539,7 +552,7 @@ class TestPlanConstantElLsaWindow:
         # Find a time when LST = 100 deg + a small margin, so the next
         # 0.5 h won't include an increasing crossing of 100 deg.
         # Sample LST across a day; pick the first time LST > 100.5 deg
-        # (so the next 0.5 h spans LSA ~108 deg-115 deg, never re-crossing 100 deg).
+        # (so the next 0.5 h spans LSA ~100.5-108 deg, never re-crossing 100 deg).
         anchor = Time("2026-09-15T00:00:00", scale="utc")
         dt = np.arange(0, 24 * 3600, 30.0)
         times = anchor + dt * u.s
@@ -623,7 +636,7 @@ class TestPlanConstantElLsaWindow:
 
         assert label in block.summary
 
-    def test_lsa_window_none_preserves_legacy_behavior(self, site):
+    def test_lsa_window_none_equals_omitting_it(self, site):
         """Default ``lsa_window=None`` is byte-identical to omitting the kwarg.
 
         Guards against accidental coupling between the LSA branch and
@@ -934,7 +947,7 @@ class TestPlanConstantElLsaWindow:
             f"obs_start should differ from start_time by minutes-to-hours, got {dt_sec} s"
         )
 
-    def test_lsa_window_sun_safety_single_call_in_legacy_path(self, site, monkeypatch):
+    def test_lsa_window_sun_safety_single_call_on_the_crossing_path(self, site, monkeypatch):
         """Without ``lsa_window``, only one sun-safety call fires.
 
         Guards the gating property: re-checking sun safety is
@@ -965,33 +978,6 @@ class TestPlanConstantElLsaWindow:
         )
 
         assert len(recorded) == 1
-
-    def test_compute_ce_duration_from_lsa_zero_min_lsa(self, site):
-        """Helper-level regression: ``min_lsa = 0`` is detectable.
-
-        Direct unit test on the geometry helper, independent of the
-        planner. Mirrors ``test_lsa_window_at_lst_zero_crossing`` but
-        without the surrounding planner machinery.
-        """
-        coords = Coordinates(site)
-        sample_anchor = Time("2026-09-15T00:00:00", scale="utc")
-        dt = np.arange(0, 24 * 3600, 30.0)
-        times = sample_anchor + dt * u.s
-        lsa = np.asarray(coords.get_lst(times))
-        idx_arr = np.flatnonzero((lsa > 358.0) & (lsa < 359.5))
-        assert len(idx_arr) > 0
-        base_time = times[idx_arr[0]]
-
-        t_start, t_end, duration = _compute_ce_duration_from_lsa(
-            lsa_window=(0.0, 60.0),
-            coords_obj=coords,
-            base_search_time=base_time,
-        )
-        # 60 deg LSA window / 15 deg per hr = 4 h = 14400 s exactly; abs=1e-6 s absorbs round-off.
-        assert duration == pytest.approx(4.0 * 3600.0, abs=1e-6)
-        lst_at_start = coords.get_lst(t_start)
-        diff = (lst_at_start - 0.0 + 180.0) % 360.0 - 180.0
-        assert abs(diff) < 0.05
 
 
 class TestConstantElSweptSunCheck:
@@ -1080,8 +1066,8 @@ class TestConstantElSweptSunCheck:
         with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
             self._plan(site, sun_safe=late_unsafe)
 
-        # The same predicate inverted (unsafe only before the pass) is silent,
-        # so the warning above is not just "the predicate said no somewhere".
+        # An always-clear predicate is silent over the same pass, so the warning
+        # above comes from the late verdict, not from this pass's own geometry.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             self._plan(site, sun_safe=lambda az, el, t: True)

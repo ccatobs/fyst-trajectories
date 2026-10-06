@@ -11,7 +11,9 @@ diagnostics and RA/Dec hit-density maps.
 
 .. note::
 
-   This subpackage requires the ``plotting`` extra::
+   This subpackage requires the ``plotting`` extra:
+
+   .. code-block:: bash
 
        pip install "fyst-trajectories[plotting]"
 
@@ -30,8 +32,13 @@ elevation floor, and sun-proximity highlighting on each target curve.
 
 .. autofunction:: fyst_trajectories.visualization.plot_visibility
 
-.. autodata:: fyst_trajectories.visualization.DEFAULT_VISIBILITY_TARGETS
-   :no-value:
+.. py:data:: DEFAULT_VISIBILITY_TARGETS
+
+   Default target list for :func:`plot_visibility`, :func:`plot_sky_view`
+   and :func:`plot_observability_windows`: every ``BODY`` entry of
+   :data:`~fyst_trajectories.observability.FLUX_CALIBRATORS` (the planets
+   and the Moon; satellites are left out because they duplicate their
+   parent body's curve).
 
 **Tonight's calibrators from FYST** (planets + Moon, elevation and
 azimuth panels, sun zones from the site configuration)::
@@ -150,11 +157,11 @@ to compose side-by-side policy panels into one figure.
 Focal-Plane Footprint on Sky
 ----------------------------
 
-The detector-array-on-sky view: all seven PrimeCam modules drawn at their
+The detector-array-on-sky view: all seven Prime-Cam modules drawn at their
 true on-sky positions and 0.65° FOV radii for a given boresight elevation,
-rotated by the mechanical Nasmyth field rotation. The axes are to scale
+rotated by the mechanical focal-plane rotation. The axes are to scale
 (equal aspect), so the figure answers "which module lands on the source at
-this elevation?" and makes the elevation-dependent field rotation directly
+this elevation?" and makes the elevation-dependent Nasmyth rotation directly
 visible.
 
 .. autofunction:: fyst_trajectories.visualization.plot_array_footprint
@@ -232,19 +239,19 @@ any built ``Trajectory`` with a ``start_time``::
 
     site = get_fyst_site()
 
-    # Plot detector-center tracks for two PrimeCam modules
-    offsets = [
-        (get_primecam_offset("i1"), "module i1"),
-        (get_primecam_offset("i6"), "module i6"),
-    ]
-    fig = plot_hit_map(trajectory, offsets, site, show=False)
+    # Coverage of two PrimeCam modules, each averaged over its field of view
+    modules = {
+        "module i1": get_primecam_offset("i1"),
+        "module i6": get_primecam_offset("i6"),
+    }
+    fig = plot_hit_map(trajectory, modules=modules, site=site, show=False)
     fig.savefig("coverage_map.png", dpi=300)
 
-**With module footprint convolution**::
+**Raw detector-centre tracks**, without the field-of-view average::
 
     fig = plot_hit_map(
-        trajectory, offsets, site,
-        module_fov=1.3,      # PrimeCam module FOV in degrees (2 x 0.65 deg radius)
+        trajectory, modules=modules, site=site,
+        fov_radius_deg=None,  # the default is the 0.65 deg module radius
         show=False,
     )
 

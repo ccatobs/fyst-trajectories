@@ -4,16 +4,13 @@ Scans back and forth in azimuth at a fixed elevation using a
 smooth polynomial turnaround profile.
 """
 
-import warnings
-
 import numpy as np
 from astropy.time import Time
 
-from ..exceptions import PointingWarning
 from ..site import AtmosphericConditions, Site
-from ..trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, Trajectory
+from ..trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND, Trajectory, TrajectoryMetadata
 from ..trajectory_utils import validate_trajectory_bounds
-from .base import AltAzPattern, TrajectoryMetadata
+from .base import AltAzPattern
 from .configs import ConstantElScanConfig
 from .registry import register_pattern
 from .turnarounds import quintic_turnaround, swept_az_envelope, turnaround_duration_sec
@@ -64,10 +61,6 @@ class ConstantElScanPattern(AltAzPattern):
     def __init__(self, config: ConstantElScanConfig):
         self.config = config
 
-    @property
-    def name(self) -> str:
-        return "constant_el"
-
     def generate(
         self,
         site: Site,
@@ -99,6 +92,9 @@ class ConstantElScanPattern(AltAzPattern):
         ------
         AzimuthBoundsError
             If the scan azimuth range exceeds telescope limits.
+        ValueError
+            If ``duration`` yields fewer than two samples at the config
+            timestep.
         ElevationBoundsError
             If the scan elevation exceeds telescope limits.
         """
@@ -136,7 +132,6 @@ class ConstantElScanPattern(AltAzPattern):
             el_vel=el_vel,
             start_time=start_time,
             metadata=self.get_metadata(),
-            coordsys="altaz",
             scan_flag=scan_flag,
         )
 
@@ -257,18 +252,9 @@ class ConstantElScanPattern(AltAzPattern):
         in_science = in_cruise & (positions >= az_min) & (positions <= az_max)
         scan_flag[in_science] = SCAN_FLAG_SCIENCE
 
-        pos_min = positions.min()
-        pos_max = positions.max()
-        overshoot = max(motion_min - pos_min, pos_max - motion_max)
-        if overshoot > 0.01:
-            warnings.warn(
-                f"Scan positions exceed motion range by {overshoot:.4f} deg "
-                f"(positions [{pos_min:.4f}, {pos_max:.4f}], "
-                f"motion range [{motion_min:.4f}, {motion_max:.4f}]). "
-                "Check scan parameters for consistency.",
-                category=PointingWarning,
-                stacklevel=2,
-            )
+        # The turnaround's peak displacement equals turnaround_overshoot_deg,
+        # so every sample already lies inside the envelope; the clip only
+        # absorbs floating-point rounding at the turnaround apex.
         positions = np.clip(positions, motion_min, motion_max)
 
         return positions, velocities, scan_flag

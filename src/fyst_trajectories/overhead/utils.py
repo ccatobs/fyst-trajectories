@@ -1,503 +1,178 @@
 """Scheduling utility functions.
 
-Provides slew time estimation, observable window computation, transit time
-calculation, and maximum elevation lookup, small utilities that fill gaps
-in the fyst-trajectories API needed by the scheduler.
+Provides what the scheduler and the calibration-night planner share: the
+UTC instant both hold every time as, the scalar cable-wrap placement, the
+check of a policy's footprint tag, and the canonical module name and the
+search start a recorded pass carries.
 """
 
 import math
-from typing import TYPE_CHECKING
+from numbers import Real
 
 import numpy as np
-from astropy import units as u
-from astropy.coordinates import AltAz, SkyCoord
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
 
-from ..coordinates import Coordinates, _parallactic_angle_from_altaz
+from ..patterns.utils import normalize_azimuth
+from ..primecam import PRIMECAM_MODULES, get_primecam_offset
 from ..site import Site
-from ..sun_models import _axis_slew_duration
+from .exceptions import ScanParamsSchemaError
 
-if TYPE_CHECKING:
-    from ..dispatch import SunSafePredicate
-
-__all__ = [
-    "circular_mean_deg",
-    "compute_nasmyth_rotation",
-    "estimate_slew_time",
-    "get_max_elevation",
-    "get_observable_windows",
-    "get_transit_time",
-]
+__all__: list[str] = []
 
 
-# Deliberately outside the subpackage's re-exports: addressable as
-# ``overhead.utils.circular_mean_deg``, not ``overhead.*``.
-def circular_mean_deg(a: float, b: float) -> float:
-    """Circular mean of two angles in degrees.
+def _utc_instant(t: Time | str) -> Time:
+    """Return ``t`` as the simulator holds an instant: a UTC ``Time`` with astropy's defaults.
 
-    Averages on the circle via ``atan2`` of the mean sine and cosine,
-    so the result is the midpoint of the **shorter** arc between the
-    two angles: 355 and 5 average to 0, not to 180.
-
-    This is the right average for a direction statistic (a mean wind
-    bearing, a mean position angle). It is the wrong average for
-    telescope motion, where the mount travels the commanded path
-    rather than the shorter modular arc: azimuths placed in one
-    coherent cable-wrap frame want the arithmetic mean instead, which
-    is why nothing on the scheduler's slew path calls this.
-
-    Parameters
-    ----------
-    a, b : float
-        Angles in degrees.
-
-    Returns
-    -------
-    float
-        Circular-mean angle in degrees, in ``[-180, 180]``.
+    A string is read as UTC. A UTC ``Time`` without a location and with
+    astropy's default ``precision`` (3) and ``out_subfmt`` (``"*"``) is
+    returned unchanged; any other ``Time`` is rebuilt from its UTC Julian
+    date, without a location and with those defaults. Both planners hold
+    every time this way, so a night is planned on the UTC instants its times
+    name, as exactly as astropy converts them (from TT, TAI, TDB and TCG
+    exactly, from UT1 and TCB to within a few units in the last place);
+    every time the simulator records is a UTC string to the millisecond, the
+    form its readers parse; and a pass's ``search_start``, which keeps the
+    UTC Julian date alone, restores the very instant the planner searched
+    from (a location on the ``Time`` would enter its conversion to TDB, and
+    so the planned pass).
     """
-    a_rad = math.radians(a)
-    b_rad = math.radians(b)
-    mean_sin = (math.sin(a_rad) + math.sin(b_rad)) / 2.0
-    mean_cos = (math.cos(a_rad) + math.cos(b_rad)) / 2.0
-    return math.degrees(math.atan2(mean_sin, mean_cos))
+    if isinstance(t, str):
+        return Time(t, scale="utc")
+    if t.scale == "utc" and t.location is None and t.precision == 3 and t.out_subfmt == "*":
+        return t
+    utc = t.utc
+    instant = Time(utc.jd1, utc.jd2, format="jd", scale="utc")
+    instant.format = "isot"
+    return instant
 
 
-def compute_nasmyth_rotation(az: float, el: float, site: Site) -> float:
-    """Compute the celestial-frame field rotation from AltAz coordinates.
+def _search_start_record(start: Time) -> list[float]:
+    """Record where a pass's search began as its two-part UTC Julian date ``[jd1, jd2]``.
 
-    This is the sky orientation of the Nasmyth-mounted focal plane, a
-    derived quantity (FYST has no instrument rotator to command).
-
-    Returns ``site.nasmyth_sign * el + parallactic_angle``. That is the
-    same quantity
-    :meth:`fyst_trajectories.coordinates.Coordinates.get_field_rotation`
-    returns; the two differ only in what they are given, RA/Dec there and
-    an already-transformed horizon position here, and both take the
-    parallactic angle from one shared kernel, so they agree to machine
-    precision.
-
-    Parameters
-    ----------
-    az : float
-        Azimuth in degrees.
-    el : float
-        Elevation in degrees.
-    site : Site
-        Site configuration providing ``latitude`` and ``nasmyth_sign``.
-
-    Returns
-    -------
-    float
-        Nasmyth boresight rotation in degrees.
+    The two parts are the ``jd1`` and ``jd2`` of the instant as
+    :func:`_utc_instant` holds it, so :func:`_search_start_time` restores
+    that instant exactly; an ISO string, even at nanosecond precision,
+    generally does not.
     """
-    pa = _parallactic_angle_from_altaz(math.radians(az), math.radians(el), site.latitude)
-    return float(site.nasmyth_sign * el + pa)
+    instant = _utc_instant(start)
+    return [float(instant.jd1), float(instant.jd2)]
 
 
-def estimate_slew_time(
-    az1: float,
-    el1: float,
-    az2: float,
-    el2: float,
-    site: Site,
-) -> float:
-    """Estimate telescope slew time between two positions.
+def _search_start_time(record: object) -> Time:
+    """Restore the instant :func:`_search_start_record` recorded, exactly.
 
-    Uses a trapezoidal motion profile (accelerate to max velocity, cruise,
-    decelerate). Returns the maximum of azimuth and elevation slew times
-    since axes move simultaneously.
-
-    Azimuth distance is the direct path ``abs(az2 - az1)`` when both
-    positions are within the telescope's azimuth range, respecting the
-    cable wrap constraint. The telescope cannot take a shorter modular
-    path if it would require passing through the cable wrap boundary.
-
-    .. note::
-
-       ``az1`` and ``az2`` must be expressed in one **coherent**
-       cable-wrap frame, not merely both inside the telescope's
-       ``[az_min, az_max] = [-180, 360]`` window: that window is 540
-       degrees wide, so two in-window values can denote the same sky
-       azimuth a full turn apart, and this function then reports a
-       phantom unwind. Place the second azimuth on the in-limits
-       360-degree representative nearest the first (what the overhead
-       scheduler does before every call); mixing raw astropy
-       ``[0, 360]`` azimuth with telescope-normalised azimuth has the
-       same effect. The function does not enforce or check this.
-
-    Parameters
-    ----------
-    az1, el1 : float
-        Starting azimuth and elevation in degrees.
-    az2, el2 : float
-        Ending azimuth and elevation in degrees.
-    site : Site
-        Observatory site with telescope limits.
-
-    Returns
-    -------
-    float
-        Estimated slew time in seconds (including settle_time=0 here;
-        the caller adds settle_time from OverheadModel if desired).
+    Raises
+    ------
+    ScanParamsSchemaError
+        If ``record`` is not two finite numbers.
     """
-    az_limits = site.telescope_limits.azimuth
-    el_limits = site.telescope_limits.elevation
+    if not (
+        isinstance(record, (list, tuple))
+        and len(record) == 2
+        and all(isinstance(x, Real) and not isinstance(x, bool) for x in record)
+        and all(math.isfinite(x) for x in record)
+    ):
+        raise ScanParamsSchemaError(
+            "search_start must be two finite numbers, the UTC Julian date [jd1, jd2] the "
+            f"planner's search began at; got {record!r}"
+        )
+    start = Time(float(record[0]), float(record[1]), format="jd", scale="utc")
+    start.format = "isot"
+    return start
 
-    # Direct path respecting cable wrap limits.  Both positions should
-    # already be within [az_min, az_max]; the direct distance is the
-    # actual motor travel without wrapping around 360 deg.
-    az_dist = abs(az2 - az1)
-    az_time = _axis_slew_duration(az_dist, az_limits.max_velocity, az_limits.max_acceleration)
-    el_time = _axis_slew_duration(
-        abs(el2 - el1), el_limits.max_velocity, el_limits.max_acceleration
-    )
-    return max(az_time, el_time)
 
-
-def get_observable_windows(
-    ra: float,
-    dec: float,
-    start_time: Time,
-    end_time: Time,
-    site: Site,
-    min_elevation: float = 30.0,
-    check_sun: bool = True,
-    sun_safe: "SunSafePredicate | None" = None,
-) -> list[tuple[Time, Time]]:
-    """Find all time windows when a target is observable.
-
-    Composes ``Coordinates.get_rise_set_times()`` with sun avoidance
-    checks to find all continuous observable windows within the given
-    time range.
+def _require_module_tag(field: str, tag: object) -> None:
+    """Refuse a policy's footprint tag unless it names one Prime-Cam module.
 
     Parameters
     ----------
-    ra : float
-        Right Ascension in degrees.
-    dec : float
-        Declination in degrees.
-    start_time : Time
-        Start of search window (UTC).
-    end_time : Time
-        End of search window (UTC).
-    site : Site
-        Observatory site configuration.
-    min_elevation : float
-        Minimum elevation in degrees (default: 30). The default is an
-        observing floor, deliberately above the telescope's commandable
-        elevation limit: FYST's pointing and surface accuracy are
-        specified (requirements document P-TSSS-RQT-0001 rev G) over
-        roughly 30 to 85 degrees elevation, so windows computed at the
-        mechanical limit overstate schedulable time for science that
-        needs in-spec performance. The calibration-night planner applies
-        a 30 degree floor of its own
-        (:class:`~fyst_trajectories.overhead.CalibrationNightPolicy`'s
-        ``el_min``);
-        the observability and planet-calibration defaults elsewhere in
-        the package use the commandable limit. Pass
-        ``site.telescope_limits.elevation.min`` to plan down to the
-        commandable bound.
-    check_sun : bool
-        Whether to check sun avoidance (default: True).
-    sun_safe : SunSafePredicate, optional
-        Injected sun-safety model
-        (:class:`~fyst_trajectories.dispatch.SunSafePredicate`, e.g. from
-        :func:`~fyst_trajectories.sun_models.make_sun_safe`) used for the
-        sun sub-window filtering instead of the site's scalar exclusion
-        radius. Default ``None``. Only consulted when ``check_sun`` is
-        true and the site has Sun avoidance enabled.
-
-    Returns
-    -------
-    list of (Time, Time)
-        List of (window_start, window_end) pairs.
+    field : str
+        The policy field the tag came from, named in the message.
+    tag : object
+        The value to check.
 
     Raises
     ------
     ValueError
-        If ``sun_safe`` is given while ``check_sun`` is False (the model
-        would be silently ignored).
+        If ``tag`` is not a str, or is a str that
+        :func:`~fyst_trajectories.primecam.get_primecam_offset` does not
+        resolve (the message then lists the names it takes).
     """
-    if sun_safe is not None and not check_sun:
-        raise ValueError(
-            "sun_safe was given but check_sun is False; enable check_sun or drop the model."
-        )
-    coords = Coordinates(site)
-    windows = []
-    search_start = start_time
-
-    while search_start.unix < end_time.unix:
-        remaining_hours = (end_time - search_start).sec / 3600.0
-        if remaining_hours < 0.01:
-            break
-
-        rise, set_time = coords.get_rise_set_times(
-            ra,
-            dec,
-            search_start,
-            horizon=min_elevation,
-            max_search_hours=remaining_hours,
-            step_hours=0.1,
-        )
-
-        if rise is None and set_time is None:
-            _az, el = coords.radec_to_altaz(ra, dec, search_start)
-            if el > min_elevation:
-                # Source is up. Search for when it sets below min_elevation.
-                set_time = _find_set_time(ra, dec, search_start, end_time, coords, min_elevation)
-                rise = search_start
-                if set_time is None:
-                    # Truly circumpolar: observable for the full remaining window
-                    set_time = end_time
-            else:
-                break
-        elif rise is not None and set_time is None:
-            # Source rises but doesn't set within search window
-            set_time = end_time
-        elif rise is None and set_time is not None:
-            # Source is setting, use search_start as rise
-            rise = search_start
-
-        if rise.unix < start_time.unix:
-            rise = start_time
-        if set_time.unix > end_time.unix:
-            set_time = end_time
-
-        if set_time.unix <= rise.unix:
-            search_start = set_time + TimeDelta(60, format="sec")
-            continue
-
-        if check_sun and site.sun_avoidance.enabled:
-            safe_windows = _filter_sun_unsafe(
-                ra,
-                dec,
-                rise,
-                set_time,
-                coords,
-                site.sun_avoidance.exclusion_radius,
-                sun_safe=sun_safe,
-            )
-            windows.extend(safe_windows)
-        else:
-            windows.append((rise, set_time))
-
-        search_start = set_time + TimeDelta(60, format="sec")
-
-    return windows
+    if not isinstance(tag, str):
+        raise ValueError(f"{field} must be a str naming one Prime-Cam module, got {tag!r}")
+    try:
+        get_primecam_offset(tag)
+    except KeyError as exc:
+        raise ValueError(f"{field}: {exc.args[0]}") from None
 
 
-def _filter_sun_unsafe(
-    ra: float,
-    dec: float,
-    window_start: Time,
-    window_end: Time,
-    coords: Coordinates,
-    min_sun_angle: float,
-    step_minutes: float = 5.0,
-    sun_safe: "SunSafePredicate | None" = None,
-) -> list[tuple[Time, Time]]:
-    """Filter out sun-unsafe portions of an observable window.
+def _canonical_module_name(tag: str) -> str:
+    """Return the canonical name of the Prime-Cam module ``tag`` names.
+
+    That is the first key of
+    :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` naming the same
+    module, the name the per-module coverage records use: ``"c"`` for every
+    spelling of the centre module (``"C"``, ``"center"``, ``"IM0"``) and
+    ``"i1"`` .. ``"i6"`` for the ring. A recorded pass names its module this
+    way because an execution layer may compare the name as a string.
+
+    Raises
+    ------
+    KeyError
+        If ``tag`` names no Prime-Cam module.
+    """
+    module = get_primecam_offset(tag)
+    return next(name for name, offset in PRIMECAM_MODULES.items() if offset is module)
+
+
+def _normalize_az(az: float, site: Site, ref: float | None = None) -> float:
+    """Normalize a scalar azimuth into the site's cable-wrap window.
+
+    Wraps :func:`fyst_trajectories.patterns.utils.normalize_azimuth` (which
+    operates on arrays) for the scalar azimuths the scheduler and the
+    calibration-night planner carry.
+    Raw astropy azimuths are in ``[0, 360)``; the slew-time and boresight
+    math must compare them in the telescope's ``[az_min, az_max]`` window
+    or a north-straddling pair measures the long way round instead of the
+    short one and flips the boresight by ~180 deg.
+
+    With ``ref`` given, the in-limits 360-degree representative nearest
+    ``ref`` is returned, so the scheduler models the mount's direct
+    cable-wrap move from its current position. Without ``ref`` each
+    scalar independently takes the representative nearest the window
+    centre, which relocates the wrap seam rather than removing it; pass
+    ``ref`` whenever a coherent frame with another azimuth is required.
 
     Parameters
     ----------
-    ra, dec : float
-        Target coordinates in degrees.
-    window_start, window_end : Time
-        Observable window bounds.
-    coords : Coordinates
-        Coordinate transformer.
-    min_sun_angle : float
-        Minimum angular separation from Sun in degrees (scalar mode).
-    step_minutes : float
-        Time resolution for sun safety sampling.
-    sun_safe : SunSafePredicate, optional
-        Injected model whose verdicts replace the scalar separation test.
-
-    Returns
-    -------
-    list of (Time, Time)
-        Safe sub-windows.
-    """
-    duration_minutes = (window_end - window_start).sec / 60.0
-    n_steps = max(2, int(duration_minutes / step_minutes) + 1)
-    times = window_start + TimeDelta(
-        np.linspace(0, (window_end - window_start).sec, n_steps), format="sec"
-    )
-
-    az_arr, el_arr = coords.radec_to_altaz(ra, dec, times)
-    if sun_safe is not None:
-        if hasattr(sun_safe, "batch"):
-            safe_mask = np.atleast_1d(np.asarray(sun_safe.batch(az_arr, el_arr, times), dtype=bool))
-            if safe_mask.shape != (n_steps,):
-                # A scalar/short result would silently broadcast one verdict
-                # over the whole window; fail loudly instead.
-                raise ValueError(
-                    f"sun_safe.batch returned shape {safe_mask.shape}, expected "
-                    f"({n_steps},) verdicts for the window grid"
-                )
-        else:
-            safe_mask = np.array(
-                [
-                    bool(sun_safe(float(az_arr[i]), float(el_arr[i]), times[i]))
-                    for i in range(n_steps)
-                ],
-                dtype=bool,
-            )
-    else:
-        sun_az_arr, sun_alt_arr = coords.get_sun_altaz(times)
-        c_target = SkyCoord(az=az_arr * u.deg, alt=el_arr * u.deg, frame="altaz")
-        c_sun = SkyCoord(az=sun_az_arr * u.deg, alt=sun_alt_arr * u.deg, frame="altaz")
-        sep = c_target.separation(c_sun).deg
-        safe_mask = sep > min_sun_angle
-
-    windows = []
-    in_safe = False
-    safe_start = None
-
-    for i in range(n_steps):
-        if safe_mask[i] and not in_safe:
-            safe_start = times[i]
-            in_safe = True
-        elif not safe_mask[i] and in_safe:
-            windows.append((safe_start, times[i]))
-            in_safe = False
-
-    if in_safe:
-        windows.append((safe_start, times[-1]))
-
-    return windows
-
-
-def _find_set_time(
-    ra: float,
-    dec: float,
-    start_time: Time,
-    end_time: Time,
-    coords: Coordinates,
-    min_elevation: float,
-    step_hours: float = 0.1,
-) -> Time | None:
-    """Find when a source sets below min_elevation within a time range.
-
-    Used when the source is currently above min_elevation and
-    ``get_rise_set_times`` returned ``(None, None)`` because no rise was
-    found; the source may still set within the window.
-
-    Parameters
-    ----------
-    ra, dec : float
-        Target coordinates in degrees.
-    start_time, end_time : Time
-        Search range.
-    coords : Coordinates
-        Coordinate transformer.
-    min_elevation : float
-        Horizon altitude in degrees.
-    step_hours : float
-        Time step for sampling in hours.
-
-    Returns
-    -------
-    Time or None
-        Set time, or None if the source stays above min_elevation for
-        the entire range (circumpolar).
-    """
-    remaining_hours = (end_time - start_time).sec / 3600.0
-    n_steps = max(2, int(remaining_hours / step_hours) + 1)
-    dt = np.linspace(0, (end_time - start_time).sec, n_steps)
-    times = start_time + TimeDelta(dt, format="sec")
-
-    source = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-    altaz_frame = AltAz(
-        obstime=times,
-        location=coords.location,
-        pressure=0 * u.hPa,
-    )
-    altitudes = source.transform_to(altaz_frame).alt.to_value(u.deg)
-
-    set_indices = np.where((altitudes[:-1] >= min_elevation) & (altitudes[1:] < min_elevation))[0]
-    if len(set_indices) == 0:
-        return None
-
-    i_set = set_indices[0]
-    denom = altitudes[i_set + 1] - altitudes[i_set]
-    frac = 0.0 if abs(denom) < 1e-12 else (min_elevation - altitudes[i_set]) / denom
-    return times[i_set] + frac * (times[i_set + 1] - times[i_set])
-
-
-# dec is unused on purpose (a transit is a pure hour-angle crossing); the
-# argument stays for signature symmetry with the sibling source helpers.
-def get_transit_time(  # pylint: disable=unused-argument
-    ra: float,
-    dec: float,
-    start_time: Time,
-    site: Site,
-    max_search_hours: float = 24.0,
-) -> Time | None:
-    """Find the next transit (meridian crossing) for a source.
-
-    Transit occurs when the hour angle is zero (source on the meridian),
-    corresponding to maximum elevation for non-circumpolar sources.
-
-    Parameters
-    ----------
-    ra : float
-        Right Ascension in degrees.
-    dec : float
-        Declination in degrees.
-    start_time : Time
-        Start of search window (UTC).
+    az : float
+        Azimuth in degrees (typically raw astropy ``[0, 360)``).
     site : Site
-        Observatory site configuration.
-    max_search_hours : float
-        Maximum forward search window in hours.
-
-    Returns
-    -------
-    Time or None
-        Transit time, or None if not found within search window.
-    """
-    coords = Coordinates(site)
-    n_steps = int(max_search_hours * 60) + 1
-    dt = np.arange(n_steps) * 60.0
-    times = start_time + TimeDelta(dt, format="sec")
-
-    ha_values = coords.get_hour_angle(ra, times)
-
-    for i in range(len(ha_values) - 1):
-        if ha_values[i] <= 0 < ha_values[i + 1]:
-            frac = -ha_values[i] / (ha_values[i + 1] - ha_values[i])
-            transit_dt = dt[i] + frac * 60.0
-            return start_time + TimeDelta(transit_dt, format="sec")
-
-    return None
-
-
-def get_max_elevation(  # pylint: disable=unused-argument
-    ra: float,
-    dec: float,
-    site: Site,
-) -> float:
-    """Compute the maximum elevation a source reaches at this site.
-
-    For a source at declination ``dec`` observed from latitude ``lat``,
-    the maximum elevation is ``90 - |lat - dec|`` degrees.
-
-    Parameters
-    ----------
-    ra : float
-        Right Ascension in degrees (unused, included for API consistency).
-    dec : float
-        Declination in degrees.
-    site : Site
-        Observatory site configuration.
+        Site providing the azimuth limits.
+    ref : float or None, optional
+        Reference azimuth (already in the cable-wrap window) selecting
+        among the in-limits representatives. Default None.
 
     Returns
     -------
     float
-        Maximum elevation in degrees. At most 90 (reached when ``dec``
-        equals the site latitude); can be negative for sources that never
-        rise at this site.
+        Azimuth shifted into ``[az_min, az_max]``. When two in-limits
+        representatives lie equally far from ``ref`` (a half turn either
+        way), the window-centre one is kept.
+
+    Warns
+    -----
+    PointingWarning
+        If no representative of the azimuth lies inside the window, which
+        happens only for a window narrower than 360 deg; the window-centre
+        representative, outside the limits, is then returned.
     """
-    return 90.0 - abs(site.latitude - dec)
+    base = float(normalize_azimuth(np.array([az], dtype=float), site)[0])
+    if ref is None:
+        return base
+    limits = site.telescope_limits.azimuth
+    best = base
+    for cand in (base - 360.0, base + 360.0):
+        if limits.min <= cand <= limits.max and abs(cand - ref) < abs(best - ref):
+            best = cand
+    return best

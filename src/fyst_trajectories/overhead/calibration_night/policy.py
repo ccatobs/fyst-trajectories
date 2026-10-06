@@ -19,6 +19,7 @@ from typing import Any, TypedDict
 
 from ..models import ObservingTimeline
 from ..transitions import DeferralReason
+from ..utils import _require_module_tag
 from .tables import ElevationBin, ScanParameterTable
 
 __all__ = [
@@ -30,6 +31,8 @@ __all__ = [
     "TuningPolicy",
     "encode_calibration_night_metadata",
     "read_calibration_night_metadata",
+    "tables_as_record",
+    "tables_from_record",
 ]
 
 #: Version of the header payload written by :func:`encode_calibration_night_metadata`.
@@ -139,15 +142,24 @@ class CalibrationNightPolicy:
         A solved footprint crossing longer than this is refused as too
         slow for now (the body is retried later). Default 1200.
     az_speed : float, optional
-        Per-leg azimuth speed in deg/s. Default 1.5.
+        Per-leg azimuth speed in deg/s. Default 1.5, a commissioning value
+        rather than a ratified limit.
     az_accel : float, optional
-        Azimuth acceleration in deg/s^2. Default 1.5; note the quintic
-        turnaround peaks at 1.5 times this value, which exceeds the site's
-        advisory ceiling and is reported as a warning on every pass.
+        Nominal azimuth acceleration in deg/s^2. Default 1.0, a
+        commissioning value rather than a ratified limit; the quintic
+        turnaround peaks at 1.5 times this value, 1.5 deg/s^2 at the
+        default.
     footprint : str, optional
-        Module tag the passes are planned on. Default ``"c"``; any other
-        tag is accepted for simulation and warns, since the execution layer
-        accepts centred footprints only.
+        The Prime-Cam module the passes are planned on, by one name as
+        :func:`~fyst_trajectories.primecam.get_primecam_offset` takes it
+        (``"c"`` or its aliases ``"center"`` and ``"IM0"``, or ``"i1"`` ..
+        ``"i6"``, in any case). A pass's dispatch dict names the module by
+        its canonical name, ``"c"`` or ``"i1"`` .. ``"i6"``, since the
+        execution layer compares the name as a string; the night's record
+        keeps the name as given. Default ``"c"``; a tag naming any other
+        module is accepted for simulation and a warning recorded (in
+        ``VisitPlan.warnings`` and the night's metadata), since the
+        execution layer accepts centred footprints only.
     footprint_margin : float, optional
         On-sky margin in degrees added on every side of the footprint
         before the crossing is solved. Default 0.
@@ -158,6 +170,14 @@ class CalibrationNightPolicy:
         Default False; a reference dwell longer than the solved crossing
         is not applied (the full crossing is scanned and a warning
         recorded).
+    use_table_throw : bool, optional
+        Sweep the table's azimuth throw instead of the throw solved from
+        the footprint. Default False: each pass sweeps the footprint's
+        azimuth extent at its elevation (the margined module's width over
+        the cosine of the elevation), with no padding. When True, the
+        table's throw is swept at and above the table's lowest bin
+        (extrapolated above its top bin) and, below it, the kernel's
+        default padded throw.
     min_pass_seconds : float, optional
         The night ends when less than this remains. Default 60.
     retry_after_seconds : float, optional
@@ -180,19 +200,23 @@ class CalibrationNightPolicy:
     Raises
     ------
     ValueError
-        If ``el_min`` is outside [0, 90), a duration or speed is not
-        positive, ``footprint_margin`` or ``moon_min_separation`` is
-        negative, ``n_passes`` is below 1, or ``footprint`` is empty.
+        If ``el_min`` is outside [0, 90), a duration, ``az_speed`` or
+        ``az_accel`` is not a positive, finite number,
+        ``footprint_margin`` or ``moon_min_separation`` is negative or
+        not finite, ``n_passes`` is below 1, or ``footprint`` is not a
+        str naming one Prime-Cam module (for an unknown name the message
+        lists the names it takes).
     """
 
     el_min: float = 30.0
     max_pass_seconds: float = 1200.0
     az_speed: float = 1.5
-    az_accel: float = 1.5
+    az_accel: float = 1.0
     footprint: str = "c"
     footprint_margin: float = 0.0
     n_passes: int = 1
     use_table_dwell: bool = False
+    use_table_throw: bool = False
     min_pass_seconds: float = 60.0
     retry_after_seconds: float = 300.0
     max_wait_seconds: float = 3600.0
@@ -219,13 +243,28 @@ class CalibrationNightPolicy:
             raise ValueError(f"n_passes must be at least 1, got {self.n_passes}")
         if self.moon_min_separation is not None:
             _non_negative("moon_min_separation", self.moon_min_separation)
-        if not self.footprint:
-            raise ValueError("footprint must be a module tag")
+        # Checked here, as CalibrationPolicy checks its planet_cal_footprint,
+        # so a tag no module answers to is refused when the policy is built
+        # rather than by the first visit's footprint lookup.
+        _require_module_tag("footprint", self.footprint)
 
     def as_record(self) -> dict[str, Any]:
         """Return the policy as a plain dict of JSON builtins (nested for ``tuning``)."""
         record = dataclasses.asdict(self)
         return json.loads(json.dumps(record))
+
+
+def _policy_from_record(record: dict[str, Any]) -> CalibrationNightPolicy:
+    """Rebuild a policy from :meth:`CalibrationNightPolicy.as_record` output.
+
+    A record without ``use_table_throw`` was written before the switch
+    existed, when every pass swept the table's throw, so it is read as
+    ``use_table_throw=True``.
+    """
+    fields = dict(record)
+    fields.setdefault("use_table_throw", True)
+    fields["tuning"] = TuningPolicy(**fields["tuning"])
+    return CalibrationNightPolicy(**fields)
 
 
 class CalibrationNightMetadata(TypedDict):
@@ -258,10 +297,15 @@ class CalibrationNightMetadata(TypedDict):
     drops : list of dict
         Every drop for the night, as ``{"body", "at", "reason"}``.
     unplaced : list of dict
-        Scripted entries that timed out, as ``{"body", "overrides"}``.
+        Scripted entries that timed out, as ``{"body", "at", "overrides"}``,
+        ``at`` being when the entry was set aside.
     warnings : list of dict
         Advisories the planner recorded while planning visits, as
         ``{"body", "at", "message"}``.
+    telescope_limits : dict
+        The site's axis limits, as nested dicts of the
+        :class:`~fyst_trajectories.site.TelescopeLimits` fields; the ECSV
+        header does not carry them.
     """
 
     targets: list[str]
@@ -277,6 +321,7 @@ class CalibrationNightMetadata(TypedDict):
     drops: list[dict[str, str]]
     unplaced: list[dict[str, Any]]
     warnings: list[dict[str, str]]
+    telescope_limits: dict[str, dict[str, float]]
 
 
 def tables_as_record(tables: dict[str, ScanParameterTable]) -> dict[str, list[dict[str, float]]]:

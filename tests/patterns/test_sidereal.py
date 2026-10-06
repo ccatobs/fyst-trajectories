@@ -1,6 +1,5 @@
 """Tests for SiderealTrackPattern."""
 
-import numpy as np
 import pytest
 from astropy.time import Time
 
@@ -17,13 +16,11 @@ class TestSiderealTrackPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
 
-        assert trajectory.n_points > 0
         assert trajectory.start_time == start_time
         assert trajectory.pattern_type == "sidereal"
         assert trajectory.center_ra == 83.633
         assert trajectory.center_dec == 22.014
 
-    @pytest.mark.slow
     def test_track_changes_with_time(self, site):
         """Az/El changes during tracking as the Earth rotates."""
         start_time = Time("2026-10-15T03:00:00", scale="utc")
@@ -53,20 +50,8 @@ class TestSiderealTrackPattern:
 
         trajectory = pattern.generate(site, duration=10.0, start_time=start_time)
 
-        # With 0.5s timestep over 10s, should have ~20 points
-        assert trajectory.n_points == pytest.approx(20, abs=2)
-
-    def test_finite_positions(self, site):
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        config = SiderealTrackConfig(timestep=0.1)
-        pattern = SiderealTrackPattern(ra=180.0, dec=-30.0, config=config)
-
-        trajectory = pattern.generate(site, duration=60.0, start_time=start_time)
-
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
-        assert np.all(np.isfinite(trajectory.az_vel))
-        assert np.all(np.isfinite(trajectory.el_vel))
+        # round(10 / 0.5) + 1 samples, both endpoints included
+        assert trajectory.n_points == 21
 
     def test_none_start_time_raises(self, site):
         config = SiderealTrackConfig(timestep=0.1)

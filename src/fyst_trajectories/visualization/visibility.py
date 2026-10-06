@@ -10,7 +10,7 @@ Planning-side renderers for calibration-target work:
   bar lane per target from ``check_observability``'s windows.
 - :func:`plot_array_footprint`: the instantaneous PrimeCam module layout
   projected onto the sky at a given elevation, at honest angular scale,
-  showing the Nasmyth field rotation.
+  showing the focal-plane rotation.
 
 These functions require ``matplotlib`` (install via
 ``pip install fyst-trajectories[plotting]``). They never call
@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from astropy.time import Time
 
-from ..coordinates import Coordinates
+from ..coordinates import Coordinates, _build_time_grid
 from ..observability import (
     ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG,
     FLUX_CALIBRATORS,
@@ -51,7 +51,6 @@ from ..observability import (
     SunEventKind,
     Target,
     TargetKind,
-    _build_time_grid,
     _target_altaz_grid,
     check_observability,
     resolve_target,
@@ -61,6 +60,7 @@ from ..offsets import _rotate_offset, compute_focal_plane_rotation
 from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import AtmosphericConditions, Site, get_fyst_site
 from ..sun_models import make_sun_safe
+from ._common import FOOTPRINT_COLOR, _palette, _unique_offsets
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -68,8 +68,8 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import SunSafePredicate, ZonedSunSafePredicate
 
 __all__ = [
     "DEFAULT_VISIBILITY_TARGETS",
@@ -190,7 +190,7 @@ def plot_visibility(
     atmosphere: AtmosphericConditions | None = None,
     extra_targets: "dict[str, Target] | None" = None,
     tz: tzinfo | None = None,
-    sun_model: "str | SunSafePredicate | None" = None,
+    sun_model: "str | ZonedSunSafePredicate | None" = None,
     panels: "Sequence[str]" = ("elevation", "azimuth"),
     title: str | None = None,
     axes: "Sequence[Axes] | None" = None,
@@ -294,9 +294,15 @@ def plot_visibility(
         ``horizon_hours`` / ``step_minutes`` is not a finite positive
         value, or an injected ``sun_model``'s ``batch`` / ``threshold``
         returns the wrong shape for the time grid.
+    AttributeError
+        If an injected ``sun_model`` has no ``batch`` method, or no
+        ``threshold`` method when the ``"sun_separation"`` panel is drawn.
+        The base :class:`~fyst_trajectories.sun_protocols.SunSafePredicate`
+        contract makes both optional, so a plain predicate such as
+        ``Coordinates.is_sun_safe`` is refused here; build the model with
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`.
     """
     try:
-        import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
         import matplotlib.dates as mdates  # pylint: disable=import-outside-toplevel
         import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
     except ImportError:
@@ -397,12 +403,7 @@ def plot_visibility(
     # overlay). Compare in normalized hex so named cycles ('tab:red') and
     # tuple entries are excluded too. Modulo indexing (not zip) so more
     # targets than palette colors are still all drawn, merely reusing colors.
-    reserved = {mcolors.to_hex(c) for c in (SUN_COLOR, WARNING_COLOR, EXCLUSION_COLOR)}
-    cycle = [
-        c
-        for c in plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        if mcolors.to_hex(c) not in reserved
-    ] or ["#1f77b4"]
+    cycle = _palette((SUN_COLOR, WARNING_COLOR, EXCLUSION_COLOR), "#1f77b4")
     colors = [cycle[i % len(cycle)] for i in range(len(tracks))]
 
     def draw_target_curve(ax: "Axes", y: np.ndarray, overlays, color: str) -> None:
@@ -423,7 +424,7 @@ def plot_visibility(
             ax.plot(x, sun_el, color=SUN_COLOR, lw=2.2, zorder=2)
             ax.axhline(el_floor, color="0.3", ls="--", lw=1.0, zorder=1)
             ax.annotate(
-                f"el_min = {el_floor:.0f}°",
+                f"el_min = {el_floor:.0f} deg",
                 xy=(0.012, el_floor),
                 xycoords=("axes fraction", "data"),
                 va="bottom",
@@ -488,8 +489,8 @@ def plot_visibility(
                 )
         else:
             for color, label in (
-                (EXCLUSION_COLOR, f"≤ {sun_cfg.exclusion_radius:.0f}° from Sun (exclusion)"),
-                (WARNING_COLOR, f"≤ {sun_cfg.warning_radius:.0f}° (warning)"),
+                (EXCLUSION_COLOR, f"<= {sun_cfg.exclusion_radius:.0f} deg from Sun (exclusion)"),
+                (WARNING_COLOR, f"<= {sun_cfg.warning_radius:.0f} deg (warning)"),
             ):
                 handles.append(plt.Line2D([], [], color=color, lw=2.6, label=label))
     axes[0].legend(handles=handles, ncol=4, fontsize=8.5, loc="upper right", framealpha=0.85)
@@ -535,8 +536,7 @@ def plot_observability_windows(
 ) -> "Figure":
     """Plot each target's observable windows as one bar lane per target.
 
-    The Gantt-style answer to "which chunks of tonight can I use for which
-    target": one horizontal lane per requested target, a bar per
+    A Gantt-style chart: one horizontal lane per requested target, a bar per
     contiguous interval where every criterion passes (elevation limits,
     the selected sun-avoidance policy, and any ``avoid`` zones), computed
     by :func:`~fyst_trajectories.observability.check_observability` on its
@@ -611,7 +611,6 @@ def plot_observability_windows(
         :func:`~fyst_trajectories.observability.check_observability`).
     """
     try:
-        import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
         import matplotlib.dates as mdates  # pylint: disable=import-outside-toplevel
         import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
     except ImportError:
@@ -665,12 +664,7 @@ def plot_observability_windows(
     _shade_night(ax, x, sun_el_shading)
     _draw_sun_event_lines(ax, events, annotate=True)
 
-    reserved = {mcolors.to_hex(c) for c in (SUN_COLOR, WARNING_COLOR, EXCLUSION_COLOR)}
-    cycle = [
-        c
-        for c in plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        if mcolors.to_hex(c) not in reserved
-    ] or ["#1f77b4"]
+    cycle = _palette((SUN_COLOR, WARNING_COLOR, EXCLUSION_COLOR), "#1f77b4")
 
     # First requested target on the TOP lane, reading order.
     for lane, report in enumerate(reports):
@@ -711,12 +705,10 @@ def plot_observability_windows(
     elif sun_model is not None:
         policy = getattr(sun_model, "describe", "injected model")
     else:
-        policy = f"Sun > {site.sun_avoidance.exclusion_radius:.0f}\N{DEGREE SIGN}"
-    criteria = (
-        f"observable: el \N{GREATER-THAN OR EQUAL TO} {el_floor:.0f}\N{DEGREE SIGN}, {policy}"
-    )
+        policy = f"Sun > {site.sun_avoidance.exclusion_radius:.0f} deg"
+    criteria = f"observable: el >= {el_floor:.0f} deg, {policy}"
     if el_max is not None:
-        criteria += f", el \N{LESS-THAN OR EQUAL TO} {el_max:.0f}\N{DEGREE SIGN}"
+        criteria += f", el <= {el_max:.0f} deg"
     if avoid:
         criteria += f", {len(avoid)} avoid zone{'s' if len(avoid) != 1 else ''}"
     ax.legend(
@@ -756,7 +748,7 @@ def plot_array_footprint(
 ) -> "Figure":
     """Plot the instantaneous focal-plane module layout on sky at an elevation.
 
-    Rotates each module's boresight offset by the mechanical Nasmyth field
+    Rotates each module's boresight offset by the mechanical focal-plane
     rotation (:func:`~fyst_trajectories.offsets.compute_focal_plane_rotation`
     with ``parallactic_angle=0``, i.e. ``nasmyth_sign * el +
     instrument_rotation``) and draws it as a circle of its on-sky FOV
@@ -790,7 +782,7 @@ def plot_array_footprint(
         Label each module circle with its offset name. Default True.
     title : str, optional
         Axes title. Default is an auto-generated summary including the
-        field-rotation angle.
+        focal-plane rotation angle.
     ax : matplotlib.axes.Axes, optional
         Draw into this axes instead of creating a new figure. When given,
         ``show`` is ignored and no layout call is made on the caller's
@@ -830,20 +822,14 @@ def plot_array_footprint(
     site = get_fyst_site() if site is None else site
     modules = PRIMECAM_MODULES if modules is None else modules
 
-    # Alias keys ("c"/"center") reference one offset; draw each offset once.
-    unique: list[InstrumentOffset] = []
-    for offset in modules.values():
-        if not any(offset is seen for seen in unique):
-            unique.append(offset)
-    if not unique:
-        raise ValueError("modules must not be empty")
+    unique = _unique_offsets(modules)
 
     # Exact tangent-plane rotation: preserves each module's radial distance
     # at every elevation (a project-through-the-sphere-then-flatten round
     # trip would distort at high elevation and collapse at el = 90).
     placements = []
     for offset in unique:
-        rotation = compute_focal_plane_rotation(el, site, offset)
+        rotation = compute_focal_plane_rotation(el, site=site, offset=offset)
         dx, dy = _rotate_offset(offset, rotation)
         placements.append((offset, float(dx), float(dy)))
 
@@ -858,15 +844,23 @@ def plot_array_footprint(
             Circle(
                 (dx, dy),
                 fov_radius_deg,
-                facecolor="#1f77b4",
+                facecolor=FOOTPRINT_COLOR,
                 alpha=0.25,
-                edgecolor="#1f77b4",
+                edgecolor=FOOTPRINT_COLOR,
                 lw=1.4,
             )
         )
         if labels:
-            name = (offset.name or "").removeprefix("PrimeCam-") or "?"
-            ax.annotate(name, xy=(dx, dy), ha="center", va="center", fontsize=9)
+            name = (offset.name or "").removeprefix("PrimeCam-").lower() or "?"
+            ax.annotate(
+                name,
+                xy=(dx, dy),
+                xytext=(0, -14),  # below the centre, clear of the boresight marker
+                textcoords="offset points",
+                ha="center",
+                va="center",
+                fontsize=9,
+            )
 
     ax.plot(0.0, 0.0, "+", color="black", ms=10, mew=1.5, zorder=5)
 
@@ -881,10 +875,10 @@ def plot_array_footprint(
     ax.set_ylabel("Elevation offset from boresight [deg]", fontsize=10)
 
     if title is None:
-        rot_text = f"Nasmyth rotation {site.nasmyth_sign * el:+.1f}°"
+        rot_text = f"Nasmyth rotation {site.nasmyth_sign * el:+.1f} deg"
         if any(offset.instrument_rotation != 0.0 for offset in unique):
             rot_text += " + per-module instrument rotation"
-        title = f"PrimeCam footprint at el = {el:.1f}°  ({rot_text}, to scale)"
+        title = f"Prime-Cam footprint at el = {el:.1f} deg  ({rot_text}, to scale)"
     ax.set_title(title, fontsize=11.5)
 
     if own_fig:

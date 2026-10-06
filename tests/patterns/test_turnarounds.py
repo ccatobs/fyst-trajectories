@@ -111,7 +111,8 @@ class TestTurnaroundDurationIsShared:
         The quantiser's leg arithmetic and the generated trajectory have to
         price a reversal identically; deriving the count from the cruise time
         alone quantises a 300 s window to 848 s for a 2.44 deg leg at
-        1.5 deg/s and 1.0 deg/s^2.
+        1.5 deg/s and 1.0 deg/s^2 (pinned by
+        ``tests/test_planning_helpers.py``).
         """
         expected = turnaround_duration_sec(az_speed, az_accel)
         assert expected == pytest.approx(2.0 * az_speed / az_accel)

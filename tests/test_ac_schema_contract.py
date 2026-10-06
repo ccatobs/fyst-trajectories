@@ -1,12 +1,14 @@
 """Survey-planner (fystplan / OpsDB) to scan-task (typed PCS) schema contract.
 
 The survey planner (KOSMA ``fystplan``) writes per-source scan parameters into
-OpsDB; at dispatch time the PCS typed scan task reads them back and calls the
-matching ``plan_*_scan`` planner in this library. There is no shared schema
-module between the two sides. The field names are coupled only by an *implicit*
-adapter, called the ``A->C`` adapter in the assertions below. This test pins
-that adapter explicitly so a future rename on **either** side fails loudly here
-instead of silently mis-dispatching a scan at the telescope.
+OpsDB; at dispatch time the expansion layer reads them back, turns them into the
+``scan_params`` of a typed PCS scan task, and the task calls the matching
+``plan_*_scan`` planner in this library. There is no shared schema module
+between the two sides. The field names are coupled only by an *implicit*
+adapter, called the ``A->C`` adapter in the assertions below. A planner-side
+rename fails loudly here. The fystplan side is a transcription (the fixtures
+below), so a fystplan-side rename is caught only when the fixtures are
+re-read against the fystplan source.
 
 The OpsDB scan parameters are carried in the ``mapping_parameters`` /
 ``additional_params`` fields.
@@ -26,7 +28,7 @@ The renames pinned here (verified against the fystplan source):
 ====================  ========================  =====================
 fystplan / OpsDB key  fyst-trajectories kwarg   scan type(s)
 ====================  ========================  =====================
-``onsky_velocity``    ``velocity``              pong, daisy, CE
+``onsky_velocity``    ``velocity``              pong, daisy
 ``R0``                ``radius``                daisy
 ``Rt``                ``turn_radius``           daisy
 ``Ra``                ``avoidance_radius``      daisy
@@ -39,6 +41,12 @@ Note ``num_terms`` is **not** renamed: fystplan already emits ``num_terms``
 fystplan and this library already agree. The mapping is asserted as identity so
 that if either side ever drifts to the singular, this test catches it.
 
+For constant elevation ``onsky_velocity`` is not a rename:
+``plan_constant_el_scan`` takes ``velocity`` as the mount-frame azimuth rate
+(on-sky speed = ``velocity * cos(elevation)``), so the adapter divides the
+on-sky rate by ``cos(elevation)``. That assumes the fystplan key is on-sky,
+as its name says, which KOSMA has not yet confirmed.
+
 fystplan omits ``start_acceleration`` and ``y_offset`` from its daisy dict
 entirely (it specifies no ramp acceleration). ``y_offset`` is covered by the
 ``plan_daisy_scan`` default (0.0); ``start_acceleration`` is a *required*
@@ -49,6 +57,7 @@ it cannot be forgotten.
 
 import inspect
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -64,14 +73,14 @@ from fyst_trajectories.planning import (
 # ---------------------------------------------------------------------------
 # THE ADAPTER CONTRACT
 #
-# ``RENAME_MAP`` is the single source of truth for the A->C key translation.
-# A dispatch-time PCS adapter that reads OpsDB and calls ``plan_*_scan`` must
-# apply exactly this map. If a planner kwarg is renamed without updating this
-# map, the subset assertions below fail; if fystplan adds an emit key without a
-# rule here, the coverage assertions fail.
+# ``RENAME_MAP`` records the A->C key translation. A dispatch-time adapter that
+# reads OpsDB and builds the ``scan_params`` for ``plan_*_scan`` must apply this
+# map. If a planner kwarg is renamed without updating this map, the subset
+# assertions below fail; a new fystplan emit key fails the coverage assertions
+# once the fixtures are re-transcribed from the fystplan source.
 # ---------------------------------------------------------------------------
 RENAME_MAP: dict[str, str] = {
-    "onsky_velocity": "velocity",
+    "onsky_velocity": "velocity",  # pong/daisy; CE converts the rate (see above)
     "R0": "radius",
     "Rt": "turn_radius",
     "Ra": "avoidance_radius",
@@ -227,8 +236,8 @@ def test_pong_mapped_keys_are_planner_params(fystplan_pong_dict):
     """Mapped fystplan pong keys are a subset of ``plan_pong_scan`` params.
 
     Fails if a pong planner kwarg is renamed without updating ``RENAME_MAP``
-    (the mapped key would no longer be accepted) or if fystplan adds an
-    unmapped scalar key.
+    (the mapped key would no longer be accepted) or if a re-transcribed fixture
+    carries an unmapped scalar key.
     """
     mapped = _apply_rename(fystplan_pong_dict)
     accepted = _planner_param_names(plan_pong_scan)
@@ -360,7 +369,9 @@ def test_daisy_required_params_coverage_and_gaps(fystplan_daisy_dict):
         f"daisy: unexpected uncovered required params {sorted(uncovered)}; "
         f"expected exactly {{'start_acceleration'}} (the known A->C gap)"
     )
-    assert covered_by_dispatch  # sanity: ra/dec/site/... recognised as infra
+    # ``timestep`` defaults to 0.1 s, so dispatch supplies it only to override
+    # the default; every other infra key is still required.
+    assert covered_by_dispatch == dispatch_supplied - {"timestep"}
 
 
 def test_daisy_y_offset_is_covered_by_default():
@@ -377,6 +388,10 @@ def test_daisy_y_offset_is_covered_by_default():
     )
 
 
+@pytest.mark.filterwarnings(
+    "ignore:Trajectory (azimuth|elevation) acceleration:"
+    "fyst_trajectories.exceptions.AccelerationLimitWarning",
+)
 def test_daisy_adapter_builds_a_valid_planner_call(site, fystplan_daisy_dict):
     """End-to-end: adapter output (+ infra + supplied start_acceleration) runs.
 
@@ -406,15 +421,15 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
 
     ``plan_constant_el_scan`` does not accept az_min/az_max/duration directly.
     It *derives* the az range and duration from the field + elevation (or from
-    the ``lsa_window`` partial bridge). The only direct scalar rename is
-    ``onsky_velocity`` -> ``velocity``; ``nominal_alt`` -> ``elevation`` is a
-    semantic (not literal) rename handled by the structural adapter. This test
-    pins which keys are direct-mappable and which are structural.
+    the ``lsa_window`` partial bridge). ``onsky_velocity`` reaches ``velocity``
+    through a frame conversion (on-sky to mount azimuth rate), not a literal
+    rename, and ``nominal_alt`` -> ``elevation`` is a semantic rename; both are
+    handled by the structural adapter. This test pins which keys are
+    direct-mappable and which are structural.
     """
     accepted = _planner_param_names(plan_constant_el_scan)
 
-    # Direct scalar rename that lands on a real planner kwarg.
-    assert RENAME_MAP["onsky_velocity"] == "velocity"
+    # The converted rate lands on a real planner kwarg.
     assert "velocity" in accepted
 
     # Structural keys: present in fystplan, NOT direct planner kwargs (the
@@ -441,7 +456,7 @@ def test_ce_required_params_are_satisfiable():
     """Every required ``plan_constant_el_scan`` param is adapter-satisfiable.
 
     field (from the source's RA/Dec + extent), elevation (from nominal_alt),
-    velocity (from onsky_velocity) come via the structural adapter; site and
+    velocity (converted from onsky_velocity) come via the structural adapter; site and
     start_time are dispatch infra.
     """
     required = _required_planner_params(plan_constant_el_scan)
@@ -455,17 +470,21 @@ def test_ce_required_params_are_satisfiable():
 
 
 def test_ce_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
+    """The CE adapter converts the on-sky rate to the mount azimuth rate it dispatches."""
     field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=8.0)
+    elevation = fystplan_ce_dict["nominal_alt"]
+    velocity = fystplan_ce_dict["onsky_velocity"] / math.cos(math.radians(elevation))
     block = plan_constant_el_scan(
         field=field,
-        elevation=fystplan_ce_dict["nominal_alt"],
-        velocity=fystplan_ce_dict["onsky_velocity"],
+        elevation=elevation,
+        velocity=velocity,
         site=site,
         start_time="2026-09-15T00:00:00",
         rising=True,
     )
     assert block.trajectory.n_points > 0
-    assert block.config.elevation == fystplan_ce_dict["nominal_alt"]
+    assert block.config.elevation == elevation
+    assert block.config.az_speed == pytest.approx(velocity)
 
 
 # ---------------------------------------------------------------------------
@@ -474,8 +493,8 @@ def test_ce_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
 def test_source_ces_required_keyword_only_params():
     """``plan_source_ces`` requires footprint and site as keyword-only.
 
-    These have no default and are keyword-only (leading bare ``*``). A
-    schedlib FYST policy / PCS source_scan task calling this must supply both.
+    These have no default and are keyword-only (leading bare ``*``). The
+    PCS ``source_scan`` task calling this must supply both.
     ``el_bore`` is optional: a caller may instead anchor with an
     approximate ``start_time`` and let the planner derive the boresight
     elevation. Callers on the classic ``night``/``window`` forms must still
@@ -554,7 +573,6 @@ def test_source_ces_body_and_radec_are_mutually_exclusive(site):
     from astropy.time import Time
 
     from fyst_trajectories.offsets import InstrumentOffset
-    from fyst_trajectories.primecam import MODULE_FOV_RADIUS_DEG
 
     footprint = InstrumentOffset(dx=0.0, dy=0.0)
     with pytest.raises(ValueError, match="either 'body' or 'ra'/'dec'"):
@@ -567,9 +585,6 @@ def test_source_ces_body_and_radec_are_mutually_exclusive(site):
             window=(Time("2026-03-15T00:00:00"), Time("2026-03-15T06:00:00")),
             site=site,
         )
-    # MODULE_FOV_RADIUS_DEG referenced to keep the import meaningful for readers
-    # comparing against the schedlib make_geometry radius; not load-bearing here.
-    assert MODULE_FOV_RADIUS_DEG > 0
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +604,9 @@ _PROVENANCE_ONLY = frozenset(
 # them) but not read by the pinned execution layer, which re-plans from the
 # keys it forwards and drops the rest without a message. Each is part of the
 # outbound ask to have them forwarded; move a key out of this set only when a
-# re-pinned snapshot shows it forwarded.
+# re-pinned snapshot shows it forwarded, and then out of the calibration-night
+# dispatch sheet's copy (overhead/calibration_night/reporting.py, held equal to
+# this set below) and the list on docs/overhead_calibration_night.rst.
 _AWAITING_FORWARD = frozenset(
     {
         "eta_offset_deg",  # per-pass focal-plane row shift
@@ -608,11 +625,15 @@ _AWAITING_FORWARD = frozenset(
 def test_emitted_source_ces_keys_partition_against_the_execution_layer_pin():
     """Every emitted key is forwarded, provenance-only, or explicitly awaiting.
 
+    The calibration-night dispatch sheet names, under each pass row, the
+    awaiting keys that row's dict carries; the simulator cannot import from
+    tests, so it keeps its own copy of the set, held equal to this one here.
+
     The snapshot is re-cut only on a deliberate re-pin of the execution layer
     (see tests/data/README.md). A failure here means a key changed class:
     classify a new ``SourceCESScanParams`` key above, or move a key out of the
-    awaiting set once the new pin forwards it. Never edit the snapshot to make
-    this pass.
+    awaiting set, and out of the sheet's copy, once the new pin forwards it.
+    Never edit the snapshot to make this pass.
     """
     from fyst_trajectories.overhead import SourceCESScanParams
 
@@ -641,3 +662,10 @@ def test_emitted_source_ces_keys_partition_against_the_execution_layer_pin():
     # the library, so the pin and the kernel have not drifted apart either.
     accepted = _planner_param_names(plan_source_ces)
     assert forwarded <= accepted, sorted(forwarded - accepted)
+
+    from fyst_trajectories.overhead.calibration_night.reporting import _UNFORWARDED_KEYS
+
+    assert _UNFORWARDED_KEYS == _AWAITING_FORWARD, (
+        f"the dispatch sheet's note names {sorted(_UNFORWARDED_KEYS)}, but the keys awaiting "
+        f"forwarding at pin {snapshot['commit']} are {sorted(_AWAITING_FORWARD)}"
+    )

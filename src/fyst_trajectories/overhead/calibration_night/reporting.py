@@ -115,7 +115,8 @@ class NightSummary:
     drops : tuple of dict
         Every drop for the night.
     unplaced : tuple of dict
-        Scripted entries that timed out.
+        Scripted entries that timed out, as ``{"body", "at", "overrides"}``,
+        ``at`` being when the entry was set aside.
     warnings : tuple of str
         Advisories the planner recorded, one per distinct message.
     """
@@ -279,7 +280,16 @@ def summarize_calibration_night(timeline: ObservingTimeline) -> NightSummary:
     )
 
 
-_OVERRIDE_KEYS = ("az_speed", "az_accel", "az_throw", "dwell", "footprint_margin")
+# The pass-dict keys that shape a pass but that the execution layer's
+# source-scan task, at the revision this library is checked against, does
+# not read: it drops them without a message and plans the pass from its own
+# defaults. The simulator cannot import from tests, so this is a copy;
+# tests/test_ac_schema_contract.py holds it equal to the keys that test
+# classifies as awaiting forwarding against the vendored snapshot of that
+# task's keys.
+_UNFORWARDED_KEYS = frozenset(
+    {"az_speed", "az_throw", "dwell", "eta_offset_deg", "footprint_margin"}
+)
 
 
 def dispatch_sheet(timeline: ObservingTimeline) -> str:
@@ -290,10 +300,16 @@ def dispatch_sheet(timeline: ObservingTimeline) -> str:
     source-scan task, the scan mode and boresight elevation, the planned
     encoder wrap, the slack the plan left in front of the pass, and
     a blank column for the actual elapsed time. Detector operations are
-    rows of their own. Rows whose dict carries override keys end with a
-    note to confirm the execution layer forwards them. Rendering only:
-    nothing is re-planned, so a sheet printed from a timeline read back
-    from ECSV is byte-identical to one printed from memory.
+    rows of their own. A pass row whose dict carries keys that shape the
+    pass but that the source-scan task, at the revision this library is
+    checked against, drops without a message (``az_speed``, ``az_throw``,
+    ``dwell``, ``eta_offset_deg`` and ``footprint_margin``) ends with a
+    note naming the ones it carries, for the person dispatching to confirm
+    the execution layer forwards them; the planner writes ``az_speed`` and
+    ``eta_offset_deg`` into every pass dict, so every pass row it plans
+    carries the note. Rendering only: nothing is re-planned, so a sheet
+    printed from a timeline read back from ECSV is byte-identical to one
+    printed from memory.
 
     Parameters
     ----------
@@ -331,7 +347,7 @@ def dispatch_sheet(timeline: ObservingTimeline) -> str:
             lines.append(
                 f"{n:6d}  {start}  {duration}  source_scan on {params.get('body')}: "
                 f"mode {params.get('mode')}, el_bore {float(params.get('el_bore', 0.0)):.2f} deg, "
-                f"wrap az {float(transition.get('wrap', block.az_start)):.1f} deg, "
+                f"visit wrap az {float(transition.get('wrap', block.az_start)):.1f} deg, "
                 f"legs {block.metadata.get('n_legs')}, "
                 f"duty {float(block.metadata.get('science_fraction', 0.0)):.0%}; "
                 f"slack {_pass_slack(previous):.0f} s; elapsed ______"
@@ -340,10 +356,10 @@ def dispatch_sheet(timeline: ObservingTimeline) -> str:
                 f"        scan_params={json.dumps(params, sort_keys=True)}  "
                 f"scheduled_t0_unix={block.t_start.unix:.3f}"
             )
-            if any(key in params for key in _OVERRIDE_KEYS):
+            unforwarded = [key for key in sorted(params) if key in _UNFORWARDED_KEYS]
+            if unforwarded:
                 lines.append(
-                    "        note: this dict carries scan-geometry keys; confirm the execution "
-                    "layer forwards them"
+                    "        note: confirm the execution layer forwards " + ", ".join(unforwarded)
                 )
         elif block.block_type == BlockType.CALIBRATION:
             lines.append(

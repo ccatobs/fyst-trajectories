@@ -11,9 +11,9 @@ import typing
 import pytest
 
 from fyst_trajectories import list_patterns
-from fyst_trajectories.overhead.models import (
+from fyst_trajectories.overhead.models import ObservingPatch
+from fyst_trajectories.overhead.schemas import (
     _SCAN_TYPE_TO_SCAN_PARAM_KEYS,
-    ObservingPatch,
     ScanParamsDict,
     SourceCESScanParams,
 )
@@ -21,19 +21,7 @@ from fyst_trajectories.planning._types import (
     _SCAN_TYPE_TO_KEYS,
     ComputedParams,
     SourceCESComputedParams,
-    validate_computed_params,
 )
-
-
-def test_source_ces_computed_params_message_signposts():
-    """A source_ces computed_params check points the caller at the right validator.
-
-    Passing ``"source_ces"`` raises ``KeyError`` whose message names the public
-    ``validate_scan_params`` entry point, so a caller who reaches this corner is
-    directed to the validator that does accept source-CES params.
-    """
-    with pytest.raises(KeyError, match="validate_scan_params"):
-        validate_computed_params({}, "source_ces")
 
 
 def test_scan_type_vocabularies_are_intentionally_inverted():

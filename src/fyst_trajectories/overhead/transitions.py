@@ -6,7 +6,7 @@ in which azimuth wrap, how long will it take, and if not, why not.
 :func:`plan_transition` composes the dispatch-time wrap choice
 (:func:`~fyst_trajectories.dispatch.choose_encoder_solution`), the
 path-level Sun sweep (:func:`~fyst_trajectories.sun_models.make_slew_safe`)
-and the kinematic slew estimate (:func:`~fyst_trajectories.overhead.estimate_slew_time`)
+and the kinematic slew estimate (:func:`~fyst_trajectories.dispatch.estimate_slew_time`)
 into a single value, :class:`Transition`, whose ``cause`` is a
 :class:`DeferralReason`. A blocked transition is returned, never raised,
 so a sequencer can defer or drop the target and move on.
@@ -34,13 +34,18 @@ import numpy as np
 from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
-from ..dispatch import choose_encoder_solution
+from ..dispatch import choose_encoder_solution, estimate_slew_time
 from ..exceptions import EncoderSolutionCause, EncoderSolutionError
 from ..sun_models import find_sun_safe_detour, make_slew_safe, make_sun_safe
-from .utils import estimate_slew_time
+from ..sun_protocols import (
+    PathSlewSafePredicate,
+    SlewSafePredicate,
+    SunSafePredicate,
+    ZonedSunSafePredicate,
+)
 
 if TYPE_CHECKING:
-    from ..dispatch import EncoderSolution, SlewSafePredicate, SunSafePredicate
+    from ..dispatch import EncoderSolution
     from ..site import Site
 
 __all__ = [
@@ -54,7 +59,7 @@ __all__ = [
 _ESCAPE_EL_STEP_DEG = 5.0
 #: How much deeper into the zone than its start an escape path may go, in
 #: degrees, absorbing the sweep's sampling and the Sun's own motion. Depth
-#: is measured against the model's own threshold when it exposes one and
+#: is measured against the model's own threshold when it is a zoned model and
 #: against the raw Sun separation otherwise, so for a directional zone the
 #: tolerance absorbs a step of the threshold table as well.
 _ESCAPE_APPROACH_TOLERANCE_DEG = 0.5
@@ -70,8 +75,10 @@ class DeferralReason(str, enum.Enum):
     ``BELOW_BAND``, ``ABOVE_BAND``, ``CROSSING_TOO_SLOW``, ``MOON``,
     ``UNPLANNABLE``, ``WINDOW_CLOSED``), and the label on an idle stretch
     (``NOTHING_AVAILABLE``, ``SCRIPT_WAITING``, ``WAITING_FOR_PASS``,
-    ``WINDOW_CLOSED`` on the stretch a schedule ends with, and
-    ``NO_ESCAPE`` when the Sun zone holds the telescope where it sits).
+    ``WINDOW_CLOSED`` on the stretch a schedule ends with,
+    ``NO_ESCAPE`` when the Sun zone holds the telescope where it sits, and
+    ``UNPLANNABLE`` when the offline scheduler cannot plan a science
+    subscan of the patch it selected).
     ``NO_WRAP`` and ``LIMITS`` are geometry and drop a target for the
     night; every other refusal passes with time and defers it. Members
     are strings, so they serialise as their values.
@@ -186,7 +193,8 @@ def _default_slew_safe(sun_safe: SunSafePredicate, site: Site) -> SlewSafePredic
     """Sweep ``sun_safe`` along the direct path under the site's own axis limits.
 
     Built from ``site.telescope_limits`` rather than the library-wide
-    constants so the verdict and :func:`estimate_slew_time`, which reads
+    constants so the verdict and
+    :func:`~fyst_trajectories.dispatch.estimate_slew_time`, which reads
     the same limits, describe one telescope.
     """
     limits = site.telescope_limits
@@ -220,7 +228,7 @@ def plan_transition(
     :func:`~fyst_trajectories.dispatch.choose_encoder_solution` (point-safe
     at ``time``, direct path clear under ``slew_safe``, the whole
     ``goal_az_span`` inside the azimuth limits), then prices the slew with
-    :func:`~fyst_trajectories.overhead.estimate_slew_time` in that wrap.
+    :func:`~fyst_trajectories.dispatch.estimate_slew_time` in that wrap.
     A refused goal becomes a :class:`Transition` whose ``cause`` names the
     refusal; nothing is raised for infeasibility.
 
@@ -267,14 +275,15 @@ def plan_transition(
         is reported as ``SUN_PATH`` and the caller decides.
     hold : float, optional
         Seconds the goal must stay point-safe after arrival. Default
-        ``0.0``, the arrival instant alone. A positive value re-runs the
+        ``0.0``, the start instant alone. A positive value re-runs the
         wrap choice over ``(time, arrival, arrival + hold)``, using the
         all-times gate
         :func:`~fyst_trajectories.dispatch.choose_encoder_solution` already
         applies to a dwell grid, and a goal that does not survive it is
         refused as ``SUN_POINT``. The window is anchored on the arrival
         the instantaneous choice priced, so the hold is a sampled gate,
-        not a proof.
+        not a proof. A two-leg detour is held the same way, from its own
+        arrival.
 
     Returns
     -------
@@ -291,10 +300,10 @@ def plan_transition(
     ------
     ValueError
         If ``time`` is not scalar, ``settle_time`` or ``hold`` is negative,
-        the span is malformed, the chosen encoder azimuth lies more than
-        540 degrees from ``current_az`` (the two are not in one coherent
-        frame), or a detour is requested with a ``slew_safe`` that cannot
-        evaluate a path.
+        a pose coordinate or a span endpoint is NaN or infinite, the span
+        is malformed, the chosen encoder azimuth lies more than 540 degrees
+        from ``current_az`` (the two are not in one coherent frame), or a
+        detour is requested with a ``slew_safe`` that cannot evaluate a path.
 
     Examples
     --------
@@ -312,9 +321,9 @@ def plan_transition(
     """
     if not time.isscalar:
         raise ValueError("plan_transition takes a scalar start time")
-    if settle_time < 0.0:
+    if not settle_time >= 0.0:
         raise ValueError(f"settle_time must be non-negative, got {settle_time}")
-    if hold < 0.0:
+    if not hold >= 0.0:
         raise ValueError(f"hold must be non-negative, got {hold}")
     if sun_safe is None:
         sun_safe = make_sun_safe("scalar", site=site)
@@ -359,6 +368,8 @@ def plan_transition(
                 site,
                 slew_safe,
                 settle_time,
+                sun_safe=sun_safe,
+                hold=hold,
             )
             if detour is not None:
                 return detour
@@ -401,8 +412,18 @@ def _plan_detour(
     site: Site,
     slew_safe: SlewSafePredicate,
     settle_time: float,
+    *,
+    sun_safe: SunSafePredicate,
+    hold: float,
 ) -> Transition | None:
-    """Try a two-leg detour to each point-safe wrap, nearest first."""
+    """Try a two-leg detour to each point-safe wrap, nearest first.
+
+    With a positive ``hold`` a detour counts only when its goal stays
+    point-safe at the detour's own arrival and ``hold`` seconds later. A
+    ``SUN_POINT`` transition is returned when detours were found and every
+    one failed that gate; ``None`` means no detour path was found at all.
+    """
+    failed_hold = False
     for az_to in sorted(candidates, key=lambda az: abs(az - current_az)):
         via = find_sun_safe_detour(
             current_az, current_el, az_to, goal_el, time, slew_safe, site=site
@@ -415,6 +436,11 @@ def _plan_detour(
             + estimate_slew_time(az_mid, el_mid, az_to, goal_el, site)
             + settle_time
         )
+        if hold > 0.0:
+            window = time + TimeDelta([duration, duration + hold], format="sec")
+            if not all(sun_safe(az_to, goal_el, t) for t in window):
+                failed_hold = True
+                continue
         return Transition(
             az_from=current_az,
             el_from=current_el,
@@ -425,6 +451,16 @@ def _plan_detour(
             cause=DeferralReason.OK,
             detour_via=(float(az_mid), float(el_mid)),
             az_shift=az_to - goal_az,
+        )
+    if failed_hold:
+        return Transition(
+            az_from=current_az,
+            el_from=current_el,
+            az_to=goal_az,
+            el_to=goal_el,
+            t_start=time,
+            duration=0.0,
+            cause=DeferralReason.SUN_POINT,
         )
     return None
 
@@ -465,9 +501,11 @@ def plan_escape(
     safe at arrival.
 
     Depth and margin are measured against the point model's own
-    requirement when it exposes the optional ``threshold`` extension of
-    the :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract
-    (separation minus the required separation), and against the raw Sun
+    requirement when it is a zoned model
+    (:class:`~fyst_trajectories.sun_protocols.ZonedSunSafePredicate`, which
+    exposes ``batch`` and ``threshold``, as every model
+    :func:`~fyst_trajectories.sun_models.make_sun_safe` builds does), as
+    the separation minus the required separation, and against the raw Sun
     separation otherwise. The two agree for a model whose requirement is
     one radius; they differ for a directional zone, where a route can
     hold its separation while crossing into a sector that demands tens of
@@ -486,8 +524,10 @@ def plan_escape(
         Point-level Sun predicate; ``None`` (default) builds the scalar
         model from the site's avoidance radii.
     slew_safe : SlewSafePredicate, optional
-        Path model exposing ``evaluate`` (the site-built default does;
-        see :func:`~fyst_trajectories.sun_models.make_slew_safe`). Its
+        Path model exposing ``evaluate``
+        (:class:`~fyst_trajectories.sun_protocols.PathSlewSafePredicate`; the
+        site-built default is one, see
+        :func:`~fyst_trajectories.sun_models.make_slew_safe`). Its
         sampled path supplies the separations the admissibility rule
         reads. Only consulted for a pose that is actually inside the
         zone, so a bare predicate still answers the safe-pose case.
@@ -519,7 +559,7 @@ def plan_escape(
     """
     if not time.isscalar:
         raise ValueError("plan_escape takes a scalar start time")
-    if settle_time < 0.0:
+    if not settle_time >= 0.0:
         raise ValueError(f"settle_time must be non-negative, got {settle_time}")
     limits = site.telescope_limits
     floor = limits.elevation.min if el_floor is None else float(el_floor)
@@ -537,7 +577,7 @@ def plan_escape(
         return None
     if slew_safe is None:
         slew_safe = _default_slew_safe(sun_safe, site)
-    if not hasattr(slew_safe, "evaluate"):
+    if not isinstance(slew_safe, PathSlewSafePredicate):
         raise ValueError(
             "slew_safe must expose evaluate() (build it with make_slew_safe) so the "
             "escape rule can read the path's Sun separations."
@@ -546,11 +586,11 @@ def plan_escape(
     coords = Coordinates(site)
     sun_az, sun_el = coords.get_sun_altaz(time)
     start_separation = float(coords.angular_separation(current_az, current_el, sun_az, sun_el))
-    # A model exposing ``threshold`` states how much separation it wants at
-    # each pose, so depth is measured against that requirement; without it
-    # the raw separation is the only ordering available. Subtracting zero
-    # in the second case keeps one code path.
-    threshold = getattr(sun_safe, "threshold", None)
+    # A zoned model states how much separation it wants at each pose, so
+    # depth is measured against that requirement; without it the raw
+    # separation is the only ordering available. Subtracting zero in the
+    # second case keeps one code path.
+    threshold = sun_safe.threshold if isinstance(sun_safe, ZonedSunSafePredicate) else None
     start_margin = start_separation
     if threshold is not None:
         start_margin -= float(np.atleast_1d(threshold(current_az, current_el, time))[0])
@@ -590,7 +630,7 @@ def plan_escape(
                 margins = margins - np.atleast_1d(threshold(az_path, el_path, times))
             if float(margins.min()) < start_margin - _ESCAPE_APPROACH_TOLERANCE_DEG:
                 continue
-            if not sun_safe(az_to, el_to, times[-1]):
+            if not sun_safe(az_to, el_to, times[-1]):  # type: ignore[arg-type]
                 continue
             duration = estimate_slew_time(current_az, current_el, az_to, el_to, site) + settle_time
             key = (float(margins[-1]), -duration)

@@ -81,8 +81,6 @@ class TestSatelliteTrackPattern:
 
         trajectory = pattern.generate(site, duration=120.0, start_time=TITAN_UP_TIME)
 
-        assert np.all(np.isfinite(trajectory.az_vel))
-        assert np.all(np.isfinite(trajectory.el_vel))
         assert np.all(np.abs(trajectory.az_vel) < 1.0)
         assert np.all(np.abs(trajectory.el_vel) < 1.0)
         # Smoothness: the step-to-step velocity change stays tiny for a
@@ -90,20 +88,6 @@ class TestSatelliteTrackPattern:
         # glitch while staying orders of magnitude above the real values).
         assert np.all(np.abs(np.diff(trajectory.az_vel)) < 1e-2)
         assert np.all(np.abs(np.diff(trajectory.el_vel)) < 1e-2)
-
-    def test_titan_track_az_normalized(self, site):
-        """All azimuths lie within the telescope range [-180, 360].
-
-        The normalize_azimuth gotcha: celestial/planet/satellite patterns map
-        astropy's [0, 360) into the telescope's [-180, 360].
-        """
-        config = SatelliteTrackConfig(timestep=1.0, body="titan", satellite_kernel=TITAN_KERNEL)
-        pattern = SatelliteTrackPattern(config=config)
-
-        trajectory = pattern.generate(site, duration=120.0, start_time=TITAN_UP_TIME)
-
-        assert np.all(trajectory.az >= -180.0)
-        assert np.all(trajectory.az <= 360.0)
 
     def test_titan_track_bounds_respected(self, site):
         """A time when Titan is below el_min raises TargetNotObservableError.
@@ -176,10 +160,12 @@ class TestSatelliteTrackPattern:
         pattern = SatelliteTrackPattern(config=config)
 
         trajectory = pattern.generate(site, duration=60.0, start_time=TITAN_UP_TIME)
+        explicit = SatelliteTrackPattern(
+            config=SatelliteTrackConfig(timestep=1.0, body="titan", satellite_kernel=TITAN_KERNEL)
+        ).generate(site, duration=60.0, start_time=TITAN_UP_TIME)
 
-        assert trajectory.n_points > 0
-        assert np.all(np.isfinite(trajectory.az))
-        assert np.all(np.isfinite(trajectory.el))
+        np.testing.assert_array_equal(trajectory.az, explicit.az)
+        np.testing.assert_array_equal(trajectory.el, explicit.el)
 
     def test_titan_track_requires_kernel(self, site, monkeypatch):
         """No kernel and no env var raises a clear ValueError through generate()."""
@@ -264,25 +250,18 @@ class TestSatelliteTrackBuilder:
         assert trajectory.pattern_type == "satellite"
         assert trajectory.pattern_params["body"] == "titan"
         assert trajectory.metadata.target_name == "titan"
-        assert trajectory.n_points > 0
 
 
 class TestSatelliteTrackPublicAPI:
     """The satellite symbols are exported from the top level and listed in ``__all__``."""
 
-    def test_new_symbols_importable_and_in_all(self):
+    def test_satellite_symbols_are_exported_at_top_level(self):
         """All three satellite symbols import from the top level and appear in __all__."""
         import fyst_trajectories as ft
 
         for name in ("SatelliteTrackConfig", "SatelliteTrackPattern", "SATELLITE_BODIES"):
             assert hasattr(ft, name), f"{name} not importable from fyst_trajectories"
             assert name in ft.__all__, f"{name} missing from __all__"
-
-    def test_satellite_bodies_contains_titan(self):
-        """SATELLITE_BODIES is the public tuple of resolvable satellites."""
-        from fyst_trajectories import SATELLITE_BODIES
-
-        assert "titan" in SATELLITE_BODIES
 
 
 def test_no_pointing_warning_on_apply_detector_offset(site):
@@ -302,6 +281,6 @@ def test_no_pointing_warning_on_apply_detector_offset(site):
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", PointingWarning)
-        adjusted = apply_detector_offset(trajectory, offset, site)
+        adjusted = apply_detector_offset(trajectory, offset, site=site)
 
     assert adjusted.n_points == trajectory.n_points

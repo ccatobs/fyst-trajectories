@@ -74,37 +74,6 @@ def sun_ra_dec(coordinates, obstime):
 class TestValidateSunAvoidance:
     """Test validate_sun_avoidance() function."""
 
-    def test_safe_trajectory_passes(self, site, coordinates, obstime):
-        """Trajectory far from the sun passes without error or warning."""
-        sun_az, _sun_alt = coordinates.get_sun_altaz(obstime)
-        safe_az = (sun_az + 180.0) % 360.0
-        safe_el = 45.0
-
-        n = 100
-        abs_times = obstime + TimeDelta(np.arange(n) * u.s)
-
-        az = np.full(n, safe_az)
-        el = np.full(n, safe_el)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_sun_avoidance(site, az, el, abs_times, coords=coordinates)
-            sun_warnings = [x for x in w if issubclass(x.category, PointingWarning)]
-            assert len(sun_warnings) == 0
-
-    def test_trajectory_at_sun_warns(self, site, coordinates, obstime):
-        """Trajectory pointing at the sun emits EXCLUSION ZONE warning."""
-        sun_az, sun_alt = coordinates.get_sun_altaz(obstime)
-
-        n = 50
-        abs_times = obstime + TimeDelta(np.arange(n) * u.s)
-
-        az = np.full(n, sun_az)
-        el = np.full(n, sun_alt)
-
-        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-            validate_sun_avoidance(site, az, el, abs_times, coords=coordinates)
-
     def test_warning_zone_emits_warning(self, site, coordinates, obstime):
         """Trajectory in the warning zone emits PointingWarning."""
         sun_az, sun_alt = coordinates.get_sun_altaz(obstime)
@@ -155,8 +124,10 @@ class TestValidateSunAvoidance:
         az = np.full(n, sun_az)
         el = np.full(n, sun_alt)
 
-        # Should NOT raise even though pointing at the sun
-        validate_sun_avoidance(disabled_site, az, el, abs_times, coords=coordinates)
+        # Pointing at the Sun: the enabled check would warn; disabled is silent.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PointingWarning)
+            validate_sun_avoidance(disabled_site, az, el, abs_times, coords=coordinates)
 
     def test_subsampling_behavior(self, site, coordinates, obstime):
         """Trajectory with many points uses sparse sun position computation."""
@@ -170,20 +141,19 @@ class TestValidateSunAvoidance:
         az = np.full(n, safe_az)
         el = np.full(n, 45.0)
 
-        call_count = [0]
+        batch_sizes = []
         original_get_sun = coordinates.get_sun_altaz
 
         def counting_get_sun(t):
-            call_count[0] += 1
+            batch_sizes.append(t.size)
             return original_get_sun(t)
 
         with patch.object(coordinates, "get_sun_altaz", side_effect=counting_get_sun):
             validate_sun_avoidance(site, az, el, abs_times, coords=coordinates)
 
-        # Over 10 seconds with 60s interval, should call get_sun_altaz once
-        # (or a handful of times). Certainly not 100,000.
-        assert call_count[0] < 100
-        assert call_count[0] >= 1
+        # One vectorised ephemeris call over the subsample: 10 s at the 60 s
+        # interval keeps only the first and the last point.
+        assert batch_sizes == [2]
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +164,9 @@ class TestValidateSunAvoidance:
 class TestValidateTrajectoryWithSun:
     """Test that validate_trajectory() includes sun check."""
 
+    @pytest.mark.filterwarnings(
+        "ignore:Trajectory has only 3 points:fyst_trajectories.exceptions.PointingWarning",
+    )
     def test_skips_sun_when_no_start_time(self, site):
         """Sun check is skipped when trajectory.start_time is None."""
         traj = Trajectory(
@@ -222,7 +195,11 @@ class TestValidateTrajectoryWithSun:
             start_time=obstime,
         )
 
-        validate_trajectory(traj, site, check_sun=False)
+        # The trajectory points at the Sun, so only the skip keeps this silent.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            validate_trajectory(traj, site, check_sun=False)
+        assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
 
 
 # ---------------------------------------------------------------------------
@@ -232,21 +209,6 @@ class TestValidateTrajectoryWithSun:
 
 class TestCheckFieldSunSafety:
     """Test _check_field_sun_safety() pre-flight check."""
-
-    def test_safe_field_passes(self, site, obstime, sun_ra_dec):
-        """Field far from the sun passes the pre-flight check."""
-        sun_ra, _sun_dec = sun_ra_dec
-        safe_ra = (sun_ra + 90.0) % 360.0
-        safe_dec = -30.0
-
-        _check_field_sun_safety(safe_ra, safe_dec, obstime, site)
-
-    def test_field_at_sun_warns(self, site, obstime, sun_ra_dec):
-        """Field at the sun's position emits EXCLUSION ZONE warning."""
-        sun_ra, sun_dec = sun_ra_dec
-
-        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-            _check_field_sun_safety(sun_ra, sun_dec, obstime, site)
 
     def test_disabled_skips(self, site, obstime, sun_ra_dec):
         """Pre-flight check is skipped when sun avoidance is disabled."""
@@ -258,7 +220,9 @@ class TestCheckFieldSunSafety:
         )
         disabled_site = replace(site, sun_avoidance=disabled_sun)
 
-        _check_field_sun_safety(sun_ra, sun_dec, obstime, disabled_site)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PointingWarning)
+            _check_field_sun_safety(sun_ra, sun_dec, obstime, disabled_site)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +233,10 @@ class TestCheckFieldSunSafety:
 class TestPlanningIntegration:
     """Test that planning functions invoke the sun pre-flight check."""
 
+    @pytest.mark.filterwarnings(
+        "ignore:Trajectory elevation acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_plan_pong_scan_warns_sun_field(self, site, obstime, sun_ra_dec):
         """plan_pong_scan emits EXCLUSION ZONE warning for a field at the sun."""
         sun_ra, sun_dec = sun_ra_dec
@@ -289,46 +257,6 @@ class TestPlanningIntegration:
                 start_time=obstime,
                 timestep=0.1,
             )
-
-    def test_plan_daisy_scan_warns_sun_field(self, site, obstime, sun_ra_dec):
-        """plan_daisy_scan emits EXCLUSION ZONE warning for a source at the sun."""
-        sun_ra, sun_dec = sun_ra_dec
-
-        with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-            plan_daisy_scan(
-                ra=sun_ra,
-                dec=sun_dec,
-                radius=0.5,
-                velocity=0.3,
-                turn_radius=0.2,
-                avoidance_radius=0.0,
-                start_acceleration=0.5,
-                site=site,
-                start_time=obstime,
-                timestep=0.1,
-                duration=60.0,
-            )
-
-    def test_plan_pong_scan_passes_safe_field(self, site):
-        """plan_pong_scan succeeds for a field far from the sun."""
-        start_time = Time("2026-03-15T04:00:00", scale="utc")
-        field = FieldRegion(
-            ra_center=180.0,
-            dec_center=-30.0,
-            width=2.0,
-            height=2.0,
-        )
-
-        block = plan_pong_scan(
-            field=field,
-            velocity=0.5,
-            spacing=0.1,
-            num_terms=4,
-            site=site,
-            start_time=start_time,
-            timestep=0.1,
-        )
-        assert block.trajectory.n_points > 0
 
 
 # ---------------------------------------------------------------------------

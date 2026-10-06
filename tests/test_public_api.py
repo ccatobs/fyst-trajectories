@@ -12,22 +12,26 @@ Scope and limits:
   name (in ``__all__`` but not importable) and fails here.
 - :func:`test_no_private_names_leak_into_all` catches a private (single
   leading-underscore) symbol leaking into the public surface.
-- :func:`test_identity_across_import_paths` pins that the planning symbols are
-  the *same object* whether imported from the top level or from
-  :mod:`fyst_trajectories.planning`.
+- :func:`test_planning_reexports_are_consistent_with_top_level` pins that
+  every planning symbol re-exported at the top level is the *same object*
+  whether imported from the top level or from :mod:`fyst_trajectories.planning`.
+- :func:`test_root_constants_are_their_module_attributes` pins the same
+  identity for the defaults and vocabularies the root re-exports beside the
+  functions that use them.
 
 What these tests deliberately do **not** do is assert the exact *membership*
 of ``__all__`` (an intentional add/remove is a normal change, not a
 regression). Detecting accidental removals, a symbol silently dropped from
 ``__all__`` entirely, is left to an explicit review that diffs the full
-surface against the source. The hardcoded planning checks below cover the
-five symbols downstream code is known to import.
+surface against the source.
 """
+
+import importlib
 
 import pytest
 
 import fyst_trajectories
-from fyst_trajectories import patterns
+from fyst_trajectories import patterns, planning, visualization
 
 
 def _is_private(name: str) -> bool:
@@ -83,21 +87,34 @@ def test_patterns_reexports_are_consistent_with_top_level():
     assert not mismatched, f"top-level re-exports diverge from patterns.__all__: {mismatched}"
 
 
-def test_identity_across_import_paths():
-    """Planning symbols imported from both paths are the same object."""
-    from fyst_trajectories import FieldRegion as F1
-    from fyst_trajectories import ScanBlock as S1
-    from fyst_trajectories import plan_constant_el_scan as pce1
-    from fyst_trajectories import plan_daisy_scan as pda1
-    from fyst_trajectories import plan_pong_scan as pp1
-    from fyst_trajectories.planning import FieldRegion as F2
-    from fyst_trajectories.planning import ScanBlock as S2
-    from fyst_trajectories.planning import plan_constant_el_scan as pce2
-    from fyst_trajectories.planning import plan_daisy_scan as pda2
-    from fyst_trajectories.planning import plan_pong_scan as pp2
+def test_planning_reexports_are_consistent_with_top_level():
+    """Planning symbols re-exported at the top level are the same objects."""
+    shared = set(fyst_trajectories.__all__) & set(planning.__all__)
+    assert shared, "expected the top level to re-export planning symbols"
+    mismatched = [
+        name for name in shared if getattr(fyst_trajectories, name) is not getattr(planning, name)
+    ]
+    assert not mismatched, f"top-level re-exports diverge from planning.__all__: {mismatched}"
 
-    assert F1 is F2
-    assert S1 is S2
-    assert pp1 is pp2
-    assert pce1 is pce2
-    assert pda1 is pda2
+
+@pytest.mark.parametrize(
+    ("name", "module"),
+    [
+        ("DEFAULT_RETUNE_DURATION_SEC", "fyst_trajectories.retune"),
+        ("GO_TCS_MIN_SAMPLE_INTERVAL_SEC", "fyst_trajectories.trajectory_utils"),
+        ("TRACKPOINT_NEW_LEG_GROUP_SIZE", "fyst_trajectories.trajectory_utils"),
+        ("EncoderSolutionCause", "fyst_trajectories.exceptions"),
+    ],
+)
+def test_root_constants_are_their_module_attributes(name, module):
+    """The defaults and vocabularies the root re-exports are the defining module's objects."""
+    assert getattr(fyst_trajectories, name) is getattr(importlib.import_module(module), name)
+
+
+@pytest.mark.parametrize("module", [planning, visualization], ids=lambda m: m.__name__)
+def test_library_subpackage_all_is_sound(module):
+    """Each library-tier subpackage ``__all__`` resolves, is public, and has no duplicate."""
+    names = module.__all__
+    assert [n for n in names if not hasattr(module, n)] == []
+    assert [n for n in names if _is_private(n)] == []
+    assert len(names) == len(set(names))

@@ -9,9 +9,9 @@ from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
 from ..site import AtmosphericConditions, Site
-from ..trajectory import Trajectory
+from ..trajectory import Trajectory, TrajectoryMetadata
 from ..trajectory_utils import validate_trajectory_bounds
-from .base import AltAzPattern, TrajectoryMetadata
+from .base import AltAzPattern
 from .configs import PlanetTrackConfig
 from .registry import register_pattern
 from .utils import (
@@ -60,10 +60,6 @@ class PlanetTrackPattern(AltAzPattern):
     ):
         self.config = config
 
-    @property
-    def name(self) -> str:
-        return "planet"
-
     def generate(
         self,
         site: Site,
@@ -93,11 +89,18 @@ class PlanetTrackPattern(AltAzPattern):
         Raises
         ------
         ValueError
-            If ``start_time`` is None.
+            If ``start_time`` is None, or if ``duration`` yields fewer than
+            two samples at the config timestep.
         TargetNotObservableError
             If the body is below the horizon or outside telescope limits
             at the requested time. The exception has ``target``,
             ``time_info``, and ``bounds_error`` attributes.
+
+        Warns
+        -----
+        PointingWarning
+            If no whole-turn shift places the azimuth track inside the
+            telescope's azimuth range.
         """
         if start_time is None:
             raise ValueError(
@@ -143,7 +146,6 @@ class PlanetTrackPattern(AltAzPattern):
             el_vel=el_vel,
             start_time=start_time,
             metadata=metadata,
-            coordsys="altaz",
         )
 
     def get_metadata(self) -> TrajectoryMetadata:

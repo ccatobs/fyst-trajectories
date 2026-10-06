@@ -1,7 +1,7 @@
 """Tests for the overhead sun-model seam and the boundary unification.
 
 Covers the sun-model seam end to end: every overhead sun verdict site
-accepts an injected :class:`~fyst_trajectories.dispatch.SunSafePredicate`,
+accepts an injected :class:`~fyst_trajectories.sun_protocols.SunSafePredicate`,
 and the scalar-mode boundary is unified on "exactly at the radius is
 UNSAFE" (matching ``Coordinates.is_sun_safe``).
 """
@@ -17,26 +17,24 @@ from fyst_trajectories.overhead import (
     ObservingPatch,
     SunAvoidanceConstraint,
     generate_timeline,
-    get_observable_windows,
 )
 from fyst_trajectories.overhead.scheduler.helpers import (
     _default_constraints,
     _time_until_sun_unsafe,
 )
-from fyst_trajectories.overhead.utils import _filter_sun_unsafe
 from fyst_trajectories.sun_models import make_sun_safe
 
 T_DAY = Time("2026-11-15T16:00:00", scale="utc")  # Sun up at FYST
 T_UP = Time("2026-11-15T22:00:00", scale="utc")  # field up (el ~31), Sun up (el ~11)
 
 
-def _patch(name="p", ra=24.0, dec=-32.0, scan_type="pong"):
+def _patch(name="p", ra=24.0, dec=-32.0, scan_type="pong", size=10.0):
     return ObservingPatch(
         name=name,
         ra_center=ra,
         dec_center=dec,
-        width=10.0,
-        height=10.0,
+        width=size,
+        height=size,
         scan_type=scan_type,
         velocity=1.0,
         elevation=50.0,
@@ -74,10 +72,6 @@ def test_boundary_unified_at_exact_radius(coordinates):
         _time_until_sun_unsafe(ra, dec, t, 600.0, coords, min_sun_angle=sep, step_seconds=60.0)
         == 0.0
     )
-
-    # _filter_sun_unsafe: the window's first sample is unsafe at the radius.
-    windows = _filter_sun_unsafe(ra, dec, t, t + TimeDelta(600, format="sec"), coords, sep)
-    assert all(abs((w0 - t).sec) > 1.0 for w0, _ in windows)
 
 
 def test_min_duration_constraint_boundary(coordinates):
@@ -205,7 +199,7 @@ def test_time_until_sun_unsafe_bisection_finds_the_true_crossing(coordinates):
     )
     assert out == pytest.approx(137.4, abs=0.2)
     assert out < 137.4  # conservative: strictly before the flip
-    assert model.batch_calls >= 1  # grid pass + bisection probes
+    assert model.batch_calls == 1 + 10  # one grid pass + bisection probes
 
 
 def test_time_until_sun_unsafe_batch_shape_guard(coordinates):
@@ -256,58 +250,6 @@ def test_time_until_sun_unsafe_all_safe_and_all_unsafe(coordinates):
 
 
 # ---------------------------------------------------------------------------
-# get_observable_windows with an injected model
-# ---------------------------------------------------------------------------
-
-
-def test_observable_windows_scalar_model_parity():
-    """The 'scalar' model reproduces the built-in scalar filtering exactly."""
-    site = get_fyst_site()
-    t0 = Time("2026-11-15T00:00:00", scale="utc")
-    t1 = Time("2026-11-16T00:00:00", scale="utc")
-    default = get_observable_windows(24.0, -32.0, t0, t1, site)
-    injected = get_observable_windows(
-        24.0, -32.0, t0, t1, site, sun_safe=make_sun_safe("scalar", site=site)
-    )
-    assert len(default) == len(injected)
-    for (a0, a1), (b0, b1) in zip(default, injected):
-        assert abs((a0 - b0).sec) < 1e-6
-        assert abs((a1 - b1).sec) < 1e-6
-
-
-def test_observable_windows_model_with_check_sun_off_raises():
-    site = get_fyst_site()
-    t0 = Time("2026-11-15T00:00:00", scale="utc")
-    with pytest.raises(ValueError, match="check_sun"):
-        get_observable_windows(
-            24.0,
-            -32.0,
-            t0,
-            t0 + TimeDelta(3600, format="sec"),
-            site,
-            check_sun=False,
-            sun_safe=make_sun_safe("scalar", site=site),
-        )
-
-
-def test_observable_windows_scalar_fallback_without_batch():
-    """A plain predicate (no batch) drives the window filter per sample."""
-    site = get_fyst_site()
-    t0 = Time("2026-11-15T00:00:00", scale="utc")
-    t1 = Time("2026-11-15T12:00:00", scale="utc")
-    calls = []
-
-    def plain_predicate(az, el, time):
-        calls.append(1)
-        return True
-
-    injected = get_observable_windows(24.0, -32.0, t0, t1, site, sun_safe=plain_predicate)
-    default = get_observable_windows(24.0, -32.0, t0, t1, site, check_sun=False)
-    assert calls  # consulted
-    assert len(injected) == len(default)  # all-safe model == no sun filtering
-
-
-# ---------------------------------------------------------------------------
 # End-to-end scheduler parity and the CAD-subset property
 # ---------------------------------------------------------------------------
 
@@ -340,15 +282,19 @@ def test_generate_timeline_cad_night_is_subset_of_cone50():
     The patch rides at Jupiter's Nov-15 sky position, ~87-88 deg from the
     Sun all day: outside every cone (45/50 pass it untouched) but inside
     the directional CAD zone whenever its clock angle enters the 88-90 deg
-    sectors, so the CAD run must genuinely lose science time while every
-    CAD block stays inside a cone-50 block.
+    sectors, so the CAD run must genuinely lose science time against the
+    zone-free cone-50 baseline. It is a 4 x 4 deg pong: the scheduler
+    slews to a pong once its whole pattern clears the elevation limit, and
+    a 10 x 10 deg pattern clears it only after the direct path from the
+    parked pose has entered the CAD zone, so with no detour the CAD night
+    would plan nothing for a reason unrelated to the zone over the field.
     """
     pytest.importorskip("sun_avoidance", exc_type=ImportError)
     site = get_fyst_site()
     coords = Coordinates(site)
     mid = Time("2026-11-15T12:00:00", scale="utc")
     jup_ra, jup_dec = coords.get_body_radec("jupiter", mid)
-    patches = [_patch(name="JupField", ra=float(jup_ra), dec=float(jup_dec), scan_type="pong")]
+    patches = [_patch(name="JupField", ra=float(jup_ra), dec=float(jup_dec), size=4.0)]
     kwargs = dict(
         patches=patches,
         site=site,
@@ -371,18 +317,21 @@ def test_generate_timeline_cad_night_is_subset_of_cone50():
     cad_total = sum(c1 - c0 for c0, c1 in cad_iv)
 
     assert cone_total > 0.0  # the field is observable at all under cone-50
-    # Subset invariant, robust to block re-segmentation (idle/retune
-    # boundaries shift between runs): every CAD-scheduled science sample
-    # must itself be cone-50-safe, since the CAD zone contains the 50 cone.
-    cone_model = make_sun_safe("cone", radius=50.0, site=site)
-    for c0, c1 in cad_iv:
-        ts = Time([c0, (c0 + c1) / 2.0, c1], format="unix", scale="utc")
-        az, el = coords.radec_to_altaz(np.full(3, float(jup_ra)), np.full(3, float(jup_dec)), ts)
-        assert cone_model.batch(az, el, ts).all(), "CAD scheduled inside the cone-50 zone"
+    # Subset premise: the field stays ~87 deg from the Sun all window, so no
+    # cone refuses it and every CAD-scheduled sample is cone-50-safe by
+    # construction. Pin the premise rather than re-checking the CAD blocks
+    # against a zone that cannot reach them.
+    ts = Time("2026-11-15T05:00:00", scale="utc") + TimeDelta(
+        np.linspace(0.0, 39600.0, 45), format="sec"
+    )
+    n = ts.size
+    az, el = coords.radec_to_altaz(np.full(n, float(jup_ra)), np.full(n, float(jup_dec)), ts)
+    sun_az, sun_el = coords.get_sun_altaz(ts)
+    assert np.all(np.asarray(coords.angular_separation(az, el, sun_az, sun_el)) > 86.0)
     # STRICT: the directional zone must actually bite on this geometry; a
     # CAD path wired to cone-50 (or disconnected) fails here.
     assert cad_total < cone_total - 60.0
-    # The subset loop above must not be vacuous: the parked bootstrap pose
+    # The CAD night must still observe: the parked bootstrap pose
     # sits inside the directional zone by daytime, and the scheduler
     # escapes it (a slew named sun_escape) rather than idling there, so
     # the CAD night still plans science and never records a trapped tick.

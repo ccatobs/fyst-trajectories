@@ -1,7 +1,5 @@
 """Tests for pattern utility functions."""
 
-import warnings
-
 import numpy as np
 import pytest
 from astropy import units as u
@@ -14,25 +12,17 @@ from fyst_trajectories import (
     get_fyst_site,
 )
 from fyst_trajectories.exceptions import (
-    AccelerationLimitWarning,
     AzimuthBoundsError,
-    ElevationBoundsError,
     PointingError,
     PointingWarning,
-    TrajectoryBoundsError,
-    VelocityLimitWarning,
 )
 from fyst_trajectories.patterns.utils import (
     compute_velocities,
-    generate_time_array,
     normalize_azimuth,
     rewrap_trajectory_azimuth,
     sky_offsets_to_altaz,
 )
-from fyst_trajectories.trajectory_utils import (
-    validate_trajectory_bounds,
-    validate_trajectory_dynamics,
-)
+from fyst_trajectories.trajectory_utils import validate_trajectory_bounds
 
 
 class TestComputeVelocities:
@@ -158,36 +148,6 @@ class TestComputeVelocities:
         np.testing.assert_allclose(velocities, -5.0, rtol=1e-10)
 
 
-class TestGenerateTimeArray:
-    """Sample-count rounding, and the two-point floor when the timestep exceeds duration."""
-
-    def test_basic_case(self):
-        times = generate_time_array(10.0, 1.0)
-        assert times[0] == 0.0
-        assert times[-1] == 10.0
-        assert len(times) == 11  # 0, 1, 2, ..., 10
-
-    def test_non_integer_division(self):
-        times = generate_time_array(10.0, 3.0)
-        # round(10/3) = 3, so 3+1 = 4 points
-        assert times[0] == 0.0
-        assert times[-1] == 10.0
-        assert len(times) == 4
-
-    def test_timestep_greater_than_duration(self):
-        times = generate_time_array(0.5, 1.0)
-        # Minimum 2 points enforced: start and end
-        assert times[0] == 0.0
-        assert times[-1] == pytest.approx(0.5)
-        assert len(times) == 2
-
-    def test_timestep_equals_duration(self):
-        times = generate_time_array(5.0, 5.0)
-        assert times[0] == 0.0
-        assert times[-1] == 5.0
-        assert len(times) == 2  # Start and end
-
-
 class TestSkyOffsetsToAltaz:
     """Offset-to-horizon conversion, checked against direct RA/Dec transforms."""
 
@@ -211,8 +171,8 @@ class TestSkyOffsetsToAltaz:
 
         # Should match direct radec_to_altaz of the center
         az_ref, el_ref = coords.radec_to_altaz(180.0, -30.0, obstime)
-        np.testing.assert_allclose(az, az_ref, atol=0.001)
-        np.testing.assert_allclose(el, el_ref, atol=0.001)
+        np.testing.assert_allclose(az, az_ref, atol=1e-6)
+        np.testing.assert_allclose(el, el_ref, atol=1e-6)
 
     def test_small_offset_matches_direct_radec(self):
         site = get_fyst_site()
@@ -234,8 +194,8 @@ class TestSkyOffsetsToAltaz:
 
         # Reference: direct shift (spherical_offsets_by at dec=0 gives RA+1)
         az_ref, el_ref = coords.radec_to_altaz(181.0, 0.0, obstime)
-        np.testing.assert_allclose(az_0, az_ref, atol=0.01)
-        np.testing.assert_allclose(el_0, el_ref, atol=0.01)
+        np.testing.assert_allclose(az_0, az_ref, atol=1e-6)
+        np.testing.assert_allclose(el_0, el_ref, atol=1e-6)
 
     def test_array_inputs(self):
         site = get_fyst_site()
@@ -256,207 +216,13 @@ class TestSkyOffsetsToAltaz:
 
         assert len(az) == 4
         assert len(el) == 4
-        assert np.all(np.isfinite(az))
-        assert np.all(np.isfinite(el))
-
-
-class TestValidateTrajectoryBounds:
-    """Per-axis bounds refusals, their structured attributes, and inclusive limit values."""
-
-    def test_within_limits(self):
-        site = get_fyst_site()
-        az = np.array([100.0, 150.0, 200.0])
-        el = np.array([45.0, 50.0, 55.0])
-        validate_trajectory_bounds(site, az, el)  # Should not raise
-
-    def test_az_below_limit(self):
-        site = get_fyst_site()
-        az = np.array([-300.0, 0.0, 100.0])  # -300 < az_min (-180)
-        el = np.array([45.0, 45.0, 45.0])
-
-        with pytest.raises(AzimuthBoundsError, match="azimuth") as exc_info:
-            validate_trajectory_bounds(site, az, el)
-
-        err = exc_info.value
-        assert err.axis == "azimuth"
-        assert err.actual_min == -300.0
-        assert err.limit_min == site.telescope_limits.azimuth.min
-
-    def test_az_above_limit(self):
-        site = get_fyst_site()
-        az = np.array([0.0, 100.0, 400.0])  # 400 > az_max (360)
-        el = np.array([45.0, 45.0, 45.0])
-
-        with pytest.raises(AzimuthBoundsError, match="azimuth") as exc_info:
-            validate_trajectory_bounds(site, az, el)
-
-        err = exc_info.value
-        assert err.axis == "azimuth"
-        assert err.actual_max == 400.0
-        assert err.limit_max == site.telescope_limits.azimuth.max
-
-    def test_el_below_limit(self):
-        site = get_fyst_site()
-        az = np.array([100.0, 150.0, 200.0])
-        el = np.array([10.0, 45.0, 50.0])  # 10 < el_min (20)
-
-        with pytest.raises(ElevationBoundsError, match="elevation") as exc_info:
-            validate_trajectory_bounds(site, az, el)
-
-        err = exc_info.value
-        assert err.axis == "elevation"
-        assert err.actual_min == 10.0
-        assert err.limit_min == site.telescope_limits.elevation.min
-
-    def test_el_above_limit(self):
-        site = get_fyst_site()
-        az = np.array([100.0, 150.0, 200.0])
-        el = np.array([45.0, 50.0, 95.0])  # 95 > el_max (90)
-
-        with pytest.raises(ElevationBoundsError, match="elevation") as exc_info:
-            validate_trajectory_bounds(site, az, el)
-
-        err = exc_info.value
-        assert err.axis == "elevation"
-        assert err.actual_max == 95.0
-        assert err.limit_max == site.telescope_limits.elevation.max
-
-    def test_bounds_errors_subclass_valueerror(self):
-        """The bounds exceptions subclass ``ValueError``."""
-        site = get_fyst_site()
-        az = np.array([-300.0, 0.0, 100.0])
-        el = np.array([45.0, 45.0, 45.0])
-
-        with pytest.raises(ValueError, match="azimuth"):
-            validate_trajectory_bounds(site, az, el)
-
-    def test_structured_data_on_bounds_error(self):
-        site = get_fyst_site()
-        az = np.array([100.0, 150.0, 200.0])
-        el = np.array([10.0, 45.0, 50.0])
-
-        with pytest.raises(TrajectoryBoundsError) as exc_info:
-            validate_trajectory_bounds(site, az, el)
-
-        err = exc_info.value
-        assert hasattr(err, "axis")
-        assert hasattr(err, "actual_min")
-        assert hasattr(err, "actual_max")
-        assert hasattr(err, "limit_min")
-        assert hasattr(err, "limit_max")
-
-    def test_boundary_values(self):
-        """The exact limit values are accepted."""
-        site = get_fyst_site()
-        limits = site.telescope_limits
-        az = np.array([limits.azimuth.min, 0.0, limits.azimuth.max])
-        el = np.array([limits.elevation.min, 45.0, limits.elevation.max])
-        validate_trajectory_bounds(site, az, el)  # Should not raise
-
-
-class TestValidateTrajectoryDynamics:
-    """Velocity and acceleration breaches warn by category; short inputs warn and skip."""
-
-    def test_no_warning_within_limits(self):
-        site = get_fyst_site()
-        times = np.linspace(0, 10, 100)
-        # Slow scan: 0.1 deg/s az velocity
-        az = 100.0 + 0.1 * times
-        el = np.full_like(times, 45.0)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
-            dyn_warnings = [
-                x
-                for x in w
-                if "velocity" in str(x.message).lower() or "acceleration" in str(x.message).lower()
-            ]
-            assert len(dyn_warnings) == 0
-
-    def test_warns_on_high_velocity(self):
-        site = get_fyst_site()
-        times = np.linspace(0, 10, 100)
-        # Very fast scan: 10 deg/s (exceeds 3 deg/s limit)
-        az = 100.0 + 10.0 * times
-        el = np.full_like(times, 45.0)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
-            vel_warnings = [x for x in w if "velocity" in str(x.message).lower()]
-            assert len(vel_warnings) >= 1
-
-    def test_warns_on_high_acceleration(self):
-        site = get_fyst_site()
-        times = np.linspace(0, 10, 1000)
-        # Quadratic motion with high acceleration: a = 5 deg/s^2
-        az = 100.0 + 0.5 * 5.0 * times**2
-        el = np.full_like(times, 45.0)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
-            accel_warnings = [x for x in w if "acceleration" in str(x.message).lower()]
-            assert len(accel_warnings) >= 1
-
-    def test_high_velocity_warning_has_velocity_limit_category(self):
-        """The velocity breach warning is a ``VelocityLimitWarning`` (category, not text).
-
-        Dispatch-time gates escalate on this category, so a velocity breach
-        must carry it regardless of message wording.
-        """
-        site = get_fyst_site()
-        times = np.linspace(0, 10, 100)
-        az = 100.0 + 10.0 * times  # 10 deg/s, exceeds the 3 deg/s limit
-        el = np.full_like(times, 45.0)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
-        assert any(issubclass(x.category, VelocityLimitWarning) for x in w)
-
-    def test_high_acceleration_warning_has_acceleration_limit_category(self):
-        """The accel breach warning is an ``AccelerationLimitWarning`` (category, not text)."""
-        site = get_fyst_site()
-        times = np.linspace(0, 10, 1000)
-        az = 100.0 + 0.5 * 5.0 * times**2  # a = 5 deg/s^2, exceeds the limit
-        el = np.full_like(times, 45.0)
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
-        assert any(issubclass(x.category, AccelerationLimitWarning) for x in w)
-
-    def test_single_point_trajectory_warns_skipped(self):
-        """Single-point trajectory warns that dynamics validation is skipped entirely."""
-        site = get_fyst_site()
-        times = np.array([0.0])
-        az = np.array([100.0])
-        el = np.array([45.0])
-
-        with pytest.warns(PointingWarning, match="fewer than 2 points"):
-            validate_trajectory_dynamics(site, az, el, times)
-
-    def test_short_trajectory_warns_skipped(self):
-        """Two-point trajectory warns that acceleration validation is skipped."""
-        site = get_fyst_site()
-        times = np.array([0.0, 1.0])
-        az = np.array([100.0, 200.0])
-        el = np.array([45.0, 45.0])
-
-        with pytest.warns(PointingWarning, match="only 2 points"):
-            validate_trajectory_dynamics(site, az, el, times)
-
-    def test_three_point_trajectory_warns_skipped(self):
-        """Three-point trajectory warns that acceleration validation is skipped."""
-        site = get_fyst_site()
-        times = np.array([0.0, 1.0, 2.0])
-        az = np.array([100.0, 200.0, 250.0])
-        el = np.array([45.0, 45.0, 45.0])
-
-        with pytest.warns(PointingWarning, match="only 3 points"):
-            validate_trajectory_dynamics(site, az, el, times)
+        # Each sample is transformed at its own time: every element equals the
+        # single-sample call at that sample's obstime.
+        for i in range(4):
+            az_i, el_i = sky_offsets_to_altaz(
+                x_offsets[i : i + 1], y_offsets[i : i + 1], 180.0, -30.0, obstimes[i], coords
+            )
+            np.testing.assert_allclose([az[i], el[i]], [az_i[0], el_i[0]], atol=1e-9)
 
 
 class TestNormalizeAzimuth:
@@ -492,38 +258,22 @@ class TestNormalizeAzimuth:
 
         np.testing.assert_allclose(result, az, atol=1e-10)
 
-    def test_unwrap_removes_discontinuity(self):
-        """Test that azimuth discontinuity at 0/360 boundary is unwrapped.
-
-        A trajectory crossing from 350 to 10 should be continuous
-        (350, 360, 370) not jump (350, 10).
-        """
-        site = get_fyst_site()
-        # Simulate azimuth crossing 360/0 boundary: 350, 355, 0, 5, 10
-        az = np.array([350.0, 355.0, 0.0, 5.0, 10.0])
-        result = normalize_azimuth(az, site)
-
-        # After normalization, the trajectory should be continuous
-        diffs = np.diff(result)
-        # All steps should be ~5 degrees (no 355-degree jumps)
-        assert np.all(np.abs(diffs) < 10.0)
-
-    def test_trajectory_near_zero_azimuth(self):
-        """Test trajectory straddling north (az=0).
-
-        A trajectory going through north should produce continuous values
-        near zero azimuth.
-        """
-        site = get_fyst_site()
-        # Tracking through north: 355, 358, 1, 4
-        az = np.array([355.0, 358.0, 1.0, 4.0])
-        result = normalize_azimuth(az, site)
-
-        # Should be continuous and within range
-        diffs = np.diff(result)
-        assert np.all(np.abs(diffs) < 10.0)
-        assert result.min() >= site.telescope_limits.azimuth.min
-        assert result.max() <= site.telescope_limits.azimuth.max
+    @pytest.mark.parametrize(
+        ("az", "expected"),
+        [
+            ([350.0, 355.0, 0.0, 5.0, 10.0], [-10.0, -5.0, 0.0, 5.0, 10.0]),
+            ([355.0, 358.0, 1.0, 4.0], [-5.0, -2.0, 1.0, 4.0]),
+            (
+                [350.0, 355.0, 0.0, 5.0, 10.0, 15.0, 20.0],
+                [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0],
+            ),
+        ],
+        ids=["crossing", "straddling-north", "crossing-then-drift"],
+    )
+    def test_a_north_crossing_is_unwrapped_by_one_turn(self, az, expected):
+        """A track through north comes back continuous, shifted by exactly -360."""
+        result = normalize_azimuth(np.array(az), get_fyst_site())
+        np.testing.assert_allclose(result, expected, atol=1e-10)
 
     def test_trajectory_centered_around_180(self):
         """Test trajectory centered around az=180 stays near 180."""
@@ -542,33 +292,6 @@ class TestNormalizeAzimuth:
         # Single point at 350 should be shifted to -10
         np.testing.assert_allclose(result, np.array([-10.0]), atol=1e-10)
 
-    def test_shift_is_multiple_of_360(self):
-        site = get_fyst_site()
-        az = np.array([340.0, 345.0, 350.0, 355.0, 0.0, 5.0])
-        result = normalize_azimuth(az, site)
-
-        # The unwrapped version should differ from the result by a multiple of 360
-        az_unwrapped = np.unwrap(az, period=360.0)
-        shift = result[0] - az_unwrapped[0]
-        assert shift % 360.0 == pytest.approx(0.0, abs=1e-10)
-
-    def test_multiple_boundary_crossings(self):
-        """Repeated 0/360 crossings unwrap to a single monotonic track.
-
-        This can happen with a long sidereal track where the object
-        crosses north repeatedly (unlikely in practice, but testing robustness).
-        """
-        site = get_fyst_site()
-        # Simulate multiple crossings: going from 350 to 370 (=10) to 380 (=20)
-        # In astropy [0,360] this looks like: 350, 355, 0, 5, 10, 15, 20
-        az = np.array([350.0, 355.0, 0.0, 5.0, 10.0, 15.0, 20.0])
-        result = normalize_azimuth(az, site)
-
-        # Should be continuous monotonically increasing
-        diffs = np.diff(result)
-        assert np.all(diffs > 0)
-        assert np.all(np.abs(diffs) < 10.0)
-
     def test_wide_trajectory_exceeds_range(self):
         """Test that a trajectory spanning > 540 degrees remains out of range.
 
@@ -581,12 +304,17 @@ class TestNormalizeAzimuth:
         # A trajectory spanning 600 degrees (wider than 540 degree range)
         az = np.linspace(0, 600, 100)
         # This is already unwrapped (no discontinuities), so unwrap is a no-op
-        with pytest.warns(PointingWarning, match="No 360-degree shift"):
+        with (
+            pytest.warns(PointingWarning, match="Shifted azimuth"),
+            pytest.warns(PointingWarning, match="No 360-degree shift"),
+        ):
             result = normalize_azimuth(az, site)
 
         # The span should be preserved (600 degrees)
         span = result.max() - result.min()
         assert span == pytest.approx(600.0, abs=0.1)
+        with pytest.raises(AzimuthBoundsError):
+            validate_trajectory_bounds(site, result, np.full_like(result, 45.0))
 
     def test_negative_azimuth_input(self):
         """Negative input, outside astropy's [0, 360] convention, passes through unchanged."""
@@ -597,16 +325,6 @@ class TestNormalizeAzimuth:
 
         # These should stay the same (already centered near 0)
         np.testing.assert_allclose(result, az, atol=1e-10)
-
-    def test_consistent_with_validate_trajectory_bounds(self):
-        site = get_fyst_site()
-        az = np.array([170.0, 175.0, 180.0, 185.0, 190.0])
-        el = np.full(5, 45.0)
-
-        az_normalized = normalize_azimuth(az, site)
-
-        # Should pass bounds check without raising
-        validate_trajectory_bounds(site, az_normalized, el)
 
     def test_trajectory_well_inside_range(self):
         """A trajectory comfortably inside [-180, 360] is left where it is."""
@@ -641,7 +359,6 @@ class TestRewrapTrajectoryAzimuth:
             el=el,
             az_vel=np.gradient(az, times),
             el_vel=np.zeros(5),
-            coordsys="altaz",
         )
 
     def test_shifts_every_azimuth_sample(self):
@@ -673,9 +390,13 @@ class TestRewrapTrajectoryAzimuth:
 
     @pytest.mark.parametrize("bad", [1.0, 359.0, -180.0, float("nan"), float("inf")])
     def test_refuses_a_shift_that_is_not_whole_turns(self, bad):
-        """Anything but a multiple of 360 would move the trajectory to other sky."""
-        with pytest.raises(PointingError, match="whole multiple of 360"):
+        """Anything but a multiple of 360 would move the trajectory to other sky.
+
+        A malformed argument, so a plain ``ValueError`` and not a ``PointingError``.
+        """
+        with pytest.raises(ValueError, match="whole multiple of 360") as exc_info:
             rewrap_trajectory_azimuth(self._trajectory(), bad)
+        assert not isinstance(exc_info.value, PointingError)
 
     def test_applies_the_encoder_solution_shift(self):
         """The helper consumes ``EncoderSolution.az_shift`` directly."""

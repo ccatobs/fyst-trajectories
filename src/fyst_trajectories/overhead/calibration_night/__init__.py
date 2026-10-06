@@ -1,13 +1,15 @@
 """Plan one night of solar-system calibration passes back to back.
 
 A commissioning night visits whichever planets are up, in a chosen
-order, planning each visit with the source-CES kernel on the instrument
-team's per-body scan tables, checking every slew for Sun safety, and
-reserving the detector operations between visits. The entry point is
-:func:`plan_calibration_night`; the four step functions it loops over
-(:func:`list_candidates`, :func:`plan_visit`, :func:`commit_visit`,
-:func:`advance_idle`) are public so a person can plan, inspect, discard
-and re-plan a visit interactively. The result is an ordinary
+order, planning each visit with the source-CES kernel across the
+footprint (the instrument team's per-body scan tables give a reference
+throw and dwell the policy can apply instead), checking every slew for
+Sun safety, and reserving the detector operations between visits. The
+entry point is :func:`plan_calibration_night`; the four step functions
+it loops over (:func:`list_candidates`, :func:`plan_visit`,
+:func:`commit_visit`, :func:`advance_idle`) are public so a person can
+plan, inspect, discard and re-plan a visit interactively. The result is
+an ordinary
 :class:`~fyst_trajectories.overhead.ObservingTimeline`, read back by
 :func:`summarize_calibration_night` and :func:`dispatch_sheet`.
 """

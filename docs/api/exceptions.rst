@@ -30,9 +30,8 @@ Usage Examples
         )
     except TargetNotObservableError as e:
         print(f"Target not observable: {e}")
-        if e.bounds_error:
-            print(f"  Axis: {e.bounds_error.axis}")
-            print(f"  Actual: {e.bounds_error.actual_min:.1f} to {e.bounds_error.actual_max:.1f}")
+        print(f"  Axis: {e.bounds_error.axis}")
+        print(f"  Actual: {e.bounds_error.actual_min:.1f} to {e.bounds_error.actual_max:.1f}")
 
 Advisories are ordinary warnings; :doc:`../quickstart` collects them with
 ``warnings.catch_warnings(record=True)``.

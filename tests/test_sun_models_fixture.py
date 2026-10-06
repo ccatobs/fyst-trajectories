@@ -9,6 +9,7 @@ verdicts must satisfy. The live half (``test_sun_models_live.py``)
 regenerates the library-backed verdicts and is the drift detector.
 """
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -16,9 +17,13 @@ import numpy as np
 import pytest
 from astropy.time import Time
 
+from fyst_trajectories import get_fyst_site
 from fyst_trajectories.sun_models import (
     CAD_TABLE_SHA256,
     SUN_AVOIDANCE_PINNED_SHA,
+    _table_sha256,
+    load_avoidance_data,
+    make_slew_safe,
     make_sun_safe,
 )
 
@@ -49,6 +54,20 @@ def test_fixture_pins_match_module(fx):
     assert str(fx["cad_table_sha256"]) == CAD_TABLE_SHA256
 
 
+def test_cad_table_digest_folds_crlf(tmp_path):
+    """An LF and a CRLF copy of one table hash to the same digest.
+
+    A checkout that converts line endings (``core.autocrlf`` on Windows)
+    stores the shipped table with CRLF, so the pin must hold on either.
+    """
+    rows = b"gamma,delta\n0.0,50.0\n360.0,50.0\n"
+    lf = tmp_path / "lf.csv"
+    crlf = tmp_path / "crlf.csv"
+    lf.write_bytes(rows)
+    crlf.write_bytes(rows.replace(b"\n", b"\r\n"))
+    assert _table_sha256(lf) == _table_sha256(crlf) == hashlib.sha256(rows).hexdigest()
+
+
 def test_cad_table_properties(fx):
     gamma, delta = fx["cad_gamma"], fx["cad_delta"]
     assert len(gamma) == 73
@@ -66,8 +85,6 @@ def test_scalar_verdicts_regenerate(fx):
     the site defaults) so this fixture only ever changes for library or
     adapter reasons, never for a site-default policy bump.
     """
-    from fyst_trajectories import get_fyst_site
-
     pinned_site = get_fyst_site(sun_exclusion_radius=45.0, sun_warning_radius=50.0)
     predicate = make_sun_safe("scalar", site=pinned_site)
     A, E = np.meshgrid(fx["az"], fx["el"])
@@ -117,20 +134,33 @@ def test_make_sun_safe_validation_offline():
         make_sun_safe("cone")  # cone requires a radius, with or without the library
 
 
-@pytest.mark.parametrize("call", [{"model": "cad"}, {"model": "cone", "radius": 50.0}])
-def test_missing_library_error(monkeypatch, call):
-    """Absent library => RuntimeError carrying the pinned install command."""
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: make_sun_safe("cad"),
+        lambda: make_sun_safe("cone", radius=50.0),
+        lambda: make_slew_safe(),
+        lambda: load_avoidance_data("cad"),
+    ],
+    ids=["make_sun_safe-cad", "make_sun_safe-cone", "make_slew_safe-default", "load-cad"],
+)
+def test_missing_library_error(monkeypatch, build):
+    """Absent library => ModuleNotFoundError carrying the pinned install command.
+
+    ``RuntimeError`` is kept for a CAD table that fails the pin, which needs a
+    re-pin rather than an install.
+    """
     monkeypatch.setitem(sys.modules, "sun_avoidance", None)
-    with pytest.raises(RuntimeError, match=SUN_AVOIDANCE_PINNED_SHA[:12]):
-        make_sun_safe(**call)
+    with pytest.raises(ModuleNotFoundError, match=SUN_AVOIDANCE_PINNED_SHA[:12]) as excinfo:
+        build()
+    assert excinfo.value.name == "sun_avoidance"
+    assert not isinstance(excinfo.value, RuntimeError)
 
 
 def test_input_guards_offline():
     """Rank and elevation-range guards hold on the no-library model too."""
-    from astropy.time import Time as _Time
-
     predicate = make_sun_safe("scalar")
-    t = _Time("2026-11-15T16:00:00", scale="utc")
+    t = Time("2026-11-15T16:00:00", scale="utc")
     with pytest.raises(ValueError, match="scalar or 1-D"):
         predicate.batch(np.zeros((2, 2)), np.zeros((2, 2)), t)
     with pytest.raises(ValueError, match=r"\[-90, 90\]"):
@@ -138,8 +168,6 @@ def test_input_guards_offline():
 
 
 def test_scalar_respects_disabled_site():
-    from fyst_trajectories import get_fyst_site
-
     predicate = make_sun_safe("scalar", site=get_fyst_site(sun_avoidance_enabled=False))
     t = Time("2026-11-15T16:00:00", scale="utc")
     assert predicate.batch([0.0, 90.0, 180.0], [45.0, 45.0, 45.0], t).all()

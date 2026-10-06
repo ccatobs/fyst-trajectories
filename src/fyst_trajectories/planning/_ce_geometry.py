@@ -20,7 +20,8 @@ import numpy as np
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
-from ..coordinates import Coordinates
+from .._validation import _require_positive
+from ..coordinates import Coordinates, _threshold_crossings
 from ..exceptions import PointingError, PointingWarning
 from ..patterns.turnarounds import turnaround_duration_sec
 from ._types import FieldRegion
@@ -70,7 +71,7 @@ def _field_region_corners(
     # such declinations below the elevation cut anyway, so the check is
     # a defensive boundary, not an operationally tight one.
     if abs(cos_dec) < 0.01:
-        raise ValueError("FieldRegion too close to celestial pole (|dec| > 89.43 deg)")
+        raise PointingError("FieldRegion too close to celestial pole (|dec| > 89.43 deg)")
     corners = []
     for dx, dy in corners_local:
         rx = dx * cos_a - dy * sin_a
@@ -84,7 +85,6 @@ def _find_elevation_crossing(
     search_times: Time,
     target_el: float,
     rising: bool,
-    step_seconds: float,
 ) -> Time | None:
     """Find the first rising or setting crossing of a target elevation.
 
@@ -98,26 +98,14 @@ def _find_elevation_crossing(
         Target elevation in degrees.
     rising : bool
         If True, find the rising crossing; if False, the setting crossing.
-    step_seconds : float
-        Time step between search times in seconds.
 
     Returns
     -------
     Time or None
         Time of crossing, or None if no crossing found.
     """
-    above = el_array >= target_el
-    diff = np.diff(above.astype(int))
-    if rising:
-        crossings = np.where(diff == 1)[0]
-    else:
-        crossings = np.where(diff == -1)[0]
-    if len(crossings) == 0:
-        return None
-    idx = crossings[0]
-    denom = el_array[idx + 1] - el_array[idx]
-    frac = 0.5 if abs(denom) < 1e-12 else (target_el - el_array[idx]) / denom
-    return search_times[idx] + TimeDelta(frac * step_seconds * u.s)
+    crossings = _threshold_crossings(el_array, search_times, target_el, rising=rising)
+    return crossings[0] if crossings else None
 
 
 def _compute_ce_duration(
@@ -137,7 +125,7 @@ def _compute_ce_duration(
     target elevation.
 
     Handles the RA = 0/360 wrap by detecting when the corner span exceeds
-    180° and re-centering the values around ``field.ra_center`` so the
+    180 deg and re-centering the values around ``field.ra_center`` so the
     leading and trailing RA edges are correctly identified for fields
     near RA = 0.
 
@@ -172,7 +160,11 @@ def _compute_ce_duration(
     Raises
     ------
     ValueError
-        If elevation crossings cannot be found in the search window.
+        If ``step_seconds`` is not positive.
+    PointingError
+        If elevation crossings cannot be found in the search window, if the
+        two field edges cross on different passes, or if the field lies
+        within 0.57 deg of a celestial pole.
 
     Notes
     -----
@@ -182,11 +174,7 @@ def _compute_ce_duration(
     are one. See the module docstring for why that coupling is deliberate
     and the function stays private.
     """
-    if step_seconds <= 0:
-        raise ValueError(
-            f"step_seconds must be positive, got {step_seconds}; "
-            f"cannot sample the elevation-crossing search on a non-positive step"
-        )
+    _require_positive(step_seconds, "step_seconds")
 
     corners = _field_region_corners(
         field.ra_center, field.dec_center, field.width, field.height, angle
@@ -217,17 +205,24 @@ def _compute_ce_duration(
         search_times,
     )
 
-    t_start = _find_elevation_crossing(el_min_arr, search_times, elevation, rising, step_seconds)
-    t_end = _find_elevation_crossing(el_max_arr, search_times, elevation, rising, step_seconds)
+    t_start = _find_elevation_crossing(el_min_arr, search_times, elevation, rising)
+    t_end = _find_elevation_crossing(el_max_arr, search_times, elevation, rising)
 
     if t_start is None or t_end is None:
-        raise ValueError(
+        raise PointingError(
             f"Could not find elevation crossing for field edges at el={elevation} "
             f"(rising={rising}) within {max_search_hours} hours of {base_search_time.iso}"
         )
 
     if t_start > t_end:
-        t_start, t_end = t_end, t_start
+        # The leading RA edge crosses first on every pass, so a later leading
+        # crossing means the two edges were found on different passes: the
+        # anchor fell inside a pass and the horizon reached the next day.
+        raise PointingError(
+            f"Field edges cross el={elevation} on different passes (rising={rising}): "
+            f"{base_search_time.iso} falls inside a pass; anchor the search before "
+            f"the pass opens."
+        )
 
     duration_seconds = (t_end - t_start).to_value(u.s)
 
@@ -257,16 +252,16 @@ def _compute_ce_az_range(
     with padding. Using three times captures the temporal variation in
     azimuth coverage as the field transits.
 
-    Three samples bound a monotone or single-turning-point azimuth track
-    exactly, which is what a field sweeping to or from transit does. A
-    track that turns twice inside the window could exceed the sampled
-    extent between them; the 2 degree default padding absorbs that, and
+    Three samples bound a monotone azimuth track exactly, since its
+    endpoints are its extremes. A track that turns inside the window, as a
+    field near its greatest elongation does, can exceed the sampled extent
+    between samples; the 2 degree default padding absorbs that, and
     the trajectory's own bounds validation is what refuses a genuinely
     out-of-range scan.
 
     Handles the azimuth = 0/360 discontinuity for sources transiting through
-    north (plausible at FYST's -23° latitude for sources with dec ≳ +20°):
-    when the naive max-min span exceeds 180°, the samples are unwrapped
+    north (plausible at FYST's -23 deg latitude for sources with dec above about +20 deg):
+    when the naive max-min span exceeds 180 deg, the samples are unwrapped
     around the median azimuth so the returned range is contiguous. The
     padded interval is then shifted by a whole turn onto a branch inside
     the telescope azimuth limits when one fits, so a setting pass (west
@@ -294,7 +289,7 @@ def _compute_ce_az_range(
         Azimuth range in degrees. May lie outside ``[0, 360)`` when the
         field straddles north (e.g. ``(-5.0, 12.0)`` rather than
         ``(355.0, 12.0)``); callers and consumers handle the unwrapped
-        representation directly. The interval is placed on a 360° branch
+        representation directly. The interval is placed on a 360 deg branch
         within the telescope azimuth limits whenever such a branch
         exists; an interval too wide for any branch is returned as-is
         for downstream bounds validation to refuse.
@@ -354,8 +349,8 @@ def _compute_ce_duration_from_lsa(
     longer than the sidereal window it names.
 
     Wrap-around windows (``max_lsa < min_lsa``) are handled explicitly:
-    the duration is computed modulo 360°, so ``(310, 10)`` is a
-    60°/15 = 4 hour scan crossing the LST = 0/360 boundary.
+    the duration is computed modulo 360 deg, so ``(310, 10)`` is a
+    60 deg at 15 deg/h = 4 hour scan crossing the LST = 0/360 boundary.
 
     Parameters
     ----------
@@ -413,19 +408,11 @@ def _compute_ce_duration_from_lsa(
         raise ValueError(
             f"lsa_window has equal endpoints ({min_lsa}); refusing zero-duration window"
         )
-    if max_search_hours <= 0:
-        raise ValueError(
-            f"max_search_hours must be positive, got {max_search_hours}; "
-            f"cannot search for LSA crossings in a non-positive horizon"
-        )
-    if step_seconds <= 0:
-        # 0 makes the arange below divide by zero; a negative step makes it
-        # empty, and the crossing search then reports "no crossing found"
-        # over a horizon it never sampled.
-        raise ValueError(
-            f"step_seconds must be positive, got {step_seconds}; "
-            f"the LSA crossing search steps forward in time"
-        )
+    _require_positive(max_search_hours, "max_search_hours")
+    # 0 makes the arange below divide by zero; a negative step makes it
+    # empty, and the crossing search then reports "no crossing found"
+    # over a horizon it never sampled.
+    _require_positive(step_seconds, "step_seconds")
 
     duration_deg = (max_lsa - min_lsa) % 360.0
     duration_hours = duration_deg / 15.0

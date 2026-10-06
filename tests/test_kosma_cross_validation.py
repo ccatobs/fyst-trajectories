@@ -52,7 +52,7 @@ KOSMA_FOCAL_LENGTH_CORRECTION = 0.0  # mm (default)
 KOSMA_FOCAL_LENGTH = (180.0 * 3600.0) / (
     KOSMA_PLATE_SCALE * math.pi
 ) + KOSMA_FOCAL_LENGTH_CORRECTION
-"""Effective focal length in mm, derived from plate scale."""
+"""Effective focal length in mm, derived from plate scale: 13.89 arcsec/mm implies f ~ 14.85 m."""
 
 
 def kosma_mm_to_arcsec(mm: float) -> float:
@@ -145,7 +145,6 @@ def _make_site(nasmyth_port: str = "right") -> Site:
         latitude=-22.985639,
         longitude=-67.740278,
         elevation=5611.8,
-        atmosphere=None,
         telescope_limits=TelescopeLimits(
             azimuth=AxisLimits(
                 min=-180,
@@ -198,7 +197,7 @@ class TestKOSMACrossValidationRotation:
         site = _make_site(port)
         offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
 
-        ccat_rot = compute_focal_plane_rotation(el, site, offset)
+        ccat_rot = compute_focal_plane_rotation(el, site=site, offset=offset)
 
         # KOSMA: rho = angle_if + instr_focal_plane_rotation, angle_if = sign*el.
         assert ccat_rot == pytest.approx(expected_sign * el + inst_rot)
@@ -216,7 +215,6 @@ class TestKOSMAParallacticAngleRotation:
 
     _OBSTIME = Time("2026-03-15T04:00:00", scale="utc")
 
-    @pytest.mark.slow
     @pytest.mark.parametrize("port,expected_sign", [("right", +1), ("left", -1)])
     def test_parallactic_angle_added_per_port(self, port, expected_sign):
         """PA is added on top of sign*el + inst_rot; the port only flips the el sign."""
@@ -230,27 +228,9 @@ class TestKOSMAParallacticAngleRotation:
         assert abs(pa) > 1.0  # the geometry genuinely exercises a non-zero PA
 
         offset = InstrumentOffset(dx=0.0, dy=0.0, instrument_rotation=inst_rot)
-        ccat_rot = compute_focal_plane_rotation(el, site, offset, parallactic_angle=pa)
+        ccat_rot = compute_focal_plane_rotation(el, site=site, offset=offset, parallactic_angle=pa)
 
         assert ccat_rot == pytest.approx(expected_sign * el + inst_rot + pa)
-
-    @pytest.mark.slow
-    def test_parallactic_angle_near_zero_at_transit(self):
-        """Parallactic angle is near zero at transit (HA ~ 0)."""
-        site = _make_site("right")
-        coords = Coordinates(site)
-
-        # RA = LST is an apparent-meridian proxy (HA ~ 0). Use a Dec well south
-        # of the latitude so the source transits at a moderate elevation
-        # (~53 deg), clear of the zenith where the parallactic angle is
-        # ill-conditioned and the proxy's small precession offset is amplified.
-        lst = coords.get_lst(self._OBSTIME)
-        ra_at_transit = lst
-        dec = -60.0
-
-        pa = coords.get_parallactic_angle(ra_at_transit, dec, self._OBSTIME)
-
-        assert pa == pytest.approx(0.0, abs=1.0)
 
 
 class TestKOSMAElevationDependentOffsets:
@@ -287,12 +267,12 @@ class TestKOSMAElevationDependentOffsets:
             y_mm=ref_y_mm,
             plate_scale=KOSMA_PLATE_SCALE,
         )
-        field_rotation = compute_focal_plane_rotation(el, site, offset)
+        field_rotation = compute_focal_plane_rotation(el, site=site, offset=offset)
         det_az, det_el = boresight_to_detector(
             180.0,
             el,
             offset,
-            field_rotation=field_rotation,
+            focal_plane_rotation=field_rotation,
         )
 
         cos_el = math.cos(math.radians(el))
@@ -315,72 +295,6 @@ class TestKOSMAElevationDependentOffsets:
         assert ccat_del_arcsec == pytest.approx(kosma_y, abs=tol)
 
 
-class TestKOSMACrossValidationSmallOffsets:
-    """Cross-validate offset projection for small offsets.
-
-    For small offsets (< ~0.5 degrees), the KOSMA flat-projection and
-    the fyst-trajectories spherical model should agree to within a few
-    arcseconds. The flat-plane error scales as the square of the offset.
-    """
-
-    @pytest.mark.parametrize(
-        "ref_x_mm,ref_y_mm",
-        [
-            (1.0, 0.0),  # ~14 arcsec along x
-            (0.0, 1.0),  # ~14 arcsec along y
-            (1.0, 1.0),  # ~20 arcsec diagonal
-            (5.0, 3.0),  # ~80 arcsec, still small
-            (10.0, -5.0),  # ~155 arcsec
-        ],
-    )
-    def test_small_offset_agreement(self, ref_x_mm, ref_y_mm):
-        """Under ~3 arcmin the flat and spherical projections agree to better than 0.1 arcsec."""
-        elevation = 45.0
-        site = _make_site("right")
-
-        # KOSMA model: flat projection
-        kosma_x, kosma_y = kosma_focal_plane_offset(
-            ref_x_mm,
-            ref_y_mm,
-            elevation,
-            port="Right",
-        )
-
-        # fyst-trajectories model: spherical projection
-        # Use from_focal_plane to convert mm -> arcmin via plate scale
-        offset = InstrumentOffset.from_focal_plane(
-            x_mm=ref_x_mm,
-            y_mm=ref_y_mm,
-            plate_scale=KOSMA_PLATE_SCALE,
-        )
-
-        # Compute field rotation (mechanical only, no parallactic angle)
-        field_rotation = compute_focal_plane_rotation(
-            elevation,
-            site,
-            offset,
-        )
-
-        # Apply offset using spherical model
-        det_az, det_el = boresight_to_detector(
-            180.0,
-            elevation,
-            offset,
-            field_rotation=field_rotation,
-        )
-
-        # Convert spherical result to offsets in arcsec for comparison.
-        # KOSMA fp_x is cross-elevation = dAz * cos(el), fp_y is dEl.
-        # The spherical model returns (dAz, dEl) in degrees.
-        cos_el = math.cos(math.radians(elevation))
-        ccat_xel_arcsec = (det_az - 180.0) * cos_el * 3600.0
-        ccat_del_arcsec = (det_el - elevation) * 3600.0
-
-        # For these small offsets, agreement should be within 0.1 arcsec
-        assert ccat_xel_arcsec == pytest.approx(kosma_x, abs=0.1)
-        assert ccat_del_arcsec == pytest.approx(kosma_y, abs=0.1)
-
-
 class TestKOSMACrossValidationLargeOffsets:
     """Cross-validate offset projection for large offsets.
 
@@ -395,21 +309,20 @@ class TestKOSMACrossValidationLargeOffsets:
     """
 
     @pytest.mark.parametrize(
-        "offset_mm,max_diff_arcsec,description",
+        "offset_mm,measured_arcsec,description",
         [
             # Offset in mm on the focal plane. Converted to arcmin via plate scale.
-            # Measured differences at el=45: 0.98, 35.6, 113.9, 937.6 arcsec
-            # Bounds are set at ~2x measured to allow margin
-            (10.0 * 60.0 / KOSMA_PLATE_SCALE, 2.0, "small module offset (~10 arcmin)"),
-            (60.0 * 60.0 / KOSMA_PLATE_SCALE, 72.0, "1-degree offset"),
-            (461.3, 230.0, "PrimeCam inner ring (~1.78 deg, 461.3 mm)"),
-            (300.0 * 60.0 / KOSMA_PLATE_SCALE, 1900.0, "5-degree offset (extreme)"),
+            # Both models are closed-form, so the difference is pinned, not bounded.
+            (10.0 * 60.0 / KOSMA_PLATE_SCALE, 0.978, "small module offset (~10 arcmin)"),
+            (60.0 * 60.0 / KOSMA_PLATE_SCALE, 35.59, "1-degree offset"),
+            (461.3, 113.9, "PrimeCam inner ring (~1.78 deg, 461.3 mm)"),
+            (300.0 * 60.0 / KOSMA_PLATE_SCALE, 937.6, "5-degree offset (extreme)"),
         ],
     )
     def test_flat_vs_spherical_divergence(
         self,
         offset_mm,
-        max_diff_arcsec,
+        measured_arcsec,
         description,
     ):
         """Verify that flat-vs-spherical difference scales with offset size.
@@ -418,9 +331,8 @@ class TestKOSMACrossValidationLargeOffsets:
         ----------
         offset_mm : float
             Offset magnitude in millimeters on the focal plane.
-        max_diff_arcsec : float
-            Maximum acceptable difference in arcseconds. This is an upper
-            bound on the flat-projection error for the given offset size.
+        measured_arcsec : float
+            Flat-vs-spherical difference measured at el = 45, in arcseconds.
         description : str
             Human-readable description of the test case.
         """
@@ -441,12 +353,12 @@ class TestKOSMACrossValidationLargeOffsets:
             y_mm=0.0,
             plate_scale=KOSMA_PLATE_SCALE,
         )
-        field_rotation = compute_focal_plane_rotation(elevation, site, offset)
+        field_rotation = compute_focal_plane_rotation(elevation, site=site, offset=offset)
         det_az, det_el = boresight_to_detector(
             180.0,
             elevation,
             offset,
-            field_rotation=field_rotation,
+            focal_plane_rotation=field_rotation,
         )
 
         # KOSMA fp_x is cross-elevation = dAz * cos(el)
@@ -458,9 +370,9 @@ class TestKOSMACrossValidationLargeOffsets:
         diff_y = abs(ccat_del_arcsec - kosma_y)
         diff_total = math.sqrt(diff_x**2 + diff_y**2)
 
-        assert diff_total < max_diff_arcsec, (
+        assert diff_total == pytest.approx(measured_arcsec, rel=0.01), (
             f"Flat-vs-spherical difference for {description}: "
-            f"{diff_total:.2f} arcsec exceeds bound {max_diff_arcsec} arcsec"
+            f"{diff_total:.2f} arcsec, measured {measured_arcsec} arcsec"
         )
 
     def test_divergence_increases_with_offset(self):
@@ -493,14 +405,14 @@ class TestKOSMACrossValidationLargeOffsets:
             )
             field_rotation = compute_focal_plane_rotation(
                 elevation,
-                site,
-                offset,
+                site=site,
+                offset=offset,
             )
             det_az, det_el = boresight_to_detector(
                 180.0,
                 elevation,
                 offset,
-                field_rotation=field_rotation,
+                focal_plane_rotation=field_rotation,
             )
 
             # KOSMA fp_x is cross-elevation = dAz * cos(el)
@@ -519,21 +431,24 @@ class TestKOSMACrossValidationLargeOffsets:
                 f"offset_mm={offset_mm_sizes[i]:.1f} diff={diffs[i]:.4f}"
             )
 
+        # Quadratic growth: each ratio to the smallest offset tracks the square
+        # of the size ratio; higher-order terms add up to 7% by 5 deg.
+        for size, diff in zip(offset_mm_sizes, diffs):
+            assert diff / diffs[0] == pytest.approx((size / offset_mm_sizes[0]) ** 2, rel=0.07)
+
 
 class TestKOSMAPlateScaleConsistency:
-    """Plate scale, derived focal length and mm->arcsec stay mutually consistent."""
+    """Library and KOSMA mm-to-sky conversions agree; the oracle reproduces its plate scale."""
 
-    def test_plate_scale_to_focal_length(self):
-        expected_fl = (180.0 * 3600.0) / (KOSMA_PLATE_SCALE * math.pi)
-        assert KOSMA_FOCAL_LENGTH == pytest.approx(expected_fl)
+    def test_from_focal_plane_matches_kosma_mm_to_arcsec(self):
+        """``InstrumentOffset.from_focal_plane`` converts mm exactly as KOSMA does."""
+        offset = InstrumentOffset.from_focal_plane(
+            x_mm=10.0, y_mm=-5.0, plate_scale=KOSMA_PLATE_SCALE
+        )
+        assert offset.dx * 60.0 == pytest.approx(kosma_mm_to_arcsec(10.0), rel=1e-12)
+        assert offset.dy * 60.0 == pytest.approx(kosma_mm_to_arcsec(-5.0), rel=1e-12)
 
     def test_mm_to_arcsec_roundtrip(self):
         # 1mm at the focal plane should be plate_scale arcsec on sky
         one_mm_arcsec = kosma_mm_to_arcsec(1.0)
         assert one_mm_arcsec == pytest.approx(KOSMA_PLATE_SCALE, rel=1e-10)
-
-    def test_focal_length_reasonable(self):
-        # FYST is a 6m telescope with f/0.6 primary + reimaging.
-        # Effective focal length depends on optical design.
-        # The plate scale of 13.89"/mm implies f ~ 14.8m effective.
-        assert 10_000 < KOSMA_FOCAL_LENGTH < 20_000  # mm

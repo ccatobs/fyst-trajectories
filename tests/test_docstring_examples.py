@@ -48,6 +48,32 @@ def _needs_sun_avoidance(test: doctest.DocTest) -> bool:
     return needs_sun_avoidance("".join(example.source for example in test.examples))
 
 
+def _example_imports(source):
+    """Resolve the package names an example imports, asserting each one exists."""
+    resolved = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(PACKAGE):
+            module = importlib.import_module(node.module)
+            for alias in node.names:
+                assert hasattr(module, alias.name), f"{node.module} has no {alias.name!r}"
+                resolved[alias.asname or alias.name] = getattr(module, alias.name)
+    return resolved
+
+
+def _call_target(func, namespace):
+    """Resolve ``name(...)``, or ``Class.method(...)`` for a class or static method."""
+    if isinstance(func, ast.Name):
+        return namespace.get(func.id)
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        owner = namespace.get(func.value.id)
+        if inspect.isclass(owner):
+            target = getattr(owner, func.attr, None)
+            static = isinstance(inspect.getattr_static(owner, func.attr, None), staticmethod)
+            if inspect.ismethod(target) or static:
+                return target
+    return None
+
+
 def _module_names():
     """Every module in the package, read off the source tree.
 
@@ -104,18 +130,25 @@ def _doctest_globs():
     }
 
 
+#: PointingWarning-family advisories a module's docstring examples may emit.
+#: A published example should stay advisory-clean, the rule the rst guard
+#: applies to the pages. The one entry is the example that trips an
+#: advisory today; it leaves the registry when its example is shrunk.
+_EXPECT_DOCTEST_WARNINGS: dict[str, set[str]] = {
+    "fyst_trajectories.planning.daisy": {"AccelerationLimitWarning", "PointingWarning"},
+}
+
+
 @pytest.mark.parametrize("name", MODULE_NAMES)
 def test_module_docstring_examples(name, _doctest_globs, tmp_path, monkeypatch):
-    """Every doctest in the module passes (with the seeded ambient namespace)."""
+    """Every doctest in the module passes and trips no undeclared advisory."""
     if name.startswith(f"{PACKAGE}.visualization"):
         pytest.importorskip("matplotlib")
     monkeypatch.chdir(tmp_path)
     mod = importlib.import_module(name)
     report = io.StringIO()
-    with warnings.catch_warnings():
-        # Doctests assert printed output, not advisories; warning hygiene for the
-        # executed doc surface is owned by test_doc_examples_rst.py.
-        warnings.simplefilter("ignore")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         runner = doctest.DocTestRunner(optionflags=_FLAGS)
         finder = doctest.DocTestFinder()
         for test in finder.find(mod, mod.__name__, extraglobs=dict(_doctest_globs)):
@@ -128,6 +161,12 @@ def test_module_docstring_examples(name, _doctest_globs, tmp_path, monkeypatch):
             f"{results.failed} of {results.attempted} docstring example(s) in "
             f"{name} failed:\n{report.getvalue()}"
         )
+    emitted = {type(w.message).__name__ for w in caught if isinstance(w.message, PointingWarning)}
+    expected = _EXPECT_DOCTEST_WARNINGS.get(name, set())
+    assert emitted == expected, (
+        f"{name}: docstring examples emitted {sorted(emitted)}, expected {sorted(expected)}; "
+        "shrink the example or declare the advisory in _EXPECT_DOCTEST_WARNINGS"
+    )
 
 
 @pytest.mark.parametrize("name", MODULE_NAMES)
@@ -144,16 +183,17 @@ def test_skipped_docstring_examples_still_parse_and_bind(name, _doctest_globs):
     if name.startswith(f"{PACKAGE}.visualization"):
         pytest.importorskip("matplotlib")
     mod = importlib.import_module(name)
-    namespace = {**vars(fyst_trajectories), **vars(mod), **_doctest_globs}
     for test in doctest.DocTestFinder().find(mod, mod.__name__):
         sources = [ex.source for ex in test.examples if ex.options.get(doctest.SKIP)]
         if not sources:
             continue
+        namespace = {**vars(fyst_trajectories), **vars(mod), **_doctest_globs}
+        namespace.update(_example_imports("".join(ex.source for ex in test.examples)))
         tree = ast.parse("".join(sources))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            if not isinstance(node, ast.Call):
                 continue
-            func = namespace.get(node.func.id)
+            func = _call_target(node.func, namespace)
             if func is None or not callable(func):
                 continue
             if any(isinstance(a, ast.Constant) and a.value is Ellipsis for a in node.args):
@@ -166,6 +206,6 @@ def test_skipped_docstring_examples_still_parse_and_bind(name, _doctest_globs):
                 inspect.signature(func).bind(*positional, **keywords)
             except TypeError as exc:
                 pytest.fail(
-                    f"{test.name}: a skipped example calls {node.func.id}() in a way that "
-                    f"no longer binds: {exc}"
+                    f"{test.name}: a skipped example calls {ast.unparse(node.func)}() "
+                    f"in a way that no longer binds: {exc}"
                 )

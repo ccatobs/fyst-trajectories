@@ -111,8 +111,8 @@ SourceCESScanParams
 ScanParamsDict
 ~~~~~~~~~~~~~~
 
-.. autodata:: fyst_trajectories.overhead.ScanParamsDict
-   :annotation: = CEScanParams | PongScanParams | DaisyScanParams
+.. py:data:: fyst_trajectories.overhead.ScanParamsDict
+   :value: CEScanParams | PongScanParams | DaisyScanParams
 
    Umbrella union alias for the ``scan_params`` mapping carried on
    :class:`ObservingPatch` and :class:`ScienceBlockMetadata`. The
@@ -132,8 +132,8 @@ EmptyBlockMetadata
 TimelineBlockMetadata
 ~~~~~~~~~~~~~~~~~~~~~
 
-.. autodata:: fyst_trajectories.overhead.TimelineBlockMetadata
-   :annotation: = ScienceBlockMetadata | CalibrationBlockMetadata | EmptyBlockMetadata
+.. py:data:: fyst_trajectories.overhead.TimelineBlockMetadata
+   :value: ScienceBlockMetadata | CalibrationBlockMetadata | EmptyBlockMetadata
 
    Exhaustive union of metadata shapes a :class:`TimelineBlock` may carry.
    ``SCIENCE`` and ``CALIBRATION`` blocks have their own variants; ``SLEW``

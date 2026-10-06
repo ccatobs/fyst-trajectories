@@ -53,25 +53,25 @@ Examples
 from __future__ import annotations
 
 import enum
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from types import MappingProxyType
 
 import numpy as np
 from astropy import units as u
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
 
-from .coordinates import SOLAR_SYSTEM_BODIES, Coordinates
+from .coordinates import (
+    SOLAR_SYSTEM_BODIES,
+    Coordinates,
+    _build_time_grid,
+    _threshold_crossings,
+)
 from .site import AtmosphericConditions, Site, get_fyst_site
-
-if TYPE_CHECKING:
-    # Annotation-only import to avoid an import cycle: ``dispatch`` imports
-    # ``coordinates``/``site``/``exceptions`` at runtime, and ``__init__``
-    # imports ``dispatch`` before ``observability``. The predicate is invoked
-    # structurally, so only the type hint needs the symbol.
-    from .dispatch import SunSafePredicate
+from .sun_protocols import SunSafePredicate, _sun_verdicts
 
 
-# ── Target catalog ───────────────────────────────────────────────────────────
+# --- Target catalog ----------------------------------------------------------
 class TargetKind(str, enum.Enum):
     """How a target's position is resolved."""
 
@@ -138,20 +138,28 @@ class Target:
         elif self.kind == TargetKind.FIXED:
             if self.ra_deg is None or self.dec_deg is None:
                 raise ValueError(f"FIXED target '{self.name}' requires both ra_deg and dec_deg.")
+            if not (np.isfinite(self.ra_deg) and -90.0 <= self.dec_deg <= 90.0):
+                raise ValueError(
+                    f"FIXED target '{self.name}' needs a finite ra_deg and a dec_deg in "
+                    f"[-90, 90], got ({self.ra_deg}, {self.dec_deg})."
+                )
 
 
 # Built-in submm flux-calibrator catalog. This resolves names -> positions only;
-# it carries NO avoidance defaults. Titan is a SATELLITE proxied by Saturn
-# (a real satellite ephemeris is a possible future addition).
-FLUX_CALIBRATORS: dict[str, Target] = {
-    "mars": Target("mars", TargetKind.BODY),
-    "jupiter": Target("jupiter", TargetKind.BODY),
-    "saturn": Target("saturn", TargetKind.BODY),
-    "uranus": Target("uranus", TargetKind.BODY),
-    "neptune": Target("neptune", TargetKind.BODY),
-    "moon": Target("moon", TargetKind.BODY, aliases=("luna",)),
-    "titan": Target("titan", TargetKind.SATELLITE, parent_body="saturn"),
-}
+# it carries NO avoidance defaults. Titan is a SATELLITE proxied by Saturn, so it
+# needs no kernel; Coordinates resolves Titan's own position only when a JPL
+# satellite kernel is configured (see SATELLITE_BODIES).
+FLUX_CALIBRATORS: Mapping[str, Target] = MappingProxyType(
+    {
+        "mars": Target("mars", TargetKind.BODY),
+        "jupiter": Target("jupiter", TargetKind.BODY),
+        "saturn": Target("saturn", TargetKind.BODY),
+        "uranus": Target("uranus", TargetKind.BODY),
+        "neptune": Target("neptune", TargetKind.BODY),
+        "moon": Target("moon", TargetKind.BODY, aliases=("luna",)),
+        "titan": Target("titan", TargetKind.SATELLITE, parent_body="saturn"),
+    }
+)
 """Built-in submm flux-calibrator catalog mapping names to :class:`Target` positions.
 
 Resolution only; it carries no avoidance defaults. Titan is a ``SATELLITE``
@@ -255,7 +263,7 @@ def _resolve_avoid_body(name: str, *, extra: dict[str, Target] | None = None) ->
     )
 
 
-# ── AVOID variable-zone model (no default zone) ──────────────────────────────
+# --- AVOID variable-zone model (no default zone) -----------------------------
 @dataclass(frozen=True)
 class AvoidZone:
     """A caller-specified bright-source exclusion zone.
@@ -327,7 +335,7 @@ class AvoidZone:
             raise ValueError(f"AVOID entry {pair!r} must be a (body, zone) pair with a radius.")
         body, zone = pair
         if isinstance(zone, str):
-            cleaned = zone.strip().lower().removesuffix("deg").removesuffix("°").strip()
+            cleaned = zone.strip().lower().removesuffix("deg").removesuffix("\u00b0").strip()
             if not cleaned:
                 raise ValueError(f"AVOID entry for '{body}' has no zone radius.")
             zone = cleaned
@@ -340,7 +348,7 @@ class AvoidZone:
         return cls(body, zone_deg)
 
 
-# ── Report schema ────────────────────────────────────────────────────────────
+# --- Report schema -----------------------------------------------------------
 class ReasonCode(str, enum.Enum):
     """Why a target is (not) observable.
 
@@ -433,7 +441,10 @@ class ObservabilityReport:
         Target azimuth (raw astropy ``[0, 360)``, unnormalised) and elevation
         at ``time``.
     ra_deg, dec_deg : float
-        Target ICRS coordinates at ``time``.
+        Target RA/Dec in degrees at ``time``: the catalogue ICRS position
+        for a ``FIXED`` target, and the apparent topocentric place on ICRS
+        axes (what :meth:`~fyst_trajectories.coordinates.Coordinates.get_body_radec`
+        returns) for a body or a satellite's parent-body proxy.
     sun_separation_deg : float
         Angular separation from the Sun at ``time``.
     sun_clear : bool
@@ -477,7 +488,7 @@ class ObservabilityReport:
     def summary(self) -> str:
         """One-line human-readable verdict."""
         if self.observable:
-            return f"{self.name}: observable (el={self.el_deg:.1f}°)"
+            return f"{self.name}: observable (el={self.el_deg:.1f} deg)"
         reasons = ", ".join(r.value for r in self.reasons)
         return f"{self.name}: NOT observable - {reasons}"
 
@@ -494,26 +505,7 @@ class ObservabilityReport:
         return float(sum(w.duration_hours for w in self.windows or ()))
 
 
-# ── Internal helpers ─────────────────────────────────────────────────────────
-def _build_time_grid(time: Time, horizon_hours: float, step_minutes: float) -> Time:
-    """Build the sample grid. Length 1 (just ``time``) when ``horizon_hours <= 0``."""
-    if horizon_hours and horizon_hours > 0:
-        horizon_s = horizon_hours * 3600.0
-        step_s = step_minutes * 60.0
-        # Cover [time, time + horizon] with uniform step_s spacing. ceil so the
-        # interval is fully covered; n >= 2 so a positive horizon is always a real
-        # interval (never a degenerate length-1 grid). The final sample is clipped
-        # to land exactly on time + horizon (no sample past the horizon), so the
-        # last cell may be shorter than step_s. Endpoints therefore land on grid
-        # samples spaced <= step_minutes apart.
-        n = max(2, int(np.ceil(horizon_s / step_s)) + 1)
-        offsets_s = np.minimum(np.arange(n) * step_s, horizon_s)
-    else:
-        n = 1
-        offsets_s = np.arange(1) * (step_minutes * 60.0)
-    return time + TimeDelta(offsets_s, format="sec")
-
-
+# --- Internal helpers --------------------------------------------------------
 def _all_windows(ok: np.ndarray, grid: Time) -> tuple[ObservabilityWindow, ...]:
     """Every contiguous ``True`` run of ``ok`` as an :class:`ObservabilityWindow`, in time order."""
     ok = np.asarray(ok, dtype=bool)
@@ -550,7 +542,7 @@ def _target_altaz_grid(
     return np.atleast_1d(az), np.atleast_1d(el)
 
 
-# ── Public entry point ───────────────────────────────────────────────────────
+# --- Public entry point ------------------------------------------------------
 def check_observability(
     targets: list[str | Target],
     time: Time,
@@ -610,7 +602,7 @@ def check_observability(
         built-in calibrators.
     sun_safe : SunSafePredicate, optional
         Sun-safety predicate implementing the
-        :class:`~fyst_trajectories.dispatch.SunSafePredicate` contract,
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract,
         ``(az_deg, el_deg, time) -> bool`` returning ``True`` when the
         position is clear of the Sun. ``None`` (default) keeps the built-in
         scalar check, ``separation > site.sun_avoidance.exclusion_radius``
@@ -633,12 +625,18 @@ def check_observability(
     Raises
     ------
     ValueError
-        If a target name is unknown, an AVOID body cannot be resolved,
-        ``el_min`` exceeds ``el_max``, ``horizon_hours`` is not finite,
-        ``window_step_minutes`` is not finite or not positive with a horizon
-        requested, or an injected ``sun_safe.batch`` returns the wrong shape
-        for the horizon grid.
+        If ``targets`` is a bare string rather than a list, a target name
+        is unknown, an AVOID body cannot be resolved, ``el_min`` or
+        ``el_max`` is not finite, ``el_min`` exceeds ``el_max``,
+        ``horizon_hours`` is not finite, ``window_step_minutes`` is not
+        finite or not positive with a horizon requested, or an injected
+        ``sun_safe.batch`` returns the wrong shape for the horizon grid.
     """
+    if isinstance(targets, str):
+        raise ValueError(
+            f"targets must be a list of names or Targets, got the string {targets!r}; "
+            "wrap a single name in a list"
+        )
     site = get_fyst_site() if site is None else site
     coords = Coordinates(site, atmosphere=atmosphere)
     avoid = list(avoid) if avoid else []
@@ -646,6 +644,8 @@ def check_observability(
     el_limits = site.telescope_limits.elevation
     el_min = el_limits.min if el_min is None else el_min
     el_max = el_limits.max if el_max is None else el_max
+    if not (np.isfinite(el_min) and np.isfinite(el_max)):
+        raise ValueError(f"el_min and el_max must be finite, got {el_min} and {el_max}")
     if el_min > el_max:
         raise ValueError(f"el_min ({el_min}) must be <= el_max ({el_max})")
     # Finiteness first, as ``sun_events`` does: NaN slips past every bare
@@ -709,28 +709,13 @@ def check_observability(
             # Strict `>`: conservative stance, matching is_sun_safe
             # (a target exactly at the exclusion radius is NOT clear).
             sun_ok_grid = sun_sep_grid > sun_radius
-        elif hasattr(sun_safe, "batch"):
-            # Batch-capable predicate (e.g. from sun_models.make_sun_safe):
-            # one vectorized evaluation over the whole grid instead of a
-            # per-sample ephemeris call each iteration.
-            sun_ok_grid = np.atleast_1d(
-                np.asarray(sun_safe.batch(az_grid, el_grid, grid), dtype=bool)
-            )
-            if sun_ok_grid.shape != (n,):
-                # A scalar/short result would silently broadcast one verdict
-                # over the whole grid; fail loudly instead.
-                raise ValueError(
-                    f"sun_safe.batch returned shape {sun_ok_grid.shape}, expected "
-                    f"({n},) verdicts for the horizon grid"
-                )
         else:
-            # Injected directional model: consult it per grid sample. ``False``
-            # marks an unsafe (inside-the-zone) sample. The reported
-            # ``sun_separation_deg`` above is still the geometric separation.
-            sun_ok_grid = np.array(
-                [bool(sun_safe(float(az_grid[i]), float(el_grid[i]), grid[i])) for i in range(n)],
-                dtype=bool,
-            )
+            # Injected model: one vectorized call over the whole grid when it
+            # has ``batch`` (e.g. from sun_models.make_sun_safe), otherwise
+            # one call per grid sample. ``False`` marks an unsafe
+            # (inside-the-zone) sample. The reported ``sun_separation_deg``
+            # above is still the geometric separation.
+            sun_ok_grid = _sun_verdicts(sun_safe, az_grid, el_grid, grid, what="horizon grid")
 
         el_ok_grid = (el_grid >= el_min) & (el_grid <= el_max)
 
@@ -790,7 +775,7 @@ def check_observability(
     return reports
 
 
-# ── Sun events (sunrise / sunset / twilight) ─────────────────────────────────
+# --- Sun events (sunrise / sunset / twilight) --------------------------------
 SUN_RISE_SET_ALTITUDE_DEG: float = -0.8333
 """Sun-centre altitude defining sunrise and sunset, in degrees.
 
@@ -864,31 +849,6 @@ _SUN_EVENT_THRESHOLDS: tuple[tuple[float, SunEventKind, SunEventKind], ...] = (
         SunEventKind.ASTRONOMICAL_DUSK,
     ),
 )
-
-
-def _threshold_crossings(
-    values: np.ndarray, grid: Time, threshold: float, *, rising: bool
-) -> list[Time]:
-    """Linearly interpolated times where ``values`` crosses ``threshold``.
-
-    ``rising=True`` finds upward crossings (``values[i] < threshold <=
-    values[i+1]``); ``rising=False`` downward ones (``values[i] >= threshold >
-    values[i+1]``). The two masks partition each grid cell, so one cell yields
-    at most one crossing and a value exactly at the threshold is never counted
-    twice. Interpolation uses the actual per-cell spacing, so a clipped final
-    grid cell (see :func:`_build_time_grid`) is handled exactly.
-    """
-    below, above = values[:-1], values[1:]
-    if rising:
-        mask = (below < threshold) & (above >= threshold)
-    else:
-        mask = (below >= threshold) & (above < threshold)
-    times: list[Time] = []
-    for i in np.flatnonzero(mask):
-        denom = values[i + 1] - values[i]
-        frac = 0.0 if abs(denom) < 1e-12 else (threshold - values[i]) / denom
-        times.append(grid[i] + frac * (grid[i + 1] - grid[i]))
-    return times
 
 
 def sun_events(

@@ -22,16 +22,30 @@ Exception Hierarchy
         TargetNotObservableError
         EncoderSolutionError
         OffsetInversionError
+        DwellExceedsCrossingError
+
+The offline simulator adds two more ``PointingError`` subclasses,
+``ScanParamsSchemaError`` and ``BlockNotReconstructableError``, in
+``fyst_trajectories.overhead.exceptions``; they live in that tier and are
+not re-exported here.
+
+One rule decides which of the two an error is. A ``PointingError``
+means a well-formed request that cannot be satisfied for this site,
+target and time: a target outside the telescope limits, no elevation
+crossing within the search window, a dwell longer than the solved
+crossing. A plain ``ValueError`` means a malformed request: a
+non-positive timestep, a duplicate pattern name, an unrecognised
+config. The offline simulator's ``ScanParamsSchemaError`` and
+``BlockNotReconstructableError`` report a recorded block that cannot be
+rebuilt.
 
 ``PointingError`` inherits from ``ValueError``, and every exception
 below it inherits from ``PointingError``, so all of them can be caught
-as ``ValueError``. That is the single reason recorded for the
-subclassing, and the reason is live rather than historical: a control
+as ``ValueError``. The reason is live rather than historical: a control
 system's ``except ValueError`` around a dispatch, and the offline
-simulator's best-effort rebuild path, both rely on it, and the
-calibration-night planner relies on the ordering it creates (a handler
-must catch ``PointingError`` before ``ValueError`` to tell an
-infeasibility from a malformed argument).
+simulator's best-effort rebuild path, both rely on it. A handler that
+treats the two differently catches ``PointingError`` first, to tell an
+infeasibility from a malformed argument.
 
 The bounds family and :class:`EncoderSolutionError` overlap at one
 condition, deliberately. ``TrajectoryBoundsError`` and its two
@@ -54,7 +68,7 @@ from collections.abc import Sequence
 from typing import Literal
 
 #: The stages at which :func:`~fyst_trajectories.dispatch.choose_encoder_solution`
-#: can refuse a goal; the vocabulary of :attr:`EncoderSolutionError.cause`.
+#: can refuse a goal; the vocabulary of ``EncoderSolutionError.cause``.
 EncoderSolutionCause = Literal[
     "goal_elevation", "no_image", "span_unreachable", "sun_blocked", "path_blocked"
 ]
@@ -91,14 +105,18 @@ class AccelerationLimitWarning(PointingWarning):
 
 
 class PointingError(ValueError):
-    """Base exception for all fyst-trajectories errors.
+    """A well-formed request that cannot be satisfied for this site, target and time.
 
-    Inherits from ``ValueError``; see the module docstring for why.
+    The base class of the library's own error types. A malformed request
+    raises plain ``ValueError`` instead. ``PointingError`` inherits from
+    ``ValueError`` (see the module docstring for why), so
+    ``except ValueError`` is the handler that catches both, and a handler
+    that treats them differently catches ``PointingError`` first.
 
     Examples
     --------
-    Narrow to ``except PointingError`` to catch only the
-    physical-infeasibility and bounds family:
+    Narrow to ``except PointingError`` to catch a request that cannot be
+    satisfied and let plain ``ValueError`` argument checks through:
 
     >>> from fyst_trajectories import validate_trajectory
     >>> from fyst_trajectories.exceptions import PointingError
@@ -163,8 +181,9 @@ class TrajectoryBoundsError(PointingError):
     def __reduce__(self):
         """Return the pickle/copy reconstruction of this error."""
         return (
-            TrajectoryBoundsError,
+            type(self),
             (self.axis, self.actual_min, self.actual_max, self.limit_min, self.limit_max),
+            self.__dict__,
         )
 
 
@@ -213,6 +232,7 @@ class AzimuthBoundsError(TrajectoryBoundsError):
         return (
             type(self),
             (self.actual_min, self.actual_max, self.limit_min, self.limit_max),
+            self.__dict__,
         )
 
 
@@ -261,6 +281,7 @@ class ElevationBoundsError(TrajectoryBoundsError):
         return (
             type(self),
             (self.actual_min, self.actual_max, self.limit_min, self.limit_max),
+            self.__dict__,
         )
 
 
@@ -332,7 +353,11 @@ class TargetNotObservableError(PointingError):
 
     def __reduce__(self):
         """Return the pickle/copy reconstruction of this error."""
-        return (type(self), (self.target, self.time_info, self.bounds_error, str(self)))
+        return (
+            type(self),
+            (self.target, self.time_info, self.bounds_error, str(self)),
+            self.__dict__,
+        )
 
 
 class EncoderSolutionError(PointingError):
@@ -428,6 +453,7 @@ class EncoderSolutionError(PointingError):
                 time_iso=self.time_iso,
             ),
             (self.cause, str(self)),
+            self.__dict__,
         )
 
 
@@ -439,10 +465,10 @@ class OffsetInversionError(PointingError):
     trajectory-level :func:`~fyst_trajectories.offsets.apply_detector_offset`)
     refuses in two situations: the requested detector position is within
     the pole guard, where azimuth is degenerate and the residual check
-    cannot validate the answer, and the iterative refinement failing to
+    cannot validate the answer, or the iterative refinement does not
     converge. Both are geometric infeasibility, so they belong in the
     :class:`PointingError` hierarchy the callers' ``Raises`` sections
-    advertise rather than escaping as a bare ``RuntimeError``.
+    advertise.
 
     Parameters
     ----------
@@ -467,4 +493,50 @@ class OffsetInversionError(PointingError):
 
     def __reduce__(self):
         """Return the pickle/copy reconstruction of this error."""
-        return (functools.partial(type(self), indices=self.indices), (str(self),))
+        return (functools.partial(type(self), indices=self.indices), (str(self),), self.__dict__)
+
+
+class DwellExceedsCrossingError(PointingError):
+    """Raised when a requested dwell is longer than the solved footprint crossing.
+
+    Raised by :func:`~fyst_trajectories.planning.compute_source_ces_params`,
+    :func:`~fyst_trajectories.planning.plan_source_ces` and a single-pass
+    :func:`~fyst_trajectories.planning.plan_source_ces_passes`. Whether a
+    dwell fits depends on the crossing solved for this site, source, time
+    and ``el_bore``, so the refusal is a :class:`PointingError`. It carries
+    both durations, so a caller can fall back to the full crossing without
+    reading the message.
+
+    Parameters
+    ----------
+    message : str
+        Human-readable description, composed at the raise site.
+    dwell : float
+        The requested time on source in seconds.
+    crossing_seconds : float
+        The solved footprint crossing in seconds.
+
+    Examples
+    --------
+    >>> from fyst_trajectories.exceptions import DwellExceedsCrossingError
+    >>> exc = DwellExceedsCrossingError(
+    ...     "dwell must not exceed the solved footprint crossing",
+    ...     dwell=900.0,
+    ...     crossing_seconds=581.35,
+    ... )
+    >>> exc.crossing_seconds
+    581.35
+    """
+
+    def __init__(self, message: str, *, dwell: float, crossing_seconds: float):
+        self.dwell = float(dwell)
+        self.crossing_seconds = float(crossing_seconds)
+        super().__init__(message)
+
+    def __reduce__(self):
+        """Return the pickle/copy reconstruction of this error."""
+        return (
+            functools.partial(type(self), dwell=self.dwell, crossing_seconds=self.crossing_seconds),
+            (str(self),),
+            self.__dict__,
+        )

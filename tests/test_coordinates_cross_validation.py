@@ -6,9 +6,10 @@ high-precision astronomy calculations.
 
 Each test class sets its own assertion threshold. Catalogue-star positions and
 sidereal time agree with Skyfield to about an arcsecond; solar-system bodies
-agree to tens of arcseconds, where ephemeris version, light-time and aberration
-handling differ. The thresholds sit well above the measured agreement, so an
-ephemeris or Earth-orientation update cannot turn a cross-check into a flake.
+agree to under twenty arcseconds, where ephemeris version, light-time and
+aberration handling differ. The thresholds sit a few times above the measured
+agreement, so an Earth-orientation update cannot turn a cross-check into a flake
+while an arcsecond-scale frame error still fails.
 
 Skyfield is chosen as the reference because it:
 - Uses JPL DE ephemerides for solar system positions
@@ -18,9 +19,10 @@ Skyfield is chosen as the reference because it:
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 from astropy.time import Time, TimeDelta
+
+from fyst_trajectories import SOLAR_SYSTEM_BODIES
 
 try:
     from skyfield.api import S, Star, W, load, load_file, wgs84
@@ -74,9 +76,9 @@ class TestRadecToAltazCrossValidation:
     """RA/Dec to Az/El matches Skyfield at six sky positions and four epochs."""
 
     # Both sides are airless (vacuum Coordinates, airless skyfield altaz); the measured
-    # disagreement is ~1 arcsec. The 0.2 deg threshold is headroom for ephemeris and
-    # Earth-orientation differences between the two libraries, not a refraction budget.
-    POSITION_TOLERANCE = 0.2  # degrees
+    # disagreement is under 1 arcsec per axis. 5 arcsec is headroom for Earth-orientation
+    # differences, well below the ~20 arcsec of an omitted aberration or nutation term.
+    POSITION_TOLERANCE = 5.0 / 3600.0  # degrees
 
     @pytest.fixture
     def comparison_cases(self):
@@ -203,20 +205,14 @@ class TestRadecToAltazCrossValidation:
 
 
 class TestSolarSystemCrossValidation:
-    """Five solar-system bodies match Skyfield's apparent Az/El."""
+    """Every supported solar-system body matches Skyfield's apparent Az/El."""
 
-    # Solar system body positions can differ more due to:
-    # - Different ephemeris versions (astropy may use different JPL DE)
-    # - Light time corrections
-    # - Aberration handling
-    # - Different geocentric vs topocentric calculation approaches
-    POSITION_TOLERANCE = 0.5  # degrees - permissive for solar system
+    # Bodies differ more: astropy's ephemeris against skyfield's DE421, light-time and
+    # aberration handling. Measured: up to ~17 arcsec (Jupiter).
+    POSITION_TOLERANCE = 60.0 / 3600.0  # degrees
 
     @pytest.mark.slow
-    @pytest.mark.parametrize(
-        "body",
-        ["sun", "moon", "mars", "jupiter", "saturn"],
-    )
+    @pytest.mark.parametrize("body", SOLAR_SYSTEM_BODIES)
     def test_solar_system_body_positions(
         self,
         coordinates,
@@ -306,56 +302,6 @@ class TestLSTCrossValidation:
         )
 
 
-class TestConsistencyAcrossTimescales:
-    """Az/El varies smoothly minute to minute and nearly repeats after 24 hours."""
-
-    @pytest.mark.slow
-    def test_transformation_stability_over_hour(self, coordinates):
-        """A discontinuity in time handling shows up as a large minute-to-minute step."""
-        ra, dec = 180.0, -30.0
-
-        base_time = Time("2026-06-15T04:00:00", scale="utc")
-        times = base_time + TimeDelta(np.arange(60) * 60, format="sec")
-
-        azs = []
-        els = []
-        for t in times:
-            az, el = coordinates.radec_to_altaz(ra, dec, obstime=t)
-            azs.append(az)
-            els.append(el)
-
-        azs = np.array(azs)
-        els = np.array(els)
-
-        # At ~1 minute intervals, Az/El should change by <1 degree
-        az_diffs = np.abs(np.diff(azs))
-        az_diffs = np.minimum(az_diffs, 360 - az_diffs)
-        el_diffs = np.abs(np.diff(els))
-
-        assert np.all(az_diffs < 1.0), f"Large Az jump detected: {az_diffs.max()}"
-        assert np.all(el_diffs < 1.0), f"Large El jump detected: {el_diffs.max()}"
-
-    @pytest.mark.slow
-    def test_transformation_stability_over_day(self, coordinates):
-        """A sidereal day is ~23h 56m, so Az/El nearly repeats after exactly 24 h."""
-        ra, dec = 180.0, -30.0
-
-        t1 = Time("2026-06-15T04:00:00", scale="utc")
-        t2 = Time("2026-06-16T04:00:00", scale="utc")  # 24 hours later
-
-        az1, el1 = coordinates.radec_to_altaz(ra, dec, obstime=t1)
-        az2, el2 = coordinates.radec_to_altaz(ra, dec, obstime=t2)
-
-        # Positions should be very similar (within ~1 degree for the ~4 minute
-        # difference between solar and sidereal day)
-        az_diff = abs(az2 - az1)
-        az_diff = min(az_diff, 360 - az_diff)
-        el_diff = abs(el2 - el1)
-
-        assert az_diff < 2.0, f"24-hour Az difference too large: {az_diff}"
-        assert el_diff < 2.0, f"24-hour El difference too large: {el_diff}"
-
-
 class TestProperMotionCrossValidation:
     """``radec_to_altaz_with_pm`` matches Skyfield's ``Star`` propagation.
 
@@ -363,7 +309,7 @@ class TestProperMotionCrossValidation:
     independent oracle for the two highest-proper-motion catalogue stars.
     """
 
-    POSITION_TOLERANCE = 0.2  # degrees
+    POSITION_TOLERANCE = 5.0 / 3600.0  # degrees; measured under 1 arcsec per axis
 
     @pytest.fixture
     def high_pm_stars(self):
@@ -468,31 +414,44 @@ class TestProperMotionCrossValidation:
             )
 
     @pytest.mark.slow
-    def test_proper_motion_makes_difference(self, coordinates):
-        """Barnard's Star PM (10.4 arcsec/yr) moves it ~4.6 arcmin in 26.5 years.
+    def test_array_obstime_agreement(
+        self,
+        coordinates,
+        high_pm_stars,
+        skyfield_timescale,
+        skyfield_planets,
+        fyst_topos,
+    ):
+        """One call over the three instants as an array matches Skyfield at each."""
+        time_strs = ["2026-03-15T04:00:00", "2026-06-15T08:00:00", "2026-10-01T02:00:00"]
+        obstimes = Time(time_strs, scale="utc")
 
-        The assertion is a floor at 0.01 deg on the raw az/el offset, not the on-sky
-        separation; test_doc_examples.py pins the projected 0.076 deg.
-        """
-        ra, dec = 269.452, 4.694
-        pmra, pmdec = -798.58, 10328.12
-        ref_epoch = Time("J2000.0")
-        obstime = Time("2026-06-15T04:00:00", scale="utc")
-
-        az_pm, el_pm = coordinates.radec_to_altaz_with_pm(
-            ra,
-            dec,
-            pmra,
-            pmdec,
-            ref_epoch,
-            obstime=obstime,
-        )
-        az_no_pm, el_no_pm = coordinates.radec_to_altaz(ra, dec, obstime=obstime)
-
-        diff = np.sqrt((az_pm - az_no_pm) ** 2 + (el_pm - el_no_pm) ** 2)
-        assert diff > 0.01, (
-            f"PM should shift position by >0.01 deg for Barnard's Star, got {diff:.6f}"
-        )
+        for name, ra, dec, pmra, pmdec in high_pm_stars:
+            az_arr, el_arr = coordinates.radec_to_altaz_with_pm(
+                ra, dec, pmra, pmdec, Time("J2000.0"), obstime=obstimes
+            )
+            for i, time_str in enumerate(time_strs):
+                az_sf, el_sf = self._skyfield_altaz_with_pm(
+                    ra,
+                    dec,
+                    pmra,
+                    pmdec,
+                    time_str,
+                    skyfield_timescale,
+                    skyfield_planets,
+                    fyst_topos,
+                )
+                if el_sf < -5 and el_arr[i] < -5:
+                    continue
+                el_diff = abs(el_arr[i] - el_sf)
+                assert el_diff < self.POSITION_TOLERANCE, (
+                    f"{name} at {time_str}: elevation diff {el_diff:.6f} deg"
+                )
+                az_diff = abs(az_arr[i] - az_sf)
+                az_diff = min(az_diff, 360 - az_diff)
+                assert az_diff < self.POSITION_TOLERANCE, (
+                    f"{name} at {time_str}: azimuth diff {az_diff:.6f} deg"
+                )
 
 
 class TestRiseSetCrossValidation:
@@ -525,83 +484,28 @@ class TestRiseSetCrossValidation:
             dec,
             start_time=start_time,
             horizon=horizon,
-            max_search_hours=24.0,
+            max_search_hours=36.0,
             step_hours=0.05,
         )
-
-        # Skyfield rise/set
         ts = skyfield_timescale
-        earth = skyfield_planets["earth"]
-        observer = earth + fyst_topos
+        observer = skyfield_planets["earth"] + fyst_topos
         star = Star(ra_hours=ra / 15.0, dec_degrees=dec)
-
-        dt_start = start_time.datetime
-        dt_end = (start_time + TimeDelta(24 * 3600, format="sec")).datetime
-        t0 = ts.utc(
-            dt_start.year,
-            dt_start.month,
-            dt_start.day,
-            dt_start.hour,
-            dt_start.minute,
-            dt_start.second,
-        )
-        t1 = ts.utc(
-            dt_end.year,
-            dt_end.month,
-            dt_end.day,
-            dt_end.hour,
-            dt_end.minute,
-            dt_end.second,
-        )
-
+        t0 = ts.from_astropy(start_time)
+        t1 = ts.from_astropy(start_time + TimeDelta(36 * 3600, format="sec"))
         rise_times_sf, _ = find_risings(observer, star, t0, t1, horizon_degrees=horizon)
-        set_times_sf, _ = find_settings(observer, star, t0, t1, horizon_degrees=horizon)
-
-        if rise_ccat is not None and len(rise_times_sf) > 0:
-            # Skyfield returns tz-aware datetime; astropy returns naive (UTC).
-            # Compare via Julian date to avoid tz mismatch.
-            rise_sf_jd = rise_times_sf[0].tt
-            rise_ccat_jd = rise_ccat.tt.jd
-            diff_minutes = abs(rise_ccat_jd - rise_sf_jd) * 24 * 60
-
-            assert diff_minutes < self.TIME_TOLERANCE_MINUTES, (
-                f"Rise time mismatch: ccat={rise_ccat.iso}, "
-                f"skyfield_tt_jd={rise_sf_jd}, "
-                f"diff={diff_minutes:.2f} min"
-            )
-
-        if set_ccat is not None and len(set_times_sf) > 0:
-            set_sf_jd = set_times_sf[0].tt
-            set_ccat_jd = set_ccat.tt.jd
-            diff_minutes = abs(set_ccat_jd - set_sf_jd) * 24 * 60
-
-            assert diff_minutes < self.TIME_TOLERANCE_MINUTES, (
-                f"Set time mismatch: ccat={set_ccat.iso}, "
-                f"skyfield_tt_jd={set_sf_jd}, "
-                f"diff={diff_minutes:.2f} min"
-            )
-
-    @pytest.mark.slow
-    def test_circumpolar_source_no_rise_set(self, coordinates):
-        """Circumpolar source (Dec=-70 at FYST) returns (None, None)."""
-        ra, dec = 180.0, -70.0
-        start_time = Time("2026-06-15T00:00:00", scale="utc")
-
-        rise, set_ = coordinates.get_rise_set_times(
-            ra,
-            dec,
-            start_time=start_time,
-            horizon=0.0,
-            max_search_hours=24.0,
-            step_hours=0.1,
+        # The library reports the first set AFTER the rise, so search from there.
+        set_times_sf, _ = find_settings(
+            observer, star, rise_times_sf[0], t1, horizon_degrees=horizon
         )
-
-        # Dec=-70 is circumpolar from FYST: upper culmination is near 90-|lat-dec| = 43 deg
-        # and lower culmination is only ~3 deg above the horizon, so it never sets below
-        # horizon=0.
-        assert rise is None and set_ is None, (
-            f"Expected (None, None) for circumpolar source, got rise={rise}, set={set_}"
-        )
+        assert rise_ccat is not None and set_ccat is not None
+        for label, ours, theirs in (
+            ("rise", rise_ccat, rise_times_sf[0]),
+            ("set", set_ccat, set_times_sf[0]),
+        ):
+            diff_minutes = abs(ours.tt.jd - theirs.tt) * 24 * 60
+            assert diff_minutes < self.TIME_TOLERANCE_MINUTES, (
+                f"{label} mismatch: ccat={ours.iso}, diff={diff_minutes:.2f} min"
+            )
 
 
 class TestRefractionIsolation:
@@ -612,9 +516,9 @@ class TestRefractionIsolation:
     transforms, isolating the refraction model agreement.
     """
 
-    # Both libraries use slightly different refraction models, but the
-    # deltas should agree within ~0.005 deg at moderate elevation.
-    REFRACTION_DELTA_TOLERANCE = 0.005  # degrees
+    # The two refraction models' deltas agree to ~0.0003 deg at ~49 deg elevation
+    # (measured), against a ~0.007 deg delta.
+    REFRACTION_DELTA_TOLERANCE = 0.001  # degrees
 
     @pytest.mark.slow
     def test_refraction_delta_agreement(

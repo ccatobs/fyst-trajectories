@@ -85,8 +85,8 @@ def regression_timeline():
 class TestRegressionTimeline:
     """Verify that timeline generation produces known-good outputs.
 
-    These anchors were computed from the initial extraction and serve
-    as regression baselines. Tolerances are tight, any significant
+    These anchors come from a known-good run of this fixture night and serve
+    as regression baselines. Tolerances are tight: any significant
     change signals an algorithm or API change.
     """
 
@@ -205,14 +205,9 @@ class TestRegressionTimeline:
             assert set(entry) == set(CalibrationBudget.__annotations__)
 
     def test_total_time_conservation(self, regression_timeline):
-        """All block durations should sum to less than total timeline span.
-
-        Blocks may not cover the entire timeline (gaps at the end),
-        but should never exceed it.
-        """
+        """The blocks tile the timeline span exactly: no gap and no overlap."""
         block_total = sum(b.duration for b in regression_timeline.blocks)
-        timeline_span = regression_timeline.total_time
-        assert block_total <= timeline_span + 1.0  # 1s tolerance
+        assert block_total == pytest.approx(regression_timeline.total_time, abs=0.01)
 
     def test_block_ordering(self, regression_timeline):
         """Blocks should be in chronological order."""
@@ -242,9 +237,10 @@ class TestRegressionTimeline:
         All three Deep56 subscans share ``metadata["t0_scan"]``, so each
         rebuilt trajectory must cover only its own block window rather
         than the full pass (which triple-counted the visit at 4.75x the
-        scheduled science time). The first subscan legitimately starts up
-        to a tick plus the slew allowance before the re-solved crossing,
-        so its slice may be shorter than its block.
+        scheduled science time). The first subscan may start up to a tick
+        plus the slew allowance before the re-solved crossing, so its slice
+        may be shorter than its block; on this night that lead is zero and
+        every slice ends within 0.13 s of its block.
         """
         from fyst_trajectories.overhead import schedule_to_trajectories
 
@@ -270,9 +266,10 @@ class TestRegressionTimeline:
         assert len(set(starts)) == 3
 
         science_time = regression_timeline.total_science_time
-        # The only deficit is the first subscan's acquisition lead, at
-        # most one scheduler tick (300 s) plus the 180 s slew allowance.
-        assert science_time - 500.0 < total_span <= science_time + 1e-3
+        # The first subscan may legitimately lose its acquisition lead (up to
+        # a tick plus the slew allowance); on this night that lead is zero and
+        # each slice ends at most 0.13 s short of its block, 0.28 s in total.
+        assert science_time - 1.0 < total_span <= science_time + 1e-3
         # The slice, not the full pass: duration diverges from the
         # computed_params of the solved pass on purpose.
         assert pairs[0][1].duration < pairs[0][1].computed_params["duration"]
@@ -299,3 +296,83 @@ class TestRegressionTimeline:
             assert sblock.end_pose_az == pytest.approx(float(az[-1]), abs=1e-9)
             assert sblock.az_start == pytest.approx(102.33, abs=0.01)
             assert sblock.az_end == pytest.approx(215.62, abs=0.01)
+
+
+class TestScienceIdleTicksTile:
+    """A science visit that fits no scan still leaves a block for its tick.
+
+    Two science-phase paths advance the clock by a tick with nothing to
+    scan: a scan window shorter than ``min_scan_duration``, and a visit
+    whose room checks fit no subscan. Each must still emit a block, or a
+    gap opens after the slew, ``validate()`` fails and the four time
+    totals fall short of ``total_time``.
+    """
+
+    @pytest.mark.parametrize(
+        "start_time",
+        [
+            # Ends the visit before any subscan fits.
+            "2026-06-15T03:33:00",
+            # Leaves a scan window below min_scan_duration.
+            "2026-06-15T03:37:00",
+        ],
+    )
+    def test_single_patch_night_tiles(self, start_time):
+        patch = ObservingPatch(
+            name="W",
+            ra_center=180.0,
+            dec_center=-30.0,
+            width=1.0,
+            height=1.0,
+            scan_type="pong",
+            velocity=0.5,
+        )
+        timeline = generate_timeline(
+            patches=[patch],
+            site=get_fyst_site(),
+            start_time=start_time,
+            end_time="2026-06-15T06:00:00",
+            overhead_model=OverheadModel(max_scan_duration=600.0),
+        )
+        assert timeline.validate() == []
+        accounted = (
+            timeline.total_science_time
+            + timeline.total_calibration_time
+            + timeline.total_slew_time
+            + timeline.total_idle_time
+        )
+        assert accounted == pytest.approx(timeline.total_time, abs=0.01)
+
+    @pytest.mark.slow
+    def test_five_patch_day_validates_clean(self):
+        """A 24 h mixed night whose too-short visit follows a slew at ~13:24."""
+        fields = [
+            ("F0", 24.0, -32.0, 40.0, 10.0, "constant_el", 50.0),
+            ("F1", 150.0, 2.2, 4.0, 4.0, "pong", None),
+            ("F2", 80.0, -30.0, 30.0, 10.0, "constant_el", 40.0),
+            ("F3", 200.0, -20.0, 6.0, 6.0, "daisy", None),
+            ("F4", 330.0, -10.0, 30.0, 10.0, "constant_el", 45.0),
+        ]
+        patches = [
+            ObservingPatch(
+                name=name,
+                ra_center=ra,
+                dec_center=dec,
+                width=width,
+                height=height,
+                scan_type=scan_type,
+                velocity=1.0 if scan_type == "constant_el" else 0.5,
+                elevation=elevation,
+            )
+            for name, ra, dec, width, height, scan_type, elevation in fields
+        ]
+        timeline = generate_timeline(
+            patches=patches,
+            site=get_fyst_site(),
+            start_time="2026-12-15T00:00:00",
+            end_time="2026-12-16T00:00:00",
+            calibration_policy=CalibrationPolicy(retune_cadence=0.0),
+        )
+        assert timeline.validate() == []
+        block_total = sum(b.duration for b in timeline.blocks)
+        assert block_total == pytest.approx(timeline.total_time, abs=0.01)

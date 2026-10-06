@@ -44,13 +44,15 @@ def _check_rebuild_and_regate(site, timeline):
     assert len(pairs) == len(passes)
     sun_safe = make_sun_safe("scalar", site=site)
     for block, rebuilt in pairs:
-        # Measured on this fixture: 0.007 to 0.014 s, the reconstruction
-        # widening the window and re-landing on the same crossing. A 2.0 s
-        # tolerance would be wide enough to absorb a real anchoring drift.
-        assert abs((rebuilt.trajectory.start_time - block.t_start).to_value("s")) < 0.1
-        assert rebuilt.computed_params["az_throw"] == pytest.approx(
-            block.metadata["applied"]["az_throw"], abs=1e-6
-        )
+        # The rebuild repeats the planner's search from the block's
+        # ``search_start``, so it is the planned pass: it starts at the block's
+        # start (the planned one, in this in-memory timeline) and solves the
+        # recorded throw, crossing and legs exactly.
+        assert rebuilt.trajectory.start_time == block.t_start
+        solved = block.metadata["solved"]
+        assert rebuilt.computed_params["az_throw"] == solved["az_throw"]
+        assert rebuilt.computed_params["crossing_seconds"] == solved["crossing_seconds"]
+        assert rebuilt.computed_params["n_scans"] == block.metadata["n_legs"]
         wrap = block.metadata["transition"]["wrap"]
         t0 = Time(block.metadata["t0_scan"], scale="utc")
         az, _ = choose_encoder_solution(
@@ -109,30 +111,38 @@ class TestShortNight:
         meta = first.metadata
         assert first.elevation == pytest.approx(61.5, abs=0.5)
         assert meta["solved"]["crossing_seconds"] == pytest.approx(736.0, abs=10.0)
-        assert meta["applied"]["az_throw"] == pytest.approx(4.5, abs=0.1)
-        assert meta["applied"]["az_speed"] == 1.5 and meta["applied"]["az_accel"] == 1.5
-        assert 0.55 < meta["science_fraction"] < 0.65
-        assert meta["n_legs"] == pytest.approx(148, abs=3)
+        # The throw solved from the footprint: one module width over cos(61.5 deg).
+        assert meta["applied"]["az_throw"] == pytest.approx(2.72, abs=0.01)
+        assert meta["applied"]["az_speed"] == 1.5 and meta["applied"]["az_accel"] == 1.0
+        assert 0.33 < meta["science_fraction"] < 0.43
+        assert meta["n_legs"] == pytest.approx(154, abs=3)
         summary = summarize_calibration_night(timeline)
         assert summary.bodies[0].minutes_on_source == pytest.approx(30.8, abs=0.5)
-        assert any("2.2" in w and "exceeds limit" in w for w in summary.warnings)
+        assert any("on-sky azimuth speed" in w for w in summary.warnings)
+
+    def test_a_default_night_records_no_acceleration_advisory(self, short_night):
+        """The default acceleration's turnaround peak stays inside the site's ceiling."""
+        _, timeline = short_night
+        warns = summarize_calibration_night(timeline).warnings
+        assert not any("acceleration" in w for w in warns)
 
     def test_rebuilds_and_regates(self, short_night):
         site, timeline = short_night
         _check_rebuild_and_regate(site, timeline)
 
 
+@pytest.fixture(scope="class")
+def full_night():
+    return _plan(
+        ["jupiter", "saturn", "neptune", "uranus"],
+        "2026-09-10T22:00:00",
+        "2026-09-11T10:30:00",
+    )
+
+
 @pytest.mark.slow
 class TestFullNight:
     """The four-body night from dusk to dawn, 2026-09-10/11."""
-
-    @pytest.fixture(scope="class")
-    def full_night(self):
-        return _plan(
-            ["jupiter", "saturn", "neptune", "uranus"],
-            "2026-09-10T22:00:00",
-            "2026-09-11T10:30:00",
-        )
 
     def test_shape(self, full_night):
         _, timeline = full_night
@@ -165,9 +175,15 @@ class TestFullNight:
             if "2026-09-11 08:00" <= p.t_start.iso[:16] <= "2026-09-11 09:00"
         }
         assert window == {"saturn"}
+        # Above Uranus's top bin (40 deg) the table's reference throw is
+        # extrapolated; the passes sweep the solved throw, so the candidate
+        # list is where the table's value shows.
         uranus = [p for p in passes if p.metadata["target"] == "uranus"]
-        assert any(p.elevation > 40.0 for p in uranus)
-        assert all(p.metadata["requested"]["az_throw"] > 2.61 for p in uranus if p.elevation > 40.0)
+        high = next(p for p in uranus if p.elevation > 40.0)
+        state = NightState.initial(high.t_start, (high.az_start, high.elevation))
+        (candidate,) = [c for c in list_candidates(state, ctx) if c.body == "uranus"]
+        assert candidate.el_bore_estimate > 40.0 and candidate.bin is None
+        assert candidate.az_throw > 2.61
 
     def test_every_pass_rebuilds_and_regates(self, full_night):
         site, timeline = full_night

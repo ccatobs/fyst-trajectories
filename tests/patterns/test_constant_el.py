@@ -8,6 +8,7 @@ from astropy.time import Time
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from fyst_trajectories.exceptions import PointingWarning
 from fyst_trajectories.patterns import ConstantElScanConfig, ConstantElScanPattern
 from fyst_trajectories.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
@@ -28,7 +29,6 @@ class TestConstantElScanPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=None)
 
-        assert trajectory.n_points > 0
         assert trajectory.duration == pytest.approx(60.0, abs=0.2)
         assert trajectory.pattern_type == "constant_el"
 
@@ -105,7 +105,9 @@ class TestConstantElScanPattern:
 
         trajectory = pattern.generate(site, duration=60.0, start_time=None)
 
-        assert trajectory.n_points > 0
+        # A reversed config starts at az_start and scans toward az_stop.
+        assert trajectory.az[0] == pytest.approx(180.0)
+        assert trajectory.az_vel[0] < 0.0
         # With overscan, positions extend beyond science bounds
         assert trajectory.az.min() >= 120.0 - d_half_turn - 0.05
         assert trajectory.az.max() <= 180.0 + d_half_turn + 0.05
@@ -133,7 +135,7 @@ class TestConstantElScanPattern:
 class TestTurnaroundBehavior:
     """The quintic turnaround: bounded peak acceleration, a zero crossing, full cruise speed."""
 
-    def test_velocity_is_continuous(self, site):
+    def test_turnaround_peaks_at_one_and_a_half_times_az_accel(self, site):
         config = ConstantElScanConfig(
             timestep=0.1,
             az_start=100.0,
@@ -150,8 +152,8 @@ class TestTurnaroundBehavior:
         dt = np.diff(trajectory.times)
         acceleration = dv / dt
 
-        # Quintic turnaround has peak acceleration of 1.5x the average
-        assert np.abs(acceleration).max() <= 1.5 * 1.1
+        # The turnaround peaks at 1.5x its average acceleration, az_accel.
+        assert np.abs(acceleration).max() == pytest.approx(1.5 * config.az_accel, rel=0.01)
 
     def test_velocity_passes_through_zero(self, site):
         config = ConstantElScanConfig(
@@ -195,14 +197,15 @@ class TestTurnaroundBehavior:
 
     def test_small_throw_reaches_cruise(self, site):
         """Even small throws reach full cruise speed with overscan."""
-        config = ConstantElScanConfig(
-            timestep=0.1,
-            az_start=100.0,
-            az_stop=102.0,
-            elevation=45.0,
-            az_speed=2.0,
-            az_accel=1.0,
-        )
+        with pytest.warns(PointingWarning, match="Turnaround distance"):
+            config = ConstantElScanConfig(
+                timestep=0.1,
+                az_start=100.0,
+                az_stop=102.0,
+                elevation=45.0,
+                az_speed=2.0,
+                az_accel=1.0,
+            )
         pattern = ConstantElScanPattern(config)
 
         trajectory = pattern.generate(site, duration=30.0, start_time=None)
@@ -216,18 +219,22 @@ class TestEdgeCases:
     """Short throws, very slow scans, and an explicit start time all generate."""
 
     def test_very_short_scan(self, site):
-        config = ConstantElScanConfig(
-            timestep=0.1,
-            az_start=100.0,
-            az_stop=101.0,
-            elevation=45.0,
-            az_speed=1.0,
-            az_accel=0.5,
-        )
+        with pytest.warns(PointingWarning, match="Turnaround distance"):
+            config = ConstantElScanConfig(
+                timestep=0.1,
+                az_start=100.0,
+                az_stop=101.0,
+                elevation=45.0,
+                az_speed=1.0,
+                az_accel=0.5,
+            )
         pattern = ConstantElScanPattern(config)
 
         trajectory = pattern.generate(site, duration=10.0, start_time=None)
-        assert trajectory.n_points > 0
+        # The 1 deg throw is shorter than the 1.25 deg turnaround overshoot; the
+        # motion range is still the throw plus one overshoot on each side.
+        assert trajectory.az.min() == pytest.approx(100.0 - 1.25, abs=0.01)
+        assert trajectory.az.max() == pytest.approx(101.0 + 1.25, abs=0.01)
 
     def test_very_slow_scan(self, site):
         config = ConstantElScanConfig(
@@ -241,7 +248,9 @@ class TestEdgeCases:
         pattern = ConstantElScanPattern(config)
 
         trajectory = pattern.generate(site, duration=60.0, start_time=None)
-        assert trajectory.n_points > 0
+        # 60 s at 0.1 deg/s covers 6 deg of the 50 deg throw: no turnaround yet.
+        assert trajectory.az[-1] == pytest.approx(106.0)
+        assert np.all(trajectory.scan_flag == SCAN_FLAG_SCIENCE)
 
     def test_with_start_time(self, site):
         config = ConstantElScanConfig(
@@ -277,7 +286,12 @@ class TestConstantElPropertyBased:
         # contention (parallel test runs, loaded CI runners) for a pure
         # numpy workload with no hang risk.
         deadline=None,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
+        # Repeats the suite profile's too_slow (tests/conftest.py): an explicit
+        # list replaces the profile's rather than adding to it.
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @pytest.mark.filterwarnings(
+        "ignore:Turnaround distance:fyst_trajectories.exceptions.PointingWarning"
     )
     def test_invariants(self, site, az_start, az_throw, elevation, az_speed, az_accel, duration):
         """Every CE invariant holds across random valid parameters.
@@ -348,7 +362,10 @@ class TestConstantElPropertyBased:
 
         # Position and stored velocity are consistent everywhere after the
         # first sample (the first leg starts at full cruise speed, so the
-        # one-sided gradient at index 0 is not meaningful).
+        # one-sided gradient at index 0 is not meaningful). The last sample's
+        # difference is one-sided too: when the scan ends inside a turnaround it
+        # is off by up to 1.5 * az_accel * timestep / 2, 0.15 deg/s at the top
+        # of the az_accel strategy.
         d_az_dt = np.gradient(np.unwrap(trajectory.az, period=360.0), trajectory.times)
         np.testing.assert_allclose(d_az_dt[1:], trajectory.az_vel[1:], atol=0.15, rtol=0.0)
 
@@ -372,6 +389,8 @@ class TestPositionContinuity:
     # several throws, and a range of speed/accel ratios. All chosen so the
     # quintic peak acceleration (1.5 * az_accel) stays at or below the FYST
     # az acceleration limit (1.5 deg/s^2), so a clean trajectory is warning-free.
+    # That limit is an operational placeholder pending the FYST team's
+    # ratification; these configs move with it.
     CONFIGS = [
         (130.0, 150.0, 0.5, 0.5),
         (150.0, 130.0, 0.5, 0.5),
@@ -421,10 +440,10 @@ class TestPositionContinuity:
         trajectory = ConstantElScanPattern(config).generate(site, duration=300.0, start_time=None)
 
         d_az_dt = np.gradient(np.unwrap(trajectory.az, period=360.0), trajectory.times)
-        # Skip index 0 (one-sided gradient at the full-speed start is not
-        # meaningful). The tolerance absorbs the central-difference error where
-        # the position curves through the turnaround (~az_accel * timestep / 2).
-        np.testing.assert_allclose(d_az_dt[1:], trajectory.az_vel[1:], atol=0.1, rtol=0.0)
+        # Skip both ends: the one-sided differences there are not meaningful (a
+        # scan that ends mid-turnaround reads 1.5 * az_accel * timestep / 2 off
+        # at its last sample). Interior central differences agree to ~0.004.
+        np.testing.assert_allclose(d_az_dt[1:-1], trajectory.az_vel[1:-1], atol=0.01, rtol=0.0)
 
     @pytest.mark.parametrize(("az_start", "az_stop", "az_speed", "az_accel"), CONFIGS)
     def test_no_spurious_dynamics_warnings(self, site, az_start, az_stop, az_speed, az_accel):

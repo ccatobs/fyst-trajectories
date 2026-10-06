@@ -1,9 +1,11 @@
 """Per-body scan-parameter tables binned by elevation.
 
 A :class:`ScanParameterTable` holds, for one body or for the shared
-default, the azimuth throw to sweep in each elevation bin together with a
-reference dwell that the planner shows beside its own solved crossing time
-and applies only on request. The shipped :data:`DEFAULT_SCAN_TABLES` are
+default, a reference azimuth throw for each elevation bin together with a
+reference dwell, the table's scan time. The planner applies each only
+when the policy asks for it (``use_table_throw``, ``use_table_dwell``);
+by default a pass sweeps the throw solved from the footprint and scans
+the solved crossing. The shipped :data:`DEFAULT_SCAN_TABLES` are
 instrument-team commissioning defaults pending on-sky testing;
 :func:`load_scan_tables` reads a caller's own table file so the defaults
 can be replaced without a release.
@@ -42,12 +44,12 @@ class ElevationBin:
         Upper elevation bound in degrees, exclusive except on a table's
         top bin, where it is inclusive.
     az_throw : float
-        Azimuth throw of the swept window in degrees for this bin (the
-        table's "scan width").
+        Reference azimuth throw of the swept window in degrees for this
+        bin (the table's "scan width"), swept only when a policy asks for
+        it.
     dwell_reference : float
         Reference time on source in seconds (the table's "scan time"),
-        shown beside the solved crossing and applied only when a policy
-        asks for it.
+        applied only when a policy asks for it.
 
     Raises
     ------

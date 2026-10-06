@@ -44,7 +44,7 @@ Usage Examples
     )
     for r in reports:
         for w in r.windows or ():
-            print(r.name, w.start.iso, "→", w.end.iso,
+            print(r.name, w.start.iso, "->", w.end.iso,
                   f"({w.duration_hours:.1f} h)")
         print(r.name, "total:", f"{r.total_observable_hours:.1f} h")
 

@@ -2,12 +2,11 @@
 
 This runnable example scripts five consecutive passes on one body at five
 azimuth sweep speeds with
-:class:`~fyst_trajectories.overhead.ScriptedSelection`, the way a
-commissioning session sweeps a scan parameter in one sitting on one body
-rather than across nights. Elevation still drifts between the trials as
-the body moves, and with it the table's azimuth throw, so each pass
-records the elevation and throw it actually ran at. It prints the applied
-geometry of each pass with its science duty cycle and pass length.
+:class:`~fyst_trajectories.overhead.ScriptedSelection`. Elevation still
+drifts between the trials as the body moves, and with it the throw solved
+from the footprint, so each pass records the elevation and throw it
+actually ran at. It prints the applied geometry of each pass with its
+science duty cycle and pass length.
 
 Run it from the repository root::
 

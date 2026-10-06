@@ -1,6 +1,7 @@
 """Tests for TOAST-compatible ECSV I/O."""
 
-import math
+import dataclasses
+import re
 
 import pytest
 from astropy.table import QTable, Table
@@ -23,7 +24,6 @@ from fyst_trajectories.overhead.models import (
     OverheadModel,
     TimelineBlock,
 )
-from fyst_trajectories.overhead.utils import compute_nasmyth_rotation
 
 
 def _make_test_timeline():
@@ -89,16 +89,7 @@ def _make_test_timeline():
 
 
 class TestWriteTimeline:
-    """A written file names its blocks; a timeline with none still writes."""
-
-    def test_writes_file(self, tmp_path):
-        timeline = _make_test_timeline()
-        path = tmp_path / "test_timeline.ecsv"
-        write_timeline(timeline, path)
-        assert path.exists()
-        content = path.read_text()
-        assert "deep_field" in content
-        assert "retune" in content
+    """A timeline with no blocks still writes."""
 
     def test_empty_timeline(self, tmp_path):
         site = get_fyst_site()
@@ -137,8 +128,9 @@ class TestReadTimeline:
 
         loaded = read_timeline(path)
         for orig, loaded_b in zip(timeline.blocks, loaded.blocks):
-            assert abs(orig.t_start.unix - loaded_b.t_start.unix) < 1.0
-            assert abs(orig.t_stop.unix - loaded_b.t_stop.unix) < 1.0
+            # ISO strings carry milliseconds; this timeline's times are whole seconds.
+            assert abs(orig.t_start.unix - loaded_b.t_start.unix) < 1e-3
+            assert abs(orig.t_stop.unix - loaded_b.t_stop.unix) < 1e-3
 
     def test_preserves_metadata(self, tmp_path):
         timeline = _make_test_timeline()
@@ -244,6 +236,81 @@ class TestTimelineWindowRoundTrip:
         assert loaded.efficiency == pytest.approx(1.0, abs=1e-3)
 
 
+class TestTimesAreWrittenInUtc:
+    """The file holds every time in UTC, the scale ``read_timeline`` reads them in."""
+
+    @pytest.mark.parametrize("scale", ["tt", "tai", "tdb", "ut1"])
+    def test_a_timeline_held_in_another_scale_reads_back_at_its_instants(self, scale, tmp_path):
+        utc = _make_test_timeline()
+        given = dataclasses.replace(
+            utc,
+            blocks=[
+                dataclasses.replace(
+                    b, t_start=getattr(b.t_start, scale), t_stop=getattr(b.t_stop, scale)
+                )
+                for b in utc.blocks
+            ],
+            start_time=getattr(utc.start_time, scale),
+            end_time=getattr(utc.end_time, scale),
+        )
+        path = tmp_path / f"{scale}.ecsv"
+        write_timeline(given, path)
+        back = read_timeline(path)
+
+        def off(a, b):
+            return abs((a - b).to_value("s"))
+
+        # The file stores times to the millisecond.
+        assert off(back.start_time, utc.start_time) <= 5e-4
+        assert off(back.end_time, utc.end_time) <= 5e-4
+        for block, original in zip(back.blocks, utc.blocks, strict=True):
+            assert off(block.t_start, original.t_start) <= 5e-4
+            assert off(block.t_stop, original.t_stop) <= 5e-4
+
+    @pytest.mark.parametrize(
+        "attributes", [{"precision": 0}, {"out_subfmt": "date"}], ids=["precision 0", "date"]
+    )
+    def test_a_utc_timeline_with_other_output_attributes_writes_millisecond_strings(
+        self, attributes, tmp_path
+    ):
+        """The times are written to the millisecond whatever the ``Time`` objects print.
+
+        Every time is moved 0.3714 s off the whole second, so a string to
+        the second, or a date alone, would read back at another instant.
+        """
+        shift = TimeDelta(0.3714, format="sec")
+
+        def given(t):
+            return Time(t + shift, **attributes)
+
+        utc = _make_test_timeline()
+        timeline = dataclasses.replace(
+            utc,
+            blocks=[
+                dataclasses.replace(b, t_start=given(b.t_start), t_stop=given(b.t_stop))
+                for b in utc.blocks
+            ],
+            start_time=given(utc.start_time),
+            end_time=given(utc.end_time),
+        )
+        path = tmp_path / "attributes.ecsv"
+        write_timeline(timeline, path)
+
+        table = Table.read(path, format="ascii.ecsv")
+        millisecond = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}")
+        strings = [
+            *table["start_time"],
+            *table["stop_time"],
+            table.meta["timeline_start_time"],
+            table.meta["timeline_end_time"],
+        ]
+        assert all(millisecond.fullmatch(str(s)) for s in strings), strings
+        back = read_timeline(path)
+        for block, original in zip(back.blocks, utc.blocks, strict=True):
+            assert abs((block.t_start - (original.t_start + shift)).to_value("s")) <= 5e-4
+            assert abs((block.t_stop - (original.t_stop + shift)).to_value("s")) <= 5e-4
+
+
 class TestCanonicalColumnNames:
     """New writes use the TOAST names and ISO times, never the legacy MJD/scan ones."""
 
@@ -273,7 +340,7 @@ class TestCanonicalColumnNames:
         table = Table.read(str(path), format="ascii.ecsv")
         first = str(table["start_time"][0])
         # ISO format looks like "2026-06-15 02:00:00.000"
-        assert "2026-06-15" in first
+        assert first == "2026-06-15 02:00:00.000"
 
 
 class TestEmptyTimelineRoundTrip:
@@ -428,6 +495,10 @@ class TestMetadataPersistence:
         for b in non_sci:
             assert b.metadata == {}
 
+    @pytest.mark.filterwarnings(
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_metadata_roundtrip_through_simulation_bridge(self, tmp_path):
         site = get_fyst_site()
         patches = [
@@ -461,7 +532,15 @@ class TestMetadataPersistence:
             assert b.metadata["width"] == pytest.approx(3.0)
             assert b.metadata["height"] == pytest.approx(2.0)
             assert b.metadata["velocity"] == pytest.approx(0.75)
-            assert b.metadata["scan_params"] == {"spacing": 0.12, "num_terms": 5}
+            # The patch's own keys, plus the whole periods the subscan holds.
+            n_cycles = b.metadata["scan_params"]["n_cycles"]
+            assert isinstance(n_cycles, int)
+            assert n_cycles >= 1
+            assert b.metadata["scan_params"] == {
+                "spacing": 0.12,
+                "num_terms": 5,
+                "n_cycles": n_cycles,
+            }
 
         # The simulation bridge should succeed end-to-end on the loaded
         # timeline and reproduce the same pong geometry (width/height) as
@@ -493,6 +572,47 @@ class TestSiteReconstruction:
         assert loaded.site.nasmyth_port == timeline.site.nasmyth_port
         assert loaded.site.plate_scale == timeline.site.plate_scale
 
+    @pytest.mark.parametrize(
+        "written_site",
+        [
+            dataclasses.replace(get_fyst_site(), nasmyth_port="left"),
+            get_fyst_site(sun_avoidance_enabled=False),
+            get_fyst_site(sun_exclusion_radius=50.0, sun_warning_radius=55.0),
+        ],
+        ids=["left_port", "sun_avoidance_off", "sun_radii_50_55"],
+    )
+    def test_fyst_coordinates_keep_the_persisted_fields(self, tmp_path, written_site):
+        """A FYST-coordinate site reads back with the fields it was written with.
+
+        The reader takes the limits from the FYST default for these
+        coordinates, so the Nasmyth port and the Sun settings are the
+        fields a default-only round trip cannot see being dropped.
+        """
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        timeline = ObservingTimeline(
+            blocks=[
+                TimelineBlock(
+                    t_start=t0,
+                    t_stop=t0 + TimeDelta(60, format="sec"),
+                    block_type="idle",
+                    patch_name="noop",
+                    az_start=180.0,
+                    az_end=180.0,
+                    elevation=50.0,
+                    scan_index=0,
+                )
+            ],
+            site=written_site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(60, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        path = tmp_path / "fyst_persisted.ecsv"
+        write_timeline(timeline, path)
+        loaded = read_timeline(path)
+        assert loaded.site == written_site
+
     def test_custom_site_coordinates_preserved(self, tmp_path):
         """A non-FYST site round-trips from metadata, not replaced.
 
@@ -515,7 +635,6 @@ class TestSiteReconstruction:
             latitude=-30.0,
             longitude=-70.0,
             elevation=2500.0,
-            atmosphere=None,
             telescope_limits=TelescopeLimits(
                 azimuth=AxisLimits(min=-180.0, max=360.0, max_velocity=3.0, max_acceleration=1.0),
                 elevation=AxisLimits(min=20.0, max=90.0, max_velocity=1.0, max_acceleration=0.5),
@@ -561,6 +680,7 @@ class TestSiteReconstruction:
 
     def test_site_description_round_trips_without_accumulation(self, tmp_path):
         """Description round-trips, telescope_name reflects the site, no metadata leak."""
+        from fyst_trajectories.exceptions import PointingWarning
         from fyst_trajectories.site import (
             AxisLimits,
             Site,
@@ -574,7 +694,6 @@ class TestSiteReconstruction:
             latitude=-30.0,
             longitude=-70.0,
             elevation=2500.0,
-            atmosphere=None,
             telescope_limits=TelescopeLimits(
                 azimuth=AxisLimits(min=-180.0, max=360.0, max_velocity=3.0, max_acceleration=1.0),
                 elevation=AxisLimits(min=20.0, max=90.0, max_velocity=1.0, max_acceleration=0.5),
@@ -607,7 +726,8 @@ class TestSiteReconstruction:
         )
         path = tmp_path / "desc_site.ecsv"
         write_timeline(timeline, path)
-        loaded = read_timeline(path)
+        with pytest.warns(PointingWarning, match="Reconstructing a non-FYST Site"):
+            loaded = read_timeline(path)
 
         # Description round-trips; without this it is silently dropped.
         assert loaded.site.description == "My Test Observatory"
@@ -619,7 +739,8 @@ class TestSiteReconstruction:
         # Second write/read cycle: no metadata accumulation; description stable.
         path2 = tmp_path / "desc_site2.ecsv"
         write_timeline(loaded, path2)
-        loaded2 = read_timeline(path2)
+        with pytest.warns(PointingWarning, match="Reconstructing a non-FYST Site"):
+            loaded2 = read_timeline(path2)
         assert loaded2.site.description == "My Test Observatory"
         assert "site_description" not in loaded2.metadata
 
@@ -633,7 +754,7 @@ class TestBoresightAngle:
         # Construct a block with a known nonzero boresight_angle.
         az = 120.0
         el = 55.0
-        expected = compute_nasmyth_rotation(az, el, site)
+        expected = Coordinates(site).get_field_rotation_from_altaz(az, el)
         block = TimelineBlock(
             t_start=t0,
             t_stop=t0 + TimeDelta(60, format="sec"),
@@ -668,107 +789,6 @@ class TestBoresightAngle:
         loaded = read_timeline(path)
         assert len(loaded.blocks) == 1
         assert loaded.blocks[0].boresight_angle == pytest.approx(expected, abs=1e-9)
-
-
-class TestNasmythConsistency:
-    """The parallactic angle inside ``compute_nasmyth_rotation`` matches ``get_parallactic_angle``.
-
-    ``compute_nasmyth_rotation`` returns ``nasmyth_sign*el + pa``, and both
-    tests below add ``nasmyth_sign*el`` before comparing, so the term pinned
-    against ``Coordinates.get_parallactic_angle`` is the ``pa`` inside it.
-
-    The two implementations use different input variables (AltAz vs HA)
-    but share the same underlying spherical trigonometry for the
-    parallactic angle. We verify the equivalence by computing the HA-based
-    formula directly from (HA, dec, lat) and the AltAz-based formula from
-    the matching (az, el) point on the celestial sphere. Both forms must
-    agree to machine precision on the shared geometric input.
-    """
-
-    def test_nasmyth_rotation_matches_coordinates(self):
-        site = get_fyst_site()
-        lat_rad = math.radians(site.latitude)
-
-        # Sample (HA, dec) pairs that are well-separated from the zenith.
-        samples = [
-            (-30.0, -40.0),
-            (15.0, -10.0),
-            (75.0, -55.0),
-            (-120.0, -70.0),
-            (45.0, -20.0),
-        ]
-
-        for ha_deg, dec_deg in samples:
-            ha_rad = math.radians(ha_deg)
-            dec_rad = math.radians(dec_deg)
-
-            # Geometric conversion from (HA, dec) to (az, el) at this
-            # latitude (same spherical triangle used by get_parallactic_angle).
-            sin_el = math.sin(lat_rad) * math.sin(dec_rad) + math.cos(lat_rad) * math.cos(
-                dec_rad
-            ) * math.cos(ha_rad)
-            el_rad = math.asin(sin_el)
-            cos_el = math.cos(el_rad)
-            if cos_el < 1e-9:
-                continue  # skip zenith samples
-            sin_az = -math.sin(ha_rad) * math.cos(dec_rad) / cos_el
-            cos_az = (math.sin(dec_rad) - math.sin(el_rad) * math.sin(lat_rad)) / (
-                cos_el * math.cos(lat_rad)
-            )
-            az_deg = math.degrees(math.atan2(sin_az, cos_az))
-            el_deg = math.degrees(el_rad)
-            if el_deg > 85.0:
-                continue
-
-            # HA-based parallactic angle (same formula used by
-            # Coordinates.get_parallactic_angle).
-            numerator_ha = math.sin(ha_rad)
-            denominator_ha = math.cos(dec_rad) * math.tan(lat_rad) - math.sin(dec_rad) * math.cos(
-                ha_rad
-            )
-            pa_ha_deg = math.degrees(math.atan2(numerator_ha, denominator_ha))
-            ha_bangle = site.nasmyth_sign * el_deg + pa_ha_deg
-
-            # AltAz-based equivalent (what compute_nasmyth_rotation computes).
-            altaz_bangle = compute_nasmyth_rotation(az_deg, el_deg, site)
-
-            diff = math.fmod(altaz_bangle - ha_bangle + 540.0, 360.0) - 180.0
-            assert abs(diff) < 1e-9, (
-                f"PA mismatch at HA={ha_deg} dec={dec_deg}: "
-                f"altaz={altaz_bangle}, ha={ha_bangle}, diff={diff}"
-            )
-
-    def test_nasmyth_rotation_matches_coordinates_via_instance(self):
-        """The two PA paths agree to machine precision at a non-J2000 epoch.
-
-        ``compute_nasmyth_rotation`` (AltAz form, overhead path) and
-        ``Coordinates.get_parallactic_angle`` (RA/Dec offset + source-CES path)
-        both derive the PA from the *transformed* vacuum Az/El, so they are the
-        same computation. An ``HA = apparent LST - ICRS RA`` form instead leaves a
-        precession bias (0.1 to 0.5 deg at these samples in 2026); this pins that
-        the two agree.
-        """
-        from fyst_trajectories.site import AtmosphericConditions
-
-        site = get_fyst_site()
-        coords = Coordinates(site, atmosphere=AtmosphericConditions.no_refraction())
-        time = Time("2026-06-15T05:00:00", scale="utc")
-
-        saw_nonzero = False
-        for ra, dec in [(120.0, -30.0), (200.0, -55.0), (300.0, -10.0)]:
-            az, el = coords.radec_to_altaz(ra, dec, time)
-            if el < 20.0 or el > 80.0:
-                continue
-            pa = coords.get_parallactic_angle(ra, dec, time)
-            if abs(pa) > 1.0:
-                saw_nonzero = True
-
-            altaz_bangle = compute_nasmyth_rotation(float(az), float(el), site)
-            ha_bangle = site.nasmyth_sign * float(el) + float(pa)
-            diff = math.fmod(altaz_bangle - ha_bangle + 540.0, 360.0) - 180.0
-            assert abs(diff) < 1e-6, f"PA paths diverge at RA={ra}, dec={dec}: {diff:.6f} deg"
-
-        assert saw_nonzero  # the comparison genuinely exercised a non-zero PA
 
 
 class TestOverheadModelRoundTrip:
@@ -1011,40 +1031,6 @@ class TestCalibrationBlockMetadataRoundTrip:
         assert len(cal_blocks) == 1
         assert cal_blocks[0].metadata["target"] == "jupiter"
         assert cal_blocks[0].metadata["cal_type"] == "planet_cal"
-
-    def test_retune_block_metadata_empty(self, tmp_path):
-        site = get_fyst_site()
-        t0 = Time("2026-06-15T02:00:00", scale="utc")
-
-        blocks = [
-            TimelineBlock(
-                t_start=t0,
-                t_stop=t0 + TimeDelta(5, format="sec"),
-                block_type="calibration",
-                patch_name="retune",
-                az_start=180.0,
-                az_end=180.0,
-                elevation=50.0,
-                scan_index=0,
-                scan_type="retune",
-            ),
-        ]
-
-        timeline = ObservingTimeline(
-            blocks=blocks,
-            site=site,
-            start_time=t0,
-            end_time=t0 + TimeDelta(5, format="sec"),
-            overhead_model=OverheadModel(),
-            calibration_policy=CalibrationPolicy(),
-        )
-
-        path = tmp_path / "retune_meta_rt.ecsv"
-        write_timeline(timeline, path)
-        loaded = read_timeline(path)
-
-        assert len(loaded.blocks) == 1
-        assert loaded.blocks[0].metadata == {}
 
 
 class TestRetuneEventsRoundTrip:

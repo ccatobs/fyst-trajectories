@@ -5,6 +5,10 @@ Examples for generating telescope trajectories using the patterns package.
 Trajectories serialize to the Go TCS ``/path`` request body and to ACU
 ProgramTrack ``TrackPoint`` rows.
 
+Trajectories are vacuum (unrefracted) az/el unless an atmosphere is
+passed, because refraction is applied downstream; see
+:ref:`quickstart-planning-refraction`.
+
 The ``Trajectory`` Object
 -------------------------
 
@@ -13,8 +17,8 @@ and ``el`` with their velocities, an absolute ``start_time``, a per-sample
 ``scan_flag``, and the pattern metadata. :doc:`api/trajectory` documents
 every field, ``science_mask`` and the derived properties.
 
-**Export and inspect** (the rest of the export and validation surface is
-in :doc:`api/trajectory_utils`)::
+**Export and inspect** any trajectory built below (the rest of the export
+and validation surface is in :doc:`api/trajectory_utils`)::
 
     from fyst_trajectories.trajectory_utils import print_trajectory, to_path_payload
 
@@ -67,7 +71,10 @@ Track solar system bodies using astropy ephemeris::
         .build()
     )
 
-Supported bodies: mercury, venus, mars, jupiter, saturn, uranus, neptune, moon, sun.
+Supported bodies are listed in
+:data:`~fyst_trajectories.coordinates.SOLAR_SYSTEM_BODIES`. It
+includes ``"sun"``, and the builder runs no Sun check (see
+:doc:`sun_avoidance`).
 
 Satellite Track
 ---------------
@@ -84,9 +91,11 @@ the ``FYST_SATELLITE_KERNEL`` environment variable, plus the
     )
 
 Building the trajectory then follows the planet-track pattern exactly.
-Generation raises ``FileNotFoundError`` when the kernel path does not
-exist and ``ModuleNotFoundError`` without ``jplephem``; supported names
-are listed in :data:`~fyst_trajectories.coordinates.SATELLITE_BODIES`.
+Generation raises ``ValueError`` when neither the config nor the
+environment names a kernel, ``FileNotFoundError`` when the kernel path
+does not exist, and ``ModuleNotFoundError`` without ``jplephem``;
+supported names are listed in
+:data:`~fyst_trajectories.coordinates.SATELLITE_BODIES`.
 
 Constant Elevation Scan
 -----------------------
@@ -108,8 +117,8 @@ the field geometry; :doc:`planning` works it through. For manual control
         az_start=120.0,     # Starting azimuth (deg)
         az_stop=145.0,      # Ending azimuth (deg)
         elevation=45.0,     # Fixed elevation (deg)
-        az_speed=1.0,       # Scan speed (deg/s)
-        az_accel=0.5,       # Acceleration (deg/s^2)
+        az_speed=1.0,       # Mount-frame az speed (deg/s); on-sky it is x cos(el)
+        az_accel=0.5,       # Mount-frame az acceleration (deg/s^2)
     )
 
     trajectory = (
@@ -155,8 +164,7 @@ RA/Dec centre::
 Daisy Scan
 ----------
 
-A rosette of petals through a single tracked position, for a compact
-source rather than a field::
+A rosette of petals through a single tracked position::
 
     from astropy.time import Time
 
@@ -223,8 +231,12 @@ due to Earth's rotation.
    crossing geometry, drift rate, and timing for you (and
    ``plan_source_ces_passes`` steps it across the focal plane); see
    :doc:`planning`. To chain such passes over a whole commissioning
-   night, see :doc:`overhead_calibration_night`. The example below
-   builds the same thing by hand to show the underlying mechanics.
+   night, see :doc:`overhead_calibration_night`. The example below is
+   not that observation: it shows the offset mechanics by hand at
+   Jupiter's transit, where the planet's elevation barely changes and
+   each azimuth leg sweeps the module across it. ``plan_source_ces``
+   refuses an anchor that near transit, because its passes need the
+   source's own elevation drift to carry it across the array.
 
 Aim the scan so the planet drifts through one detector module rather
 than through the boresight. Drop the offset step to centre it on the
@@ -246,13 +258,13 @@ planet itself::
 
     # Mechanical (horizon-frame) focal plane rotation
     offset = get_primecam_offset("i1")
-    field_rotation = compute_focal_plane_rotation(el=planet_el, site=site, offset=offset)
+    rotation = compute_focal_plane_rotation(el=planet_el, site=site, offset=offset)
 
-    # Compute boresight position so detector I1 sees the planet
+    # Compute the boresight position that puts module i1 on the planet
     bore_az, bore_el = detector_to_boresight(
         det_az=planet_az, det_el=planet_el,
         offset=offset,
-        field_rotation=field_rotation,
+        focal_plane_rotation=rotation,
     )
 
     # Set up scan centered on boresight position
@@ -306,27 +318,27 @@ Dispatching to the Telescope
 ----------------------------
 
 At the observatory a typed scan task calls a planner at dispatch time,
-so the ephemeris is fresh, and POSTs the result to the Go TCS::
+so the ephemeris is fresh, and POSTs the result to the Go TCS:
 
-    scheduling layer --[scan_params]--> typed scan task (e.g. pong_scan)
-                                            |
-                                            v
-                                    fyst-trajectories
-                                    (plan_pong_scan + to_path_payload)
-                                            |
-                                            v
-                                    HTTP POST /path
-                                            |
-                                            v
-                                    Go TCS --> ACU hardware
+.. figure:: figures/dispatch_flow.png
+   :alt: Flow from the scheduling layer, passing scan_params, to a typed scan task such as
+      pong_scan. The task calls fyst-trajectories (plan_pong_scan and to_path_payload),
+      which returns the payload; the task sends it by HTTP POST to /path to the Go TCS,
+      which drives the ACU hardware.
+   :width: 100%
+
+   One scan from scheduling to hardware. The typed scan task calls this
+   library, the highlighted step, for the payload and POSTs it to the Go TCS.
 
 The dispatch-time API is :doc:`api/dispatch` and
 :doc:`api/trajectory_utils`.
 
-For local testing, POST the payload directly. Re-anchor the trajectory
-first: the pages above build trajectories with fixed past start times,
-and the Go TCS rejects any start time that does not lead by about 10
-seconds::
+For local testing, POST the payload directly. The start time must lead
+the Go TCS clock by about 10 seconds, and only an AltAz-frame trajectory
+can simply be re-anchored, because its az/el do not depend on when it
+runs; a celestial one must be built again at the new time. Nothing here
+checks the Sun, so screen anything bound for a real antenna with
+``validate_sun_avoidance``::
 
     import dataclasses
 
@@ -334,9 +346,20 @@ seconds::
     import requests
     from astropy.time import Time
 
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.patterns import ConstantElScanConfig, TrajectoryBuilder
     from fyst_trajectories.trajectory_utils import to_path_payload
 
-    live = dataclasses.replace(trajectory, start_time=Time.now() + 15 * u.s)
+    engineering = (
+        TrajectoryBuilder(get_fyst_site())
+        .with_config(ConstantElScanConfig(
+            timestep=0.1, az_start=120.0, az_stop=145.0, elevation=45.0,
+            az_speed=1.0, az_accel=0.5,
+        ))
+        .duration(120.0)
+        .build()
+    )
+    live = dataclasses.replace(engineering, start_time=Time.now() + 15 * u.s)
     response = requests.post(
         "http://localhost:5600/path", json=to_path_payload(live)
     )

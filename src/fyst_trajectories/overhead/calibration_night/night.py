@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -16,13 +17,13 @@ from .policy import (
     tables_as_record,
 )
 from .selection import ScriptedSelection, SelectionRule, select_priority
-from .state import NightContext, NightState
+from .state import NightContext, NightState, _describe, _rule_name
 from .step import advance_idle, commit_visit, list_candidates
 from .tables import ScanParameterTable
 
 if TYPE_CHECKING:
-    from ...dispatch import SlewSafePredicate, SunSafePredicate
     from ...site import Site
+    from ...sun_protocols import SlewSafePredicate, SunSafePredicate
 
 __all__ = ["plan_calibration_night"]
 
@@ -72,10 +73,13 @@ def plan_calibration_night(
     site : Site
         Observing site.
     start_time, end_time : Time or str
-        The requested window in UTC; the planned interval is clipped to
-        when the Sun is down inside it.
+        The requested window, held in UTC: an ISO string is read as UTC,
+        and any ``Time`` is held as a UTC ``Time`` without a location and
+        with astropy's default ``precision`` and ``out_subfmt`` (one in
+        another scale is converted to UTC). The planned interval is clipped
+        to when the Sun is down inside it.
     policy : CalibrationNightPolicy, optional
-        The night's policy. Default :class:`CalibrationNightPolicy()`.
+        The night's policy. Default ``CalibrationNightPolicy()``.
     tables : mapping of str to ScanParameterTable, optional
         Scan-parameter tables keyed by body with ``"default"`` for the
         shared one. Keys are matched in lower case, so ``"Uranus"`` and
@@ -87,9 +91,11 @@ def plan_calibration_night(
         Durations of the detector operations and the settle time.
     calibration_policy : CalibrationPolicy, optional
         Cadences; the skydip cadence is read from it.
-    sun_safe, slew_safe : optional
-        The Sun predicates; default the scalar site model and its sweep
-        along the slew path under the site's axis limits.
+    sun_safe : SunSafePredicate, optional
+        Point-level Sun predicate; default the scalar site model.
+    slew_safe : SlewSafePredicate, optional
+        Path-level Sun predicate; default ``sun_safe`` swept along the
+        slew path under the site's axis limits.
     start_pose : tuple of float, optional
         The ``(az, el)`` the telescope starts from; default the offline
         scheduler's bootstrap pose.
@@ -106,7 +112,7 @@ def plan_calibration_night(
     ValueError
         If ``targets`` is empty, names a body twice or names one with no
         ephemeris, the window is not ordered, a body has no table, or the
-        selection rule returns a body it was not offered.
+        selection rule returns a body that is not an available candidate.
 
     See Also
     --------
@@ -143,18 +149,24 @@ def _run_night(
     deferrals: list[dict[str, str]] = []
     drops: list[dict[str, str]] = []
     advisories: list[dict[str, str]] = []
+    set_aside_at: list[str] = []
 
     while ctx.usable and (ctx.end_time - state.t).to_value("s") > pol.min_pass_seconds:
         for _ in range(_MAX_ITERATIONS_PER_TICK):
             candidates = list_candidates(state, ctx)
             choice = rule(candidates, state)
             if choice is None:
-                state = _idle(state, ctx, rule, candidates)
+                n_unplaced = len(state.unplaced)
+                state = _idle(state, ctx, rule)
+                if len(state.unplaced) > n_unplaced:
+                    set_aside_at.append(state.t.iso)
                 break
             body, overrides = choice
             body = body.lower()
-            if body not in {c.body for c in candidates}:
-                raise ValueError(f"selection returned {body!r}, which is not a candidate")
+            if body not in {c.body for c in candidates if c.available}:
+                raise ValueError(
+                    f"selection returned {body!r}, which is not a candidate available now"
+                )
             plan = ctx.visit_planner(state, ctx, body, overrides)
             advisories.extend(
                 {"body": body, "at": state.t.iso, "message": message} for message in plan.warnings
@@ -169,25 +181,27 @@ def _run_night(
 
     if ctx.usable:
         state = advance_idle(
-            state, ctx, (ctx.end_time - state.t).to_value("s"), DeferralReason.NOTHING_AVAILABLE
+            state, ctx, (ctx.end_time - state.t).to_value("s"), DeferralReason.WINDOW_CLOSED
         )
 
     meta: CalibrationNightMetadata = {
         "targets": list(ctx.targets),
         "policy": pol.as_record(),
         "tables": tables_as_record(dict(ctx.tables)),
-        "selection": getattr(rule, "__name__", type(rule).__name__),
-        "sun_safe": str(getattr(ctx.sun_safe, "describe", type(ctx.sun_safe).__name__)),
-        "slew_safe": str(getattr(ctx.slew_safe, "describe", type(ctx.slew_safe).__name__)),
+        "selection": _rule_name(rule),
+        "sun_safe": _describe(ctx.sun_safe),
+        "slew_safe": _describe(ctx.slew_safe),
         "requested_window": [ctx.requested_start.iso, ctx.requested_end.iso],
         "usable_interval": [ctx.start_time.iso, ctx.end_time.iso] if ctx.usable else None,
         "start_pose": [initial.az, initial.el],
         "deferrals": deferrals,
         "drops": drops,
         "unplaced": [
-            {"body": body, "overrides": overrides.as_record()} for body, overrides in state.unplaced
+            {"body": body, "at": at, "overrides": overrides.as_record()}
+            for (body, overrides), at in zip(state.unplaced, set_aside_at, strict=True)
         ],
         "warnings": advisories,
+        "telescope_limits": dataclasses.asdict(ctx.site.telescope_limits),
     }
     return ObservingTimeline(
         blocks=list(state.blocks),
@@ -200,9 +214,7 @@ def _run_night(
     )
 
 
-def _idle(
-    state: NightState, ctx: NightContext, rule: SelectionRule, candidates: tuple
-) -> NightState:
+def _idle(state: NightState, ctx: NightContext, rule: SelectionRule) -> NightState:
     """One idle tick, with the scripted rule's waiting bookkeeping."""
     pol = ctx.policy
     reason = DeferralReason.NOTHING_AVAILABLE

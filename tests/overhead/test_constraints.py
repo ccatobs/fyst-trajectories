@@ -1,4 +1,9 @@
-"""Tests for scheduling constraints."""
+"""Tests for scheduling constraints.
+
+- MinDurationConstraint sun forward-check. A target that stays above
+  the elevation floor but is inside the Sun exclusion zone within
+  ``min_duration`` must be rejected, matching the class docstring.
+"""
 
 import pytest
 from astropy.time import Time
@@ -10,6 +15,7 @@ from fyst_trajectories.overhead.constraints import (
     SunAvoidanceConstraint,
 )
 from fyst_trajectories.overhead.models import ObservingPatch
+from fyst_trajectories.site import FYST_EL_MAX, FYST_EL_MIN
 
 
 @pytest.fixture
@@ -28,6 +34,18 @@ def patch():
 @pytest.fixture
 def time():
     return Time("2026-06-15T04:00:00", scale="utc")
+
+
+# A time/place where a target offset ~20 deg in RA from the Sun is well
+# above the FYST horizon but inside the 45 deg Sun exclusion radius.
+_SUN_TIME = Time("2026-06-15T17:30:00", scale="utc")
+
+
+@pytest.fixture
+def sun_radec(coordinates):
+    """Sun RA/Dec at the test time (for placing sunward targets)."""
+    ra, dec = coordinates.get_body_radec("sun", _SUN_TIME)
+    return float(ra), float(dec)
 
 
 class TestElevationConstraint:
@@ -53,6 +71,33 @@ class TestElevationConstraint:
     def test_invalid_range(self):
         with pytest.raises(ValueError, match="el_min"):
             ElevationConstraint(el_min=80.0, el_max=30.0)
+
+    def test_default_el_max_matches_fyst_el_max(self):
+        """Default ``el_max`` equals the site limit ``FYST_EL_MAX`` (90 deg)."""
+        c = ElevationConstraint()
+        assert c.el_max == FYST_EL_MAX
+        assert c.el_max == 90.0
+
+    def test_default_el_min_matches_fyst_el_min(self):
+        """Default ``el_min`` equals the site limit ``FYST_EL_MIN`` (20 deg)."""
+        c = ElevationConstraint()
+        assert c.el_min == FYST_EL_MIN
+        assert c.el_min == 20.0
+
+    def test_default_allows_elevation_89_deg(self, patch, time, coordinates):
+        """An elevation of 89 deg scores as valid under the defaults."""
+        c = ElevationConstraint()
+        assert c.score(patch, time, 180.0, 89.0, coordinates) == 1.0
+
+    def test_default_rejects_elevation_below_fyst_min(self, patch, time, coordinates):
+        """An elevation of 10 deg must still score infeasible under defaults."""
+        c = ElevationConstraint()
+        assert c.score(patch, time, 180.0, 10.0, coordinates) == 0.0
+
+    def test_default_rejects_elevation_above_fyst_max(self, patch, time, coordinates):
+        """An elevation of 95 deg must still score infeasible under defaults."""
+        c = ElevationConstraint()
+        assert c.score(patch, time, 180.0, 95.0, coordinates) == 0.0
 
 
 class TestSunAvoidanceConstraint:
@@ -156,31 +201,39 @@ class TestMinDurationConstraint:
             MinDurationConstraint(min_duration=-1.0)
 
 
-class TestObservingPatchValidation:
-    """ObservingPatch.__post_init__ rejects invalid fields."""
+class TestMinDurationConstraintSun:
+    """MinDurationConstraint forward-checks Sun exclusion."""
 
-    @staticmethod
-    def _kwargs(**overrides):
-        base = dict(
-            name="p",
-            ra_center=180.0,
-            dec_center=-30.0,
-            width=4.0,
-            height=4.0,
+    def test_rejects_target_inside_exclusion(self, coordinates, sun_radec):
+        """Above the el floor but inside the exclusion zone -> score 0.0."""
+        sun_ra, sun_dec = sun_radec
+        ra = (sun_ra + 20.0) % 360
+        patch = ObservingPatch(
+            name="sunward",
+            ra_center=ra,
+            dec_center=sun_dec,
+            width=2.0,
+            height=2.0,
             scan_type="pong",
             velocity=0.5,
         )
-        base.update(overrides)
-        return base
+        constraint = MinDurationConstraint(min_duration=600.0)
+        # The target sits ~18 deg from the Sun at t0 and at t0 + 600 s, so
+        # this pins the scalar verdict; the pinned-elevation test pins that
+        # the check is made at the end of min_duration.
+        assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coordinates) == 0.0
 
-    def test_negative_height_raises(self):
-        with pytest.raises(ValueError, match="height must be positive"):
-            ObservingPatch(**self._kwargs(height=-1.0))
-
-    def test_non_positive_priority_raises(self):
-        with pytest.raises(ValueError, match="priority must be positive"):
-            ObservingPatch(**self._kwargs(priority=0.0))
-
-    def test_negative_weight_raises(self):
-        with pytest.raises(ValueError, match="weight must be non-negative"):
-            ObservingPatch(**self._kwargs(weight=-0.5))
+    def test_accepts_sun_safe_high_target(self, coordinates):
+        """A sun-safe target above the el floor still scores 1.0."""
+        # ra=45, dec=-40 at the test time: el ~40, ~73 deg from the Sun.
+        patch = ObservingPatch(
+            name="safe",
+            ra_center=45.0,
+            dec_center=-40.0,
+            width=2.0,
+            height=2.0,
+            scan_type="pong",
+            velocity=0.5,
+        )
+        constraint = MinDurationConstraint(min_duration=600.0)
+        assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coordinates) == 1.0

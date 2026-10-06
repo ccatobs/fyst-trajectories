@@ -4,10 +4,10 @@
 (zenith at the center, the horizon on the rim, north up, east to the left:
 the astronomer's looking-up convention): every visible catalog body, the
 region of sky that is unsafe under the selected sun-avoidance policy
-(evaluated on an az/el grid from the policy's own verdicts, so the
-directional CAD zone renders its true shape), the band below the telescope
-elevation floor, and optionally the PrimeCam footprint projected onto the
-sky at a boresight, at honest angular scale.
+(drawn to the policy's own boundary, so the directional CAD zone renders
+its true shape), the band below the telescope elevation floor, and
+optionally the PrimeCam footprint projected onto the sky at a boresight, at
+honest angular scale.
 
 Two layers are deliberately absent: the surveyed landscape horizon and
 site-structure occlusion. Neither model ships with this package.
@@ -29,17 +29,20 @@ This afternoon's sky with the default policy and the array on the Moon:
 """
 
 from datetime import tzinfo
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 from astropy.time import Time
 
 from ..coordinates import Coordinates
+from ..exceptions import PointingError
 from ..observability import Target, _target_altaz_grid, resolve_target
 from ..offsets import _offset_forward, _rotate_offset, compute_focal_plane_rotation
 from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import Site, get_fyst_site
 from ..sun_models import make_sun_safe
+from ..sun_protocols import ZonedSunSafePredicate
+from ._common import FOOTPRINT_COLOR, _palette, _unique_offsets
 from .visibility import (
     DEFAULT_VISIBILITY_TARGETS,
     EXCLUSION_COLOR,
@@ -54,13 +57,11 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-    from ..dispatch import SunSafePredicate
     from ..offsets import InstrumentOffset
+    from ..sun_protocols import BatchSunSafePredicate
 
 __all__ = ["plot_sky_view"]
 
-#: Color of the PrimeCam module outlines and the boresight marker.
-FOOTPRINT_COLOR = "#1f77b4"
 _EL_LIMIT_SHADE_COLOR = "0.55"
 _RING_SAMPLES = 73
 
@@ -78,14 +79,16 @@ def _boresight_altaz(
         az_b, el_b = (float(v) for v in boresight)
         # (0, 90]: el = 0 is excluded for the same reason a below-horizon
         # named target is, so both boresight forms agree at the horizon.
-        if not np.isfinite(az_b) or not np.isfinite(el_b) or not 0.0 < el_b <= 90.0:
+        if not np.isfinite(az_b):
+            raise ValueError(f"boresight azimuth must be finite, got {az_b}")
+        if not 0.0 < el_b <= 90.0:
             raise ValueError(f"boresight elevation must be within (0, 90] degrees, got {el_b}")
         return az_b % 360.0, el_b
     target = resolve_target(boresight, extra=extra_targets)
     az, el = _target_altaz_grid(coords, target, time)
     az_b, el_b = float(az[0]) % 360.0, float(el[0])
     if el_b <= 0.0:
-        raise ValueError(
+        raise PointingError(
             f"boresight target '{target.name}' is below the horizon at "
             f"{time.utc.iso[:16]} UTC (el {el_b:.1f} deg)"
         )
@@ -102,22 +105,16 @@ def _footprint_on_sky(
     """Sky outlines (az, el arrays) of each unique module's FOV circle.
 
     Each module's focal-plane FOV circle is rotated by the mechanical
-    Nasmyth field rotation in the tangent plane (rotating the center and
+    focal-plane rotation in the tangent plane (rotating the center and
     phase-shifting the circle are the same point set) and mapped through
     the exact spherical forward offset, so outlines are honest at any
     elevation and offset size.
     """
-    unique: list[InstrumentOffset] = []
-    for offset in modules.values():
-        if not any(offset is seen for seen in unique):
-            unique.append(offset)
-    if not unique:
-        raise ValueError("modules must not be empty")
-
+    unique = _unique_offsets(modules)
     ring = np.linspace(0.0, 2.0 * np.pi, _RING_SAMPLES)
     outlines = []
     for offset in unique:
-        rotation = compute_focal_plane_rotation(el_b, site, offset)
+        rotation = compute_focal_plane_rotation(el_b, site=site, offset=offset)
         dx_c, dy_c = _rotate_offset(offset, rotation)
         ring_az, ring_el = _offset_forward(
             az_b,
@@ -129,61 +126,123 @@ def _footprint_on_sky(
     return outlines
 
 
-def _policy_masks(
+class _ZoneLayer(NamedTuple):
+    """One shaded layer: the sky where ``lower < values <= upper``.
+
+    ``values`` is sampled on the grid nodes (the cell edges, ``r`` rows by
+    ``theta`` columns) when ``on_nodes`` is true, else on the cell centers.
+    """
+
+    values: np.ndarray
+    lower: float
+    upper: float
+    on_nodes: bool
+
+
+def _below(values: np.ndarray, upper: float) -> float:
+    """Return a level below every value, so that a layer fills ``values <= upper``."""
+    return min(float(np.min(values)), upper) - 1.0
+
+
+def _batch_on(sun_model, az: np.ndarray, el: np.ndarray, time: Time, what: str) -> np.ndarray:
+    """Ask ``sun_model.batch`` for one verdict per grid point, shaped like the grid."""
+    verdicts = np.asarray(sun_model.batch(az.ravel(), el.ravel(), time), dtype=bool)
+    if verdicts.shape != az.ravel().shape:
+        raise ValueError(
+            f"sun_model.batch returned shape {verdicts.shape}, expected "
+            f"{az.ravel().shape} verdicts for the {what}"
+        )
+    return verdicts.reshape(az.shape)
+
+
+def _policy_zones(
     coords: Coordinates,
     site: Site,
-    sun_model: "str | SunSafePredicate | None",
-    az_grid: np.ndarray,
-    el_grid: np.ndarray,
+    sun_model: "BatchSunSafePredicate | None",
+    theta_edges: np.ndarray,
+    r_edges: np.ndarray,
     time: Time,
     sun_az: float,
     sun_el: float,
-) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Cell verdicts ``(unsafe, warn_band)`` for the evaluation grid.
+) -> "tuple[_ZoneLayer | None, _ZoneLayer | None]":
+    """Return the ``(unsafe, warn_band)`` layers to shade on the polar grid.
 
-    ``(None, None)`` when Sun avoidance is disabled on the site. With an
-    injected model the verdicts come from its own ``batch`` (so a
-    directional zone keeps its true shape) and there is no warning band;
-    the default scalar path tests the true angular separation against the
-    site radii with the at-radius-is-UNSAFE ``<=`` boundary of
-    ``Coordinates.is_sun_safe``.
+    ``(None, None)`` when Sun avoidance is disabled on the site. The default
+    path contours the true angular separation on the grid nodes, the zone
+    at ``exclusion_radius`` and the warning band up to ``warning_radius``,
+    with the at-radius-is-UNSAFE ``<=`` boundary of
+    ``Coordinates.is_sun_safe``. An injected model has no warning band. Its
+    zone is the contour of separation minus its own ``threshold`` when that
+    field reproduces the model's ``batch`` verdicts at every node (nodes
+    within 1e-9 deg of the boundary are ties); otherwise, or without a
+    ``threshold``, it is the model's ``batch`` verdicts on the cell
+    centers, so a zone the threshold does not describe keeps its verdict
+    shape.
     """
     sun_cfg = site.sun_avoidance
     if not sun_cfg.enabled:
         return None, None
-    if sun_model is not None:
-        verdicts = np.asarray(sun_model.batch(az_grid.ravel(), el_grid.ravel(), time), dtype=bool)
-        if verdicts.shape != az_grid.ravel().shape:
-            raise ValueError(
-                f"sun_model.batch returned shape {verdicts.shape}, expected "
-                f"{az_grid.ravel().shape} verdicts for the evaluation grid"
-            )
-        return ~verdicts.reshape(az_grid.shape), None
+    if sun_model is not None and not isinstance(sun_model, ZonedSunSafePredicate):
+        return _cell_verdicts(sun_model, theta_edges, r_edges, time), None
+    az_nodes, el_nodes = np.meshgrid(np.rad2deg(theta_edges), 90.0 - r_edges)
     separation = np.asarray(
-        coords.angular_separation(az_grid.ravel(), el_grid.ravel(), sun_az, sun_el)
-    ).reshape(az_grid.shape)
-    unsafe = separation <= sun_cfg.exclusion_radius
-    warn_band = (separation > sun_cfg.exclusion_radius) & (separation <= sun_cfg.warning_radius)
-    return unsafe, warn_band
+        coords.angular_separation(az_nodes.ravel(), el_nodes.ravel(), sun_az, sun_el)
+    ).reshape(az_nodes.shape)
+    if sun_model is None:
+        exclusion, warning = sun_cfg.exclusion_radius, sun_cfg.warning_radius
+        return (
+            _ZoneLayer(separation, _below(separation, exclusion), exclusion, True),
+            _ZoneLayer(separation, exclusion, warning, True),
+        )
+    verdicts = _batch_on(sun_model, az_nodes, el_nodes, time, "grid nodes")
+    threshold = np.asarray(
+        sun_model.threshold(az_nodes.ravel(), el_nodes.ravel(), time), dtype=float
+    )
+    if threshold.shape != az_nodes.ravel().shape:
+        raise ValueError(
+            f"sun_model.threshold returned shape {threshold.shape}, expected "
+            f"{az_nodes.ravel().shape} values for the grid nodes"
+        )
+    field = separation - threshold.reshape(az_nodes.shape)
+    agrees = ((field > 0.0) == verdicts) | (np.abs(field) < 1e-9)
+    if np.all(np.isfinite(field)) and np.all(agrees):
+        return _ZoneLayer(field, _below(field, 0.0), 0.0, True), None
+    return _cell_verdicts(sun_model, theta_edges, r_edges, time), None
 
 
-def _fill_zone(ax, theta_edges: np.ndarray, r_edges: np.ndarray, mask: np.ndarray, rgba) -> None:
-    """Fill the True cells of ``mask`` as one smooth translucent region.
+def _cell_verdicts(
+    sun_model: "BatchSunSafePredicate", theta_edges: np.ndarray, r_edges: np.ndarray, time: Time
+) -> _ZoneLayer:
+    """Return the model's unsafe cells, from its ``batch`` verdicts at the cell centers."""
+    theta_c = 0.5 * (theta_edges[:-1] + theta_edges[1:])
+    r_c = 0.5 * (r_edges[:-1] + r_edges[1:])
+    az_cells, el_cells = np.meshgrid(np.rad2deg(theta_c), 90.0 - r_c)
+    unsafe = ~_batch_on(sun_model, az_cells, el_cells, time, "evaluation grid")
+    return _ZoneLayer(unsafe.astype(float), 0.5, 1.5, False)
+
+
+def _fill_zone(ax, theta_edges: np.ndarray, r_edges: np.ndarray, layer: _ZoneLayer, rgba) -> None:
+    """Fill one layer as a single smooth translucent region.
 
     A semi-transparent ``pcolormesh`` composites every shared cell edge
     twice, rendering the zone as a seam moire instead of a flat wash;
-    ``contourf`` draws each connected region as a single filled path.
-    Cell centers are padded with a wrapped azimuth column (closes the
-    theta seam at north) and duplicated pole/rim rows (covers the sky
-    inside the first center ring and outside the last).
+    ``contourf`` draws each connected region as a single filled path. A
+    layer on the nodes is contoured directly: the node grid includes the
+    zenith row and both seam columns, so the fill covers the whole sky. A
+    layer on the cell centers is padded with a wrapped azimuth column
+    (closes the theta seam at north) and duplicated pole/rim rows (covers
+    the sky inside the first center ring and outside the last).
     """
-    theta_c = 0.5 * (theta_edges[:-1] + theta_edges[1:])
-    r_c = 0.5 * (r_edges[:-1] + r_edges[1:])
-    theta_p = np.concatenate([theta_c, theta_c[:1] + 2.0 * np.pi])
-    r_p = np.concatenate([[r_edges[0]], r_c, [r_edges[-1]]])
-    values = np.concatenate([mask, mask[:, :1]], axis=1).astype(float)
-    values = np.vstack([values[:1, :], values, values[-1:, :]])
-    ax.contourf(theta_p, r_p, values, levels=[0.5, 1.5], colors=[rgba], zorder=1)
+    if layer.on_nodes:
+        theta, r, values = theta_edges, r_edges, layer.values
+    else:
+        theta_c = 0.5 * (theta_edges[:-1] + theta_edges[1:])
+        r_c = 0.5 * (r_edges[:-1] + r_edges[1:])
+        theta = np.concatenate([theta_c, theta_c[:1] + 2.0 * np.pi])
+        r = np.concatenate([[r_edges[0]], r_c, [r_edges[-1]]])
+        values = np.concatenate([layer.values, layer.values[:, :1]], axis=1)
+        values = np.vstack([values[:1, :], values, values[-1:, :]])
+    ax.contourf(theta, r, values, levels=[layer.lower, layer.upper], colors=[rgba], zorder=1)
 
 
 def plot_sky_view(
@@ -192,7 +251,7 @@ def plot_sky_view(
     *,
     site: Site | None = None,
     boresight: "str | Target | tuple[float, float] | None" = None,
-    sun_model: "str | SunSafePredicate | None" = None,
+    sun_model: "str | ZonedSunSafePredicate | None" = None,
     el_min: float | None = None,
     extra_targets: "dict[str, Target] | None" = None,
     modules: "Mapping[str, InstrumentOffset] | None" = None,
@@ -212,19 +271,25 @@ def plot_sky_view(
     the Sun, the sky region unsafe under the selected sun-avoidance policy,
     the band below the telescope elevation floor, and, when ``boresight``
     is given, the PrimeCam module FOV outlines projected onto the sky
-    there, at true angular scale with the mechanical Nasmyth field
-    rotation applied.
+    there, at true angular scale with the mechanical focal-plane rotation
+    applied.
 
-    With the default ``sun_model=None`` the unsafe region is the true
-    angular separation tested against the site radii (plus the warning
-    annulus from ``exclusion_radius`` to ``warning_radius``); an injected
-    model's own ``batch`` verdicts are evaluated on the az/el grid
-    instead, so a directional model (e.g. the shared library's CAD zone)
-    renders its true, asymmetric shape rather than a circle. All shading
-    is omitted when Sun avoidance is disabled on the site. A
-    below-horizon Sun is reported in the legend rather than drawn; its
-    zone shading remains, because the default policies carry no night
-    waiver.
+    With the default ``sun_model=None`` the unsafe region is the sky
+    within ``exclusion_radius`` of the Sun (plus the warning annulus out
+    to ``warning_radius``), its edges contoured from the true angular
+    separation, so they lie on the radii rather than on the grid's cells
+    at any ``grid_step_deg``. An injected model's zone is contoured the
+    same way from the separation minus its ``threshold`` when that field
+    reproduces the model's own ``batch`` verdicts at every grid node, so a
+    directional model (e.g. the shared library's CAD zone) renders its
+    true, asymmetric shape rather than a circle. A model without
+    ``threshold``, or whose threshold does not reproduce its verdicts (as
+    the CAD model's may not with its island check or a solar-altitude
+    waiver switched on), is drawn from its ``batch`` verdicts at the cell
+    centers, and its edge follows the cells. All shading is omitted when
+    Sun avoidance is disabled on the site. A below-horizon Sun is reported
+    in the legend rather than drawn; its zone shading remains, because the
+    default policies carry no night waiver.
 
     Parameters
     ----------
@@ -247,7 +312,8 @@ def plot_sky_view(
         Sun-avoidance model shading the unsafe sky, with the same contract
         as ``plot_visibility``: default ``None`` uses the site's scalar
         radii; pass a :func:`~fyst_trajectories.sun_models.make_sun_safe`
-        name (``"cad"``, ``"scalar"``) or any predicate exposing ``batch``.
+        name (``"cad"``, ``"scalar"``) or any predicate exposing ``batch``
+        (and ``threshold``, for a contoured edge).
     el_min : float, optional
         Elevation floor for the shaded rim band, in ``[0, 90]``. Defaults
         to the site telescope elevation minimum.
@@ -264,8 +330,13 @@ def plot_sky_view(
     grid_step_deg : float, optional
         Requested cell size (degrees) of the policy-evaluation grid; each
         axis uses the nearest integer cell count, so the effective steps
-        can differ slightly from the request (and between axes). Default
-        ``1.5``.
+        can differ slightly from the request (and between axes). A
+        contoured edge is interpolated between the grid's nodes, so the
+        step sets how finely its curvature is followed, and where a
+        directional model's required separation jumps between table
+        levels, the jump is placed to within one cell; a model drawn
+        from its cell verdicts has an edge that follows the cells
+        throughout. Default ``1.5``.
     labels : bool, optional
         Annotate each drawn body with its name on the chart. The legend
         always identifies the Sun and every drawn body regardless.
@@ -299,9 +370,19 @@ def plot_sky_view(
         empty while a ``boresight`` is given, ``grid_step_deg`` or
         ``fov_radius_deg`` is not a finite positive value
         (``grid_step_deg`` at most 30), ``el_min`` is outside [0, 90],
-        ``ax`` is not a polar axes, the boresight is malformed or below
-        the horizon (named targets and explicit pairs alike), or an
-        injected ``sun_model.batch`` returns the wrong shape.
+        ``ax`` is not a polar axes, the boresight is malformed (an
+        explicit pair at or below the horizon included), or an injected
+        ``sun_model``'s ``batch`` or ``threshold`` returns the wrong shape.
+    PointingError
+        If a ``boresight`` given as a name or a
+        :class:`~fyst_trajectories.observability.Target` is at or below
+        the horizon at ``time``.
+    AttributeError
+        If an injected ``sun_model`` has no ``batch`` method. The base
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` contract
+        makes ``batch`` optional, so a plain predicate such as
+        ``Coordinates.is_sun_safe`` is refused here; build the model with
+        :func:`~fyst_trajectories.sun_models.make_sun_safe`.
     """
     try:
         import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
@@ -350,18 +431,17 @@ def plot_sky_view(
         if float(t_el[0]) > 0.0:
             visible.append((index, target, float(t_az[0]) % 360.0, float(t_el[0])))
 
-    # Policy-evaluation grid: r = 90 - el (zenith at the center). The top
-    # elevation cell is centered below 90 deg, clear of the zenith azimuth
+    # Policy-evaluation grid: r = 90 - el (zenith at the center). The zones
+    # are contoured on its nodes (the edges, zenith row and both seam
+    # columns included); the cell-verdict fallback samples the cell
+    # centers, the top one below 90 deg, clear of the zenith azimuth
     # degeneracy.
     r_edges = np.linspace(0.0, 90.0, max(1, round(90.0 / grid_step_deg)) + 1)
     theta_edges = np.deg2rad(np.linspace(0.0, 360.0, max(1, round(360.0 / grid_step_deg)) + 1))
-    az_centers = np.rad2deg(0.5 * (theta_edges[:-1] + theta_edges[1:]))
-    el_centers = 90.0 - 0.5 * (r_edges[:-1] + r_edges[1:])
-    az_grid, el_grid = np.meshgrid(az_centers, el_centers)
 
     sun_cfg = site.sun_avoidance
-    unsafe, warn_band = _policy_masks(
-        coords, site, sun_model, az_grid, el_grid, time, sun_az, sun_el
+    unsafe, warn_band = _policy_zones(
+        coords, site, sun_model, theta_edges, r_edges, time, sun_az, sun_el
     )
 
     outlines = None
@@ -399,7 +479,7 @@ def plot_sky_view(
         )
         if labels:
             ax.annotate(
-                f"Sun (el {sun_el:.0f}\N{DEGREE SIGN})",
+                f"Sun (el {sun_el:.0f} deg)",
                 (np.deg2rad(sun_az), 90.0 - sun_el),
                 textcoords="offset points",
                 xytext=(9, 8),
@@ -409,14 +489,7 @@ def plot_sky_view(
     # Body-marker palette: the rc prop cycle MINUS the reserved semantic
     # colors (Sun, zone overlays, footprint), so a body marker can never
     # masquerade as one of them; same defence as plot_visibility.
-    reserved = {
-        mcolors.to_hex(c) for c in (SUN_COLOR, EXCLUSION_COLOR, WARNING_COLOR, FOOTPRINT_COLOR)
-    }
-    palette = [
-        c
-        for c in plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        if mcolors.to_hex(c) not in reserved
-    ] or ["#2ca02c"]
+    palette = _palette((SUN_COLOR, EXCLUSION_COLOR, WARNING_COLOR, FOOTPRINT_COLOR), "#2ca02c")
     body_handles = []
     for index, target, t_az, t_el in visible:
         color = palette[index % len(palette)]
@@ -447,7 +520,7 @@ def plot_sky_view(
     # near-zenith footprint; the center is unambiguous anyway.
     ax.set_rticks([30.0, 60.0, 90.0])
     ax.set_yticklabels(
-        ["el 60\N{DEGREE SIGN}", "30\N{DEGREE SIGN}", "0\N{DEGREE SIGN}"],
+        ["el 60 deg", "30 deg", "0 deg"],
         fontsize=7,
     )
     ax.set_rlabel_position(202.5)
@@ -456,23 +529,22 @@ def plot_sky_view(
 
     # The Sun and every drawn body are always identified in the legend, so
     # the chart stays readable with labels=False (annotations off).
-    sun_label = "Sun" if sun_up else f"Sun below horizon (el {sun_el:.0f}\N{DEGREE SIGN})"
+    sun_label = "Sun" if sun_up else f"Sun below horizon (el {sun_el:.0f} deg)"
     handles = [plt.Line2D([], [], ls="", marker="o", ms=8, color=SUN_COLOR, label=sun_label)]
     handles.extend(body_handles)
     if unsafe is not None:
         if sun_model is not None:
             zone_label = f"unsafe ({getattr(sun_model, 'describe', 'injected model')})"
         else:
-            radius = f"{sun_cfg.exclusion_radius:.0f}\N{DEGREE SIGN}"
-            zone_label = f"\N{LESS-THAN OR EQUAL TO} {radius} from Sun (exclusion)"
+            radius = f"{sun_cfg.exclusion_radius:.0f} deg"
+            zone_label = f"<= {radius} from Sun (exclusion)"
         handles.append(Patch(facecolor=mcolors.to_rgba(EXCLUSION_COLOR, 0.30), label=zone_label))
     if warn_band is not None:
         handles.append(
             Patch(
                 facecolor=mcolors.to_rgba(WARNING_COLOR, 0.22),
                 label=(
-                    f"{sun_cfg.exclusion_radius:.0f}-{sun_cfg.warning_radius:.0f}"
-                    f"\N{DEGREE SIGN} (warning)"
+                    f"{sun_cfg.exclusion_radius:.0f}-{sun_cfg.warning_radius:.0f} deg (warning)"
                 ),
             )
         )
@@ -480,7 +552,7 @@ def plot_sky_view(
         Patch(
             facecolor=_EL_LIMIT_SHADE_COLOR,
             alpha=0.35,
-            label=f"below el limit ({el_floor:.0f}\N{DEGREE SIGN})",
+            label=f"below el limit ({el_floor:.0f} deg)",
         )
     )
     if outlines is not None:

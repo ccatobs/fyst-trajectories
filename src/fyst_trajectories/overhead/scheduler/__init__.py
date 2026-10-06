@@ -3,11 +3,11 @@
 Public API: :func:`fyst_trajectories.overhead.generate_timeline` stays
 the sole entry point for downstream consumers. The classes in this
 subpackage (:class:`Scheduler`, phase classes, state dataclasses) are
-exposed for advanced users who want to extend scheduling behavior
-(priority-weighted scheduling, multi-night stitching, lookahead). The
-subpackage's own private helpers stay in ``scheduler.helpers``; a caller
-that needs one imports it from there, so what this module exports is the
-extension surface and nothing else.
+exposed for callers who assemble a :class:`SchedulerContext` themselves
+or compose the phases into a different loop. The subpackage's own
+private helpers stay in ``scheduler.helpers``; a caller that needs one
+imports it from there, so what this module exports is the extension
+surface and nothing else.
 """
 
 from .phases import (

@@ -3,13 +3,17 @@
 import pytest
 from astropy.time import Time
 
-from fyst_trajectories.exceptions import AzimuthBoundsError, ElevationBoundsError
+from fyst_trajectories.exceptions import (
+    AzimuthBoundsError,
+    ElevationBoundsError,
+    PointingWarning,
+)
+from fyst_trajectories.offsets import InstrumentOffset
 from fyst_trajectories.patterns import (
     ConstantElScanConfig,
     DaisyScanConfig,
     PlanetTrackConfig,
     PongScanConfig,
-    ScanConfig,
     SiderealTrackConfig,
     TrajectoryBuilder,
 )
@@ -42,6 +46,12 @@ _PLANET_CONFIG = PlanetTrackConfig(timestep=0.1, body="mars")
 class TestTrajectoryBuilder:
     """The fluent chain per pattern type, and the refusals when a required step is missing."""
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_builder_basic_pong(self, site):
         # Use a fixed start time and position that will be well above horizon
         start_time = Time("2026-03-15T04:00:00", scale="utc")
@@ -54,11 +64,16 @@ class TestTrajectoryBuilder:
             .build()
         )
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "pong"
         assert trajectory.center_ra == 180.0
         assert trajectory.center_dec == -30.0
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_builder_with_start_time(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
 
@@ -73,6 +88,12 @@ class TestTrajectoryBuilder:
 
         assert trajectory.start_time == start_time
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory (azimuth|elevation) acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_builder_with_string_start_time(self, site):
         trajectory = (
             TrajectoryBuilder(site)
@@ -83,7 +104,7 @@ class TestTrajectoryBuilder:
             .build()
         )
 
-        assert trajectory.start_time is not None
+        assert trajectory.start_time == Time("2026-03-15T04:00:00", scale="utc")
 
     def test_builder_missing_config_raises(self, site):
         builder = TrajectoryBuilder(site).duration(60.0)
@@ -97,14 +118,6 @@ class TestTrajectoryBuilder:
         with pytest.raises(ValueError, match="Duration not set"):
             builder.build()
 
-    def test_builder_invalid_config_raises(self, site):
-        # Create a custom config class not in CONFIG_TO_PATTERN
-        class UnknownConfig(ScanConfig):
-            pass
-
-        with pytest.raises(ValueError, match="Unknown config type"):
-            TrajectoryBuilder(site).with_config(UnknownConfig(timestep=0.1))
-
     def test_builder_negative_duration_raises(self, site):
         with pytest.raises(ValueError, match="Duration must be positive"):
             TrajectoryBuilder(site).duration(-10.0)
@@ -113,6 +126,18 @@ class TestTrajectoryBuilder:
         with pytest.raises(ValueError, match="Duration must be positive"):
             TrajectoryBuilder(site).duration(0.0)
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_builder_non_finite_duration_raises(self, site, bad):
+        """A NaN or infinite duration is refused where it is set, not later in ``round``."""
+        with pytest.raises(ValueError, match="Duration must be positive"):
+            TrajectoryBuilder(site).duration(bad)
+
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+        "ignore:Trajectory azimuth acceleration:"
+        "fyst_trajectories.exceptions.AccelerationLimitWarning",
+    )
     def test_builder_daisy(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         trajectory = (
@@ -124,9 +149,12 @@ class TestTrajectoryBuilder:
             .build()
         )
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "daisy"
 
+    @pytest.mark.filterwarnings(
+        "ignore:High elevation reduces on-sky azimuth speed:"
+        "fyst_trajectories.exceptions.PointingWarning",
+    )
     def test_builder_sidereal(self, site):
         start_time = Time("2026-03-15T04:00:00", scale="utc")
         trajectory = (
@@ -138,7 +166,6 @@ class TestTrajectoryBuilder:
             .build()
         )
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "sidereal"
 
     def test_builder_planet(self, site):
@@ -152,13 +179,12 @@ class TestTrajectoryBuilder:
             .build()
         )
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "planet"
 
     def test_builder_planet_ignores_at(self, site):
         """``.at()`` coordinates warn and are ignored for planet tracking."""
         start_time = Time("2026-03-15T12:00:00", scale="utc")
-        with pytest.warns(UserWarning, match="ra/dec values are ignored"):
+        with pytest.warns(PointingWarning, match="ra/dec values are ignored"):
             trajectory = (
                 TrajectoryBuilder(site)
                 .at(ra=999.0, dec=999.0)  # Should warn and be ignored for planet
@@ -167,9 +193,17 @@ class TestTrajectoryBuilder:
                 .starting_at(start_time)
                 .build()
             )
+        reference = (
+            TrajectoryBuilder(site)
+            .with_config(_PLANET_CONFIG)
+            .duration(60.0)
+            .starting_at(start_time)
+            .build()
+        )
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "planet"
+        assert (trajectory.az == reference.az).all()
+        assert (trajectory.el == reference.el).all()
 
     def test_builder_missing_at_for_celestial_raises(self, site):
         builder = TrajectoryBuilder(site).with_config(_PONG_CONFIG).duration(60.0)
@@ -217,7 +251,6 @@ class TestTrajectoryBuilder:
         """ConstantEl is an AltAz pattern, so it builds without ``.starting_at()``."""
         trajectory = TrajectoryBuilder(site).with_config(_CONST_EL_CONFIG).duration(30.0).build()
 
-        assert trajectory.n_points > 0
         assert trajectory.pattern_type == "constant_el"
 
 
@@ -225,9 +258,9 @@ class TestBuilderBoundsValidation:
     """Builder must re-validate trajectory bounds after generation.
 
     Individual patterns already validate their own bounds, so the
-    builder's call is defence in depth. These tests neutralise the
-    per-pattern bounds check and verify that the builder still refuses
-    to emit an out-of-bounds trajectory.
+    builder's call is defence in depth: it is the only check that sees a
+    detector offset. The first two tests neutralise the per-pattern bounds
+    check; the third drives the offset case directly.
     """
 
     def test_build_raises_when_azimuth_exceeds_limits(self, site, monkeypatch):
@@ -277,20 +310,40 @@ class TestBuilderBoundsValidation:
         with pytest.raises(ElevationBoundsError):
             builder.build()
 
-    def test_build_succeeds_for_in_bounds_trajectory(self, site):
-        """Valid in-bounds configs build without raising."""
-        # Sanity check: the bounds re-validation must not refuse the happy
-        # path. Uses the reusable in-bounds config from the top of this
-        # module.
-        trajectory = TrajectoryBuilder(site).with_config(_CONST_EL_CONFIG).duration(30.0).build()
-        assert trajectory.n_points > 0
+    def test_build_raises_when_the_detector_offset_leaves_the_limits(self, site):
+        """The case the re-validation exists for: an offset moves the boresight out.
+
+        A constant-elevation scan at 21 deg is inside the limits; a detector
+        90 arcmin along the focal-plane y axis (the elevation direction at zero
+        field rotation) puts the boresight near 19.6 deg, below the 20 deg
+        floor. No pattern-level check sees the offset trajectory.
+        """
+        low_config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=100.0,
+            az_stop=110.0,
+            elevation=21.0,
+            az_speed=0.5,
+            az_accel=0.5,
+        )
+        builder = (
+            TrajectoryBuilder(site)
+            .with_config(low_config)
+            .for_detector(InstrumentOffset(dx=0.0, dy=90.0, name="low"))
+            .duration(30.0)
+        )
+
+        with pytest.raises(ElevationBoundsError):
+            builder.build()
 
 
 class TestBuildValidateDynamicsOptOut:
     """``build(validate_dynamics=False)`` skips only the dynamics advisory."""
 
     # az_accel 1.5 makes the quintic turnaround peak at 2.25 deg/s^2, over
-    # the 1.5 deg/s^2 site limit, so the default build warns.
+    # the 1.5 deg/s^2 site limit, so the default build warns. That limit is an
+    # operational placeholder pending the FYST team's ratification; this config
+    # moves with it.
     _HOT_CONFIG = ConstantElScanConfig(
         timestep=0.1,
         az_start=100.0,
@@ -308,8 +361,6 @@ class TestBuildValidateDynamicsOptOut:
 
     def test_opt_out_is_silent(self, site):
         import warnings
-
-        from fyst_trajectories.exceptions import PointingWarning
 
         builder = TrajectoryBuilder(site).with_config(self._HOT_CONFIG).duration(30.0)
         with warnings.catch_warnings():

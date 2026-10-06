@@ -1,9 +1,9 @@
 Overhead Simulation
 ===================
 
-Rebuilds the trajectory behind each timeline block and accumulates
-HEALPix coverage maps. For worked examples see
-:doc:`../overhead_timeline`.
+Rebuilds the trajectory behind each timeline block, accumulates HEALPix
+coverage maps, and totals a timeline's time budget. For worked examples
+see :doc:`../overhead_timeline`.
 
 .. autofunction:: fyst_trajectories.overhead.schedule_to_trajectories
 

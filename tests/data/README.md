@@ -21,8 +21,8 @@ and offline.
     titan_excerpt.bsp
   ```
 - **Coverage window:** 2026-06-01 .. 2026-10-01 (UTC).
-- **Segments (5):** SSB→Saturn-bary (6); Saturn-bary→Titan (606); SSB→Earth-bary (3);
-  Earth-bary→Earth (399); SSB→Sun (10).
+- **Segments (5):** SSB->Saturn-bary (6); Saturn-bary->Titan (606); SSB->Earth-bary (3);
+  Earth-bary->Earth (399); SSB->Sun (10).
 
 ### Why the target list is `3,399,10,6,606` (not just `6,606`)
 
@@ -57,9 +57,10 @@ It replaces per-fixture `skyfield.api.load("de421.bsp")` network downloads
 - **Source:** `https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de421.bsp`
   (NAIF generic kernels; US-government **public domain**). de421 is byte-identical
   across the NAIF and `ssd.jpl.nasa.gov` mirrors; either works.
+- **Cut:** 2026-10-01 with `jplephem` 2.24, by the fyst-trajectories project.
 - **Command:**
   ```bash
-  python -m jplephem excerpt --targets 3,399,301,4,499,5,6,8,10 2025/12/1 2027/1/1 \
+  python -m jplephem excerpt --targets 1,2,3,399,301,4,499,5,6,7,8,10 2025/12/1 2027/1/1 \
     https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de421.bsp \
     de421_excerpt.bsp
   ```
@@ -69,11 +70,12 @@ It replaces per-fixture `skyfield.api.load("de421.bsp")` network downloads
   ephemeris across many epochs (2026-01-01 .. 2026-12-21, plus the Sirius rise/set scan
   from 2026-03-15), so a narrow June window makes those other slow tests raise
   `EphemerisRangeError`. The window covers all of them with a month of margin each side.
-- **Targets:** observer SSB→Earth-bary (3), Earth-bary→Earth (399); Moon (301);
+- **Targets:** observer SSB->Earth-bary (3), Earth-bary->Earth (399); Moon (301);
   Sun (10); **Mars-bary (4)** and **Mars (499)**, because `eph["mars barycenter"]` in the
   cross-val file resolves to 4, while `eph["mars"]` in the oracle resolves to 499 via
-  the chain 0→4→499, so **both** are required; Jupiter/Saturn/Neptune barycenters
-  (5/6/8). Omitting 499 makes the oracle's `[mars]` case raise `KeyError`, the same
+  the chain 0->4->499, so **both** are required; Mercury/Venus barycenters (1/2) and
+  Jupiter/Saturn/Uranus/Neptune barycenters (5/6/7/8), so both oracles cover every body in
+  `SOLAR_SYSTEM_BODIES`. Omitting 499 makes the oracle's `[mars]` case raise `KeyError`, the same
   missing-segment failure documented for Titan above.
 
 ### Regenerating
@@ -169,6 +171,11 @@ message, which is what the contract test guards against.
   rebuild but not yet accepted by the execution layer; the outbound ask). A key
   that lands in none of the three fails the test, and so does a key listed as
   awaiting once a re-pinned snapshot starts forwarding it.
+- The same test holds the calibration-night dispatch sheet's copy of the
+  awaiting set (`_UNFORWARDED_KEYS` in
+  `src/fyst_trajectories/overhead/calibration_night/reporting.py`, the keys its
+  note names under a pass row) equal to the set classified there;
+  `docs/overhead_calibration_night.rst` lists the same keys.
 
 ### Provenance
 - **Read from:** `git show 2cb9a8a:pcs/agents/acu_interface/trajectory.py`, the
@@ -183,3 +190,27 @@ message, which is what the contract test guards against.
 Re-cut only when the execution layer is deliberately re-pinned. Never regenerate
 to make a red partition test pass: a red test means a key changed class, and the
 classification in the test is the thing to update.
+
+## `source_ces_golden.json` - source-CES golden output (golden-output fixture)
+
+The recorded outcome of the 23 cases of `tests/test_source_ces_golden.py`, which call the three
+source-CES entry points (`compute_source_ces_params`, `plan_source_ces`,
+`plan_source_ces_passes`): the computed parameters, the config, the metadata, the summary text,
+each warning with its category, message and caller-or-library attribution, each refusal, and
+per-array summaries of every built block and of its focal-plane track.
+**Not** on the runtime path.
+
+### Provenance
+- **Cut:** under pytest, so with the vendored `finals2000A.all` above in force.
+- **Header:** the commit, the Python, numpy, scipy, astropy and pyerfa versions, the platform
+  and the last measured day of the IERS table; information only, never compared.
+- **Comparison:** the rules (exact for strings, integers and warnings, a relative 1e-12 for
+  scalar floats, a scaled tolerance for array summaries) are in the test module's docstring.
+
+### Regenerating (deliberate re-cut only)
+```bash
+FYST_RECUT_GOLDEN=1 pytest tests/test_source_ces_golden.py --run-slow
+```
+Re-cut only in a change whose changelog entry says these numbers moved, never to make a
+refactor pass.
+A run that does not record every case writes nothing.

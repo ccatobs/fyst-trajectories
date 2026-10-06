@@ -21,26 +21,17 @@ numerical reasons unrelated to the frame question under test.
 import erfa
 import numpy as np
 import pytest
+from _pa_oracle import _apparent_pa
 from astropy import units as u
-from astropy.coordinates import TETE, SkyCoord
 from astropy.time import Time, TimeDelta
 
 
-def _apparent_pa(coordinates, ra, dec, t):
-    """Independent parallactic angle via apparent-place HA + ``erfa.hd2pa``.
-
-    Brings the ICRS RA/Dec to the apparent equinox of date (TETE) before
-    forming ``HA = LAST - RA_apparent``, then applies the IAU SOFA primitive.
-    Works for scalar or array ``ra``/``dec``.
-    """
-    loc = coordinates.location
+def _icrs_hour_angle_pa(coordinates, ra, dec, t):
+    """Return the frame-mixed PA this file guards against: ``HA = LAST - RA_icrs``."""
+    last = t.sidereal_time("apparent", longitude=coordinates.location.lon).to_value(u.deg)
+    ha = np.deg2rad(((last - ra + 180.0) % 360.0) - 180.0)
     lat_rad = np.deg2rad(coordinates.site.latitude)
-    app = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs").transform_to(
-        TETE(obstime=t, location=loc)
-    )
-    last = t.sidereal_time("apparent", longitude=loc.lon).to_value(u.deg)
-    ha = np.deg2rad(((last - app.ra.deg + 180.0) % 360.0) - 180.0)
-    return np.rad2deg(erfa.hd2pa(ha, np.deg2rad(app.dec.deg), lat_rad))
+    return np.rad2deg(erfa.hd2pa(ha, np.deg2rad(dec), lat_rad))
 
 
 def _pa_diff(a, b):
@@ -118,8 +109,8 @@ class TestParallacticAngleApparentPlace:
         Forming the hour angle as ``apparent LST - ICRS RA`` mixes frames, leaving an
         uncorrected precession term that is ~0 at J2000 and grows ~0.018 deg/yr.
         Referencing the PA to the apparent pole keeps the disagreement < 0.01 deg
-        at every epoch; the buggy form misses by several tenths of a degree and
-        worsens with epoch.
+        at every epoch; the frame-mixed form misses by 1 to 2 deg on this grid,
+        which the test asserts so the tolerance is shown to discriminate.
         """
         rng = np.random.default_rng(seed=7)
         epochs = Time(
@@ -146,4 +137,6 @@ class TestParallacticAngleApparentPlace:
             assert diff.max() < 0.01, (
                 f"epoch {t.iso}: max PA diff = {diff.max():.4f} deg (frame-mix regression)"
             )
-        assert n_epochs_checked >= 1  # guard against a vacuous pass
+            mixed = _pa_diff(_icrs_hour_angle_pa(coordinates, ras, decs, t), pa_ref)[mask]
+            assert mixed.max() > 0.5, "the frame-mixed form no longer misses: not discriminating"
+        assert n_epochs_checked == len(epochs)  # every epoch was compared

@@ -15,6 +15,8 @@ Re-cutting the fixture after a DELIBERATE re-pin::
 (applies the same IERS pin as conftest so the record stays reproducible).
 """
 
+import warnings
+
 import numpy as np
 import pytest
 from astropy.time import Time
@@ -200,8 +202,10 @@ def test_unknown_tracking_module_warns():
     with pytest.warns(PointingWarning, match="ZERO"):
         make_sun_safe("cad", tracking_module="primecam_f850")
     # Known-padded and center names stay silent.
-    make_sun_safe("cad", tracking_module="primecam_f280")
-    make_sun_safe("cad")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PointingWarning)
+        make_sun_safe("cad", tracking_module="primecam_f280")
+        make_sun_safe("cad")
 
 
 def test_island_check_forbids_reachability_risk():

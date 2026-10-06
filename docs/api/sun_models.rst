@@ -2,7 +2,22 @@ Sun-Avoidance Models
 ====================
 
 Task-oriented walkthrough: :doc:`../sun_avoidance`. This page is the
-module reference for :mod:`fyst_trajectories.sun_models`.
+module reference for :mod:`fyst_trajectories.sun_protocols`, the contracts
+of the ``sun_safe=`` and ``slew_safe=`` seams, and for
+:mod:`fyst_trajectories.sun_models`, the models that implement them.
+
+Seam protocols
+--------------
+
+The two base contracts are also importable from the package root; the
+three extensions are imported from :mod:`fyst_trajectories.sun_protocols`.
+
+.. automodule:: fyst_trajectories.sun_protocols
+   :members:
+   :show-inheritance:
+
+Models
+------
 
 :func:`~fyst_trajectories.sun_models.make_sun_safe` builds the predicate
 that every ``sun_safe=`` seam accepts;
@@ -43,7 +58,7 @@ Path-level slew safety
 :func:`~fyst_trajectories.sun_models.make_slew_safe` sweeps any point
 model along the direct trapezoidal slew path (the FYST axis
 velocity/acceleration limits, the Sun advanced along the motion) to build
-a :class:`~fyst_trajectories.dispatch.SlewSafePredicate` for
+a :class:`~fyst_trajectories.sun_protocols.SlewSafePredicate` for
 :func:`~fyst_trajectories.dispatch.choose_encoder_solution`. When no wrap
 has a clear direct path, dispatch **raises** (by design: reject, never
 auto-reroute); the caller may then plan a two-leg detour explicitly::

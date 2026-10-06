@@ -3,7 +3,7 @@
 This module provides utilities for handling instrument and detector offsets
 from the telescope boresight. When pointing the telescope's boresight at a
 target, different instruments/detectors see different parts of the sky based
-on their offset from the boresight and field rotation during observation.
+on their offset from the boresight and the focal-plane rotation during observation.
 
 Offsets are projected using spherical trigonometry (great-circle offset
 formulas), which is accurate for any offset size.
@@ -20,13 +20,15 @@ Basic offset transformation:
 
 >>> from fyst_trajectories.offsets import InstrumentOffset, boresight_to_detector
 >>> offset = InstrumentOffset(dx=5.0, dy=3.0, name="Module-1")
->>> det_az, det_el = boresight_to_detector(az=180.0, el=45.0, offset=offset, field_rotation=0.0)
+>>> det_az, det_el = boresight_to_detector(
+...     az=180.0, el=45.0, offset=offset, focal_plane_rotation=0.0
+... )
 
 Compute boresight for a detector target:
 
 >>> from fyst_trajectories.offsets import detector_to_boresight
 >>> bore_az, bore_el = detector_to_boresight(
-...     det_az=180.0, det_el=45.0, offset=offset, field_rotation=0.0
+...     det_az=180.0, det_el=45.0, offset=offset, focal_plane_rotation=0.0
 ... )
 """
 
@@ -38,6 +40,7 @@ import numpy as np
 from .exceptions import OffsetInversionError
 from .site import Site
 from .trajectory import Trajectory
+from .trajectory_utils import validate_trajectory_bounds
 
 
 @dataclass(frozen=True)
@@ -47,19 +50,19 @@ class InstrumentOffset:
     Represents the position of an instrument or detector relative to the
     telescope boresight in the focal plane coordinate system. The offsets
     (dx, dy) are defined in the focal plane frame. When projecting onto
-    the sky, the offsets are rotated by the caller-supplied field_rotation
-    angle; for the az/el projections this is the mechanical Nasmyth
-    rotation (see :func:`compute_focal_plane_rotation`). At zero field
-    rotation, dx corresponds to the cross-elevation direction and dy to
-    the elevation direction.
+    the sky, the offsets are rotated by the caller-supplied
+    focal_plane_rotation angle; for the az/el projections this is the
+    mechanical Nasmyth rotation (see :func:`compute_focal_plane_rotation`).
+    At zero rotation, dx corresponds to the cross-elevation direction and
+    dy to the elevation direction.
 
     Parameters
     ----------
     dx : float
-        X offset in arcminutes in the focal plane. At zero field rotation,
+        X offset in arcminutes in the focal plane. At zero focal-plane rotation,
         this is the cross-elevation direction (positive = increasing azimuth).
     dy : float
-        Y offset in arcminutes in the focal plane. At zero field rotation,
+        Y offset in arcminutes in the focal plane. At zero focal-plane rotation,
         this is the elevation direction (positive = increasing elevation).
     name : str, optional
         Name of the instrument/detector for identification.
@@ -156,7 +159,7 @@ class InstrumentOffset:
     def __repr__(self) -> str:
         name_str = f", name='{self.name}'" if self.name else ""
         rot_str = (
-            f", instrument_rotation={self.instrument_rotation}°"
+            f", instrument_rotation={self.instrument_rotation} deg"
             if self.instrument_rotation != 0.0
             else ""
         )
@@ -173,8 +176,8 @@ def _offset_forward(
 
     Computes the detector position on the celestial sphere given a
     boresight position and an offset that has already been rotated by
-    field rotation. Uses exact spherical trigonometry (great-circle
-    offset formulas).
+    the focal-plane rotation. Uses exact spherical trigonometry
+    (great-circle offset formulas).
 
     Parameters
     ----------
@@ -183,9 +186,9 @@ def _offset_forward(
     el : float or array
         Elevation in degrees.
     dx_rot_deg : float or array
-        Cross-elevation offset in degrees (after field rotation).
+        Cross-elevation offset in degrees (after the focal-plane rotation).
     dy_rot_deg : float or array
-        Elevation offset in degrees (after field rotation).
+        Elevation offset in degrees (after the focal-plane rotation).
 
     Returns
     -------
@@ -270,11 +273,11 @@ def _offset_inverse(
 ) -> tuple[float | np.ndarray, float | np.ndarray]:
     """Invert spherical offset to recover original Az/El.
 
-    Given a detector position and the (already field-rotation-rotated)
-    offset, compute the boresight position. Uses the forward formula with
-    negated offsets plus iterative refinement; the round-trip precision is
-    typically sub-microarcsecond in practice and enforced below the
-    ~3.6 mas failure threshold.
+    Given a detector position and the offset (already rotated by the
+    focal-plane rotation), compute the boresight position. Uses the
+    forward formula with negated offsets plus iterative refinement; the
+    round-trip precision is typically sub-microarcsecond in practice and
+    enforced below the ~3.6 mas failure threshold.
 
     Parameters
     ----------
@@ -283,9 +286,9 @@ def _offset_inverse(
     det_el : float or array
         Detector elevation in degrees.
     dx_rot_deg : float or array
-        Cross-elevation offset in degrees (after field rotation).
+        Cross-elevation offset in degrees (after the focal-plane rotation).
     dy_rot_deg : float or array
-        Elevation offset in degrees (after field rotation).
+        Elevation offset in degrees (after the focal-plane rotation).
 
     Returns
     -------
@@ -301,7 +304,8 @@ def _offset_inverse(
         :data:`_POLE_GUARD_DEG` of the pole (+/-90 deg), where azimuth is
         degenerate and the residual check cannot validate it; or if the
         iterative refinement residual exceeds
-        :data:`_INVERSE_FAILURE_THRESHOLD` after all iterations. The pole
+        :data:`_INVERSE_FAILURE_THRESHOLD`, or is not a number, after all
+        iterations. The pole
         case carries the offending sample indices on ``.indices``.
 
     Notes
@@ -368,8 +372,12 @@ def _offset_inverse(
         ):
             break
     else:
-        last_err = max(float(np.max(np.abs(d_az))), float(np.max(np.abs(d_el))))
-        if last_err > _INVERSE_FAILURE_THRESHOLD:
+        # Written so a NaN residual fails closed: one NaN sample makes the
+        # maximum NaN, and ``nan > threshold`` is False, which would return
+        # every other sample unchecked, an unconverged one included. The
+        # element-wise maximum propagates a NaN from either axis.
+        last_err = float(np.max(np.maximum(np.abs(d_az), np.abs(d_el))))
+        if not last_err <= _INVERSE_FAILURE_THRESHOLD:
             raise OffsetInversionError(
                 f"_offset_inverse iterative refinement failed to converge after "
                 f"{_INVERSE_MAX_ITERATIONS} iterations "
@@ -382,16 +390,16 @@ def _offset_inverse(
 
 def _rotate_offset(
     offset: InstrumentOffset,
-    field_rotation: float | np.ndarray,
+    focal_plane_rotation: float | np.ndarray,
 ) -> tuple[float | np.ndarray, float | np.ndarray]:
-    """Rotate offset by field rotation angle.
+    """Rotate offset by the focal-plane rotation angle.
 
     Parameters
     ----------
     offset : InstrumentOffset
         Detector offset from boresight.
-    field_rotation : float or array
-        Field rotation angle in degrees.
+    focal_plane_rotation : float or array
+        Focal-plane rotation angle in degrees.
 
     Returns
     -------
@@ -402,7 +410,7 @@ def _rotate_offset(
     """
     dx_deg = offset.dx_deg
     dy_deg = offset.dy_deg
-    rot_rad = np.deg2rad(field_rotation)
+    rot_rad = np.deg2rad(focal_plane_rotation)
     cos_rot = np.cos(rot_rad)
     sin_rot = np.sin(rot_rad)
     return dx_deg * cos_rot - dy_deg * sin_rot, dx_deg * sin_rot + dy_deg * cos_rot
@@ -412,19 +420,19 @@ def boresight_to_detector(
     az: float | np.ndarray,
     el: float | np.ndarray,
     offset: InstrumentOffset,
-    field_rotation: float | np.ndarray,
+    focal_plane_rotation: float | np.ndarray,
 ) -> tuple[float | np.ndarray, float | np.ndarray]:
     """Compute detector Az/El given boresight Az/El and offset.
 
-    Applies the instrument offset with field rotation to compute
+    Applies the instrument offset with the focal-plane rotation to compute
     the actual sky position that a detector is observing given where the
     telescope boresight is pointed. Uses spherical trigonometry
     (great-circle offset formulas) for accuracy at any offset size.
 
     For a Nasmyth-mounted instrument on an alt-az telescope, the focal
     plane rotates relative to the (az, el) axes as the elevation changes.
-    The field_rotation parameter accounts for this rotation when computing
-    detector positions.
+    The focal_plane_rotation parameter accounts for this rotation when
+    computing detector positions.
 
     Parameters
     ----------
@@ -434,7 +442,7 @@ def boresight_to_detector(
         Boresight elevation in degrees.
     offset : InstrumentOffset
         Detector offset from boresight.
-    field_rotation : float or array
+    focal_plane_rotation : float or array
         Orientation of the focal plane relative to the horizon (az/el)
         axes, in degrees. For a Nasmyth-mounted instrument this is the
         mechanical ``nasmyth_sign * elevation + instrument_rotation``
@@ -450,14 +458,14 @@ def boresight_to_detector(
     Examples
     --------
     >>> offset = InstrumentOffset(dx=5.0, dy=0.0)
-    >>> det_az, det_el = boresight_to_detector(180.0, 45.0, offset, field_rotation=0.0)
+    >>> det_az, det_el = boresight_to_detector(180.0, 45.0, offset, focal_plane_rotation=0.0)
     >>> print(f"Detector at Az={det_az:.3f}, El={det_el:.3f}")
     Detector at Az=180.118, El=45.000
     """
-    dx_rot, dy_rot = _rotate_offset(offset, field_rotation)
+    dx_rot, dy_rot = _rotate_offset(offset, focal_plane_rotation)
     det_az, det_el = _offset_forward(az, el, dx_rot, dy_rot)
 
-    if np.isscalar(az) and np.isscalar(el) and np.isscalar(field_rotation):
+    if np.isscalar(az) and np.isscalar(el) and np.isscalar(focal_plane_rotation):
         return float(det_az), float(det_el)
     return det_az, det_el
 
@@ -466,7 +474,7 @@ def detector_to_boresight(
     det_az: float | np.ndarray,
     det_el: float | np.ndarray,
     offset: InstrumentOffset,
-    field_rotation: float | np.ndarray,
+    focal_plane_rotation: float | np.ndarray,
 ) -> tuple[float | np.ndarray, float | np.ndarray]:
     """Compute boresight Az/El to place detector at given position.
 
@@ -485,7 +493,7 @@ def detector_to_boresight(
         Desired detector elevation in degrees.
     offset : InstrumentOffset
         Detector offset from boresight.
-    field_rotation : float or array
+    focal_plane_rotation : float or array
         Orientation of the focal plane relative to the horizon (az/el)
         axes, in degrees; see :func:`boresight_to_detector`.
 
@@ -502,24 +510,37 @@ def detector_to_boresight(
         If the detector or the resulting boresight elevation lies within
         1e-6 deg of the pole (+/-90 deg), where azimuth is degenerate, or
         if the iterative refinement fails to converge.
+    ValueError
+        If ``det_az``, ``det_el``, ``focal_plane_rotation`` or the offset's
+        ``dx`` or ``dy`` holds a NaN or an infinity.
 
     Examples
     --------
     >>> offset = InstrumentOffset(dx=5.0, dy=0.0)
-    >>> bore_az, bore_el = detector_to_boresight(180.0, 45.0, offset, field_rotation=0.0)
+    >>> bore_az, bore_el = detector_to_boresight(180.0, 45.0, offset, focal_plane_rotation=0.0)
     >>> print(f"Boresight at Az={bore_az:.3f}, El={bore_el:.3f}")
     Boresight at Az=179.882, El=45.000
 
     Verify inverse relationship:
 
-    >>> det_az2, det_el2 = boresight_to_detector(bore_az, bore_el, offset, field_rotation=0.0)
+    >>> det_az2, det_el2 = boresight_to_detector(bore_az, bore_el, offset, focal_plane_rotation=0.0)
     >>> assert abs(det_az2 - 180.0) < 1e-6
     >>> assert abs(det_el2 - 45.0) < 1e-6
     """
-    dx_rot, dy_rot = _rotate_offset(offset, field_rotation)
+    for name, value in (
+        ("det_az", det_az),
+        ("det_el", det_el),
+        ("focal_plane_rotation", focal_plane_rotation),
+        ("offset.dx", offset.dx),
+        ("offset.dy", offset.dy),
+    ):
+        if not np.all(np.isfinite(value)):
+            raise ValueError(f"detector_to_boresight: {name} must be finite (no NaN or infinity)")
+
+    dx_rot, dy_rot = _rotate_offset(offset, focal_plane_rotation)
     bore_az, bore_el = _offset_inverse(det_az, det_el, dx_rot, dy_rot)
 
-    if np.isscalar(det_az) and np.isscalar(det_el) and np.isscalar(field_rotation):
+    if np.isscalar(det_az) and np.isscalar(det_el) and np.isscalar(focal_plane_rotation):
         return float(bore_az), float(bore_el)
     return bore_az, bore_el
 
@@ -529,7 +550,7 @@ def sky_to_focal_plane(
     bore_el: float | np.ndarray,
     sky_az: float | np.ndarray,
     sky_el: float | np.ndarray,
-    field_rotation: float | np.ndarray,
+    focal_plane_rotation: float | np.ndarray,
 ) -> tuple[float | np.ndarray, float | np.ndarray]:
     r"""Locate a sky position in the focal plane of a boresight pointing.
 
@@ -547,7 +568,7 @@ def sky_to_focal_plane(
         Boresight azimuth and elevation in degrees.
     sky_az, sky_el : float or array
         Azimuth and elevation of the sky position in degrees.
-    field_rotation : float or array
+    focal_plane_rotation : float or array
         Orientation of the focal plane relative to the horizon axes in
         degrees, the same angle :func:`boresight_to_detector` takes
         (``nasmyth_sign * elevation + instrument_rotation`` plus any
@@ -578,15 +599,15 @@ def sky_to_focal_plane(
         \cos\rho = \sin(El_0) \sin(El_1) + \cos(El_0) \cos(El_1) \cos\Delta Az
 
     The horizon-frame offset ``(rho sin phi, rho cos phi)`` is then rotated
-    back by ``field_rotation`` into the focal plane. At a boresight
+    back by ``focal_plane_rotation`` into the focal plane. At a boresight
     elevation of exactly 90 degrees the azimuth direction is undefined and
     ``phi`` is measured from an arbitrary meridian.
 
     Examples
     --------
     >>> offset = InstrumentOffset(dx=5.0, dy=3.0)
-    >>> det_az, det_el = boresight_to_detector(180.0, 45.0, offset, field_rotation=30.0)
-    >>> xi, eta = sky_to_focal_plane(180.0, 45.0, det_az, det_el, field_rotation=30.0)
+    >>> det_az, det_el = boresight_to_detector(180.0, 45.0, offset, focal_plane_rotation=30.0)
+    >>> xi, eta = sky_to_focal_plane(180.0, 45.0, det_az, det_el, focal_plane_rotation=30.0)
     >>> print(f"{xi * 60:.6f} {eta * 60:.6f}")
     5.000000 3.000000
     """
@@ -605,12 +626,12 @@ def sky_to_focal_plane(
     dx_rot = np.rad2deg(rho * np.sin(phi))
     dy_rot = np.rad2deg(rho * np.cos(phi))
 
-    rot = np.deg2rad(field_rotation)
+    rot = np.deg2rad(focal_plane_rotation)
     cos_rot, sin_rot = np.cos(rot), np.sin(rot)
     xi = dx_rot * cos_rot + dy_rot * sin_rot
     eta = -dx_rot * sin_rot + dy_rot * cos_rot
 
-    scalar = all(np.isscalar(v) for v in (bore_az, bore_el, sky_az, sky_el, field_rotation))
+    scalar = all(np.isscalar(v) for v in (bore_az, bore_el, sky_az, sky_el, focal_plane_rotation))
     if scalar:
         return float(xi), float(eta)
     return xi, eta
@@ -618,6 +639,7 @@ def sky_to_focal_plane(
 
 def compute_focal_plane_rotation(
     el: float | np.ndarray,
+    *,
     site: Site,
     offset: InstrumentOffset,
     parallactic_angle: float | np.ndarray = 0.0,
@@ -639,7 +661,8 @@ def compute_focal_plane_rotation(
     Parameters
     ----------
     el : float or array
-        Elevation in degrees.
+        Telescope (boresight) elevation in degrees; the Nasmyth rotation
+        follows the elevation axis.
     site : Site
         Telescope site (provides nasmyth_sign).
     offset : InstrumentOffset
@@ -668,15 +691,14 @@ def compute_focal_plane_rotation(
 def apply_detector_offset(
     trajectory: Trajectory,
     offset: InstrumentOffset,
+    *,
     site: Site,
     validate: bool = False,
 ) -> Trajectory:
-    """Apply detector offset to trajectory, accounting for field rotation.
+    """Apply detector offset to trajectory, accounting for focal-plane rotation.
 
     Returns a new trajectory with boresight positions adjusted so that the
-    specified detector observes the original target positions. This is useful
-    when you have generated a trajectory for a celestial target but want a
-    specific off-axis detector to track that target instead of the boresight.
+    specified detector observes the original target positions.
 
     The adjustment is a horizon-frame (az/el) projection: the focal-plane
     offset is rotated by the mechanical rotation
@@ -694,7 +716,7 @@ def apply_detector_offset(
     offset : InstrumentOffset
         Detector offset from boresight.
     site : Site
-        Telescope site configuration (needed for field rotation calculation).
+        Telescope site configuration (needed for the focal-plane rotation).
     validate : bool, optional
         If True, run ``validate_trajectory_bounds`` on the adjusted
         trajectory and raise on violations. Default is False (no
@@ -713,15 +735,19 @@ def apply_detector_offset(
         If ``validate=True`` and the adjusted trajectory exceeds elevation limits.
     OffsetInversionError
         If the inversion hits the near-pole azimuth degeneracy or fails to
-        converge (see :func:`detector_to_boresight`).
+        converge (see :func:`detector_to_boresight`), or the boresight
+        elevation the Nasmyth term is evaluated at does not settle.
+    ValueError
+        If the offset's ``dx`` or ``dy``, or the ``instrument_rotation`` of
+        a nonzero offset, holds a NaN or an infinity.
 
     Notes
     -----
     **Precondition: the input trajectory must be in geometric (vacuum)
     coordinates.** This holds on every live path: ``Coordinates(site)``
     defaults to vacuum, and refraction is applied downstream at
-    execution time (by exactly one of the Go TCS or the ACU). The mechanical Nasmyth term consumes
-    ``trajectory.el`` directly; if the trajectory was instead built with
+    execution time (by exactly one of the Go TCS or the ACU). The mechanical Nasmyth term is
+    solved from ``trajectory.el``; if the trajectory was instead built with
     ``AtmosphericConditions.for_fyst()`` (refracted, a planning/sim-only
     path), its ``el`` is in the apparent frame and the mechanical rotation
     differs from the vacuum one by ``nasmyth_sign * (refraction bump)``,
@@ -730,17 +756,25 @@ def apply_detector_offset(
     carries no refraction flag, so a refracted input cannot be detected
     here; pair detector offsets with vacuum trajectories.
 
-    The mechanical term ``nasmyth_sign * el`` is evaluated at the input
-    trajectory's elevation (the detector/target elevation), not the returned
-    boresight elevation. The two differ by the offset's elevation component
-    (up to the offset radius), so a consumer that re-derives the field rotation
-    from the *boresight* elevation will get a slightly different value; use the
-    input (detector) elevation to reproduce it.
+    The mechanical term ``nasmyth_sign * el`` is evaluated at the returned
+    boresight elevation, the telescope's own elevation axis, which is what
+    the Nasmyth rotation follows. That elevation is the unknown being
+    solved for, so the rotation and the inversion are iterated together
+    until it settles.
+
+    The returned velocities are the input's plus the rate of change of the
+    boresight correction, so a pattern's analytic velocities (the
+    constant-elevation turnarounds, linear motion) survive the adjustment;
+    only the correction, which varies slowly, is differentiated
+    numerically. The input's velocity columns must therefore be the
+    derivative of its positions, as they are in every trajectory the
+    library builds.
 
     The returned trajectory shares some arrays with the input: ``metadata``,
     ``scan_flag`` and ``retune_events`` are the same objects, and a
-    zero offset (no shift and no instrument rotation) returns a copy that
-    shares every array, since there is nothing to recompute. ``Trajectory``
+    zero offset (no shift, whatever its instrument rotation, since a
+    rotated zero vector is still zero) returns a copy that shares every
+    array, since there is nothing to recompute. ``Trajectory``
     is frozen but its arrays are not read-only, so mutate one only when
     you mean to reach the other.
 
@@ -776,32 +810,47 @@ def apply_detector_offset(
     ... )
     >>>
     >>> # Adjust so Mod2 observes the target instead of boresight
-    >>> adjusted = apply_detector_offset(trajectory, offset, site)
+    >>> adjusted = apply_detector_offset(trajectory, offset, site=site)
     """
-    if offset.dx == 0.0 and offset.dy == 0.0 and offset.instrument_rotation == 0.0:
+    if offset.dx == 0.0 and offset.dy == 0.0:
         return dataclasses.replace(trajectory)
 
     # Horizon-frame projection: the rotation is mechanical only; the
     # parallactic angle is a horizon-to-celestial quantity and has no
-    # place in an az/el projection.
-    field_rotation = compute_focal_plane_rotation(trajectory.el, site, offset)
-
-    bore_az, bore_el = detector_to_boresight(
-        trajectory.az,
-        trajectory.el,
-        offset,
-        field_rotation,
-    )
+    # place in an az/el projection. The Nasmyth term follows the telescope's
+    # own (boresight) elevation, the unknown being solved for, so iterate:
+    # each pass shrinks the elevation error by about the offset radius in
+    # radians (0.03 for the inner ring).
+    bore_el = trajectory.el
+    for _ in range(_INVERSE_MAX_ITERATIONS):
+        rotation = compute_focal_plane_rotation(bore_el, site=site, offset=offset)
+        bore_az, new_bore_el = detector_to_boresight(
+            trajectory.az,
+            trajectory.el,
+            offset,
+            rotation,
+        )
+        step = float(np.max(np.abs(new_bore_el - bore_el)))
+        bore_el = new_bore_el
+        if step < _INVERSE_EARLY_EXIT_THRESHOLD:
+            break
+    else:
+        if not step <= _INVERSE_FAILURE_THRESHOLD:
+            raise OffsetInversionError(
+                f"apply_detector_offset: the boresight elevation did not settle after "
+                f"{_INVERSE_MAX_ITERATIONS} iterations (last step {step:.2e} deg); the "
+                "offset is far outside the PrimeCam envelope."
+            )
 
     if len(trajectory.times) < 2:
-        # np.gradient needs >=2 samples; boresight velocities are undefined for
-        # a single sample, and the builder tolerates <2-point trajectories, so
-        # zero them rather than fail.
-        az_vel = np.zeros_like(bore_az)
-        el_vel = np.zeros_like(bore_el)
+        # np.gradient needs >=2 samples, so the correction's rate is unknown
+        # for a single sample (the builder tolerates <2-point trajectories);
+        # carry the input velocities through rather than fail.
+        az_vel = trajectory.az_vel.copy()
+        el_vel = trajectory.el_vel.copy()
     else:
-        az_vel = np.gradient(bore_az, trajectory.times)
-        el_vel = np.gradient(bore_el, trajectory.times)
+        az_vel = trajectory.az_vel + np.gradient(bore_az - trajectory.az, trajectory.times)
+        el_vel = trajectory.el_vel + np.gradient(bore_el - trajectory.el, trajectory.times)
 
     result = Trajectory(
         times=trajectory.times.copy(),
@@ -811,17 +860,11 @@ def apply_detector_offset(
         el_vel=el_vel,
         start_time=trajectory.start_time,
         metadata=trajectory.metadata,
-        coordsys=trajectory.coordsys,
-        epoch=trajectory.epoch,
         scan_flag=trajectory.scan_flag,
         retune_events=trajectory.retune_events,
     )
 
     if validate:
-        from .trajectory_utils import (
-            validate_trajectory_bounds,  # pylint: disable=import-outside-toplevel
-        )
-
         validate_trajectory_bounds(site, result.az, result.el)
 
     return result

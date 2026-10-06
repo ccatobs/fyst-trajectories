@@ -1,194 +1,144 @@
 """Tests for scheduling utilities."""
 
+import dataclasses
+import json
+import math
+
 import pytest
 from astropy.time import Time
 
-from fyst_trajectories.coordinates import Coordinates
+from fyst_trajectories.dispatch import estimate_slew_time
+from fyst_trajectories.exceptions import PointingWarning
+from fyst_trajectories.overhead import ScanParamsSchemaError
 from fyst_trajectories.overhead.utils import (
-    compute_nasmyth_rotation,
-    estimate_slew_time,
-    get_max_elevation,
-    get_observable_windows,
-    get_transit_time,
+    _canonical_module_name,
+    _normalize_az,
+    _search_start_record,
+    _search_start_time,
+    _utc_instant,
 )
-from fyst_trajectories.sun_models import _axis_slew_duration
+from fyst_trajectories.primecam import PRIMECAM_MODULES, primecam_geometry_dict
+
+# Off the millisecond grid, so a record rounded anywhere would show.
+_INSTANT = Time("2026-09-11T06:46:28.371234567", scale="utc")
+_OTHER_SCALES = ["tt", "tai", "tdb", "tcg", "tcb", "ut1", "utc+location"]
 
 
-class TestEstimateSlewTime:
-    """Trapezoidal and triangular slew profiles, and the shared kinematic kernel."""
+def _given_in(scale, site):
+    """``_INSTANT`` as a ``Time`` in ``scale``; ``"utc+location"`` carries the site's location."""
+    if scale == "utc+location":
+        return Time(_INSTANT, location=site.location)
+    return getattr(_INSTANT, scale)
 
-    def test_zero_distance(self, site):
-        t = estimate_slew_time(180.0, 50.0, 180.0, 50.0, site)
-        assert t == 0.0
 
-    def test_az_only(self, site):
-        # 10 deg azimuth slew, trapezoidal profile (FYST az vel=3.0, accel=1.5):
-        # t_accel=2, d_accel=6; distance 10 > 6, so
-        # t = 2*t_accel + (10 - d_accel)/vel = 4 + 4/3 = 5.333 s.
-        t = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
-        assert t == pytest.approx(5.333, abs=0.01)
+class TestUtcInstant:
+    """Both planners hold every time as a UTC ``Time`` without a location, with the defaults."""
 
-    def test_el_only(self, site):
-        # 10 deg elevation slew, trapezoidal (FYST el vel=1.0, accel=0.75):
-        # t_accel=1.333, d_accel=1.333; distance 10 > 1.333, so
-        # t = 2*t_accel + (10 - d_accel)/vel = 2.667 + 8.667 = 11.333 s.
-        t = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
-        assert t == pytest.approx(11.333, abs=0.01)
-
-    def test_el_slower_than_az(self, site):
-        t_az = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
-        t_el = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
-        assert t_el > t_az
-
-    def test_large_slew(self, site):
-        t = estimate_slew_time(0.0, 30.0, 180.0, 70.0, site)
-        assert t > 30.0
-
-    def test_short_az_slew_is_triangular(self, site):
-        # A 2 deg az slew never reaches cruise: d_accel = v^2/a = 6 deg > 2 deg, so
-        # the triangular branch gives t = 2*sqrt(distance/a) = 2*sqrt(2/1.5) = 2.309 s.
-        t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site)
-        assert t == pytest.approx(2.309, abs=0.01)
+    def test_a_utc_time_without_a_location_is_held_as_it_is(self):
+        assert _utc_instant(_INSTANT) is _INSTANT
 
     @pytest.mark.parametrize(
-        "d_az,d_el",
-        [(10.0, 0.0), (0.0, 10.0), (0.5, 0.0), (180.0, 40.0), (3.0, 1.5)],
+        "attributes",
+        [{"precision": 0}, {"precision": 6}, {"out_subfmt": "date"}],
+        ids=["precision 0", "precision 6", "out_subfmt date"],
     )
-    def test_the_estimate_is_the_shared_profile(self, site, d_az, d_el):
-        """The estimator and the Sun sweep price a slew with one profile.
+    def test_a_utc_time_with_other_output_attributes_is_rebuilt_with_the_defaults(self, attributes):
+        """The instant is kept to the bit; its strings are the millisecond ISO ones."""
+        given = Time(_INSTANT, **attributes)
+        held = _utc_instant(given)
+        assert held is not given
+        assert (held.jd1, held.jd2) == (given.jd1, given.jd2)
+        assert (held.scale, held.location, held.precision, held.out_subfmt) == ("utc", None, 3, "*")
+        assert held.iso == "2026-09-11 06:46:28.371"
+        assert _utc_instant(held) is held
 
-        A second copy of the trapezoid here would let the duration a scan is
-        priced with drift from the duration its path is sampled over.
-        """
-        az_limits = site.telescope_limits.azimuth
-        el_limits = site.telescope_limits.elevation
-        expected = max(
-            _axis_slew_duration(d_az, az_limits.max_velocity, az_limits.max_acceleration),
-            _axis_slew_duration(d_el, el_limits.max_velocity, el_limits.max_acceleration),
-        )
-        assert estimate_slew_time(0.0, 45.0, d_az, 45.0 + d_el, site) == pytest.approx(expected)
+    def test_a_string_is_read_as_utc(self):
+        held = _utc_instant("2026-09-11T06:46:28.371")
+        assert (held.scale, held.location, held.isot) == ("utc", None, "2026-09-11T06:46:28.371")
 
-    def test_an_axis_that_cannot_move_costs_no_time(self, site):
-        """A non-positive limit describes an immobile axis, on both sides of the seam."""
-        import dataclasses
-
-        frozen_az = dataclasses.replace(site.telescope_limits.azimuth, max_velocity=0.0)
-        immobile = dataclasses.replace(
-            site,
-            telescope_limits=dataclasses.replace(site.telescope_limits, azimuth=frozen_az),
-        )
-        assert _axis_slew_duration(30.0, 0.0, 1.5) == 0.0
-        assert estimate_slew_time(0.0, 45.0, 30.0, 45.0, immobile) == 0.0
+    @pytest.mark.parametrize("scale", _OTHER_SCALES)
+    def test_any_other_time_is_held_as_the_same_instant_in_utc(self, scale, site):
+        """It is converted to UTC with its location dropped, and then held unchanged."""
+        held = _utc_instant(_given_in(scale, site))
+        assert (held.scale, held.location) == ("utc", None)
+        assert abs((held - _INSTANT).to_value("s")) < 1e-9
+        assert _utc_instant(held) is held
 
 
-class TestNasmythRotationSharesOneKernel:
-    """One quantity, two entry points: RA/Dec and an already-transformed pose."""
+class TestSearchStartRecord:
+    """A pass's ``search_start`` restores the instant the planner held, through JSON."""
+
+    @pytest.mark.parametrize("scale", ["utc", *_OTHER_SCALES])
+    def test_the_record_restores_the_held_instant_to_the_bit(self, scale, site):
+        held = _utc_instant(_INSTANT if scale == "utc" else _given_in(scale, site))
+        back = _search_start_time(json.loads(json.dumps(_search_start_record(held))))
+        assert (back.scale, back.location) == ("utc", None)
+        assert (back.jd1, back.jd2) == (held.jd1, held.jd2)
 
     @pytest.mark.parametrize(
-        "ra,dec",
-        [(83.633, 22.014), (24.0, -32.0), (150.0, 2.2), (269.452, 4.693)],
+        "record",
+        [
+            [True, False],
+            [2461295.0],
+            [2461295.0, -0.2, 0.0],
+            [],
+            [math.nan, -0.2],
+            [2461295.0, math.inf],
+            "2026-09-11T06:30:00",
+            ["2461295.0", "-0.2"],
+            None,
+            {"jd1": 2461295.0, "jd2": -0.2},
+        ],
+        ids=[
+            "booleans",
+            "one number",
+            "three numbers",
+            "empty",
+            "nan",
+            "infinity",
+            "iso string",
+            "strings",
+            "none",
+            "dict",
+        ],
     )
-    def test_it_agrees_with_the_radec_entry_point(self, site, ra, dec):
-        """Both add the Nasmyth term to the same parallactic angle, so they must match.
+    def test_any_other_form_is_a_schema_error_naming_the_key(self, record):
+        with pytest.raises(ScanParamsSchemaError, match="search_start"):
+            _search_start_time(record)
 
-        Two copies of the formula would let the boresight angle a timeline
-        block records drift from the field rotation the same pose reports.
+
+class TestCanonicalModuleName:
+    """The one name a recorded pass dict gives each Prime-Cam module."""
+
+    def test_every_spelling_maps_to_one_of_the_seven_slot_names(self):
+        """The names are the slots of the scheduler geometry, ``c`` and ``i1`` .. ``i6``."""
+        spellings = [*PRIMECAM_MODULES, "im0", "IM0", "C", "Center", "CENTER", "I3"]
+        assert {_canonical_module_name(tag) for tag in spellings} == set(primecam_geometry_dict())
+        assert {_canonical_module_name(tag) for tag in ("C", "center", "IM0")} == {"c"}
+        assert _canonical_module_name("I3") == "i3"
+
+
+class TestNormalizeAz:
+    """The scalar cable-wrap placement the scheduler and the calibration-night planner share."""
+
+    def test_a_half_turn_tie_keeps_the_window_centre_image(self, site):
+        """From a mount at 0 deg, sky 180 has two in-limits images 180 deg away.
+
+        The window-centre image is kept; both price the same move.
         """
-        coords = Coordinates(site)
-        obstime = Time("2026-03-15T04:00:00", scale="utc")
-        az, el = coords.radec_to_altaz(ra, dec, obstime)
-
-        assert compute_nasmyth_rotation(az, el, site) == pytest.approx(
-            coords.get_field_rotation(ra, dec, obstime), abs=1e-9
+        assert _normalize_az(180.0, site, ref=0.0) == 180.0
+        assert estimate_slew_time(0.0, 50.0, 180.0, 50.0, site) == estimate_slew_time(
+            0.0, 50.0, -180.0, 50.0, site
         )
 
+    def test_an_azimuth_outside_a_narrow_window_keeps_the_window_centre_image(self, site):
+        """On a window narrower than 360 deg an unreachable azimuth is not moved into it.
 
-class TestGetMaxElevation:
-    """Transit elevation is 90 deg at the site latitude and falls with dec distance."""
-
-    def test_overhead_source(self, site):
-        max_el = get_max_elevation(0.0, site.latitude, site)
-        assert abs(max_el - 90.0) < 0.01
-
-    def test_low_source(self, site):
-        max_el = get_max_elevation(0.0, 60.0, site)
-        assert max_el < 10.0
-
-    def test_moderate_source(self, site):
-        max_el = get_max_elevation(0.0, -30.0, site)
-        assert max_el > 80.0
-
-
-class TestGetTransitTime:
-    """The search returns a meridian crossing, or None if the window brackets none."""
-
-    def test_finds_transit(self, site, start_time):
-        """Verify transit is found and HA is near zero at that time."""
-        transit = get_transit_time(180.0, -30.0, start_time, site)
-        assert transit is not None, "Should find transit within 24 hours"
-        from fyst_trajectories import Coordinates
-
-        coords = Coordinates(site)
-        ha = coords.get_hour_angle(180.0, transit)
-        assert abs(ha) < 2.0  # HA near zero at transit
-
-    def test_returns_none_if_not_found(self, site):
-        # max_search_hours=0.001 yields a single sample (no interval to bracket a
-        # meridian crossing), so the search is guaranteed to return None.
-        t0 = Time("2026-06-15T02:00:00", scale="utc")
-        transit = get_transit_time(180.0, -30.0, t0, site, max_search_hours=0.001)
-        assert transit is None
-
-
-class TestGetObservableWindows:
-    """Windows lie inside the search range: several, none, or one when circumpolar."""
-
-    def test_finds_windows(self, site, start_time, end_time):
-        windows = get_observable_windows(
-            180.0,
-            -30.0,
-            start_time,
-            end_time,
-            site,
-            min_elevation=30.0,
-            check_sun=False,
-        )
-        assert isinstance(windows, list)
-        assert len(windows) >= 1
-        for rise, set_time in windows:
-            assert start_time.unix <= rise.unix < set_time.unix <= end_time.unix
-
-    def test_never_visible_source(self, site, start_time, end_time):
-        windows = get_observable_windows(
-            0.0,
-            80.0,
-            start_time,
-            end_time,
-            site,
-            min_elevation=30.0,
-            check_sun=False,
-        )
-        assert len(windows) == 0
-
-    def test_circumpolar_source(self, site, start_time, end_time):
-        """A genuinely circumpolar source yields one window over the full range.
-
-        dec=-80 from FYST (lat ~ -23) never sets, it is circumpolar
-        (dec < -(90 - |lat|) = -67). Its lower culmination sits near 13 deg, so
-        with a 5 deg horizon it stays observable for the entire search window,
-        exercising the "truly circumpolar" branch (``set_time = end_time``).
+        Sky 272.5 has no image inside ``[0, 270]``: the helper returns the
+        window-centre image, outside the limits, and warns.
         """
-        windows = get_observable_windows(
-            0.0,
-            -80.0,
-            start_time,
-            end_time,
-            site,
-            min_elevation=5.0,
-            check_sun=False,
-        )
-
-        assert len(windows) == 1
-        rise, set_time = windows[0]
-        assert rise.unix == pytest.approx(start_time.unix, abs=1.0)
-        assert set_time.unix == pytest.approx(end_time.unix, abs=1.0)
+        azimuth = dataclasses.replace(site.telescope_limits.azimuth, min=0.0, max=270.0)
+        limits = dataclasses.replace(site.telescope_limits, azimuth=azimuth)
+        narrow = dataclasses.replace(site, telescope_limits=limits)
+        with pytest.warns(PointingWarning, match="exceeds telescope limits"):
+            assert _normalize_az(272.5, narrow, ref=0.0) == 272.5
