@@ -17,6 +17,14 @@ the instrument team's ``IM0`` .. ``IM6`` in the first minor release after
 the correspondence to the as-built focal plane is confirmed; the two
 schemes do not correspond index-for-index (see :doc:`instrument_offsets`).
 
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **TOAST schedule roll uses the horizon frame.** ``boresight_angle`` now
+  exports ``-nasmyth_sign * el`` instead of celestial field rotation,
+  correcting off-axis detector pointing in SimGround. The sky angle is
+  preserved in ``field_rotation``; ``read_timeline`` still reads older files.
+
 v0.11.0 (2026-10-21)
 --------------------
 

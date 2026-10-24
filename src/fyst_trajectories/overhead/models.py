@@ -360,10 +360,11 @@ class TimelineBlock:
     boresight_angle : float
         Celestial-frame field rotation of the focal plane in degrees
         (``nasmyth_sign * elevation + parallactic_angle``), exported as
-        the TOAST ``boresight_angle`` column. A derived orientation
-        quantity, not a commandable rotator angle (FYST has no
-        instrument rotator). ``0.0`` means unset; I/O routines will
-        recompute it from az/el as needed.
+        the ECSV ``field_rotation`` column; the TOAST ``boresight_angle``
+        column holds the horizon-frame roll ``-nasmyth_sign * elevation``
+        instead. A derived orientation quantity, not a commandable rotator
+        angle (FYST has no instrument rotator). ``0.0`` means unset; I/O
+        routines will recompute it from az/el as needed.
     metadata : ScienceBlockMetadata or CalibrationBlockMetadata or EmptyBlockMetadata
         Additional per-block metadata. Science blocks populate a
         :class:`ScienceBlockMetadata` shape (ra/dec center, width,

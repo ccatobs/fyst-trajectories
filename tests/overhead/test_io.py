@@ -792,6 +792,54 @@ class TestBoresightAngle:
         assert len(loaded.blocks) == 1
         assert loaded.blocks[0].boresight_angle == pytest.approx(expected, abs=1e-9)
 
+    @pytest.mark.parametrize("port", ["right", "left", "cassegrain"])
+    @pytest.mark.parametrize("stored", [True, False])
+    def test_toast_roll_and_field_rotation(self, tmp_path, port, stored):
+        timeline = _make_test_timeline()
+        timeline.site = dataclasses.replace(timeline.site, nasmyth_port=port)
+        expected = [
+            Coordinates(timeline.site).get_field_rotation_from_altaz(
+                0.5 * (block.az_start + block.az_end), block.elevation
+            )
+            for block in timeline.blocks
+        ]
+        if stored:
+            timeline.blocks = [
+                dataclasses.replace(block, boresight_angle=angle + 7.0)
+                for block, angle in zip(timeline.blocks, expected)
+            ]
+            expected = [block.boresight_angle for block in timeline.blocks]
+        path = tmp_path / "roll.ecsv"
+        write_timeline(timeline, path)
+        table = QTable.read(path)
+        assert list(table["boresight_angle"].to_value("deg")) == [
+            -timeline.site.nasmyth_sign * block.elevation for block in timeline.blocks
+        ]
+        assert list(table["field_rotation"].to_value("deg")) == expected
+        assert [block.boresight_angle for block in read_timeline(path).blocks] == expected
+
+    @pytest.mark.parametrize("has_boresight", [True, False])
+    def test_legacy_boresight_column(self, tmp_path, has_boresight):
+        path = tmp_path / "legacy.ecsv"
+        write_timeline(_make_test_timeline(), path)
+        table = QTable.read(path)
+        table["boresight_angle"] = table["field_rotation"].copy()
+        expected = list(table["boresight_angle"].value) if has_boresight else [0.0] * len(table)
+        table.remove_column("field_rotation")
+        if not has_boresight:
+            table.remove_column("boresight_angle")
+        table.write(path, overwrite=True)
+        assert [block.boresight_angle for block in read_timeline(path).blocks] == expected
+
+    def test_empty_timeline_angle_columns(self, tmp_path):
+        timeline = _make_test_timeline()
+        timeline.blocks = []
+        path = tmp_path / "empty.ecsv"
+        write_timeline(timeline, path)
+        table = QTable.read(path)
+        for column in ("boresight_angle", "field_rotation"):
+            assert list(table[column].to_value("deg")) == [0.0]
+
 
 class TestOverheadModelRoundTrip:
     """All OverheadModel fields must survive an ECSV write/read round-trip."""
