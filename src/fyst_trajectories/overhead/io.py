@@ -157,6 +157,9 @@ def write_timeline(
     ``ra_center``, ``dec_center``, ``width``, ``height``, ``velocity``,
     and the JSON payload columns ``scan_params_json`` and
     ``block_meta_json``).
+    ``boresight_angle`` is the TOAST horizon-frame roll
+    (``-nasmyth_sign * elevation``); ``field_rotation`` preserves the
+    block's celestial-frame field rotation in degrees.
     For slew rows ``azmin`` / ``azmax`` carry the from / to azimuths of
     the move and may be unordered; they are true minimum / maximum
     bounds only for science and calibration rows. ``az_final`` holds the
@@ -198,7 +201,8 @@ def write_timeline(
             {
                 "start_time": _iso_utc(block.t_start),
                 "stop_time": _iso_utc(block.t_stop),
-                "boresight_angle": bangle,
+                "boresight_angle": -timeline.site.nasmyth_sign * block.elevation,
+                "field_rotation": bangle,
                 "name": block.patch_name,
                 "azmin": block.az_start,
                 "azmax": block.az_end,
@@ -257,7 +261,7 @@ def write_timeline(
     # promoted to ``QTable`` at write time (below) so these columns serialize
     # as Quantity mixins, which is what round-trips. ``read_timeline`` reads
     # with a plain ``Table`` and ``float(row[...])``, so it is unaffected.
-    for _deg_col in ("azmin", "azmax", "az_final", "el", "boresight_angle"):
+    for _deg_col in ("azmin", "azmax", "az_final", "el", "boresight_angle", "field_rotation"):
         table[_deg_col].unit = u.deg
 
     # Persist the declared timeline window so total_time / efficiency survive
@@ -455,6 +459,7 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     has_scan_type = "scan_type" in table.colnames
     has_rising = "rising" in table.colnames
     has_boresight = "boresight_angle" in table.colnames
+    has_field_rotation = "field_rotation" in table.colnames
     has_metadata = "ra_center" in table.colnames
     has_az_final = "az_final" in table.colnames
 
@@ -515,6 +520,8 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
                 block_meta.update(extra)  # type: ignore[typeddict-item]
 
         boresight = float(row["boresight_angle"]) if has_boresight else 0.0
+        if has_field_rotation:
+            boresight = float(row["field_rotation"])
 
         # A missing column and a NaN both mean "this block ends at azmax":
         # files written before the column existed read back unchanged.
@@ -676,6 +683,7 @@ def _empty_row() -> dict:
         "start_time": _iso_utc(t0),
         "stop_time": _iso_utc(t0),
         "boresight_angle": 0.0,
+        "field_rotation": 0.0,
         "name": "",
         "azmin": 0.0,
         "azmax": 0.0,

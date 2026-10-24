@@ -80,7 +80,11 @@ scan pattern:
 +----------------------+--------+----------------------------------------------+
 | ``subscan_index``    | int    | Sub-scan index                               |
 +----------------------+--------+----------------------------------------------+
-| ``boresight_angle``  | float  | Boresight rotation angle (deg)               |
+| ``boresight_angle``  | float  | TOAST horizon-frame roll (deg):              |
+|                      |        | ``-nasmyth_sign * el``                       |
++----------------------+--------+----------------------------------------------+
+| ``field_rotation``   | float  | FYST extension: celestial-frame field        |
+|                      |        | rotation (deg)                               |
 +----------------------+--------+----------------------------------------------+
 | ``ra_center``        | float  | FYST extension: patch RA centre (deg)        |
 +----------------------+--------+----------------------------------------------+
@@ -191,6 +195,8 @@ common fields **and** attach ``u.deg`` units to the angle columns
 coordinates stored as ``Quantity`` header metadata. TOAST's
 ``GroundSchedule`` v5 reader can therefore read them directly, ignoring
 the FYST extension columns.
+``read_timeline`` restores the block's sky angle from ``field_rotation``,
+falling back to ``boresight_angle`` for older files.
 
 All block times, the timeline window in the header and the placeholder row
 of an empty file are UTC ISO-8601 strings to the millisecond with an explicit
