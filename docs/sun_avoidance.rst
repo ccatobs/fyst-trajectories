@@ -61,7 +61,7 @@ raises, naming the pinned revision:
 
 .. code-block:: bash
 
-    pip install "git+https://github.com/ccatobs/sun-avoidance@e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
+    pip install "git+https://github.com/ccatobs/sun-avoidance@baf4e6ccafe8309a3d6991903d008c529807a538"
 
 That repository is CCAT-internal, so the command requires collaboration
 access.
@@ -180,7 +180,7 @@ answered by sweeping the point model along the trapezoidal slew
     t = Time("2026-11-15T20:30:00", scale="utc")
     # From the current pose (az 65, el 45) to the scan's first sample (100, 45).
     solution = choose_encoder_solution(
-        65.0, 45.0, 100.0, 45.0, t, get_fyst_site(),
+        65.0, 45.0, 100.0, 45.0, t, site=get_fyst_site(),
         sun_safe=make_sun_safe("cad"), slew_safe=make_slew_safe("cad"),
     )
     # trajectory: the planned scan. Shift it onto the chosen wrap, then
@@ -262,7 +262,7 @@ Where the check runs
      - Pre-flight sweep along the resolved arc (subsampled in time; at the
        midpoint and both edges of the commanded azimuth envelope, which is
        the throw widened by the turnaround overshoot). Warns, never refuses.
-   * - ``validate_sun_avoidance(site, az, el, times, sun_safe=)``
+   * - ``validate_sun_avoidance(az, el, times, site=, sun_safe=)``
      - Samples the trajectory about every 60 s, so a fast scan can cross
        the zone between samples unseen. Warns once: at or inside the
        exclusion radius, otherwise inside the warning radius (an injected

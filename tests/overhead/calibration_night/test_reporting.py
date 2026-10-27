@@ -9,6 +9,7 @@ from astropy.time import Time
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.overhead import (
+    BlockType,
     CalibrationNightPolicy,
     CalibrationPolicy,
     CalibrationType,
@@ -19,6 +20,7 @@ from fyst_trajectories.overhead import (
     ScriptedSelection,
     TimelineBlock,
     VisitPlan,
+    dispatch_records,
     dispatch_sheet,
     plan_calibration_night,
     read_calibration_night_metadata,
@@ -63,7 +65,6 @@ def _night_of_parked_passes(scan_params):
             duration=600.0,
             az=state.az,
             el=state.el,
-            site=ctx.site,
             scan_index=state.scan_counter,
             target=body,
             scan_params=scan_params,
@@ -115,6 +116,18 @@ class TestSummary:
         }
         assert summary.deferrals == ()
         assert any("on-sky azimuth speed" in w for w in summary.warnings)
+
+    def test_visits_are_counted_as_the_dispatch_record_counts_them(self, short_night):
+        """A pass at ``pass_index`` 0 opens a visit even with no move before it."""
+        _, timeline = short_night
+        passes = [
+            b
+            for b in timeline.blocks
+            if b.block_type == BlockType.CALIBRATION and b.metadata.get("cal_type") == "planet_cal"
+        ]
+        back_to_back = dataclasses.replace(timeline, blocks=passes)
+        saturn = summarize_calibration_night(back_to_back).bodies[0]
+        assert saturn.visits == len(dispatch_records(back_to_back)["visits"]) == 3
 
     def test_text_rendering(self, short_night):
         _, timeline = short_night
@@ -404,7 +417,6 @@ class TestMetadataPayload:
                 duration=600.0,
                 az=state.az,
                 el=state.el,
-                site=ctx.site,
                 scan_index=state.scan_counter,
                 target=body,
             )

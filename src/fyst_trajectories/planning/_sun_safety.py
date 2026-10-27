@@ -1,4 +1,4 @@
-"""Pre-flight sun-safety checks shared by all planner entry points."""
+"""Sun-safety screens shared by the planners: instant pre-flights, swept passes, built blocks."""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ from ..trajectory import Trajectory
 from ..trajectory_utils import get_absolute_times
 
 # Number of times sampled along a planned constant-elevation pass for the
-# sun-safety sweep. 60 samples over a typical 10-minute arc gives ~10 s
-# resolution, finer than the sun's apparent motion (~15"/s) and the array's
-# footprint extent; a multi-hour pass gets proportionally coarser sampling,
-# still well inside the exclusion radius the check screens against.
+# sun-safety sweep. Over a 10-minute arc the samples are ~10 s apart, in
+# which the Sun moves ~2.5 arcmin; a 3-hour pass is sampled ~3 min apart
+# (~0.75 deg of Sun motion), still small against the exclusion radius the
+# check screens against.
 _SUN_SAFETY_ARC_N_SAMPLES = 60
 
 # Spacing of the Sun ephemeris grid behind the built-in block screen. The Sun
@@ -45,9 +45,8 @@ def _check_field_sun_safety(
 ) -> None:
     """Quick pre-flight check that a field center is not near the sun.
 
-    This is a lightweight check that warns before expensive trajectory
-    generation. It never blocks trajectory generation. Violations are
-    reported as warnings.
+    An instant check that runs before trajectory generation; it warns and
+    never blocks.
 
     Parameters
     ----------
@@ -178,11 +177,8 @@ def _check_altaz_center_sun_safety(
         If the center is within the sun exclusion radius (default)
         or the injected ``sun_safe`` predicate reports it unsafe.
     """
-    # The centre is already a horizon position, which is the frame the
-    # verdict is taken in, so it goes straight to the check. Converting it to
-    # RA/Dec first only to have the sibling convert it back cost two
-    # transforms and could not change the answer. Vacuum (default)
-    # Coordinates matches the geometry the trajectory is built in.
+    # Vacuum (default) Coordinates matches the geometry the trajectory is
+    # built in.
     if not site.sun_avoidance.enabled:
         return
     _warn_if_center_unsafe(
@@ -263,9 +259,8 @@ def _check_arc_sun_safety(
 ) -> None:
     """Check sun safety along an arc of samples; warns only.
 
-    Computes sun separation at every sample and emits a single warning
-    naming the closest approach if any point falls inside the exclusion
-    radius. The caller chooses the sampling: the constant-elevation
+    Emits a single warning if any sample falls inside the Sun zone. The
+    caller chooses the sampling: the constant-elevation
     planners pass the grid :func:`_swept_arc_samples` builds, so the check
     covers the azimuth envelope the mount is commanded through rather than
     the boresight track alone. Boresight-level within each sample (no
@@ -273,11 +268,13 @@ def _check_arc_sun_safety(
     relative to the exclusion radius.
 
     When ``sun_safe`` is ``None`` (default) the built-in vectorised
-    scalar-radius check runs unchanged. When a predicate is injected it
-    is consulted per-sample ``(az_i, el_i, time_i)`` instead, so the
-    directional sun-avoidance model
-    (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored;
-    the warn-only semantics are preserved either way.
+    scalar-radius check runs and the warning names the closest approach.
+    An injected predicate is asked about every sample instead (one
+    ``batch`` call when the model has one), so the directional
+    sun-avoidance model
+    (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored,
+    and the warning names the earliest unsafe sample. Neither branch
+    blocks.
 
     Parameters
     ----------

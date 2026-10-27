@@ -9,8 +9,9 @@ observing patches and produces a complete timeline with calibration injection.
 
 .. note::
 
-   The retune events emitted by :class:`CalibrationPolicy` (between
-   subscans / iterations) are independent of the in-scan retune samples
+   The retune blocks the scheduler emits on the :class:`CalibrationPolicy`
+   cadence (between subscans / iterations) are independent of the in-scan
+   retune samples
    that :func:`fyst_trajectories.retune.inject_retune` injects on a single
    :class:`~fyst_trajectories.trajectory.Trajectory`. Both sets of retune
    knobs belong to the instrument team (see :doc:`/overhead_integration`),
@@ -19,39 +20,6 @@ observing patches and produces a complete timeline with calibration injection.
    :func:`~fyst_trajectories.retune.inject_retune`: a block rebuilt by
    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` carries no
    retune samples.
-
-Examples
---------
-Generate a one-night timeline:
-
->>> from fyst_trajectories import get_fyst_site
->>> from fyst_trajectories.overhead import (
-...     ObservingPatch,
-...     compute_budget,
-...     generate_timeline,
-... )
->>> site = get_fyst_site()
->>> patches = [
-...     ObservingPatch(
-...         name="Deep56",
-...         ra_center=24.0,
-...         dec_center=-32.0,
-...         width=40.0,
-...         height=10.0,
-...         scan_type="constant_el",
-...         velocity=1.0,
-...         elevation=50.0,
-...     ),
-... ]
->>> timeline = generate_timeline(
-...     patches=patches,
-...     site=site,
-...     start_time="2026-06-15T00:00:00",
-...     end_time="2026-06-15T12:00:00",
-... )
->>> stats = compute_budget(timeline)
->>> print(f"Efficiency: {stats['efficiency']:.1%}")
-Efficiency: 23.7%
 """
 
 from .calibration_night import (

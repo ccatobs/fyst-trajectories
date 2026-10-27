@@ -7,7 +7,7 @@ inserts any calibrations whose cadence has elapsed, picks the best-positioned
 observable patch, plans a Sun-checked slew to it, schedules a science scan on
 it, and advances the clock.
 
-Besides a tick on which nothing is observable, four things make the clock
+Besides a tick on which nothing is observable, several things make the clock
 advance without a scan. A constant-elevation patch is only selectable while
 its elevation-crossing pass is imminent, so expect idle blocks before such a
 pass opens; a pong or daisy patch, only while its shortest subscan (for a
@@ -139,6 +139,8 @@ for all available fields.
     )
 
     print(timeline)
+    # ObservingTimeline: 2026-09-15 00:00:00.000 to 2026-09-15 12:00:00.000
+    # Science: 1.1h ( 9.5%), 4 blocks
 
 Time Budget
 -----------
@@ -150,20 +152,24 @@ Time Budget
     stats = compute_budget(timeline)
 
     # Top-level stats
-    print(f"Total time:   {stats['total_time'] / 3600:.1f}h")
-    print(f"Efficiency:   {stats['efficiency']:.1%}")
-    print(f"Science:      {stats['science_time'] / 3600:.1f}h")
-    print(f"Calibration:  {stats['calibration_time'] / 3600:.1f}h")
+    print(f"Total time:   {stats['total_time'] / 3600:.1f}h")  # Total time: 12.0h
+    print(f"Efficiency:   {stats['efficiency']:.1%}")  # Efficiency: 9.5%
+    print(f"Science:      {stats['science_time'] / 3600:.1f}h")  # Science: 1.1h
+    print(f"Calibration:  {stats['calibration_time'] / 3600:.1f}h")  # Calibration: 3.0h
 
     # Per-patch breakdown
     for name, pstats in stats['per_patch'].items():
-        print(f"  {name}: {pstats['science_time'] / 3600:.1f}h, "
-              f"{pstats['n_scans']} scans")
+        print(f"{name}: {pstats['science_time'] / 3600:.1f}h, {pstats['n_scans']} scans")
+    # CMB: 1.1h, 4 scans
 
     # Calibration type breakdown
     for cal_type, cstats in stats['calibration_breakdown'].items():
-        print(f"  {cal_type}: {cstats['count']}x, "
-              f"{cstats['total_time']:.0f}s total")
+        print(f"{cal_type}: {cstats['count']}x, {cstats['total_time']:.0f}s total")
+    # retune: 5x, 1500s total
+    # pointing_cal: 21x, 3780s total
+    # focus: 11x, 3300s total
+    # skydip: 6x, 1800s total
+    # planet_cal: 1x, 600s total
 
 Timeline Blocks
 ---------------
@@ -183,13 +189,14 @@ The returned :class:`~fyst_trajectories.overhead.ObservingTimeline` contains a l
 |                   | a move out of the Sun zone                    |
 +-------------------+-----------------------------------------------+
 | ``"idle"``        | No scan was placed this tick: nothing         |
-|                   | observable or a pass not yet open (neither    |
-|                   | carries a reason), a refused slew, a subscan  |
-|                   | that cannot be built or no longer fits by     |
-|                   | the slew's arrival (``unplannable``), a pose  |
-|                   | the Sun zone holds, or the stretch after the  |
-|                   | last block; the last four name themselves in  |
-|                   | ``metadata["reason"]``                        |
+|                   | observable, a pass not yet open or a window   |
+|                   | too short for ``min_scan_duration`` (none of  |
+|                   | these carries a reason), a refused slew, a    |
+|                   | subscan that cannot be built or no longer     |
+|                   | fits by the slew's arrival (``unplannable``), |
+|                   | a pose the Sun zone holds, or the stretch     |
+|                   | after the last block; the last four name      |
+|                   | themselves in ``metadata["reason"]``          |
 +-------------------+-----------------------------------------------+
 
 Inspect individual blocks::
@@ -237,3 +244,4 @@ block left the telescope)::
             print(f"WARNING: {w}")
     else:
         print("Timeline is clean")
+        # "Timeline is clean"

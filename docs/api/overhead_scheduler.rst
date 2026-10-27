@@ -13,7 +13,7 @@ fixes its four phases.
 .. note::
 
    Build on :func:`~fyst_trajectories.overhead.generate_timeline` where you
-   can: the phase API below changes more freely than it does.
+   can: the phase API below changes more freely than that entry point.
 
 Scheduler
 ---------

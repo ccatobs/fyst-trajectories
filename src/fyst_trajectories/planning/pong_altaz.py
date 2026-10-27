@@ -45,17 +45,18 @@ def plan_pong_altaz_scan(
         el = y_offset + el_center
 
     so ``width``, ``height``, ``spacing``, and ``velocity`` are
-    tangent-plane (on-sky) quantities, identical in meaning to the
-    :func:`plan_pong_scan` arguments of the same name. The azimuth
-    coordinate is stretched by ``1 / cos(el_center)``: the azimuth-coordinate
-    extent is ``width / cos(el_center)`` up to the vertex quantisation: the
-    box is rounded up to a whole number of ``sqrt(2) * spacing`` steps, and
-    further to make the two vertex counts coprime, so the realised extent
-    runs from a few percent narrower at fine ``spacing`` to tens of percent
-    wider once ``spacing`` is a large fraction of ``width``; the
-    azimuth-coordinate speed exceeds the on-sky speed by the same
-    ``1 / cos(el_center)`` factor. By default the
-    duration completes ``n_cycles`` full periods of the Pong pattern.
+    tangent-plane (on-sky) quantities, as for :func:`plan_pong_scan`; the
+    on-sky azimuth extent and speed hold on the ``el_center`` row (the
+    Notes of :class:`~fyst_trajectories.patterns.PongAltAzScanConfig` give
+    the factor on the other rows). The azimuth coordinate, extent and speed
+    alike, is stretched by ``1 / cos(el_center)``. The realised on-sky extent is not exactly
+    ``width`` by ``height``: the vertex lattice rounds the box up to a
+    whole number of ``sqrt(2) * spacing`` steps (and further, to make the
+    two vertex counts coprime), and the ``num_terms``-term Fourier series
+    stops short of the vertices, so the extent runs from a few percent
+    narrower at fine ``spacing`` to tens of percent wider once ``spacing``
+    is a large fraction of ``width``. By default the duration completes
+    ``n_cycles`` full periods of the Pong pattern.
 
     Parameters
     ----------
@@ -135,7 +136,9 @@ def plan_pong_altaz_scan(
         horizon-frame pattern); the second warning names the closest
         approach, or with an injected ``sun_safe`` the earliest unsafe
         sample. Neither refuses the plan. A ``PointingWarning`` also flags a
-        high elevation that cuts the on-sky azimuth speed.
+        high elevation that cuts the on-sky azimuth speed, and an unusually
+        large width, height, velocity or derived azimuth-coordinate speed
+        (:class:`~fyst_trajectories.patterns.PongAltAzScanConfig`).
     VelocityLimitWarning, AccelerationLimitWarning
         The built trajectory exceeds an axis velocity or acceleration limit
         (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).

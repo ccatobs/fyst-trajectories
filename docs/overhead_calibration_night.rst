@@ -235,7 +235,8 @@ never from a clock, so a night planned twice is identical::
     # 29.1
 
 An infeasible visit is returned, never raised: ``plan.reason`` names why
-(the kernel could not plan the anchor, below or above the band, the
+(the kernel could not plan the anchor, a solved boresight elevation below
+the policy's ``el_min`` or above the site's elevation limit, the
 crossing too slow, no whole pass left before the night ends, the retune
 pose, a pass or the wait before a later pass inside the Sun zone, no
 sun-safe slew or step between passes, no azimuth wrap, the goal outside
@@ -337,7 +338,15 @@ pass of a multi-pass visit is
 kept only when it starts at least the step to it plus the lead after the
 previous kept pass ends, and the slack on every pass row is its whole
 wait. A pass that misses its window is skipped, and the next visit keeps
-its times.
+its times. In the night above, the first pass's search starts about the
+lead after its visit's last detector operation ends, and its slack is the
+whole wait from that end to the pass::
+
+    last_op = visit["detector_operations"][-1]
+    ops_end = last_op["t_start_unix"] + last_op["duration_s"]
+    print(f"{first_pass['scheduled_t0_unix'] - ops_end:.1f} {first_pass['slack_s']:.1f}")
+    # 20.6 52.0
+
 Re-planning from the actual time is the operator's option: ``plan_visit``
 on a state whose time is the actual time and whose ``cal_state`` records
 the detector operations already done, because

@@ -63,6 +63,14 @@ class TestScanParameterTable:
         assert table.for_elevation(40.0).az_throw == 2.0  # the top bin includes its upper bound
         assert table.for_elevation(40.1) is None
 
+    @pytest.mark.parametrize("el", [math.nan, math.inf, -math.inf])
+    def test_a_non_finite_elevation_is_refused(self, el):
+        table = ScanParameterTable((_bin(30.0, 35.0, throw=1.0), _bin(35.0, 40.0, throw=2.0)))
+        with pytest.raises(ValueError, match="el must be finite"):
+            table.for_elevation(el)
+        with pytest.raises(ValueError, match="el must be finite"):
+            table.az_throw_at(el)
+
     def test_az_throw_extrapolates_at_constant_sky_width_above_the_top_bin(self):
         table = ScanParameterTable((_bin(45.0, 50.0, throw=3.11),))
         assert table.az_throw_at(47.0) == 3.11

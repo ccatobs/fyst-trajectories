@@ -61,10 +61,12 @@ def _is_finite(value: float, name: str) -> bool:
         # value, refuses text, which float() would parse, and raises what
         # float() would for a number it cannot convert.
         return math.isfinite(value)
-    except (TypeError, ValueError, OverflowError):
+    except OverflowError:
         raise ValueError(
             f"{name} must be a real number within the float range, got {value!r}"
         ) from None
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a real number, got {value!r}") from None
 
 
 def _require_positive(value: float, name: str) -> float:

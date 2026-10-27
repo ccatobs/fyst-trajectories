@@ -353,7 +353,7 @@ class TestTrajectoryValidateExceptions:
             el_vel=np.zeros(3),
         )
         with pytest.raises(AzimuthBoundsError) as exc_info:
-            validate_trajectory(traj, site)
+            validate_trajectory(traj, site=site)
 
         exc = exc_info.value
         assert exc.axis == "azimuth"
@@ -369,7 +369,7 @@ class TestTrajectoryValidateExceptions:
             el_vel=np.zeros(3),
         )
         with pytest.raises(ElevationBoundsError) as exc_info:
-            validate_trajectory(traj, site)
+            validate_trajectory(traj, site=site)
 
         exc = exc_info.value
         assert exc.axis == "elevation"
@@ -385,7 +385,7 @@ class TestTrajectoryValidateExceptions:
             el_vel=np.zeros(3),
         )
         with pytest.raises(PointingError):
-            validate_trajectory(traj, site)
+            validate_trajectory(traj, site=site)
 
 
 class TestExceptionChaining:

@@ -22,13 +22,13 @@ class TestChooseEncoderSolution:
     def test_single_image_low_azimuth(self):
         """Sky az 10 has a single in-range encoder image (10 itself)."""
         site = get_fyst_site(sun_avoidance_enabled=False)
-        az, _ = choose_encoder_solution(0.0, 45.0, 10.0, 45.0, OBSTIME, site)
+        az, _ = choose_encoder_solution(0.0, 45.0, 10.0, 45.0, OBSTIME, site=site)
         assert az == pytest.approx(10.0)
 
     def test_chosen_az_within_limits(self):
         """From current az 0 the nearer image of sky az 350 is -10, inside the limits."""
         site = get_fyst_site(sun_avoidance_enabled=False)
-        az, _ = choose_encoder_solution(0.0, 45.0, 350.0, 45.0, OBSTIME, site)
+        az, _ = choose_encoder_solution(0.0, 45.0, 350.0, 45.0, OBSTIME, site=site)
         assert az == pytest.approx(-10.0)
         lim = site.telescope_limits.azimuth
         assert lim.min <= az <= lim.max
@@ -41,7 +41,7 @@ class TestChooseEncoderSolution:
             return az < 0  # block every encoder az >= 0
 
         az, _ = choose_encoder_solution(
-            190.0, 45.0, 200.0, 45.0, OBSTIME, site, sun_safe=block_nonnegative
+            190.0, 45.0, 200.0, 45.0, OBSTIME, site=site, sun_safe=block_nonnegative
         )
         assert az == pytest.approx(-160.0)
 
@@ -53,19 +53,21 @@ class TestChooseEncoderSolution:
             return False
 
         with pytest.raises(PointingError, match="sun-safe"):
-            choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site, sun_safe=block_all)
+            choose_encoder_solution(
+                190.0, 45.0, 200.0, 45.0, OBSTIME, site=site, sun_safe=block_all
+            )
 
     def test_goal_elevation_below_minimum_raises(self):
         """A goal elevation below the elevation limit raises PointingError."""
         site = get_fyst_site(sun_avoidance_enabled=False)
         with pytest.raises(PointingError, match="elevation"):
-            choose_encoder_solution(190.0, 45.0, 200.0, 5.0, OBSTIME, site)
+            choose_encoder_solution(190.0, 45.0, 200.0, 5.0, OBSTIME, site=site)
 
     def test_goal_elevation_above_maximum_raises(self):
         """A goal elevation above the elevation limit raises PointingError."""
         site = get_fyst_site(sun_avoidance_enabled=False)
         with pytest.raises(PointingError, match="elevation"):
-            choose_encoder_solution(190.0, 45.0, 200.0, 95.0, OBSTIME, site)
+            choose_encoder_solution(190.0, 45.0, 200.0, 95.0, OBSTIME, site=site)
 
     def test_sun_predicate_receives_goal_elevation(self):
         """The injected predicate is consulted with the goal elevation."""
@@ -76,7 +78,7 @@ class TestChooseEncoderSolution:
             seen.append((az, el))
             return True
 
-        choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site, sun_safe=spy)
+        choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site, sun_safe=spy)
         assert seen, "sun_safe predicate was not consulted"
         assert all(el == 45.0 for _, el in seen)
 
@@ -87,7 +89,7 @@ class TestChooseEncoderSolution:
         limits = dataclasses.replace(base.telescope_limits, azimuth=narrow_az)
         site = dataclasses.replace(base, telescope_limits=limits)
         with pytest.raises(PointingError, match="No encoder azimuth in range"):
-            choose_encoder_solution(5.0, 45.0, 200.0, 45.0, OBSTIME, site)
+            choose_encoder_solution(5.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
 
 
 class TestChooseEncoderSolutionSpan:
@@ -109,11 +111,11 @@ class TestChooseEncoderSolutionSpan:
         """
         site = get_fyst_site(sun_avoidance_enabled=False)
         # Control: without the span, the nearer (out-of-span) wrap is returned.
-        az_no_span, _ = choose_encoder_solution(355.0, 45.0, 350.0, 45.0, OBSTIME, site)
+        az_no_span, _ = choose_encoder_solution(355.0, 45.0, 350.0, 45.0, OBSTIME, site=site)
         assert az_no_span == pytest.approx(350.0)
         # With the span, the far wrap that keeps the whole span in range wins.
         az_span, _ = choose_encoder_solution(
-            355.0, 45.0, 350.0, 45.0, OBSTIME, site, goal_az_span=(340.0, 370.0)
+            355.0, 45.0, 350.0, 45.0, OBSTIME, site=site, goal_az_span=(340.0, 370.0)
         )
         assert az_span == pytest.approx(-10.0)
 
@@ -127,7 +129,7 @@ class TestChooseEncoderSolutionSpan:
         site = get_fyst_site(sun_avoidance_enabled=False)
         with pytest.raises(PointingError, match=r"trajectory azimuth span .* does not fit"):
             choose_encoder_solution(
-                0.0, 45.0, 300.0, 45.0, OBSTIME, site, goal_az_span=(0.0, 600.0)
+                0.0, 45.0, 300.0, 45.0, OBSTIME, site=site, goal_az_span=(0.0, 600.0)
             )
 
     def test_span_endpoint_exactly_at_limit_is_admissible(self):
@@ -139,7 +141,7 @@ class TestChooseEncoderSolutionSpan:
         """
         site = get_fyst_site(sun_avoidance_enabled=False)
         az, _ = choose_encoder_solution(
-            0.0, 45.0, 0.0, 45.0, OBSTIME, site, goal_az_span=(-180.0, 360.0)
+            0.0, 45.0, 0.0, 45.0, OBSTIME, site=site, goal_az_span=(-180.0, 360.0)
         )
         assert az == pytest.approx(0.0)
 
@@ -147,14 +149,16 @@ class TestChooseEncoderSolutionSpan:
         """An inverted span (min > max) is rejected with ValueError."""
         site = get_fyst_site(sun_avoidance_enabled=False)
         with pytest.raises(ValueError, match="must be <= max"):
-            choose_encoder_solution(0.0, 45.0, 10.0, 45.0, OBSTIME, site, goal_az_span=(20.0, 5.0))
+            choose_encoder_solution(
+                0.0, 45.0, 10.0, 45.0, OBSTIME, site=site, goal_az_span=(20.0, 5.0)
+            )
 
     def test_goal_outside_span_raises_valueerror(self):
         """A goal azimuth outside its declared span is rejected with ValueError."""
         site = get_fyst_site(sun_avoidance_enabled=False)
         with pytest.raises(ValueError, match="must lie within"):
             choose_encoder_solution(
-                0.0, 45.0, 100.0, 45.0, OBSTIME, site, goal_az_span=(10.0, 20.0)
+                0.0, 45.0, 100.0, 45.0, OBSTIME, site=site, goal_az_span=(10.0, 20.0)
             )
 
     def test_goal_at_span_endpoint_within_tolerance(self):
@@ -166,12 +170,12 @@ class TestChooseEncoderSolutionSpan:
         site = get_fyst_site(sun_avoidance_enabled=False)
         # goal_az == span_min; a normal single-wrap case that must not raise.
         az, _ = choose_encoder_solution(
-            10.0, 45.0, 10.0, 45.0, OBSTIME, site, goal_az_span=(10.0, 25.0)
+            10.0, 45.0, 10.0, 45.0, OBSTIME, site=site, goal_az_span=(10.0, 25.0)
         )
         assert az == pytest.approx(10.0)
         # A goal a hair below span_min (float round-off scale) is accepted too.
         az, _ = choose_encoder_solution(
-            10.0, 45.0, 10.0 - 5e-7, 45.0, OBSTIME, site, goal_az_span=(10.0, 25.0)
+            10.0, 45.0, 10.0 - 5e-7, 45.0, OBSTIME, site=site, goal_az_span=(10.0, 25.0)
         )
         assert az == pytest.approx(10.0)
 
@@ -187,7 +191,7 @@ class TestChooseEncoderSolutionSpan:
         """
         site = get_fyst_site(sun_avoidance_enabled=False)
         az, _ = choose_encoder_solution(
-            100.0, 45.0, -80.0, 45.0, OBSTIME, site, goal_az_span=(-110.0, -75.0)
+            100.0, 45.0, -80.0, 45.0, OBSTIME, site=site, goal_az_span=(-110.0, -75.0)
         )
         assert az == pytest.approx(280.0)
 
@@ -199,9 +203,9 @@ class TestChooseEncoderSolutionSpan:
         190 the nearer wrap is 200.
         """
         site = get_fyst_site(sun_avoidance_enabled=False)
-        no_span = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        no_span = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         point_span = choose_encoder_solution(
-            190.0, 45.0, 200.0, 45.0, OBSTIME, site, goal_az_span=(200.0, 200.0)
+            190.0, 45.0, 200.0, 45.0, OBSTIME, site=site, goal_az_span=(200.0, 200.0)
         )
         assert no_span == point_span
 
@@ -236,7 +240,7 @@ class TestChooseEncoderSolutionObstimeArray:
                 120.0,
                 45.0,
                 _OBSTIME_ARRAY[:0],
-                site,
+                site=site,
                 sun_safe=must_not_be_consulted,
             )
 
@@ -254,7 +258,7 @@ class TestChooseEncoderSolutionObstimeArray:
             return True
 
         az, _ = choose_encoder_solution(
-            120.0, 45.0, 120.0, 45.0, _OBSTIME_ARRAY, site, sun_safe=spy
+            120.0, 45.0, 120.0, 45.0, _OBSTIME_ARRAY, site=site, sun_safe=spy
         )
         assert az == pytest.approx(120.0)
         assert sorted(round(u, 3) for u in seen) == [
@@ -277,7 +281,7 @@ class TestChooseEncoderSolutionObstimeArray:
 
         with pytest.raises(PointingError, match=r"sun-safe azimuth wrap.*through"):
             choose_encoder_solution(
-                120.0, 45.0, 120.0, 45.0, _OBSTIME_ARRAY, site, sun_safe=unsafe_at_t1
+                120.0, 45.0, 120.0, 45.0, _OBSTIME_ARRAY, site=site, sun_safe=unsafe_at_t1
             )
 
     def test_scalar_obstime_control_returns_wrap(self):
@@ -292,7 +296,9 @@ class TestChooseEncoderSolutionObstimeArray:
         def unsafe_at_t1(az, el, t):
             return abs(float(t.unix) - float(_T1.unix)) > 1.0
 
-        az, _ = choose_encoder_solution(120.0, 45.0, 120.0, 45.0, _T0, site, sun_safe=unsafe_at_t1)
+        az, _ = choose_encoder_solution(
+            120.0, 45.0, 120.0, 45.0, _T0, site=site, sun_safe=unsafe_at_t1
+        )
         assert az == pytest.approx(120.0)
 
 
@@ -306,7 +312,7 @@ class TestEncoderSolutionErrorCauses:
         site = kwargs.pop("site", None) or get_fyst_site(sun_avoidance_enabled=False)
         args = kwargs.pop("args")
         with pytest.raises(EncoderSolutionError) as info:
-            choose_encoder_solution(*args, site, **kwargs)
+            choose_encoder_solution(*args, site=site, **kwargs)
         exc = info.value
         assert isinstance(exc, PointingError)
         return exc
@@ -394,7 +400,7 @@ class TestSunGateBatching:
             try:
                 return tuple(
                     choose_encoder_solution(
-                        0.0, 45.0, goal_az, goal_el, grid, site, sun_safe=sun_safe
+                        0.0, 45.0, goal_az, goal_el, grid, site=site, sun_safe=sun_safe
                     )
                 )
             except EncoderSolutionError as exc:
@@ -429,7 +435,7 @@ class TestSunGateBatching:
             ),
         )
         with pytest.raises(ValueError, match=r"el_deg must lie within \[-90, 90\]"):
-            choose_encoder_solution(0.0, 45.0, 100.0, 100.0, OBSTIME, custom)
+            choose_encoder_solution(0.0, 45.0, 100.0, 100.0, OBSTIME, site=custom)
 
     def test_batch_capable_model_is_called_once(self):
         import numpy as np
@@ -447,7 +453,9 @@ class TestSunGateBatching:
                 return np.ones(np.shape(az), dtype=bool)
 
         grid = OBSTIME + np.arange(50) * 1.0 * u.s
-        choose_encoder_solution(190.0, 45.0, 200.0, 45.0, grid, get_fyst_site(), sun_safe=_Model())
+        choose_encoder_solution(
+            190.0, 45.0, 200.0, 45.0, grid, site=get_fyst_site(), sun_safe=_Model()
+        )
         assert calls["batch"] == 1
         assert calls["scalar"] == 0
 
@@ -462,7 +470,9 @@ class TestSunGateBatching:
             return True
 
         grid = OBSTIME + np.arange(4) * 1.0 * u.s
-        choose_encoder_solution(190.0, 45.0, 200.0, 45.0, grid, get_fyst_site(), sun_safe=predicate)
+        choose_encoder_solution(
+            190.0, 45.0, 200.0, 45.0, grid, site=get_fyst_site(), sun_safe=predicate
+        )
         # Two in-range wraps of sky azimuth 200 in [-180, 360], four times.
         assert len(seen) == 8
         assert sorted({az for az, _ in seen}) == [-160.0, 200.0]
@@ -485,7 +495,7 @@ class TestSunGateBatching:
                 raise AssertionError("batch should have been used")
 
         az, _ = choose_encoder_solution(
-            190.0, 45.0, 200.0, 45.0, grid, get_fyst_site(), sun_safe=_BlocksOneWrapLate()
+            190.0, 45.0, 200.0, 45.0, grid, site=get_fyst_site(), sun_safe=_BlocksOneWrapLate()
         )
         assert az == -160.0
 
@@ -502,7 +512,7 @@ class TestEncoderSolutionCarriesTheWrapShift:
     def test_unpacks_to_two_values(self):
         """``az, el = ...`` still works, and the tuple compares equal to the pair."""
         site = get_fyst_site(sun_avoidance_enabled=False)
-        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         az, el = solution
         assert (az, el) == (200.0, 45.0)
         assert solution == (200.0, 45.0)
@@ -511,19 +521,19 @@ class TestEncoderSolutionCarriesTheWrapShift:
     def test_named_access_matches_the_tuple(self):
         """``.az`` and ``.el`` name the two elements."""
         site = get_fyst_site(sun_avoidance_enabled=False)
-        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         assert (solution.az, solution.el) == (solution[0], solution[1])
 
     def test_shift_is_zero_when_the_goal_wrap_is_chosen(self):
         """Sky az 200 from current az 190 lands on the goal's own wrap."""
         site = get_fyst_site(sun_avoidance_enabled=False)
-        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         assert solution.az_shift == 0.0
 
     def test_shift_names_the_multiple_that_reaches_the_chosen_wrap(self):
         """From current az -170 the near wrap is -160, one turn below the goal."""
         site = get_fyst_site(sun_avoidance_enabled=False)
-        solution = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        solution = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         assert solution.az == -160.0
         assert solution.az_shift == -360.0
         assert 200.0 + solution.az_shift == solution.az
@@ -532,7 +542,7 @@ class TestEncoderSolutionCarriesTheWrapShift:
         """Whatever the geometry, the shift is a multiple of 360."""
         site = get_fyst_site(sun_avoidance_enabled=False)
         for current, goal in ((0.0, 350.0), (350.0, 10.0), (190.0, 200.0)):
-            shift = choose_encoder_solution(current, 45.0, goal, 45.0, OBSTIME, site).az_shift
+            shift = choose_encoder_solution(current, 45.0, goal, 45.0, OBSTIME, site=site).az_shift
             assert shift % 360.0 == 0.0
 
     def test_survives_copy_and_pickle(self):
@@ -541,7 +551,7 @@ class TestEncoderSolutionCarriesTheWrapShift:
         import pickle
 
         site = get_fyst_site(sun_avoidance_enabled=False)
-        solution = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        solution = choose_encoder_solution(-170.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         for revived in (copy.copy(solution), pickle.loads(pickle.dumps(solution))):
             assert revived == solution
             assert revived.az_shift == solution.az_shift
@@ -571,7 +581,7 @@ class TestNonFiniteInputsAreRefused:
     def test_span_endpoints(self, span):
         site = get_fyst_site(sun_avoidance_enabled=False)
         with pytest.raises(ValueError, match="goal_az_span must be finite") as info:
-            choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site, goal_az_span=span)
+            choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site, goal_az_span=span)
         assert not isinstance(info.value, PointingError)
 
     def test_nan_current_el_is_not_reported_as_a_blocked_path(self):
@@ -591,7 +601,7 @@ class TestNonFiniteInputsAreRefused:
                 200.0,
                 45.0,
                 OBSTIME,
-                site,
+                site=site,
                 sun_safe=clear,
                 slew_safe=path_clear_when_finite,
             )
@@ -599,7 +609,7 @@ class TestNonFiniteInputsAreRefused:
 
     def test_finite_control_is_unchanged(self):
         site = get_fyst_site(sun_avoidance_enabled=False)
-        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site)
+        solution = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, OBSTIME, site=site)
         assert solution == (200.0, 45.0)
         assert solution.az_shift == 0.0
 
@@ -651,36 +661,36 @@ class TestEstimateSlewTime:
     """
 
     def test_zero_distance(self, site):
-        t = estimate_slew_time(180.0, 50.0, 180.0, 50.0, site)
+        t = estimate_slew_time(180.0, 50.0, 180.0, 50.0, site=site)
         assert t == 0.0
 
     def test_az_only(self, site):
         # 10 deg azimuth slew, trapezoidal profile (FYST az vel=3.0, accel=1.5):
         # t_accel=2, d_accel=6; distance 10 > 6, so
         # t = 2*t_accel + (10 - d_accel)/vel = 4 + 4/3 = 5.333 s.
-        t = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
+        t = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site=site)
         assert t == pytest.approx(5.333, abs=0.01)
 
     def test_el_only(self, site):
         # 10 deg elevation slew, trapezoidal (FYST el vel=1.0, accel=0.75):
         # t_accel=1.333, d_accel=1.333; distance 10 > 1.333, so
         # t = 2*t_accel + (10 - d_accel)/vel = 2.667 + 8.667 = 11.333 s.
-        t = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
+        t = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site=site)
         assert t == pytest.approx(11.333, abs=0.01)
 
     def test_el_slower_than_az(self, site):
-        t_az = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site)
-        t_el = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site)
+        t_az = estimate_slew_time(180.0, 50.0, 190.0, 50.0, site=site)
+        t_el = estimate_slew_time(180.0, 50.0, 180.0, 60.0, site=site)
         assert t_el > t_az
 
     def test_large_slew(self, site):
-        t = estimate_slew_time(0.0, 30.0, 180.0, 70.0, site)
+        t = estimate_slew_time(0.0, 30.0, 180.0, 70.0, site=site)
         assert t > 30.0
 
     def test_short_az_slew_is_triangular(self, site):
         # A 2 deg az slew never reaches cruise: d_accel = v^2/a = 6 deg > 2 deg, so
         # the triangular branch gives t = 2*sqrt(distance/a) = 2*sqrt(2/1.5) = 2.309 s.
-        t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site)
+        t = estimate_slew_time(180.0, 50.0, 182.0, 50.0, site=site)
         assert t == pytest.approx(2.309, abs=0.01)
 
     @pytest.mark.parametrize(
@@ -699,4 +709,15 @@ class TestEstimateSlewTime:
             _axis_slew_duration(d_az, az_limits.max_velocity, az_limits.max_acceleration),
             _axis_slew_duration(d_el, el_limits.max_velocity, el_limits.max_acceleration),
         )
-        assert estimate_slew_time(0.0, 45.0, d_az, 45.0 + d_el, site) == pytest.approx(expected)
+        assert estimate_slew_time(0.0, 45.0, d_az, 45.0 + d_el, site=site) == pytest.approx(
+            expected
+        )
+
+    def test_a_nan_azimuth_is_refused(self, site):
+        with pytest.raises(ValueError, match="az1 must be finite"):
+            estimate_slew_time(float("nan"), 45.0, 10.0, 45.0, site=site)
+
+    def test_a_nan_elevation_is_refused(self, site):
+        """A NaN elevation is refused, not dropped by ``max`` into an az-only price."""
+        with pytest.raises(ValueError, match="el2 must be finite"):
+            estimate_slew_time(0.0, 45.0, 10.0, float("nan"), site=site)

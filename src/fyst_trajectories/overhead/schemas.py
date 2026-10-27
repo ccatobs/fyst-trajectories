@@ -53,11 +53,9 @@ class CEScanParams(TypedDict, total=False):
         Local Sidereal Angle window in degrees. When supplied, the
         constant-elevation planner derives ``start_time`` / ``duration``
         from the LSA window instead of from RA-edge elevation crossings.
-        Declared as ``tuple | list`` because ECSV round-trip serialises
-        through JSON, which converts tuples to lists. A value freshly
-        constructed in Python is typically a tuple, but a value
-        deserialised from a stored timeline is a list. The CE planner
-        accepts both via ``float(lsa_window[0])`` indexing. See
+        Declared as ``tuple | list`` because the ECSV round trip
+        serialises through JSON, which turns a tuple into a list; the
+        constant-elevation planner accepts either. See
         :func:`~fyst_trajectories.planning.plan_constant_el_scan`
         for the full semantics (wrap-around handling, search horizon).
     rising : bool
@@ -227,7 +225,10 @@ class SourceCESScanParams(TypedDict, total=False):
     az_throw : float
         Explicit swept azimuth window in degrees. A kernel override:
         recorded when supplied, forwarded when present; absent means the
-        rebuild re-solves the padded footprint crossing.
+        rebuild re-solves the padded footprint crossing. Never recorded
+        beside ``az_padding``, which the planner refuses with it, so
+        :func:`schedule_to_trajectories` logs and skips a record holding
+        both.
     dwell : float
         Time on source in seconds that narrowed the pass about the
         crossing midpoint. A kernel override: recorded when supplied,

@@ -228,7 +228,6 @@ def _pass_block(site, start, body, index, n_passes, scan_index, **extra):
         600.0,
         330.0,
         50.0,
-        site,
         scan_index,
         target=body,
         az_end=338.0,
@@ -264,34 +263,29 @@ def _hand_built_night(short_night):
     """
     site, _ = short_night
     blocks = [
-        TimelineBlock.slew(_at(0), 60.0, 180.0, 334.0, 50.0, site, 0, patch_name="slew_to_saturn"),
+        TimelineBlock.slew(_at(0), 60.0, 180.0, 334.0, 50.0, 0, patch_name="slew_to_saturn"),
         TimelineBlock.calibration(
             "retune",
             _at(60),
             300.0,
             334.0,
             50.0,
-            site,
             0,
             extra_metadata={"operation": "find_detectors"},
         ),
-        TimelineBlock.calibration("retune", _at(360), 300.0, 334.0, 50.0, site, 0),
-        TimelineBlock.idle(_at(660), 30.0, 334.0, 50.0, site, 0, reason=_WAITING),
+        TimelineBlock.calibration("retune", _at(360), 300.0, 334.0, 50.0, 0),
+        TimelineBlock.idle(_at(660), 30.0, 334.0, 50.0, 0, reason=_WAITING),
         _pass_block(site, _at(690), "saturn", 0, 2, 1),
-        TimelineBlock.slew(
-            _at(1290), 20.0, 338.0, 334.0, 50.0, site, 1, patch_name="slew_to_saturn"
-        ),
-        TimelineBlock.idle(_at(1310), 100.0, 334.0, 50.0, site, 1, reason=_WAITING),
+        TimelineBlock.slew(_at(1290), 20.0, 338.0, 334.0, 50.0, 1, patch_name="slew_to_saturn"),
+        TimelineBlock.idle(_at(1310), 100.0, 334.0, 50.0, 1, reason=_WAITING),
         _pass_block(site, _at(1410), "saturn", 1, 2, 1),
-        TimelineBlock.idle(_at(2010), 300.0, 334.0, 50.0, site, 2, reason="nothing_available"),
-        TimelineBlock.slew(_at(2310), 40.0, 334.0, 200.0, 40.0, site, 2, patch_name="sun_escape"),
-        TimelineBlock.idle(_at(2350), 300.0, 200.0, 40.0, site, 2, reason="nothing_available"),
-        TimelineBlock.slew(
-            _at(2650), 60.0, 200.0, 100.0, 50.0, site, 3, patch_name="slew_to_uranus"
-        ),
-        TimelineBlock.calibration("retune", _at(2710), 300.0, 100.0, 50.0, site, 3),
+        TimelineBlock.idle(_at(2010), 300.0, 334.0, 50.0, 2, reason="nothing_available"),
+        TimelineBlock.slew(_at(2310), 40.0, 334.0, 200.0, 40.0, 2, patch_name="sun_escape"),
+        TimelineBlock.idle(_at(2350), 300.0, 200.0, 40.0, 2, reason="nothing_available"),
+        TimelineBlock.slew(_at(2650), 60.0, 200.0, 100.0, 50.0, 3, patch_name="slew_to_uranus"),
+        TimelineBlock.calibration("retune", _at(2710), 300.0, 100.0, 50.0, 3),
         _pass_block(site, _at(3010), "uranus", 0, 1, 3),
-        TimelineBlock.slew(_at(3610), 40.0, 100.0, 250.0, 45.0, site, 4, patch_name="sun_escape"),
+        TimelineBlock.slew(_at(3610), 40.0, 100.0, 250.0, 45.0, 4, patch_name="sun_escape"),
     ]
     return _night(short_night, blocks, _at(3650))
 
@@ -371,18 +365,14 @@ class TestHandBuiltNights:
         """It is listed with its reason, and the moves before it form their own record."""
         site, _ = short_night
         blocks = [
-            TimelineBlock.slew(
-                _at(0), 60.0, 180.0, 334.0, 50.0, site, 0, patch_name="slew_to_saturn"
-            ),
-            TimelineBlock.calibration("retune", _at(60), 300.0, 334.0, 50.0, site, 0),
-            TimelineBlock.idle(_at(360), 30.0, 334.0, 50.0, site, 0, reason=_WAITING),
-            TimelineBlock.slew(
-                _at(390), 60.0, 334.0, 100.0, 50.0, site, 1, patch_name="slew_to_uranus"
-            ),
-            TimelineBlock.calibration("retune", _at(450), 300.0, 100.0, 50.0, site, 1),
-            TimelineBlock.idle(_at(750), 30.0, 100.0, 50.0, site, 1, reason=_WAITING),
+            TimelineBlock.slew(_at(0), 60.0, 180.0, 334.0, 50.0, 0, patch_name="slew_to_saturn"),
+            TimelineBlock.calibration("retune", _at(60), 300.0, 334.0, 50.0, 0),
+            TimelineBlock.idle(_at(360), 30.0, 334.0, 50.0, 0, reason=_WAITING),
+            TimelineBlock.slew(_at(390), 60.0, 334.0, 100.0, 50.0, 1, patch_name="slew_to_uranus"),
+            TimelineBlock.calibration("retune", _at(450), 300.0, 100.0, 50.0, 1),
+            TimelineBlock.idle(_at(750), 30.0, 100.0, 50.0, 1, reason=_WAITING),
             _pass_block(site, _at(780), "uranus", 0, 1, 1),
-            TimelineBlock.idle(_at(1380), 120.0, 338.0, 50.0, site, 2, reason=_WAITING),
+            TimelineBlock.idle(_at(1380), 120.0, 338.0, 50.0, 2, reason=_WAITING),
         ]
         record = dispatch_records(_night(short_night, blocks, _at(1500)))
         assert [

@@ -22,7 +22,7 @@ Point a named Prime-Cam module at the target instead of the boresight::
     # Use predefined Prime-Cam offset
     offset = get_primecam_offset("i1")
 
-    # Boresight adjusted so detector I1 tracks the target
+    # Boresight adjusted so module i1 tracks the target
     trajectory = (
         TrajectoryBuilder(site)
         .at(ra=180.0, dec=-30.0)
@@ -48,7 +48,7 @@ tracked, and the rotation splits in two:
    \qquad
    \theta_\mathrm{sky} = \theta_\mathrm{mech} + q,
 
-where :math:`s` is ``nasmyth_sign``, :math:`\mathrm{el}` the elevation,
+where :math:`s` is ``nasmyth_sign``, :math:`\mathrm{el}` the boresight elevation,
 :math:`\theta_\mathrm{inst}` is ``instrument_rotation`` and :math:`q` is
 the parallactic angle.
 
@@ -105,7 +105,11 @@ Point Transformations
 Where a detector lands for a given boresight, and the boresight that puts
 a detector on a target. ``focal_plane_rotation`` is the **mechanical** rotation
 (``compute_focal_plane_rotation`` with its default
-``parallactic_angle=0.0``), not the celestial form::
+``parallactic_angle=0.0``), not the celestial form, at the boresight
+elevation. For ``detector_to_boresight`` that elevation is the result, so
+start from the detector's and iterate, as the drift-scan example in
+:doc:`trajectory_examples` does; ``apply_detector_offset`` iterates over a
+whole trajectory itself::
 
     from fyst_trajectories import InstrumentOffset
     from fyst_trajectories.offsets import boresight_to_detector, detector_to_boresight
@@ -178,11 +182,13 @@ scheduler geometry schema):
 
 .. note::
 
-   These positions are derived from the default plate scale (13.89 arcsec/mm)
-   and inner-ring radius (461.3 mm), both commissioning-era defaults awaiting
-   FYST instrument-team confirmation. Every off-axis offset scales linearly
-   with both, so a revision to either shifts the whole inner ring. See
-   :ref:`index-pending-verification` for the full list.
+   These positions are derived from the default plate scale (13.89 arcsec/mm,
+   the scale at the telescope focal surface where the module bays sit) and
+   inner-ring radius (461.3 mm, a distance on that surface), both
+   commissioning-era defaults awaiting FYST instrument-team confirmation.
+   Every off-axis offset scales linearly with both, so a revision to either
+   shifts the whole inner ring. See :ref:`index-pending-verification` for
+   the full list.
 
    The offset math is exact spherical trigonometry at any radius, but
    numerical accuracy is not pointing performance: FYST's offset-pointing
@@ -190,6 +196,35 @@ scheduler geometry schema):
    to a 25° radial offset, for a time period after calibration of one
    minute, and over 30° to 85° elevation, so treat large offsets as a
    library capability rather than a telescope pointing guarantee.
+
+.. _instrument-offsets-two-surfaces:
+
+**Two image surfaces**
+
+FYST forms two images of the sky. The mirrors form the first at the
+telescope's focus, where the Prime-Cam modules sit; each module's
+reimaging optics form a second on its detector wafer, at a shorter
+effective focal length, so the same field spans fewer millimetres there.
+Each image has its own plate scale, the angle of sky per millimetre. This
+library carries only the first, ``FYST_PLATE_SCALE``, and uses it only to
+turn the inner-ring radius into each ring module's on-sky offset, which
+``primecam_geometry_dict()`` and ``PRIMECAM_MODULES`` hand a consumer in
+degrees and arcminutes, so a scheduler or simulation never converts the
+ring itself. A layout in millimetres belongs to the surface it was
+measured on: the ring radius converted at a detector-plane scale places
+every module too far from the boresight, and a wafer position converted
+at the telescope's places every detector too close to its module centre.
+
+.. figure:: figures/plate_scale_surfaces.png
+   :alt: Light path from the FYST mirrors to the telescope focal surface, where the
+      modules sit at 13.89 arcsec per mm and the library converts the 461.3 mm ring
+      radius into 1.78°, then through a module's reimaging optics to its
+      detector plane, which has its own larger plate scale that the library does not
+      carry.
+   :width: 100%
+
+   The two image surfaces. The library's plate scale belongs to the first;
+   positions on a detector wafer belong to the second.
 
 **Module naming**
 
@@ -268,7 +303,7 @@ the selected modules at a source::
 
     block = plan_source_ces(
         body="jupiter",
-        footprint=resolve_module_tag("i1,i2"),  # centroid of I1+I2 on Jupiter
+        footprint=resolve_module_tag("i1,i2"),  # centroid of i1 and i2 on Jupiter
         el_bore=35.0,
         night=Time("2026-03-15T00:00:00", scale="utc"),
         mode="rising",
@@ -298,11 +333,11 @@ Custom Offsets
 
     site = get_fyst_site()
 
-    # Convert physical position to angular offset using plate scale
+    # Convert a position on the telescope focal surface to an angular offset
     offset = InstrumentOffset.from_focal_plane(
         x_mm=399.5,            # Cross-elevation position (mm)
         y_mm=-230.65,          # Elevation position (mm)
-        plate_scale=site.plate_scale,  # 13.89 arcsec/mm
+        plate_scale=site.plate_scale,  # 13.89 arcsec/mm at that surface
         name="i2-position",
     )
     print(f"Angular offset: {offset.dx:.1f}' x {offset.dy:.1f}'")

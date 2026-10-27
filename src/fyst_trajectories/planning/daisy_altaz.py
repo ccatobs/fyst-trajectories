@@ -44,10 +44,12 @@ def plan_daisy_altaz_scan(
         el = y_offset + el_center
 
     so ``radius``, ``velocity``, ``turn_radius``, ``avoidance_radius``, and
-    ``start_acceleration`` are tangent-plane (on-sky) quantities, identical
-    in meaning to the :func:`plan_daisy_scan` arguments of the same name.
-    The azimuth coordinate is stretched by ``1 / cos(el_center)``: the
-    azimuth-coordinate extent is about
+    ``start_acceleration`` are tangent-plane (on-sky) quantities, as for
+    :func:`plan_daisy_scan`; the on-sky azimuth extent and speed hold on the
+    ``el_center`` row (the Notes of
+    :class:`~fyst_trajectories.patterns.DaisyAltAzScanConfig` give the factor
+    on the other rows). The azimuth coordinate is stretched by
+    ``1 / cos(el_center)``: the azimuth-coordinate extent is about
     ``2 * r_max / cos(el_center)``, where the petal's reach
     ``r_max = sqrt(radius**2 + turn_radius**2) + turn_radius`` exceeds
     ``radius`` because the petal only starts to turn once it is ``radius``
@@ -128,7 +130,10 @@ def plan_daisy_altaz_scan(
         horizon-frame pattern); the second warning names the closest
         approach, or with an injected ``sun_safe`` the earliest unsafe
         sample. Neither refuses the plan. A ``PointingWarning`` also flags a
-        high elevation that cuts the on-sky azimuth speed.
+        high elevation that cuts the on-sky azimuth speed, and an unusually
+        large radius, velocity, start acceleration or derived
+        azimuth-coordinate speed
+        (:class:`~fyst_trajectories.patterns.DaisyAltAzScanConfig`).
     VelocityLimitWarning, AccelerationLimitWarning
         The built trajectory exceeds an axis velocity or acceleration limit
         (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).

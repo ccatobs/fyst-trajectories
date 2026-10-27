@@ -166,6 +166,26 @@ class TestInjectRetuneTurnaroundSnapping:
             f"Snapping preserved {snap_science} science samples vs {time_science} without snapping"
         )
 
+    def test_a_snap_never_returns_to_a_turnaround_already_passed(self):
+        """A wide window does not pull later retunes back onto one turnaround.
+
+        Legs of 28 s science and 2 s turnaround with a 20 s window: each
+        turnaround takes one retune, and the next falls due on time after it.
+        """
+        turnarounds = [(28.0 + 30.0 * k, 30.0 + 30.0 * k) for k in range(4)]
+        traj = _make_trajectory(duration=120.0, timestep=0.1, turnaround_intervals=turnarounds)
+
+        result = inject_retune(
+            traj,
+            retune_interval=5.0,
+            retune_duration=1.0,
+            prefer_turnarounds=True,
+            turnaround_window=20.0,
+        )
+
+        starts = [event.t_start for event in result.retune_events]
+        assert starts == pytest.approx([5.0, 28.0, 34.0, 58.0, 64.0, 88.0, 94.0, 118.0])
+
 
 class TestInjectRetuneNoTurnarounds:
     """A scan with no turnaround flags gets exactly the time-based retunes."""

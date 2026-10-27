@@ -33,11 +33,13 @@ from astropy.time import Time
 class SunSafePredicate(Protocol):
     """The build-to contract for FYST's pluggable sun-avoidance model.
 
-    This is **the** interface a sun-avoidance check must implement to be injected
-    into :func:`~fyst_trajectories.dispatch.choose_encoder_solution` via its
-    ``sun_safe`` parameter. It is a structural :class:`typing.Protocol`, so any
-    callable with the matching signature satisfies it; no base class or
-    registration is required.
+    This is **the** interface a sun-avoidance check must implement to be
+    injected through any ``sun_safe`` parameter, for example those of
+    :func:`~fyst_trajectories.dispatch.choose_encoder_solution`,
+    :func:`~fyst_trajectories.observability.check_observability` and
+    :func:`~fyst_trajectories.trajectory_utils.validate_trajectory`. It is a
+    structural :class:`typing.Protocol`, so any callable with the matching
+    signature satisfies it; no base class or registration is required.
 
     The default binding is the site's scalar exclusion radius (one isotropic
     radius, a position exactly at it counting as unsafe): the model

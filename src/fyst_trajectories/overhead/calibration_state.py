@@ -33,7 +33,7 @@ class CalibrationState:
     Parameters
     ----------
     last_retune : Time or None
-        Last KID probe tone reset time.
+        Last whole-array detector retune time.
     last_pointing_cal : Time or None
         Last pointing correction time.
     last_focus : Time or None
@@ -70,6 +70,9 @@ class CalibrationState:
         cadence-0 retune. Beam mapping has
         a nullable cadence; ``policy.beam_map_cadence is None`` (the
         default) keeps beam maps off the automatic schedule entirely.
+        A calibration whose duration in ``overhead`` is zero is not
+        returned, except a planet calibration under
+        ``policy.planet_cal_scan``.
 
         Returns calibrations in priority order: retune, pointing, focus,
         skydip, planet_cal, beam_map.
@@ -94,6 +97,26 @@ class CalibrationState:
         -------
         list of CalibrationSpec
             Calibrations that should be performed now.
+
+        Examples
+        --------
+        A calibration stamped with :meth:`update` is not due again until
+        its cadence has elapsed (``pointing_cadence`` is 3600 s by
+        default), while a cadence-0 retune is always due:
+
+        >>> from astropy.time import Time
+        >>> from fyst_trajectories.overhead import (
+        ...     CalibrationPolicy,
+        ...     CalibrationState,
+        ...     OverheadModel,
+        ... )
+        >>> t0 = Time("2026-06-15T00:00:00", scale="utc")
+        >>> state = CalibrationState().update("pointing_cal", t0)
+        >>> due = state.needs_calibration(
+        ...     Time("2026-06-15T00:30:00", scale="utc"), CalibrationPolicy(), OverheadModel()
+        ... )
+        >>> [str(spec.name) for spec in due]
+        ['retune', 'focus', 'skydip', 'planet_cal']
         """
         needed = []
 
@@ -109,28 +132,28 @@ class CalibrationState:
         for cal_type, last_time, cadence in checks:
             # ``None`` cadence means "never automatically schedule"; it keeps
             # BEAM_MAP off the automatic schedule unless the operator opts in.
-            if cadence is None:
+            if cadence is None or not self._is_due(current_time, last_time, cadence):
                 continue
-            if self._is_due(current_time, last_time, cadence):
-                target = None
-                if cal_type in (CalibrationType.PLANET_CAL, CalibrationType.BEAM_MAP) and (
-                    policy.planet_targets
-                ):
-                    target = self._find_visible_planet(
-                        policy.planet_targets,
-                        current_time,
-                        coords,
-                        min_elevation=policy.planet_min_elevation,
-                    )
-                    if target is None:
-                        continue
-                needed.append(
-                    CalibrationSpec(
-                        name=cal_type,
-                        duration=overhead.get_calibration_duration(cal_type),
-                        target=target,
-                    )
+            duration = overhead.get_calibration_duration(cal_type)
+            # A zero duration holds no such operation, as on a calibration night;
+            # a scan-mode planet calibration is sized by its passes instead.
+            if duration == 0 and not (
+                cal_type is CalibrationType.PLANET_CAL and policy.planet_cal_scan
+            ):
+                continue
+            target = None
+            if cal_type in (CalibrationType.PLANET_CAL, CalibrationType.BEAM_MAP) and (
+                policy.planet_targets
+            ):
+                target = self._find_visible_planet(
+                    policy.planet_targets,
+                    current_time,
+                    coords,
+                    min_elevation=policy.planet_min_elevation,
                 )
+                if target is None:
+                    continue
+            needed.append(CalibrationSpec(name=cal_type, duration=duration, target=target))
 
         return needed
 

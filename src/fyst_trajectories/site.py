@@ -72,9 +72,21 @@ Source: the FYST telescope control system (astro.go).
 """
 
 FYST_PLATE_SCALE: float = 13.89
-"""FYST plate scale in arcsec/mm.
+"""FYST plate scale in arcsec/mm at the telescope focal surface.
 
-Source: optical design.
+This is the scale where the Prime-Cam module bays sit, and the library uses
+it only to place the modules (see :mod:`fyst_trajectories.primecam`). The
+detector plane inside a module, behind the module's reimaging optics, has a
+larger plate scale of its own, which this library does not carry; do not use
+this value for positions on a detector wafer.
+
+Source: the FYST focal-plane plate scale in the KOSMA control system's
+telescope parameters (``tel_plate_scale`` in ``KOSMA_tel2obs.set``), as
+carried by the KOSMA focal-plane model in ``ccatobs/kosma-ocs-translator``
+(``utils/tests_with_focalplane.py``); it corresponds to an effective focal
+length of 14.85 m. The production optical design gives working f/2.6 on
+the 5.7 m illuminated aperture, about 14 arcsec/mm (Parshley et al. 2018,
+Proc. SPIE 10700, arXiv:1807.06678).
 """
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
 
@@ -279,8 +291,8 @@ class AtmosphericConditions:
     ------
     ValueError
         If ``relative_humidity`` is outside ``[0, 1]``, ``pressure`` or
-        ``temperature`` is negative or NaN (a Celsius value passed as Kelvin
-        is the usual cause), or ``obswl`` is non-positive.
+        ``temperature`` is negative or not finite (a Celsius value passed as
+        Kelvin is the usual cause), or ``obswl`` is not finite and positive.
 
     See Also
     --------
@@ -303,16 +315,17 @@ class AtmosphericConditions:
                 f"relative_humidity must be in range [0, 1], got {self.relative_humidity}"
             )
         # ``pressure == 0`` is load-bearing (it is how ``no_refraction`` disables
-        # refraction), so only negative pressure is rejected. ``obswl <= 0`` is the
-        # real silent-garbage path: ERFA's optical-dispersion term evaluates to a
-        # finite but wrong refraction constant (~2x over-refraction) rather than
-        # erroring; a negative pressure is harmless (ERFA clamps it to vacuum).
-        if not self.pressure >= 0:
-            raise ValueError(f"pressure must be >= 0 hPa, got {self.pressure}")
-        if not self.temperature >= 0:
-            raise ValueError(f"temperature must be >= 0 K, got {self.temperature}")
-        if self.obswl is not None and self.obswl <= 0:
-            raise ValueError(f"obswl must be > 0 microns, got {self.obswl}")
+        # refraction), so zero is accepted. A negative temperature is the usual
+        # trace of a Celsius value passed as Kelvin. ``obswl <= 0`` makes ERFA's
+        # optical-dispersion term a finite but wrong refraction constant (~2x
+        # over-refraction) rather than an error. An infinite pressure refracts
+        # by a finite, wrong amount, so each value must also be finite.
+        if not (math.isfinite(self.pressure) and self.pressure >= 0):
+            raise ValueError(f"pressure must be >= 0 hPa and finite, got {self.pressure}")
+        if not (math.isfinite(self.temperature) and self.temperature >= 0):
+            raise ValueError(f"temperature must be >= 0 K and finite, got {self.temperature}")
+        if self.obswl is not None and not (math.isfinite(self.obswl) and self.obswl > 0):
+            raise ValueError(f"obswl must be > 0 microns and finite, got {self.obswl}")
 
     @classmethod
     def no_refraction(cls) -> "AtmosphericConditions":
@@ -581,12 +594,15 @@ class Site:
         (+1), "left" (-1), or "cassegrain" (0), matched without regard to
         case and stored lower-cased. Default is "right".
     plate_scale : float, optional
-        Telescope plate scale in arcsec/mm. Used to convert focal-plane
-        positions (mm) to angular offsets (arcsec). Default is 0.0 (a site
-        with no focal-plane geometry); pass it to
-        ``InstrumentOffset.from_focal_plane``, where 0.0 maps every
-        focal-plane position to a zero offset. ``get_fyst_site()`` sets the
-        FYST value.
+        Plate scale in arcsec/mm at the telescope focal surface, where the
+        instrument modules sit (not the plate scale of a module's detector
+        plane). The library records it but converts nothing with it: the
+        Prime-Cam module offsets are built from ``FYST_PLATE_SCALE``
+        whatever a ``Site`` holds. Pass it to
+        ``InstrumentOffset.from_focal_plane`` to convert positions (mm) on
+        that surface to angular offsets (arcmin). Default is 0.0 (a site
+        with no focal-plane geometry), where that conversion maps every
+        position to a zero offset. ``get_fyst_site()`` sets the FYST value.
 
     Raises
     ------
@@ -617,6 +633,11 @@ class Site:
     plate_scale: float = 0.0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.nasmyth_port, str):
+            raise ValueError(
+                f"nasmyth_port must be one of: {', '.join(_NASMYTH_SIGNS.keys())}; "
+                f"got {self.nasmyth_port!r}"
+            )
         port = self.nasmyth_port.lower()
         if port not in _NASMYTH_SIGNS:
             raise ValueError(
@@ -699,6 +720,8 @@ class Site:
         ------
         FileNotFoundError
             If the configuration file does not exist.
+        yaml.YAMLError
+            If the file is not valid YAML.
         ValueError
             If the configuration file is invalid.
 
@@ -732,8 +755,8 @@ class Site:
             return cls._from_dict(config, config_name=str(config_path.name))
         except (TypeError, AttributeError) as exc:
             # A document of the wrong shape (an empty file, a scalar where a
-            # section mapping belongs, a null nasmyth_port) fails inside the
-            # lookups; report it as the invalid config it is.
+            # section mapping belongs) fails inside the lookups; report it as
+            # the invalid config it is.
             raise ValueError(f"Config '{config_path.name}' is malformed: {exc}") from exc
 
     @classmethod

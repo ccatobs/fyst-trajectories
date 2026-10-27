@@ -137,14 +137,18 @@ limits as keyword defaults (pass ``az_speed=`` and the others there).
        ``site.FYST_EL_MAX_ACCELERATION``
    * - Plate scale
      - 13.89 arcsec/mm
-     - module constant ``site.FYST_PLATE_SCALE``, read once at import by
-       the Prime-Cam offsets; for another value build them with
-       ``InstrumentOffset.from_focal_plane(x_mm, y_mm, plate_scale)``
+     - module constant ``site.FYST_PLATE_SCALE``, the scale at the telescope
+       focal surface where the module bays sit (a module's detector plane,
+       behind its reimaging optics, has its own, larger scale, which the
+       library does not carry); read once at import by the Prime-Cam
+       offsets; for another value build them with
+       ``InstrumentOffset.from_focal_plane(x_mm, y_mm, plate_scale)``;
+       see :ref:`the two image surfaces <instrument-offsets-two-surfaces>`
    * - Prime-Cam inner-ring radius
      - 461.3 mm
-     - module constant ``primecam.INNER_RING_RADIUS_MM``, read once at
-       import; for another radius build the offsets with
-       ``InstrumentOffset.from_focal_plane``
+     - module constant ``primecam.INNER_RING_RADIUS_MM``, a distance on the
+       telescope focal surface, read once at import; for another radius
+       build the offsets with ``InstrumentOffset.from_focal_plane``
    * - Prime-Cam inner-ring ordering (clocking and parity)
      - ``i1`` at focal-plane angle -90°, ``i1`` .. ``i6`` counterclockwise
        in the focal-plane (cross-elevation, elevation) frame, the

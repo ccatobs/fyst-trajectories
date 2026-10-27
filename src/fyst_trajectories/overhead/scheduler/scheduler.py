@@ -58,6 +58,13 @@ class Scheduler:
     phases or the timeline model directly, as the calibration-night
     planner does.
 
+    Parameters
+    ----------
+    context : SchedulerContext
+        The scheduling context (patches, site, coords, models,
+        constraints, time window); phases read it and write only its
+        crossing-pass and escape memos.
+
     Notes
     -----
     The loop is **greedy and single-pass**: calibrations check at the
@@ -68,13 +75,6 @@ class Scheduler:
     calibrations (e.g. an opening pointing scan) should be checked
     against the returned timeline rather than assumed; in operations
     they are typically inserted by hand at the boundaries.
-
-    Parameters
-    ----------
-    context : SchedulerContext
-        The scheduling context (patches, site, coords, models,
-        constraints, time window); phases read it and write only its
-        crossing-pass and escape memos.
     """
 
     def __init__(self, context: SchedulerContext) -> None:
@@ -147,7 +147,6 @@ class Scheduler:
                     duration=tail,
                     az=state.current_az,
                     el=state.current_el,
-                    site=ctx.site,
                     scan_index=state.scan_counter,
                     reason=str(DeferralReason.WINDOW_CLOSED),
                 )

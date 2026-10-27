@@ -17,16 +17,20 @@ from typing import TYPE_CHECKING
 
 from astropy.time import Time
 
+from ...coordinates import Coordinates
+from ...sun_models import make_sun_safe
+from ..constraints import ElevationConstraint
+from ..models import CalibrationPolicy, OverheadModel
+from ..transitions import _default_slew_safe
 from ..utils import _utc_instant
 from .helpers import _default_constraints, _pong_period
 
 if TYPE_CHECKING:
-    from ...coordinates import Coordinates
     from ...site import Site
     from ...sun_protocols import SlewSafePredicate, SunSafePredicate
     from ..calibration_state import CalibrationState
     from ..constraints import Constraint
-    from ..models import CalibrationPolicy, ObservingPatch, OverheadModel
+    from ..models import ObservingPatch
 
 __all__ = ["SchedulerContext", "SchedulerState"]
 
@@ -170,8 +174,6 @@ class SchedulerContext:
         never parks the telescope below the sky the selection phase is
         willing to observe.
         """
-        from ..constraints import ElevationConstraint
-
         floors = [c.el_min for c in self.constraints if isinstance(c, ElevationConstraint)]
         return max(floors) if floors else self.site.telescope_limits.elevation.min
 
@@ -200,11 +202,31 @@ class SchedulerContext:
         defaults to that point model swept along the direct path under the
         site's axis limits, built once here rather than per call.
 
+        Parameters
+        ----------
+        patches : list of ObservingPatch
+            The candidate sky regions; names must be unique.
+        site : Site
+            Telescope site configuration.
+        start_time, end_time : Time
+            The timeline window, held in UTC.
+        overhead_model : OverheadModel, optional
+            Default ``OverheadModel()``.
+        calibration_policy : CalibrationPolicy, optional
+            Default ``CalibrationPolicy()``.
+        constraints : list of Constraint, optional
+            Default: the site's elevation limits and, when the site has Sun
+            avoidance enabled, a Sun constraint running ``sun_safe`` or the
+            site's scalar radius.
+        time_step : float, optional
+            Idle-tick step in seconds, positive. Default 300.
+
         Raises
         ------
         ValueError
-            If two patches share a name, a constant-elevation patch has no
-            pinned ``elevation``, or a pong patch's pattern period exceeds
+            If ``time_step`` is not positive, two patches share a name, a
+            constant-elevation patch has no pinned ``elevation``, or a pong
+            patch's pattern period exceeds
             what one subscan can hold. Names identify a patch in the corridor
             memo and in every emitted block, so they have to be unique across
             one schedule. A pong subscan is a whole number of periods inside
@@ -212,9 +234,8 @@ class SchedulerContext:
             the retune booked before every subscan, so a longer period could
             never be scanned.
         """
-        from ...coordinates import Coordinates
-        from ..models import CalibrationPolicy, OverheadModel
-        from ..transitions import _default_slew_safe
+        if not time_step > 0:
+            raise ValueError(f"time_step must be positive, got {time_step}")
 
         # Patch names key the constant-elevation corridor memo, so two
         # patches sharing one name would read each other's crossing solve and
@@ -264,8 +285,6 @@ class SchedulerContext:
         if constraints is None:
             constraints = _default_constraints(site, sun_safe=sun_safe)
         if slew_safe is None:
-            from ...sun_models import make_sun_safe
-
             point = make_sun_safe("scalar", site=site) if sun_safe is None else sun_safe
             slew_safe = _default_slew_safe(point, site)
         return cls(

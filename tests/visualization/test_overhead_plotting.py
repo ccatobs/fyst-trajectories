@@ -159,6 +159,21 @@ def test_gantt_auto_title_for_a_calibration_night():
     assert "science" not in title and "efficiency" not in title
 
 
+def test_gantt_calibration_night_title_counts_only_retunes_and_skydips():
+    """A pointing calibration on a no-science night is not a detector operation."""
+    start = Time("2026-09-11T06:30:00", scale="utc")
+    blocks = [
+        _block(start, 5, "calibration", scan_type="pointing_cal"),
+        _block(start + 5 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
+        _block(start + 17 * u.min, 5, "calibration", scan_type="retune"),
+        _block(start + 22 * u.min, 12, "calibration", scan_type="planet_cal", patch="saturn"),
+        _block(start + 34 * u.min, 26, "idle"),
+    ]
+    timeline = _make_timeline(blocks, start_iso=start.isot, hours=1.0)
+    title = plot_timeline_gantt(timeline, show=False).axes[0].get_title()
+    assert "2 passes" in title and "1 detector operations" in title
+
+
 def test_gantt_empty_timeline_raises():
     with pytest.raises(ValueError, match="no blocks"):
         plot_timeline_gantt(_make_timeline(blocks=[]), show=False)

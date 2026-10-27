@@ -77,9 +77,6 @@ _SATELLITE_NAIF_CHAINS: dict[str, tuple[tuple[int, int], ...]] = {
     "titan": ((0, 6), (6, 606)),  # SSB -> Saturn-system barycentre -> Titan
 }
 
-# Public names of the planetary satellites resolvable via a JPL satellite SPK
-# kernel (parallel to ``SOLAR_SYSTEM_BODIES``). Unlike the builtin bodies these
-# require a kernel (``satellite_kernel`` / ``FYST_SATELLITE_KERNEL``).
 SATELLITE_BODIES = tuple(_SATELLITE_NAIF_CHAINS)
 """Public names of the planetary satellites resolvable via a JPL satellite SPK kernel.
 
@@ -321,8 +318,9 @@ def _threshold_crossings(
         mask = (below >= threshold) & (above < threshold)
     times: list[Time] = []
     for i in np.flatnonzero(mask):
-        denom = values[i + 1] - values[i]
-        frac = 0.0 if abs(denom) < 1e-12 else (threshold - values[i]) / denom
+        # Each mask puts the threshold between the cell's two values with one
+        # strict side, so they differ and frac lies in [0, 1].
+        frac = (threshold - values[i]) / (values[i + 1] - values[i])
         times.append(grid[i] + frac * (grid[i + 1] - grid[i]))
     return times
 
@@ -1168,9 +1166,8 @@ class Coordinates:
         publishes under two names, both of which share a single
         parallactic-angle kernel and agree to machine precision:
         :meth:`get_field_rotation_from_altaz` returns the same sum from an
-        already-transformed horizon position and is what stamps a timeline
-        block's ``boresight_angle``. This method is the canonical one: it
-        owns the vacuum transform the geometry is defined in.
+        already-transformed horizon position. This method is the canonical
+        one: it owns the vacuum transform the geometry is defined in.
 
         Parameters
         ----------
@@ -1237,8 +1234,7 @@ class Coordinates:
         :meth:`get_field_rotation` returns from RA/Dec, the sky orientation
         of the Nasmyth-mounted focal plane. Both methods take the
         parallactic angle from one shared kernel, so they agree to machine
-        precision for the same pose. This is the value a timeline block
-        records as its ``boresight_angle``.
+        precision for the same pose.
 
         Pass the geometric (vacuum) pose, the one a ``Coordinates`` built
         without refraction returns. The method uses the pose as given, so

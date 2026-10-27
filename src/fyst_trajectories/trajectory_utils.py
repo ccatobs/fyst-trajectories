@@ -25,6 +25,7 @@ from .exceptions import (
 from .site import Site
 from .sun_protocols import SunSafePredicate, _sun_verdicts
 from .trajectory import (
+    SCAN_FLAG_RETUNE,
     SCAN_FLAG_SCIENCE,
     SCAN_FLAG_UNCLASSIFIED,
     Trajectory,
@@ -32,20 +33,21 @@ from .trajectory import (
 
 
 def validate_trajectory_bounds(
-    site: Site,
     az: np.ndarray,
     el: np.ndarray,
+    *,
+    site: Site,
 ) -> None:
     """Validate that all trajectory points are within telescope limits.
 
     Parameters
     ----------
-    site : Site
-        Telescope site configuration containing telescope_limits.
     az : np.ndarray
         Azimuth positions in degrees.
     el : np.ndarray
         Elevation positions in degrees.
+    site : Site
+        Telescope site configuration containing telescope_limits.
 
     Raises
     ------
@@ -58,11 +60,12 @@ def validate_trajectory_bounds(
 
     Examples
     --------
+    >>> import numpy as np
     >>> from fyst_trajectories import get_fyst_site
     >>> site = get_fyst_site()
     >>> az = np.array([100, 150, 200])
     >>> el = np.array([45, 50, 55])
-    >>> validate_trajectory_bounds(site, az, el)  # Passes if within limits
+    >>> validate_trajectory_bounds(az, el, site=site)  # Passes if within limits
     """
     limits = site.telescope_limits
 
@@ -95,7 +98,7 @@ def validate_trajectory_bounds(
 _VELOCITY_LIMIT_RTOL: float = 1e-9
 
 #: Angular resolution, in degrees, of the high-elevation advisory: a
-#: trajectory whose azimuth travels less (the span of its unwrapped azimuths)
+#: trajectory whose azimuth travels less (the span of its azimuths)
 #: does not move in azimuth, and the numbers quoted are those of the fastest
 #: sample within it of the highest one judged. It is far above what rounding
 #: and float32 storage leave in an angle (one float32 step near 360 deg is
@@ -114,10 +117,11 @@ def _exceeds_velocity_limit(peak: float, limit: float) -> bool:
 
 
 def validate_trajectory_dynamics(
-    site: Site,
     az: np.ndarray,
     el: np.ndarray,
     times: np.ndarray,
+    *,
+    site: Site,
 ) -> None:
     """Check that trajectory velocities and accelerations are within limits.
 
@@ -144,15 +148,15 @@ def validate_trajectory_dynamics(
 
     Parameters
     ----------
-    site : Site
-        Telescope site configuration containing telescope_limits with
-        max_velocity and max_acceleration for each axis.
     az : np.ndarray
         Azimuth positions in degrees.
     el : np.ndarray
         Elevation positions in degrees.
     times : np.ndarray
         Timestamps in seconds.
+    site : Site
+        Telescope site configuration containing telescope_limits with
+        max_velocity and max_acceleration for each axis.
 
     Raises
     ------
@@ -174,12 +178,12 @@ def validate_trajectory_dynamics(
         has cos(el) below 0.5 (elevation above about 60 deg), so its on-sky
         azimuth speed is under half its coordinate rate. The numbers quoted
         are those of the fastest sample within 0.001 deg of that highest one.
-        A trajectory whose azimuth spans less than 0.001 deg (whole turns
-        aside) does not move in azimuth and gets no such advisory. Only the
-        given samples are judged: a trajectory sampled more coarsely than its
-        motion changes (a 1 deg/s azimuth ramp on 1 s steps) can warn on one
-        time grid and not on another of the same motion when the judged
-        samples lie within a few tenths of a degree of 60 deg.
+        A trajectory whose azimuth spans less than 0.001 deg does not move
+        in azimuth and gets no such advisory. Only the given samples are
+        judged: a trajectory sampled more coarsely than its motion changes (a
+        1 deg/s azimuth ramp on 1 s steps) can warn on one time grid and not
+        on another of the same motion when the judged samples lie within a
+        few tenths of a degree of 60 deg.
     """
     if not (np.all(np.isfinite(az)) and np.all(np.isfinite(el)) and np.all(np.isfinite(times))):
         raise ValueError("Non-finite values (NaN or Inf) detected in trajectory az/el/times arrays")
@@ -200,8 +204,10 @@ def validate_trajectory_dynamics(
 
     limits = site.telescope_limits
 
-    az_unwrapped = np.unwrap(az, period=360.0)
-    az_vel = np.gradient(az_unwrapped, times)
+    # Encoder azimuths do not wrap: a step from 359.9 to 0.1 is a commanded
+    # move of 359.8 deg, so the derivative is taken of the values as given.
+    az_encoder = np.asarray(az, dtype=float)
+    az_vel = np.gradient(az_encoder, times)
     el_vel = np.gradient(el, times)
 
     max_az_vel = np.abs(az_vel).max()
@@ -240,7 +246,7 @@ def validate_trajectory_dynamics(
     speed = np.abs(az_vel)
     finite = np.isfinite(speed)
     top = speed[finite].max() if finite.any() else 0.0
-    moves = np.ptp(az_unwrapped) >= _ADVISORY_ANGLE_RESOLUTION_DEG
+    moves = np.ptp(az_encoder) >= _ADVISORY_ANGLE_RESOLUTION_DEG
     if cos_el.min() > 0 and moves and top > 0:
         fast = np.flatnonzero(finite & (speed >= 0.5 * top))
         if cos_el[fast].min() < 0.5:
@@ -290,9 +296,10 @@ def validate_trajectory_dynamics(
 
 def validate_trajectory(
     trajectory: Trajectory,
+    *,
     site: Site,
     check_sun: bool = True,
-    sun_safe: "SunSafePredicate | None" = None,
+    sun_safe: SunSafePredicate | None = None,
 ) -> None:
     """Validate trajectory against telescope limits.
 
@@ -346,8 +353,8 @@ def validate_trajectory(
         samples roughly every 60 seconds; see :func:`validate_sun_avoidance`
         for the gap this leaves).
     """
-    validate_trajectory_bounds(site, trajectory.az, trajectory.el)
-    validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
+    validate_trajectory_bounds(trajectory.az, trajectory.el, site=site)
+    validate_trajectory_dynamics(trajectory.az, trajectory.el, trajectory.times, site=site)
     # The velocity columns are what to_path_format uploads; they can disagree
     # with the velocities the positions imply, so check them on their own.
     limits = site.telescope_limits
@@ -365,7 +372,9 @@ def validate_trajectory(
             )
     if check_sun and trajectory.start_time is not None:
         abs_times = get_absolute_times(trajectory)
-        validate_sun_avoidance(site, trajectory.az, trajectory.el, abs_times, sun_safe=sun_safe)
+        validate_sun_avoidance(
+            trajectory.az, trajectory.el, abs_times, site=site, sun_safe=sun_safe
+        )
 
 
 def get_absolute_times(trajectory: Trajectory) -> Time:
@@ -396,12 +405,13 @@ def get_absolute_times(trajectory: Trajectory) -> Time:
 
 
 def validate_sun_avoidance(
-    site: Site,
     az: np.ndarray,
     el: np.ndarray,
     times: Time,
+    *,
+    site: Site,
     coords: Coordinates | None = None,
-    sun_safe: "SunSafePredicate | None" = None,
+    sun_safe: SunSafePredicate | None = None,
 ) -> None:
     """Check sun avoidance constraints, emitting warnings for violations.
 
@@ -423,8 +433,6 @@ def validate_sun_avoidance(
 
     Parameters
     ----------
-    site : Site
-        Site configuration with sun avoidance settings.
     az : np.ndarray
         Azimuth array in degrees.
     el : np.ndarray
@@ -435,6 +443,8 @@ def validate_sun_avoidance(
         :func:`get_absolute_times` of the trajectory); the Sun ephemeris and
         the :class:`~fyst_trajectories.sun_protocols.SunSafePredicate`
         contract both take a ``Time``.
+    site : Site
+        Site configuration with sun avoidance settings.
     coords : Coordinates, optional
         Pre-constructed Coordinates instance. Created internally if
         not provided.
@@ -573,7 +583,7 @@ def validate_sun_avoidance(
 def to_arrays(
     trajectory: Trajectory,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Export trajectory as simple arrays for ACU upload.
+    """Return copies of the trajectory's times, azimuths and elevations.
 
     Parameters
     ----------
@@ -647,11 +657,11 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     Examples
     --------
     >>> points = to_path_format(trajectory)
-    >>> data = {
-    ...     "start_time": trajectory.start_time.unix,
-    ...     "coordsys": "Horizon",
-    ...     "points": points,
-    ... }
+    >>> points[1]  # [t, az, el, az_vel, el_vel], t relative to the first sample
+    [0.1, 120.1, 45.0, 1.0, 0.0]
+
+    Build the request body with :func:`to_path_payload`, which adds the two
+    required keys.
     """
     times = np.asarray(trajectory.times)
     # Emit times relative to ``times[0]`` so the first sample lands exactly on
@@ -754,6 +764,14 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> PathPa
     shrinking between serialization and POST; the dispatching layer owns
     the floor (the typed scan tasks push a late scheduled start out to now
     plus a 10 s dispatch buffer before planning).
+
+    Examples
+    --------
+    >>> payload = to_path_payload(trajectory)
+    >>> payload["start_time"], payload["coordsys"]
+    (1773547200.0, 'Horizon')
+    >>> payload["points"][0]  # [t, az, el, az_vel, el_vel]
+    [0.0, 120.0, 45.0, 1.0, 0.0]
     """
     if coordsys not in ("Horizon", "ICRS"):
         raise ValueError(f"coordsys must be 'Horizon' or 'ICRS', got {coordsys!r}")
@@ -773,7 +791,10 @@ def to_path_payload(trajectory: Trajectory, coordsys: str = "Horizon") -> PathPa
     }
 
 
-#: Number of points at the start of each new constant-velocity science leg
+# The scan flags of a sweep leg: a retune pauses the detectors, not the mount.
+_SWEEP_FLAGS = (SCAN_FLAG_SCIENCE, SCAN_FLAG_RETUNE)
+
+#: Number of points at the start of each new constant-velocity sweep leg
 #: that carry ``group_flag = 1`` in :func:`to_trackpoint_format`. Matches the
 #: Simons Observatory ACU driver convention of front-loading the ProgramTrack
 #: stack at a new leg so the following points are uploaded promptly.
@@ -798,15 +819,22 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     The ``SCAN_FLAG_SCIENCE`` /
     ``SCAN_FLAG_*`` values are mapped to the ACU ``az_flag`` convention:
 
-    - interior point of a science sweep leg -> ``az_flag = 1``
-    - final point of a science sweep leg -> ``az_flag = 2``
-    - turnaround / retune / unclassified / unflagged -> ``az_flag = 0``
+    - interior point of a sweep leg -> ``az_flag = 1``
+    - final point of a sweep leg -> ``az_flag = 2``
+    - turnaround / unclassified / unflagged -> ``az_flag = 0``
+
+    A sweep leg is a run of ``SCAN_FLAG_SCIENCE`` and ``SCAN_FLAG_RETUNE``
+    samples: a retune pauses the detectors, not the mount, which keeps its
+    constant velocity through it.
 
     ``group_flag = 1`` is set on the first
-    :data:`TRACKPOINT_NEW_LEG_GROUP_SIZE` points of each new science leg
+    :data:`TRACKPOINT_NEW_LEG_GROUP_SIZE` points of each new sweep leg
     (front-loading the stack, matching the SO ACU driver). ``el_flag`` is
     always 0: the leg flags emitted here describe the azimuth sweep structure,
     and the socs ACU driver likewise leaves ``el_flag`` 0 on its azimuth scans.
+    The leg flags assume a constant-elevation sweep run with the socs ACU
+    agent's ``free_form=False``: a pong or daisy trajectory, whose azimuth
+    velocity is not constant along a leg, is flagged the same way.
     Batching the rows for upload is left to the consumer.
 
     Parameters
@@ -833,6 +861,13 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     to_path_payload : the Go TCS ``/path`` body (relative point times plus a
         single absolute ``start_time``); use that for the Go-TCS route, this
         for direct-ACU upload.
+
+    Examples
+    --------
+    >>> rows = to_trackpoint_format(trajectory)
+    >>> rows[0]
+    {'timestamp': 1773547200.0, 'az': 120.0, 'el': 45.0, 'az_vel': 1.0, 'el_vel': 0.0,
+     'az_flag': 1, 'el_flag': 0, 'group_flag': 1}
     """
     if trajectory.start_time is None:
         raise ValueError("start_time not set; cannot build absolute TrackPoint timestamps")
@@ -852,19 +887,20 @@ def to_trackpoint_format(trajectory: Trajectory) -> list[dict]:
     group_countdown = 0
     for i in range(n):
         sf = int(scan_flag[i]) if scan_flag is not None else SCAN_FLAG_UNCLASSIFIED
+        in_sweep = sf in _SWEEP_FLAGS
 
-        if sf == SCAN_FLAG_SCIENCE:
-            is_last_science = i == n - 1 or int(scan_flag[i + 1]) != SCAN_FLAG_SCIENCE
-            az_flag = 2 if is_last_science else 1
+        if in_sweep:
+            is_last = i == n - 1 or int(scan_flag[i + 1]) not in _SWEEP_FLAGS
+            az_flag = 2 if is_last else 1
         else:
             az_flag = 0
 
-        # Front-load the ProgramTrack stack at the start of each science leg.
-        if sf == SCAN_FLAG_SCIENCE:
-            if i == 0 or int(scan_flag[i - 1]) != SCAN_FLAG_SCIENCE:
+        # Front-load the ProgramTrack stack at the start of each sweep leg.
+        if in_sweep:
+            if i == 0 or int(scan_flag[i - 1]) not in _SWEEP_FLAGS:
                 group_countdown = TRACKPOINT_NEW_LEG_GROUP_SIZE
         else:
-            # The countdown belongs to the leg that opened it. A science leg
+            # The countdown belongs to the leg that opened it. A sweep leg
             # shorter than the group size would otherwise carry the flag on
             # past its own end, marking the following turnaround samples as
             # the start of a new leg.

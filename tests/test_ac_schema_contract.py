@@ -36,8 +36,8 @@ fystplan / OpsDB key  fyst-trajectories kwarg   scan type(s)
 ====================  ========================  =====================
 
 Note ``num_terms`` is **not** renamed: fystplan already emits ``num_terms``
-(plural). The "``num_term``->``num_terms``" rename refers to a
-*legacy ``scan_patterns``* spelling, not fystplan;
+(plural). The "``num_term``->``num_terms``" rename refers to the singular
+keyword of the ``scan_patterns`` package's ``Pong``, not fystplan;
 fystplan and this library already agree. The mapping is asserted as identity so
 that if either side ever drifts to the singular, this test catches it.
 

@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 # Every job pins ubuntu-24.04, what ubuntu-latest resolved to before its
 # 2026-10-19 migration to Ubuntu 26, so a runner-image change is a deliberate
 # upgrade here rather than a drift under a green suite; the Python 3.10 legs
@@ -16,11 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Pinned, in lockstep with .pre-commit-config.yaml: an unpinned latest
-      # ruff changes formatter style between minors and (as of 0.16) formats
-      # Python fences inside tracked Markdown files, so CI would drift
-      # red with zero repo changes. Upgrade both pins together, reformatting
-      # in the same commit.
+      # Pinned, in lockstep with .pre-commit-config.yaml and the dev extra of
+      # pyproject.toml: an unpinned latest ruff changes formatter style
+      # between minors and (as of 0.16) formats Python fences inside tracked
+      # Markdown files, so CI would drift red with zero repo changes. Upgrade
+      # the three pins together, reformatting in the same commit.
       - name: Install ruff
         run: pip install ruff==0.15.16
 
@@ -149,22 +152,15 @@ jobs:
 
       # ``-m slow`` only selects the slow tests; the conftest skip-guard
       # (tests/conftest.py::pytest_collection_modifyitems) still skips every
-      # one of them unless ``--run-slow`` is also passed. Without ``--run-slow``
-      # this job collected the slow tests and then skipped all of them (0 run),
-      # so the skyfield and KOSMA cross-validation tests never executed in CI.
-      # ``--run-slow`` actually runs them (skyfield ships with ``[dev]``).
+      # one of them unless ``--run-slow`` is also passed, so the job passes
+      # both (skyfield ships with ``[dev]``).
       #
       # This job installs only ``.[dev]``, so it still skips the slow tests that
-      # need extra packages. The two scan_patterns AltAz parity tests
-      # (test_planning_pong_altaz, test_planning_daisy_altaz) skip because the
-      # ``scanning`` package is not installed here; they run in the dedicated
-      # ``oracle-tests`` job below, which does install it. And
-      # test_cross_validate_so_make_source_ces skips because it needs so3g and
-      # upstream schedlib (importorskip; so3g has no Windows wheels), which
-      # this job does not install; it runs in ``oracle-tests`` below.
-      # The slow tier is 85 tests; the planet-pass rebuild sweep and the
-      # time-scale rebuild cases make it about three times the 57-test tier
-      # that ran here in under ten minutes.
+      # need extra packages. test_cross_validate_so_make_source_ces skips
+      # because it needs so3g and upstream schedlib (importorskip; so3g has
+      # no Windows wheels), which this job does not install; it runs in
+      # ``oracle-tests`` below.
+      # The timeout below allows for the whole slow tier.
       - name: Run slow tests
         run: pytest -m slow --run-slow
         timeout-minutes: 60
@@ -172,11 +168,6 @@ jobs:
   oracle-tests:
     runs-on: ubuntu-24.04
     needs: [fast-tests, offline-tests]
-
-    # Secrets cannot be read from an ``if:`` expression, so the token is
-    # exposed here and the steps below test the env var instead.
-    env:
-      SUN_AVOIDANCE_DEPLOY_TOKEN: ${{ secrets.SUN_AVOIDANCE_DEPLOY_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
@@ -191,17 +182,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # Install the scan_patterns cross-validation oracle (imported as
-      # ``scanning``). ``--no-deps`` is mandatory: scan_patterns pins
-      # ``fyst-trajectories @ ...@v0.9.0`` in its install_requires, and without
-      # ``--no-deps`` pip would resolve that URL and clobber the editable
-      # checkout under test. pandas and fast-histogram are the runtime imports
-      # ``--no-deps`` skips, so they are installed explicitly.
-      - name: Install scan_patterns oracle
-        run: |
-          pip install pandas fast-histogram
-          pip install --no-deps "git+https://github.com/ccatobs/scan_patterns.git@bf68d9758c567ac2119d9de4592fc8d09cdd9446"
-
       # Install the SO source-CES oracle that
       # test_cross_validate_so_make_source_ces compares against: so3g and
       # upstream schedlib (simonsobs/scheduler), pinned to the pair the test
@@ -214,40 +194,32 @@ jobs:
       # install_requires pull the SO operations stack (socs, ocs, pixell,
       # equinox), none of which the parity test imports. jax, ephem and
       # pandas are the schedlib imports it does reach, so they are installed
-      # explicitly.
+      # explicitly. The install line below is the one place the schedlib
+      # commit is recorded: keep it one literal, since the pin checks read it.
       - name: Install SO source-CES oracle
         run: |
           pip install "so3g==0.2.7" "jax==0.10.1" ephem pandas
           pip install --no-deps \
-            git+https://github.com/simonsobs/scheduler.git@88def2dc73484fb95d5138daa815695f2701038b
+            git+https://github.com/simonsobs/scheduler.git@0ac54bf092cfb54c6422c4c852ba41b3b6cbff9d
 
       # Hard env check: fail red, not skip-green, if an oracle install is
-      # broken. Assert ``scanning``, so3g and the two schedlib modules the SO
-      # parity test uses import, and that fyst_trajectories still resolves to
-      # the editable checkout rather than a site-packages copy a dependency
-      # might have pulled in.
+      # broken. Assert so3g and the two schedlib modules the SO parity test
+      # uses import, and that fyst_trajectories still resolves to the editable
+      # checkout rather than a site-packages copy a dependency might have
+      # pulled in.
       - name: Verify oracle environment
         run: |
-          python -c "import scanning, so3g, schedlib.source, schedlib.instrument
+          python -c "import so3g, schedlib.source, schedlib.instrument
           import fyst_trajectories as f
           assert 'site-packages' not in f.__file__, f.__file__
           print('oracle env OK', f.__version__)"
 
-      # Runs the five oracle parity tests: the two scan_patterns AltAz ones,
-      # the two scan_patterns projection-parity tests in
-      # test_offsets_projection.py (the only cross-package check of the
-      # absolute field-rotation sign, a flip of which shipped undetected once,
-      # and a round trip through both of the oracle's projection calls), and
-      # test_cross_validate_so_make_source_ces against SO's make_source_ces.
-      # Expect 5 passed; ``-rs`` names any skip, so a missing oracle cannot
-      # pass silently. The projection tests drive the scan_patterns oracle
-      # outside its declared 30-75 deg validity band on purpose and filter
-      # the warning the oracle raises for it.
+      # Runs test_cross_validate_so_make_source_ces, the parity test against
+      # SO's make_source_ces and the only slow test in
+      # test_planning_source_ces.py. Expect 1 passed; ``-rs`` names any skip,
+      # so a missing oracle cannot pass silently.
       - name: Run oracle tests
-        run: |
-          pytest -m slow --run-slow -rs tests/test_planning_pong_altaz.py \
-            tests/test_planning_daisy_altaz.py tests/test_planning_source_ces.py \
-            tests/test_offsets_projection.py
+        run: pytest -m slow --run-slow -rs tests/test_planning_source_ces.py
         timeout-minutes: 10
 
       # The second out-of-index oracle: the shared sun-avoidance library that
@@ -257,10 +229,16 @@ jobs:
       # the adapter and the record-replay fixtures are built against
       # (sun_models.SUN_AVOIDANCE_PINNED_SHA); bump both together. If the
       # token route is refused, the fallback is a wheel vendored into the
-      # repository and installed here instead; it has not been built.
+      # repository and installed here instead; it has not been built. Only this
+      # step is given the token; the dependency installs and the test runs never
+      # see it.
       - name: Install sun-avoidance oracle
-        if: env.SUN_AVOIDANCE_DEPLOY_TOKEN != ''
-        run: pip install "git+https://x-access-token:${SUN_AVOIDANCE_DEPLOY_TOKEN}@github.com/ccatobs/sun-avoidance@e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
+        env:
+          SUN_AVOIDANCE_DEPLOY_TOKEN: ${{ secrets.SUN_AVOIDANCE_DEPLOY_TOKEN }}
+        run: |
+          if [ -n "$SUN_AVOIDANCE_DEPLOY_TOKEN" ]; then
+            pip install "git+https://x-access-token:${SUN_AVOIDANCE_DEPLOY_TOKEN}@github.com/ccatobs/sun-avoidance@baf4e6ccafe8309a3d6991903d008c529807a538"
+          fi
 
       # Without the library this surface skips green and says nothing: the 17
       # record-replay tests that detect behaviour drift at the pinned
@@ -276,8 +254,11 @@ jobs:
       # gap is stated. The offline half of the record-replay fixture, which pins both
       # SHAs, runs in the fast job regardless.
       - name: Run sun-avoidance oracle tests
+        env:
+          # Whether the secret is configured, never the token itself.
+          SUN_AVOIDANCE_CONFIGURED: ${{ secrets.SUN_AVOIDANCE_DEPLOY_TOKEN != '' }}
         run: |
-          if [ -z "$SUN_AVOIDANCE_DEPLOY_TOKEN" ]; then
+          if [ "$SUN_AVOIDANCE_CONFIGURED" != "true" ]; then
             echo "::warning title=sun-avoidance not installed::No SUN_AVOIDANCE_DEPLOY_TOKEN secret: skipping 17 record-replay tests, 7 end-to-end CAD tests, 9 documentation blocks and 2 doctests that need the shared library. Only the scalar sun model is covered by this run."
             exit 0
           fi

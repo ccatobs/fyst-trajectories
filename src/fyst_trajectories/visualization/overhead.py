@@ -42,6 +42,7 @@ import numpy as np
 
 from ..coordinates import Coordinates
 from ..trajectory_utils import get_absolute_times
+from ._common import _require_matplotlib
 
 # The simulator tier (fyst_trajectories.overhead) is imported inside the
 # functions that draw its timelines, so importing this subpackage for the
@@ -105,7 +106,10 @@ def _lanes_for(timeline: "ObservingTimeline") -> tuple[list, dict[str, str]]:
     patch_color : dict of str to str
         Science patch name to lane/track color.
     """
-    from ..overhead.models import BlockType, CalibrationType
+    from ..overhead.models import (  # pylint: disable=import-outside-toplevel
+        BlockType,
+        CalibrationType,
+    )
 
     cal_order = [c.value for c in CalibrationType]
 
@@ -237,18 +241,13 @@ def plot_timeline_gantt(
     ValueError
         If the timeline has no blocks.
     """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-        from matplotlib.font_manager import (  # pylint: disable=import-outside-toplevel
-            FontProperties,
-        )
-        from matplotlib.patches import Patch  # pylint: disable=import-outside-toplevel
-        from matplotlib.transforms import offset_copy  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_timeline_gantt(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_timeline_gantt")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
+    from matplotlib.font_manager import (  # pylint: disable=import-outside-toplevel
+        FontProperties,
+    )
+    from matplotlib.patches import Patch  # pylint: disable=import-outside-toplevel
+    from matplotlib.transforms import offset_copy  # pylint: disable=import-outside-toplevel
 
     if not timeline.blocks:
         raise ValueError("plot_timeline_gantt: timeline has no blocks to plot.")
@@ -293,7 +292,7 @@ def plot_timeline_gantt(
     ax.set_axisbelow(True)
 
     if title is None:
-        from ..overhead.simulation import compute_budget
+        from ..overhead.simulation import compute_budget  # pylint: disable=import-outside-toplevel
 
         budget = compute_budget(timeline)
         hours = (timeline.end_time - timeline.start_time).sec / 3600.0
@@ -302,12 +301,15 @@ def plot_timeline_gantt(
         if budget["n_science_scans"] == 0 and passes:
             # A calibration night: its yield is time on source, not science.
             on_source = sum(b.duration for b in passes) / max(timeline.total_time, 1e-9)
+            n_operations = sum(
+                b.scan_type in ("retune", "skydip") for b in timeline.calibration_blocks
+            )
             head = f"{site_name} calibration night" if site_name else "Calibration night"
             title = (
                 f"{head} {night_label}\n"
                 f"{hours:.1f} h, "
                 f"{len(passes)} passes, "
-                f"{budget['n_calibration_blocks'] - len(passes)} detector operations, "
+                f"{n_operations} detector operations, "
                 f"on source {on_source * 100:.1f}%"
             )
         else:
@@ -418,18 +420,15 @@ def plot_sky_coverage(
         If ``stride < 1``, if there are no science trajectories to plot, or
         if a trajectory carries no ``start_time``.
     """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_sky_coverage(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_sky_coverage")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     if stride < 1:
         raise ValueError(f"plot_sky_coverage: stride must be >= 1, got {stride}.")
     if pairs is None:
-        from ..overhead.simulation import schedule_to_trajectories
+        from ..overhead.simulation import (  # pylint: disable=import-outside-toplevel
+            schedule_to_trajectories,
+        )
 
         pairs = schedule_to_trajectories(timeline)
     if not pairs:
@@ -489,8 +488,10 @@ def plot_sky_coverage(
     ax.legend(handles=handles, fontsize=9.5, loc=legend_loc, markerscale=1.0)
 
     if title is None:
+        site_name = timeline.site.name.strip()
+        via = f"{site_name} site" if site_name else "the site"
         title = (
-            f"Science-scan sky coverage (az/el -> RA/Dec via {timeline.site.name} site)\n"
+            f"Science-scan sky coverage (az/el -> RA/Dec via {via})\n"
             f"observing night {timeline.start_time.iso[:10]}, equal aspect"
         )
     ax.set_title(title, fontsize=12.5)

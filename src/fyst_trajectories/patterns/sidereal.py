@@ -123,7 +123,7 @@ class SiderealTrackPattern(CelestialPattern):
         el_vel = compute_velocities(el, times, is_angular=False)
 
         with wrap_bounds_error(f"RA={self.ra:.3f} Dec={self.dec:.3f}", start_time.iso):
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
         return Trajectory(
             times=times,

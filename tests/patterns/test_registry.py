@@ -11,7 +11,6 @@ from fyst_trajectories.patterns import (
     PongScanPattern,
     SatelliteTrackPattern,
     ScanPattern,
-    TrajectoryBuilder,
     TrajectoryMetadata,
     get_pattern,
     list_patterns,
@@ -251,5 +250,4 @@ class TestPatternInterface:
         pattern_cls = get_pattern(name)
 
         assert isinstance(pattern_cls.requires_start_time, bool)
-        assert pattern_cls.requires_start_time is TrajectoryBuilder._needs_start_time(pattern_cls)
         assert pattern_cls.requires_start_time is _EXPECTED_REQUIRES_START_TIME[name]

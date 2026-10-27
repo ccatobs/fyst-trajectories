@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import inspect
 import pickle
 import warnings
 from decimal import Decimal
@@ -649,6 +650,42 @@ def test_malformed_az_padding_is_refused(site, entry, bad):
     with pytest.raises(ValueError, match="az_padding") as excinfo:
         entry(site=site, az_padding=bad, **_JUPITER_C_RISING, **kwargs)
     assert not isinstance(excinfo.value, PointingError)
+
+
+@pytest.mark.parametrize(
+    "entry", [compute_source_ces_params, plan_source_ces, plan_source_ces_passes]
+)
+def test_az_padding_defaults_to_none(entry):
+    """``az_padding`` defaults to ``None``, so a value the caller gives is always explicit."""
+    assert inspect.signature(entry).parameters["az_padding"].default is None
+
+
+def test_no_padding_pads_by_half_a_degree(site):
+    """``az_padding=None`` plans exactly what an explicit 0.5 deg plans."""
+    unset = compute_source_ces_params(site=site, az_padding=None, **_JUPITER_C_RISING)
+    half = compute_source_ces_params(site=site, az_padding=0.5, **_JUPITER_C_RISING)
+    assert unset == half
+
+
+@pytest.mark.parametrize("padding", [0.5, 0.0], ids=["the-default-value", "zero"])
+@pytest.mark.parametrize(
+    "entry", [compute_source_ces_params, plan_source_ces, plan_source_ces_passes]
+)
+def test_any_explicit_padding_is_refused_beside_az_throw(site, entry, padding):
+    """An explicit ``az_padding``, 0.5 deg included, is refused beside ``az_throw``."""
+    kwargs = dict(n_passes=2) if entry is plan_source_ces_passes else {}
+    match = "cannot be combined with an explicit az_padding"
+    with pytest.raises(ValueError, match=match) as excinfo:
+        entry(site=site, az_throw=3.0, az_padding=padding, **_JUPITER_C_RISING, **kwargs)
+    assert not isinstance(excinfo.value, PointingError)
+
+
+def test_az_throw_beside_a_none_padding_is_planned(site):
+    """``az_throw`` beside ``az_padding=None``, the form a dispatcher forwards, is planned."""
+    params = compute_source_ces_params(
+        site=site, az_throw=3.0, az_padding=None, **_JUPITER_C_RISING
+    )
+    assert params["az_throw"] == 3.0
 
 
 def test_a_full_turn_of_padding_reaches_the_azimuth_limits(site):
@@ -1783,19 +1820,19 @@ class TestPostDriftDynamicsCheck:
         monkeypatch.setattr(
             _source_ces_module,
             "validate_trajectory_dynamics",
-            lambda *args: kernel_calls.append(args),
+            lambda *args, site: kernel_calls.append((*args, site)),
         )
         monkeypatch.setattr(
             builder_module,
             "validate_trajectory_dynamics",
-            lambda *args: builder_calls.append(args),
+            lambda *args, site: builder_calls.append((*args, site)),
         )
 
         block = self._block(site, az_accel=1.0)
 
         assert builder_calls == []
         assert len(kernel_calls) == 1
-        called_site, az, el, times = kernel_calls[0]
+        az, el, times, called_site = kernel_calls[0]
         assert called_site is site
         assert az is block.trajectory.az
         assert el is block.trajectory.el

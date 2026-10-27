@@ -227,8 +227,18 @@ class TestPlotHitMap:
         plt.close("all")
         with pytest.raises(ValueError, match="modules must not be empty"):
             plot_hit_map(trajectory, modules={}, site=site, show=False)
-        with pytest.raises(ValueError, match="bin_size must be positive"):
+        with pytest.raises(ValueError, match="bin_size must be a finite value > 0"):
             plot_hit_map(trajectory, modules=modules, site=site, bin_size=0.0, show=False)
+        with pytest.raises(ValueError, match="bin_size must be a finite value > 0"):
+            plot_hit_map(trajectory, modules=modules, site=site, bin_size=np.inf, show=False)
+        with pytest.raises(ValueError, match="footprint_threshold must be within"):
+            plot_hit_map(
+                trajectory, modules=modules, site=site, footprint_threshold=np.nan, show=False
+            )
+        with pytest.raises(ValueError, match="stats_threshold must be within"):
+            plot_hit_map(trajectory, modules=modules, site=site, stats_threshold=np.nan, show=False)
+        with pytest.raises(ValueError, match="smooth_sigma must be None or a finite value"):
+            plot_hit_map(trajectory, modules=modules, site=site, smooth_sigma=-1.0, show=False)
         for fov_radius_deg in (-0.3, 0.0, float("nan")):
             with pytest.raises(ValueError, match="fov_radius_deg"):
                 plot_hit_map(
@@ -670,3 +680,27 @@ def test_import_isolation():
         f"package import eagerly loaded matplotlib\nstdout: {result.stdout}\n"
         f"stderr: {result.stderr}"
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "plot_array_footprint",
+        "plot_hit_map",
+        "plot_observability_windows",
+        "plot_sky_coverage",
+        "plot_sky_view",
+        "plot_source_track",
+        "plot_timeline_gantt",
+        "plot_trajectory",
+        "plot_visibility",
+    ],
+)
+def test_missing_matplotlib_raises_the_install_hint(monkeypatch, name):
+    """Without matplotlib every plot function names itself and the plotting extra."""
+    import fyst_trajectories.visualization as visualization
+
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    with pytest.raises(ImportError, match=r"pip install 'fyst-trajectories\[plotting\]'") as exc:
+        getattr(visualization, name)(None)
+    assert f"{name}()" in str(exc.value)

@@ -59,16 +59,17 @@ offers both an azimuth-percentile and a scan-speed criterion in
 ``tod_ops.flags.get_turnaround_flags`` and defaults to the scan-speed one;
 JCMT's SMURF flags turnaround data by slew speed (the FLAGSLOW cleaning
 parameter, in arcsec/s). The criterion here is speed-based too, expressed
-as a fraction of the nominal scan velocity and tuned for FYST/Prime-Cam
-scan dynamics.
+as a fraction of the nominal scan velocity.
 """
 
 
 def validate_sample_count(duration: float, timestep: float) -> int:
     """Validate that a duration yields at least two samples and return the count.
 
-    Every pattern samples on the grid ``n_points = round(duration / timestep)
-    + 1``. A duration that is zero, negative, or shorter than half a
+    The pong, sidereal, planet, constant-elevation and linear patterns sample
+    on the grid ``n_points = round(duration / timestep) + 1`` this function
+    returns; the daisy, whose integrator keeps a grid of its own, uses it as
+    the guard only. A duration that is zero, negative, or shorter than half a
     ``timestep`` collapses to a single sample, which then either fails
     opaquely in ``np.gradient`` (an unhelpful ``IndexError``) or silently
     produces a one-point trajectory for patterns that set velocities
@@ -138,7 +139,7 @@ def wrap_bounds_error(target: str, time_info: str) -> Iterator[None]:
     Wrap a pattern's bounds check in its ``generate()`` method::
 
         with wrap_bounds_error(f"RA={self.ra:.3f} Dec={self.dec:.3f}", start_time.iso):
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
     """
     try:
         yield
@@ -158,8 +159,11 @@ def normalize_azimuth(
 
     Astropy returns azimuth in [0, 360], but telescopes with cable wrap
     typically operate in a range like [-180, 360]. This function unwraps
-    the azimuth to remove discontinuities, then shifts by multiples of
-    360 degrees to fit within the telescope's azimuth limits.
+    the azimuth to remove discontinuities, then shifts it by the multiple
+    of 360 degrees that brings the track's azimuth midpoint nearest the
+    centre of the telescope's azimuth range (90 deg for FYST's
+    [-180, 360], so a track centred above sky azimuth 270 deg lands
+    between -90 and 0 deg).
 
     If the unwrapped trajectory span exceeds the telescope's azimuth
     range, a :class:`~fyst_trajectories.exceptions.PointingWarning` is
@@ -183,6 +187,15 @@ def normalize_azimuth(
         If the trajectory's azimuth span exceeds the telescope's
         azimuth range, meaning no shift can make it fit, or if the
         shifted azimuth range still leaves the telescope limits.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from fyst_trajectories.patterns.utils import normalize_azimuth
+    >>> normalize_azimuth(np.array([200.0, 210.0]), site)
+    array([200., 210.])
+    >>> normalize_azimuth(np.array([350.0, 10.0]), site)
+    array([-10.,  10.])
     """
     limits = site.telescope_limits
 
@@ -209,7 +222,9 @@ def normalize_azimuth(
 
     shifted_min = float(shifted.min())
     shifted_max = float(shifted.max())
-    if shifted_min < limits.azimuth.min or shifted_max > limits.azimuth.max:
+    if az_span <= telescope_range and (
+        shifted_min < limits.azimuth.min or shifted_max > limits.azimuth.max
+    ):
         warnings.warn(
             f"Shifted azimuth [{shifted_min:.1f}, {shifted_max:.1f}] exceeds "
             f"telescope limits [{limits.azimuth.min}, {limits.azimuth.max}]. "
@@ -484,7 +499,7 @@ def _celestial_offsets_to_trajectory(
     el_vel = compute_velocities(el, times, is_angular=False)
 
     with wrap_bounds_error(f"RA={ra:.3f} Dec={dec:.3f}", start_time.iso):
-        validate_trajectory_bounds(site, az, el)
+        validate_trajectory_bounds(az, el, site=site)
 
     return Trajectory(
         times=times,
@@ -548,7 +563,7 @@ def _altaz_offsets_to_trajectory(
     az_vel = compute_velocities(az, times, is_angular=True)
     el_vel = compute_velocities(el, times, is_angular=False)
 
-    validate_trajectory_bounds(site, az, el)
+    validate_trajectory_bounds(az, el, site=site)
 
     return Trajectory(
         times=times,

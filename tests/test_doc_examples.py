@@ -144,6 +144,54 @@ def test_offsets_detector_to_boresight():
 
 
 # ============================================================================
+# trajectory_examples.rst examples
+# ============================================================================
+
+
+def test_drift_scan_boresight_puts_module_on_planet():
+    """The drift-scan example's iterated boresight lands module i1 on Jupiter.
+
+    Re-projecting module i1 from the returned boresight, with the mechanical
+    rotation taken at the boresight elevation, must hit the planet; the
+    rotation taken at the planet's elevation misses by arcminutes.
+    """
+    from fyst_trajectories.primecam import get_primecam_offset
+
+    site = get_fyst_site()
+    coords = Coordinates(site)
+    observation_time = Time("2026-03-15T00:00:00", scale="utc")
+    planet_az, planet_el = coords.get_body_altaz("jupiter", observation_time)
+
+    offset = get_primecam_offset("i1")
+    bore_el = planet_el
+    for _ in range(4):
+        rotation = compute_focal_plane_rotation(el=bore_el, site=site, offset=offset)
+        bore_az, bore_el = detector_to_boresight(
+            det_az=planet_az,
+            det_el=planet_el,
+            offset=offset,
+            focal_plane_rotation=rotation,
+        )
+
+    def miss_arcsec(az, el):
+        rotation = compute_focal_plane_rotation(el=el, site=site, offset=offset)
+        det_az, det_el = boresight_to_detector(
+            az=az, el=el, offset=offset, focal_plane_rotation=rotation
+        )
+        d_az = (det_az - planet_az) * np.cos(np.radians(planet_el))
+        return 3600.0 * np.hypot(d_az, det_el - planet_el)
+
+    assert miss_arcsec(bore_az, bore_el) < 0.01
+
+    # One step, with the rotation at the planet's elevation, misses by arcminutes.
+    rotation = compute_focal_plane_rotation(el=planet_el, site=site, offset=offset)
+    once_az, once_el = detector_to_boresight(
+        det_az=planet_az, det_el=planet_el, offset=offset, focal_plane_rotation=rotation
+    )
+    assert miss_arcsec(once_az, once_el) > 60.0
+
+
+# ============================================================================
 # coordinate_systems.rst examples
 # ============================================================================
 

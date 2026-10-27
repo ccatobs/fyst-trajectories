@@ -16,6 +16,7 @@ from astropy.time import Time
 import fyst_trajectories
 import fyst_trajectories.trajectory
 from fyst_trajectories import (
+    SCAN_FLAG_RETUNE,
     SCAN_FLAG_SCIENCE,
     SCAN_FLAG_TURNAROUND,
     SCAN_FLAG_UNCLASSIFIED,
@@ -320,6 +321,19 @@ class TestTrajectory:
         assert rows[0]["timestamp"] == pytest.approx(t0 + 0.0)
         assert rows[5]["timestamp"] == pytest.approx(t0 + 5.0)
 
+    def test_to_trackpoint_format_a_retune_stays_inside_its_sweep_leg(self):
+        """Retune samples keep the mount's leg: the rows equal the unretuned ones."""
+        sf = [SCAN_FLAG_SCIENCE] * 6 + [SCAN_FLAG_TURNAROUND] + [SCAN_FLAG_SCIENCE] * 3
+        retuned = list(sf)
+        retuned[2:4] = [SCAN_FLAG_RETUNE, SCAN_FLAG_RETUNE]
+        retuned[9] = SCAN_FLAG_RETUNE
+
+        rows = to_trackpoint_format(self._flagged_traj(retuned))
+
+        assert rows == to_trackpoint_format(self._flagged_traj(sf))
+        assert [r["az_flag"] for r in rows] == [1, 1, 1, 1, 1, 2, 0, 1, 1, 2]
+        assert [r["group_flag"] for r in rows] == [1, 1, 1, 1, 0, 0, 0, 1, 1, 1]
+
     def test_to_trackpoint_format_nonzero_time_origin(self):
         """A nonzero ``times[0]`` maps the first row exactly onto start_time.unix."""
         traj = Trajectory(
@@ -387,7 +401,7 @@ class TestTrajectory:
             az_vel=np.full(4, 1.0),
             el_vel=np.zeros(4),
         )
-        validate_trajectory(traj, site)
+        validate_trajectory(traj, site=site)
 
     def test_validate_out_of_bounds_raises(self):
         site = get_fyst_site()
@@ -399,7 +413,7 @@ class TestTrajectory:
             el_vel=np.zeros(3),
         )
         with pytest.raises(AzimuthBoundsError, match="azimuth"):
-            validate_trajectory(traj, site)
+            validate_trajectory(traj, site=site)
 
     def test_validate_warns_on_high_velocity(self):
         site = get_fyst_site()
@@ -411,7 +425,7 @@ class TestTrajectory:
             el_vel=np.zeros(100),
         )
         with pytest.warns(VelocityLimitWarning, match="azimuth velocity"):
-            validate_trajectory(traj, site)
+            validate_trajectory(traj, site=site)
 
     def test_trajectory_is_frozen(self):
         """Trajectory is immutable: rebinding raises, replace works, dtype coerces."""

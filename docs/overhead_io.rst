@@ -80,11 +80,9 @@ scan pattern:
 +----------------------+--------+----------------------------------------------+
 | ``subscan_index``    | int    | Sub-scan index                               |
 +----------------------+--------+----------------------------------------------+
-| ``boresight_angle``  | float  | TOAST horizon-frame roll (deg):              |
-|                      |        | ``-nasmyth_sign * el``                       |
-+----------------------+--------+----------------------------------------------+
-| ``field_rotation``   | float  | FYST extension: celestial-frame field        |
-|                      |        | rotation (deg)                               |
+| ``boresight_angle``  | float  | TOAST's roll of the boresight in the az/el   |
+|                      |        | frame (deg), ``-nasmyth_sign * el``; see     |
+|                      |        | TOAST Compatibility below                    |
 +----------------------+--------+----------------------------------------------+
 | ``ra_center``        | float  | FYST extension: patch RA centre (deg)        |
 +----------------------+--------+----------------------------------------------+
@@ -155,7 +153,7 @@ cannot express a typed table with no rows. The header flags it with
 drops the row again, so such a file reads back with no blocks rather than
 with one dated 2000-01-01.
 
-Retune events
+Retune Events
 -------------
 
 Per-block retune events (:doc:`retune_events`) persist through the round
@@ -191,19 +189,36 @@ TOAST Compatibility
 
 Files written by fyst-trajectories use TOAST canonical column names for the
 common fields **and** attach ``u.deg`` units to the angle columns
-(``azmin``, ``azmax``, ``el``, ``boresight_angle``), with the site
+(``azmin``, ``azmax``, ``el``, ``boresight_angle`` and ``az_final``), with the site
 coordinates stored as ``Quantity`` header metadata. TOAST's
 ``GroundSchedule`` v5 reader can therefore read them directly, ignoring
 the FYST extension columns.
-``read_timeline`` restores the block's sky angle from ``field_rotation``,
-falling back to ``boresight_angle`` for older files.
+
+``boresight_angle`` is written in TOAST's own sense. TOAST's ``SimGround``
+applies the column as a roll of the boresight about its axis in the az/el
+frame, one value per row, before it converts to RA/Dec, and that
+conversion adds the parallactic rotation itself; a positive TOAST roll
+turns the focal plane clockwise on the sky (azimuth to the right,
+elevation up), the opposite sense to this library's rotation. The column
+therefore holds ``-nasmyth_sign * el`` for the row's elevation, the
+mechanical rotation of :doc:`instrument_offsets` with TOAST's sign, so a
+science row simulates with the focal plane at its mechanical orientation.
+``SimGround`` sweeps every row at constant elevation between ``azmin`` and
+``azmax``, so it does not reproduce a pong or daisy row; with its
+elevation modulation on, the roll is off by the modulation amplitude. The
+header key ``boresight_angle_convention`` (``toast_roll``) marks files
+written this way; files written before it existed hold the celestial field
+rotation, ``nasmyth_sign * el + q`` with ``q`` the parallactic angle, under
+the same column name. That
+celestial value is ``Coordinates.get_field_rotation_from_altaz(az, el)``
+for any row.
 
 All block times, the timeline window in the header and the placeholder row
 of an empty file are UTC ISO-8601 strings to the millisecond with an explicit
 ``+00:00`` offset, for example ``2026-08-02T01:25:00.123+00:00``. Without the
 offset, TOAST's ``datetime.fromisoformat`` returns a naive datetime whose
-``timestamp()`` depends on the host's timezone, and a schedule read on a host
-set to New York time ran five hours late. ``read_timeline`` also accepts the
+``timestamp()`` reads it as the host's local time, so every block moves by
+the host's UTC offset. ``read_timeline`` also accepts the
 offset-free UTC strings written before v0.11.0, ``Z`` and non-zero offsets,
 which it converts to the UTC instant.
 

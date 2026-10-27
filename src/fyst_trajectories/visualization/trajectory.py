@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..trajectory import Trajectory
+from ._common import _require_matplotlib
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,13 +63,8 @@ def plot_trajectory(
     ValueError
         If ``axes`` does not hold exactly three axes.
     """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_trajectory(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_trajectory")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     own_fig = axes is None
     if axes is None:

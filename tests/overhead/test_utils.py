@@ -127,8 +127,8 @@ class TestNormalizeAz:
         The window-centre image is kept; both price the same move.
         """
         assert _normalize_az(180.0, site, ref=0.0) == 180.0
-        assert estimate_slew_time(0.0, 50.0, 180.0, 50.0, site) == estimate_slew_time(
-            0.0, 50.0, -180.0, 50.0, site
+        assert estimate_slew_time(0.0, 50.0, 180.0, 50.0, site=site) == estimate_slew_time(
+            0.0, 50.0, -180.0, 50.0, site=site
         )
 
     def test_an_azimuth_outside_a_narrow_window_keeps_the_window_centre_image(self, site):

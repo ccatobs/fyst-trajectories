@@ -6,17 +6,18 @@ module (:func:`plot_hit_map`).
 
 Everything is computed on a plain RA x Dec grid with no ``cos(dec)``
 weighting: reported areas are **coordinate areas** (RA extent times Dec
-extent), not solid angle, and the disk kernel is circular in coordinate
-space, so on sky it is stretched in RA by ``1/cos(dec)`` (about 15% at
-dec -30, about 100% at dec -60). Treat the numbers as relative
-diagnostics rather than sky areas.
+extent), larger than the solid angle by ``1/cos(dec)`` (about 15% at
+dec -30, about 100% at dec -60), and the disk kernel is circular in
+coordinate space, so on sky it spans only ``cos(dec)`` of the module
+radius in RA (about 13% short at dec -30, half at dec -60). Treat the
+numbers as relative diagnostics rather than sky areas.
 
 These functions require ``matplotlib`` (install via
 ``pip install fyst-trajectories[plotting]``).
 
 Examples
 --------
-Plot the coverage of two PrimeCam modules, each averaged over its
+Plot the coverage of two Prime-Cam modules, each averaged over its
 0.65 deg field-of-view radius:
 
 >>> from fyst_trajectories.primecam import get_primecam_offset
@@ -42,9 +43,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..coordinates import Coordinates
+from ..offsets import boresight_to_detector, compute_focal_plane_rotation
 from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import Site, get_fyst_site
-from ._common import _unique_keyed_offsets
+from ..trajectory_utils import get_absolute_times
+from ._common import _require_matplotlib, _unique_keyed_offsets
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -167,7 +171,7 @@ def plot_hit_map(
 
     By default the histogram is convolved with a disk kernel of the
     module's field-of-view radius (circular in RA/Dec coordinate space, so
-    stretched in RA on sky away from the equator), producing filled
+    narrower in RA on sky than the module field by ``cos(dec)``), producing filled
     coverage maps. Two statistics are drawn above each panel, at its
     right, clear of the map: areas in square coordinate degrees on a
     plain RA x Dec grid, with no ``cos(dec)`` weighting.
@@ -236,23 +240,28 @@ def plot_hit_map(
     ImportError
         If matplotlib is not installed.
     ValueError
-        If ``modules`` is empty, ``bin_size`` is not positive,
+        If ``modules`` is empty, ``bin_size`` is not a finite positive
+        value, ``smooth_sigma`` is negative or not finite,
+        ``footprint_threshold`` or ``stats_threshold`` is outside [0, 1],
         ``fov_radius_deg`` is neither None nor a finite positive value,
         ``axes`` does not hold one axes per distinct module, or the
         trajectory has no ``start_time`` set.
     """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-        from matplotlib import ticker  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_hit_map(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_hit_map")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
+    from matplotlib import ticker  # pylint: disable=import-outside-toplevel
 
     panels = _unique_keyed_offsets(PRIMECAM_MODULES if modules is None else modules)
-    if not bin_size > 0.0:
-        raise ValueError(f"bin_size must be positive, got {bin_size}")
+    if not (np.isfinite(bin_size) and bin_size > 0.0):
+        raise ValueError(f"bin_size must be a finite value > 0, got {bin_size}")
+    if smooth_sigma is not None and not (np.isfinite(smooth_sigma) and smooth_sigma >= 0.0):
+        raise ValueError(f"smooth_sigma must be None or a finite value >= 0, got {smooth_sigma}")
+    for name, value in (
+        ("footprint_threshold", footprint_threshold),
+        ("stats_threshold", stats_threshold),
+    ):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be within [0, 1], got {value}")
     if fov_radius_deg is not None and not (np.isfinite(fov_radius_deg) and fov_radius_deg > 0.0):
         raise ValueError(f"fov_radius_deg must be a finite value > 0, got {fov_radius_deg}")
     if axes is not None and len(axes) != len(panels):
@@ -263,10 +272,6 @@ def plot_hit_map(
 
     from scipy.ndimage import gaussian_filter  # pylint: disable=import-outside-toplevel
     from scipy.signal import fftconvolve  # pylint: disable=import-outside-toplevel
-
-    from ..coordinates import Coordinates  # pylint: disable=import-outside-toplevel
-    from ..offsets import boresight_to_detector, compute_focal_plane_rotation
-    from ..trajectory_utils import get_absolute_times
 
     coords = Coordinates(site)
     abs_times = get_absolute_times(trajectory)

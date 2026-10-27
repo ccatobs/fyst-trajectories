@@ -6,7 +6,13 @@ from astropy.time import Time
 
 from fyst_trajectories import Coordinates
 from fyst_trajectories.patterns import DaisyScanConfig, DaisyScanPattern
-from fyst_trajectories.patterns.daisy import _DAISY_INTERNAL_TIMESTEP, _daisy_reach
+from fyst_trajectories.patterns.daisy import (
+    _DAISY_INTERNAL_TIMESTEP,
+    HAS_NUMBA,
+    _daisy_loop,
+    _daisy_loop_python,
+    _daisy_reach,
+)
 
 
 class TestDaisyScanPattern:
@@ -375,3 +381,19 @@ class TestDaisyReach:
 
         reach = _daisy_reach(radius, turn_radius, velocity, _DAISY_INTERNAL_TIMESTEP)
         assert float(np.hypot(x_off, y_off).max()) <= reach
+
+
+@pytest.mark.skipif(not HAS_NUMBA, reason="the JIT path needs numba")
+@pytest.mark.parametrize(
+    ("radius", "turn_radius", "avoidance_radius", "velocity", "y_offset"),
+    [(0.3, 0.5, 0.25, 0.3, 0.0), (0.5, 0.2, 0.0, 0.8, 0.1)],
+)
+def test_the_jit_and_pure_python_daisy_loops_agree(
+    radius, turn_radius, avoidance_radius, velocity, y_offset
+):
+    """The compiled inner loop and its pure-Python fallback trace the same path."""
+    args = (45000, 1.0 / 150.0, radius, turn_radius, avoidance_radius, velocity, 0.5, y_offset)
+    x_jit, y_jit = _daisy_loop(*args, 1e-10)
+    x_py, y_py = _daisy_loop_python(*args, 1e-10)
+    np.testing.assert_array_equal(x_jit, x_py)
+    np.testing.assert_array_equal(y_jit, y_py)

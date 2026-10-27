@@ -54,7 +54,8 @@ class ElevationBin:
     Raises
     ------
     ValueError
-        If the bounds are not ordered or a value is not positive.
+        If a value is not finite, the bounds are not ordered, or
+        ``az_throw`` or ``dwell_reference`` is not positive.
     """
 
     el_lo: float
@@ -136,7 +137,14 @@ class ScanParameterTable:
         """Return the bin covering ``el``, or ``None`` outside the table's coverage.
 
         The top bin includes its upper bound.
+
+        Raises
+        ------
+        ValueError
+            If ``el`` is not finite.
         """
+        if not math.isfinite(el):
+            raise ValueError(f"el must be finite, got {el}")
         lo, hi = self.el_range
         if el < lo or el > hi:
             return None
@@ -156,7 +164,7 @@ class ScanParameterTable:
         Raises
         ------
         ValueError
-            If ``el`` is below the table's coverage.
+            If ``el`` is not finite or is below the table's coverage.
         """
         b = self.for_elevation(el)
         if b is not None:

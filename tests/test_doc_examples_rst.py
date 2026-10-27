@@ -477,14 +477,12 @@ def test_registries_match_blocks():
 
 # Blocks that print without their page stating what they print, per page.
 # Guard mechanism 2 checks a print only where a ``#`` comment states its
-# output, so these blocks run but are unverified: 16 of the 43 blocks that
+# output, so these blocks run but are unverified: 10 of the 49 blocks that
 # print. Filling a gap is a documentation edit, one ``# expected output``
 # comment per print; the counts here are upper bounds, so adding a comment
 # (or removing a print) is free and adding an unchecked print is not.
 _UNCHECKED_PRINT_BLOCKS = {
-    "api/exceptions.rst": 1,
-    "api/observability.rst": 2,
-    "overhead_timeline.rst": 4,
+    "overhead_timeline.rst": 1,
     "planning.rst": 9,
 }
 

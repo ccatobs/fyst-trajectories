@@ -308,6 +308,16 @@ class TestPrimecamGeometryDict:
             assert shifted[name]["center"][0] == pytest.approx(base[name]["center"][0] + 1.0)
             assert shifted[name]["center"][1] == pytest.approx(base[name]["center"][1] - 2.0)
 
+    def test_negative_radius_raises(self):
+        """A negative radius is refused rather than passed to the scheduler schema."""
+        with pytest.raises(ValueError, match="radius_deg must be positive"):
+            primecam_geometry_dict(radius_deg=-1)
+
+    def test_nan_offset_raises(self):
+        """A NaN boresight offset is refused rather than passed to the scheduler schema."""
+        with pytest.raises(ValueError, match="xi_offset_deg must be a finite number"):
+            primecam_geometry_dict(xi_offset_deg=float("nan"))
+
 
 class TestResolveModuleTag:
     """String and sequence tags: expansion, dedup, case folding, and the refusals."""

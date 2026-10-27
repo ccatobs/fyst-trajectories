@@ -17,13 +17,88 @@ the instrument team's ``IM0`` .. ``IM6`` in the first minor release after
 the correspondence to the as-built focal plane is confirmed; the two
 schemes do not correspond index-for-index (see :doc:`instrument_offsets`).
 
+v0.12.0 (2026-10-27)
+--------------------
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+- **The ECSV boresight_angle column is the roll TOAST applies.**
+  ``write_timeline`` writes ``-nasmyth_sign * el`` for each row: the roll
+  TOAST's ``SimGround`` applies to the boresight in the az/el frame before
+  it adds the parallactic rotation itself, with a positive sense opposite
+  to this library's rotation. The column held the celestial field rotation
+  ``nasmyth_sign * el + q``, with ``q`` the parallactic angle, at the row's
+  mid azimuth. The header key
+  ``boresight_angle_convention`` marks the new files, and ``read_timeline``
+  ignores the column. ``TimelineBlock.boresight_angle``, which nothing
+  read, and the ``site`` argument of the five ``TimelineBlock`` factories,
+  which served only that field, are removed.
+
+  **Migration:** the celestial field rotation of a row is
+  ``Coordinates(site).get_field_rotation_from_altaz(0.5 * (azmin + azmax), el)``;
+  drop ``site=`` from the ``TimelineBlock.calibration`` / ``retune`` /
+  ``idle`` / ``slew`` / ``science`` calls.
+
+- **The validators and the dispatch helpers take site by keyword.**
+  ``validate_trajectory``, ``validate_trajectory_bounds``,
+  ``validate_trajectory_dynamics``, ``validate_sun_avoidance``,
+  ``estimate_slew_time`` and ``choose_encoder_solution`` take the data they
+  check or price positionally and ``site``, with every option after it, by
+  keyword, as the planners do. ``site`` was the first, second, fifth or
+  sixth positional argument, by function, and a call that passes it
+  positionally, such as a dispatcher's
+  ``validate_trajectory(trajectory, site)``, raises ``TypeError``.
+
+  **Migration:** name ``site=`` and put the data first:
+  ``validate_trajectory(trajectory, site=site)``,
+  ``validate_trajectory_bounds(az, el, site=site)``,
+  ``validate_trajectory_dynamics(az, el, times, site=site)``,
+  ``validate_sun_avoidance(az, el, times, site=site)``,
+  ``estimate_slew_time(az1, el1, az2, el2, site=site)`` and
+  ``choose_encoder_solution(current_az, current_el, goal_az, goal_el, obstime, site=site)``;
+  ``check_sun``, ``coords`` and ``sun_safe`` go by keyword too.
+
+- **The source-CES planners refuse any explicit az_padding beside
+  az_throw.** ``az_padding`` defaults to ``None``, which pads by 0.5° as
+  before, and ``plan_source_ces``, ``plan_source_ces_passes`` and
+  ``compute_source_ces_params`` refuse ``az_throw`` combined with any padding
+  the caller passes, 0.5 included, with ``ValueError``. An explicit 0.5 was
+  accepted beside ``az_throw`` because it equalled the default, while 0.6 was
+  refused.
+
+  **Migration:** leave ``az_padding`` unset when passing ``az_throw``; code
+  that fills a missing padding with 0.5 passes ``scan_params.get("az_padding")``
+  instead.
+
 Fixes that change results
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **TOAST schedule roll uses the horizon frame.** ``boresight_angle`` now
-  exports ``-nasmyth_sign * el`` instead of celestial field rotation,
-  correcting off-axis detector pointing in SimGround. The sky angle is
-  preserved in ``field_rotation``; ``read_timeline`` still reads older files.
+- **TOAST simulates the focal plane at its mechanical orientation.** A
+  ``SimGround`` run from a fyst-trajectories schedule turned the focal
+  plane to ``-nasmyth_sign * el`` on the sky instead of
+  ``nasmyth_sign * el + q``, an error of ``2 * nasmyth_sign * el + q``
+  (67° in the constant-elevation case reported). Reported and diagnosed
+  by Yihong Zhou.
+- **The source-CES Sun screen covers the whole pass.** ``plan_source_ces``,
+  ``plan_source_ces_passes`` and ``compute_source_ces_params`` checked the
+  Sun over the source's crossing window only, while the trajectory runs for
+  the leg-quantised duration from the crossing start, so the last seconds of
+  a pass that outlasts its window (up to 24 s on the recorded test passes)
+  went unchecked. The check now runs to the trajectory's end, and a pass that
+  enters the exclusion zone only in those seconds warns. No recorded pass
+  changes.
+- **A survey-scheduler subscan is recorded in the cable wrap the slew
+  reached.** On a night with a field reached from the other cable wrap (a
+  field at azimuth 180° to 360° approached across north), the offline
+  scheduler recorded the subscan's azimuths, and so the pose the next slew
+  started from, a full turn from where the slew had left the mount, and
+  priced and Sun-checked that slew from the wrong pose. The block and the
+  calibrations and idle ticks parked after it now carry the slew's wrap; a
+  rebuilt trajectory still returns the planner's. No block's time changes on
+  the shipped example nights; on the 12-hour night of the timeline page, the
+  two subscans from 07:20 UTC and the 52 blocks after them are now recorded
+  360° lower, in the slew's wrap.
 
 v0.11.0 (2026-10-21)
 --------------------

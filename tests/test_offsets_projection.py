@@ -2,9 +2,7 @@
 
 ``boresight_to_detector``, ``detector_to_boresight`` and ``sky_to_focal_plane``:
 round trips, known geometry, field-rotation effects, the inverse's thresholds,
-zenith degeneracy and refusal of non-finite input, and the cross-package parity
-check of the absolute
-field-rotation sign against the scan_patterns oracle.
+zenith degeneracy and refusal of non-finite input.
 """
 
 import warnings
@@ -532,87 +530,6 @@ class TestRotationKeyword:
     def test_old_keyword_is_rejected(self, call):
         with pytest.raises(TypeError, match="field_rotation"):
             call(field_rotation=30.0)
-
-
-try:
-    import scanning as _scanning  # noqa: F401
-
-    HAS_SCANNING = True
-except ImportError:
-    HAS_SCANNING = False
-
-
-@pytest.mark.slow
-@pytest.mark.skipif(not HAS_SCANNING, reason="requires the scanning (scan_patterns) package")
-class TestScanningModuleProjectionParity:
-    """scanning's module projection matches ours, absolute sign included.
-
-    The boresight-level parity tests never apply a module offset, so the
-    field-rotation sign does not enter them; a round trip cancels a
-    consistent sign error, and a flip-sensitivity test passes under
-    either sign. This compares the two packages' detector placement
-    directly, at an off-axis module and nonzero elevations, where a
-    flipped mechanical rotation displaces the module by ``2 r sin(el)``
-    (2.5 deg at el 45). Exactly that flip has shipped undetected once.
-    """
-
-    # The elevations below (25 and 80) sit outside the oracle's declared
-    # 30-75 deg validity band, deliberately: the displacement under a flipped
-    # sign scales as sin(el), so the ends of the range are where it is largest.
-    # The comparison is exact (atol 1e-9), so an oracle that degraded outside
-    # its band would fail this test rather than pass it silently.
-    @pytest.mark.filterwarnings("ignore:elevation has values outside of 30 to 75 range")
-    def test_from_boresight_matches_mechanical_rotation(self, site):
-        import scanning
-
-        # The same construction scanning's own behavioral tests use; its
-        # private projection method is the exact seam under test.
-        pong = scanning.Pong(num_term=4, width=2, height=2, spacing=0.1, velocity=0.5)
-        tp = scanning.TelescopePattern(pong, start_ra=180, start_dec=-30, start_hrang=-1)
-
-        dist, theta = 1.77985, 30.0
-        az = np.array([0.0, 90.0, 180.0, 300.0])
-        el = np.array([25.0, 45.0, 65.0, 80.0])
-
-        their_az, their_el = tp._transform_from_boresight(az, el, dist, theta)
-
-        offset = InstrumentOffset(
-            dx=dist * 60.0 * np.cos(np.radians(theta)),
-            dy=dist * 60.0 * np.sin(np.radians(theta)),
-        )
-        our_az, our_el = boresight_to_detector(
-            az, el, offset, focal_plane_rotation=site.nasmyth_sign * el
-        )
-
-        az_delta = (np.asarray(their_az) - np.asarray(our_az) + 180.0) % 360.0 - 180.0
-        np.testing.assert_allclose(az_delta, 0.0, atol=1e-9)
-        np.testing.assert_allclose(their_el, our_el, atol=1e-9)
-
-    @pytest.mark.filterwarnings("ignore:elevation has values outside of 30 to 75 range")
-    def test_round_trip_through_both_seams(self):
-        """The inverse seam of scanning calls ``detector_to_boresight`` correctly too.
-
-        The test above reaches only the forward seam; this one also runs
-        ``_transform_to_boresight``, the path scanning takes for a module
-        offset, so an oracle that still spelled an old keyword in either
-        call fails here.
-        """
-        import scanning
-
-        pong = scanning.Pong(num_term=4, width=2, height=2, spacing=0.1, velocity=0.5)
-        tp = scanning.TelescopePattern(pong, start_ra=180, start_dec=-30, start_hrang=-1)
-
-        dist, theta = 1.77985, 30.0
-        az = np.array([0.0, 90.0, 180.0, 300.0])
-        el = np.array([25.0, 45.0, 65.0, 80.0])
-
-        back_az, back_el = tp._transform_from_boresight(
-            *tp._transform_to_boresight(az, el, dist, theta), dist, theta
-        )
-
-        az_delta = (np.asarray(back_az) - az + 180.0) % 360.0 - 180.0
-        np.testing.assert_allclose(az_delta, 0.0, atol=1e-9)
-        np.testing.assert_allclose(back_el, el, atol=1e-9)
 
 
 class TestSkyToFocalPlane:

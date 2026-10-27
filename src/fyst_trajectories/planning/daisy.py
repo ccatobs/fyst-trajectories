@@ -100,6 +100,19 @@ def plan_daisy_scan(
     TrajectoryBoundsError
         If the trajectory exceeds telescope limits.
 
+    Warns
+    -----
+    PointingWarning
+        If the source is inside the Sun exclusion zone at ``start_time``
+        (an instant check of the center; the built block is not screened),
+        if :class:`~fyst_trajectories.patterns.DaisyScanConfig` finds the
+        radius, velocity or start acceleration unusually large, and when
+        azimuth motion at a high elevation cuts the on-sky azimuth speed.
+        None refuses the plan.
+    VelocityLimitWarning, AccelerationLimitWarning
+        The built trajectory exceeds an axis velocity or acceleration limit
+        (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).
+
     Examples
     --------
     >>> from astropy.time import Time
@@ -115,10 +128,12 @@ def plan_daisy_scan(
     ...     avoidance_radius=0.0,
     ...     start_acceleration=0.5,
     ...     site=site,
-    ...     start_time=Time("2026-03-15T04:00:00", scale="utc"),
+    ...     start_time=Time("2026-03-15T02:00:00", scale="utc"),
     ...     timestep=0.1,
     ...     duration=300.0,
     ... )
+    >>> round(block.duration, 1), block.trajectory.n_points
+    (300.0, 3000)
     """
     start_time = _coerce_start_time(start_time)
 

@@ -181,6 +181,22 @@ def plan_constant_el_scan(
     ElevationBoundsError
         If the elevation exceeds telescope limits.
 
+    Warns
+    -----
+    PointingWarning
+        If the field center is inside the Sun exclusion zone at
+        ``start_time`` (and, with ``lsa_window``, at the resolved start),
+        and separately if the swept pass enters it (see Notes); neither
+        refuses the plan. Also when the solved pass is longer than half of
+        ``max_search_hours`` or the ``lsa_window`` span is longer than 6 h,
+        when :class:`~fyst_trajectories.patterns.ConstantElScanConfig`
+        finds the speed or acceleration unusually large or the turnaround
+        overshoot wider than the throw, and when azimuth motion at a high
+        elevation cuts the on-sky azimuth speed.
+    VelocityLimitWarning, AccelerationLimitWarning
+        The built trajectory exceeds an axis velocity or acceleration limit
+        (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).
+
     Notes
     -----
     Sun safety is screened in two stages. The field-center pre-flight is
@@ -212,6 +228,12 @@ def plan_constant_el_scan(
     ...     rising=True,
     ...     angle=170.0,
     ... )
+    >>> print(block.summary)
+    Constant-El scan: 5.00 x 6.70 deg field at RA=53.117, Dec=-27.808
+      Elevation: 50.00 deg, Az range: [97.51, 114.17] deg (throw: 16.66 deg)
+      Velocity: 0.500 deg/s, Acceleration: 1.000 deg/s^2
+      Rising pass: 2026-03-15 17:20:43 to 2026-03-15 17:48:09
+      Scans: 48, Duration: 1646.5s (27.4min), Trajectory points: 16466
 
     LSA-window mode (Deep56-style, 4-hour wrap-around window):
 
@@ -338,8 +360,8 @@ def plan_constant_el_scan(
         "az_stop": az_max,
         "az_throw": az_throw,
         "n_scans": n_scans,
-        "start_time_iso": obs_start.iso,
-        "end_time_iso": obs_end.iso,
+        "start_time_iso": obs_start.utc.iso,
+        "end_time_iso": obs_end.utc.iso,
         "duration": actual_duration,
     }
     validate_computed_params(computed_params, "constant_el")
@@ -360,7 +382,7 @@ def plan_constant_el_scan(
         f"(throw: {az_throw:.2f} deg)\n"
         f"  Velocity: {velocity:.3f} deg/s, Acceleration: {az_accel:.3f} deg/s^2\n"
         f"  {pass_label}: "
-        f"{obs_start.iso[:19]} to {obs_end.iso[:19]}\n"
+        f"{obs_start.utc.iso[:19]} to {obs_end.utc.iso[:19]}\n"
         f"  Scans: {n_scans}, Duration: {actual_duration:.1f}s "
         f"({actual_duration / 60:.1f}min), "
         f"Trajectory points: {trajectory.n_points}"

@@ -486,7 +486,7 @@ class NightContext:
             no ephemeris, the window is not ordered, or a body has no
             table.
         """
-        from .step import plan_visit
+        from .step import plan_visit  # pylint: disable=import-outside-toplevel
 
         if not targets:
             raise ValueError("targets must name at least one body")
@@ -564,9 +564,10 @@ class NightContext:
         The targets, policy, scan tables and requested window come from the
         night's record, the overhead model and calibration policy from the
         timeline, and the context is resolved as :meth:`build` resolves it,
-        then checked against the record. A record written before the
-        policy had ``use_table_throw`` is read with it True, since that
-        night swept the table's throw.
+        then checked against the record. A policy field the record predates
+        is read at the value that night ran with: ``use_table_throw`` True,
+        ``dispatch_lead_seconds`` 0.0 and the tuning's
+        ``skydip_after_retune`` False.
 
         Parameters
         ----------

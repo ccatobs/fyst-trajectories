@@ -58,7 +58,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -137,7 +137,6 @@ from .patterns import (
     SiderealTrackConfig,
     SiderealTrackPattern,
     TrajectoryBuilder,
-    TrajectoryMetadata,
     compute_pong_period,
     get_pattern,
     get_pattern_for_config,
@@ -218,6 +217,7 @@ from .trajectory import (
     SCAN_FLAG_UNCLASSIFIED,
     RetuneEvent,
     Trajectory,
+    TrajectoryMetadata,
 )
 from .trajectory_utils import (
     GO_TCS_MIN_SAMPLE_INTERVAL_SEC,
@@ -312,6 +312,7 @@ __all__ = [
     "ASTRONOMICAL_TWILIGHT_ALTITUDE_DEG",
     # Trajectory
     "Trajectory",
+    "TrajectoryMetadata",
     "SCAN_FLAG_UNCLASSIFIED",
     "SCAN_FLAG_SCIENCE",
     "SCAN_FLAG_TURNAROUND",
@@ -342,7 +343,6 @@ __all__ = [
     "ScanPattern",
     "CelestialPattern",
     "AltAzPattern",
-    "TrajectoryMetadata",
     # Pattern configs
     "ScanConfig",
     "ConstantElScanConfig",

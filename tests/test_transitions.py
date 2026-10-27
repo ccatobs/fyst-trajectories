@@ -103,7 +103,7 @@ class TestDirectTransition:
         assert tr.safe and tr.path == "direct" and tr.cause is DeferralReason.OK
         assert tr.az_to == 200.0 and tr.el_to == 45.0
         assert tr.duration == pytest.approx(
-            estimate_slew_time(190.0, 45.0, 200.0, 45.0, site) + 5.0
+            estimate_slew_time(190.0, 45.0, 200.0, 45.0, site=site) + 5.0
         )
         assert (tr.arrival - T0).to_value("s") == pytest.approx(tr.duration)
         assert tr.detour_via is None
@@ -325,8 +325,8 @@ class TestDetour:
         assert az_mid == pytest.approx(45.0)
         assert tr.az_to == pytest.approx(90.0)
         expected = (
-            estimate_slew_time(0.0, 30.0, az_mid, el_mid, site)
-            + estimate_slew_time(az_mid, el_mid, 90.0, 30.0, site)
+            estimate_slew_time(0.0, 30.0, az_mid, el_mid, site=site)
+            + estimate_slew_time(az_mid, el_mid, 90.0, 30.0, site=site)
             + 5.0
         )
         assert tr.duration == pytest.approx(expected)
@@ -404,7 +404,7 @@ class TestDetour:
         assert tr.path == "detour"
         # The two-leg price is longer than the direct estimate a direct hold
         # would have anchored on.
-        assert tr.duration > estimate_slew_time(0.0, 30.0, 90.0, 30.0, site)
+        assert tr.duration > estimate_slew_time(0.0, 30.0, 90.0, 30.0, site=site)
         assert any(abs(s - tr.duration) < 1e-3 for s in seen)
         assert any(abs(s - (tr.duration + 300.0)) < 1e-3 for s in seen)
         assert max(seen) == pytest.approx(tr.duration + 300.0, abs=1e-3)
@@ -480,6 +480,20 @@ class TestArgumentRules:
                 site,
                 sun_safe=_always(True),
                 slew_safe=_path_always(True),
+            )
+
+    def test_incoherent_frame_raises_on_the_detour_branch(self, site):
+        with pytest.raises(ValueError, match="coherent azimuth frame"):
+            plan_transition(
+                -1000.0,
+                30.0,
+                90.0,
+                30.0,
+                T0,
+                site,
+                sun_safe=_always(True),
+                slew_safe=_HighPathsOnly(),
+                allow_detour=True,
             )
 
     def test_nan_current_el_raises_rather_than_deferring(self, site):
@@ -597,7 +611,7 @@ class TestEscape:
         end_sep = coords.angular_separation(tr.az_to, tr.el_to, sun_az, sun_el)
         assert end_sep > start_sep
         assert tr.duration == pytest.approx(
-            estimate_slew_time(180.0, 50.0, tr.az_to, tr.el_to, site) + 5.0
+            estimate_slew_time(180.0, 50.0, tr.az_to, tr.el_to, site=site) + 5.0
         )
         assert tr.arrival.unix == pytest.approx(T0.unix + tr.duration)
 

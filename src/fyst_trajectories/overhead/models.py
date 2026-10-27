@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 from astropy.time import Time, TimeDelta
 
 from .._readonly import ReadOnlyDict
-from ..coordinates import Coordinates
 from .schemas import (
     CalibrationBlockMetadata,
     EmptyBlockMetadata,
@@ -80,8 +79,11 @@ class CalibrationType(str, enum.Enum):
     def coerce(cls, value: "CalibrationType | str") -> "CalibrationType":
         """Return ``value`` as a :class:`CalibrationType`, accepting strings.
 
-        Raises :class:`ValueError` with a message listing valid names when
-        ``value`` is a string that does not match any member.
+        Raises
+        ------
+        ValueError
+            If ``value`` is a string that matches no member; the message
+            lists the valid names.
         """
         if isinstance(value, cls):
             return value
@@ -161,13 +163,18 @@ class ObservingPatch:
         on-sky (tangent-plane) speed for ``pong`` and ``daisy``, a
         mount-frame azimuth coordinate rate for ``constant_el``.
     priority : float
-        Scheduling priority. Lower values = higher priority.
+        Divides the patch's selection score: the scheduler ranks patches by
+        their constraint score times ``weight / priority``, so a lower value
+        is more urgent.
     weight : float
-        Scheduling weight for patch equalization.
+        Multiplies the patch's selection score (see ``priority``).
     elevation : float or None
-        Fixed elevation for CE scans (degrees). Required when the patch is
-        scheduled by the offline scheduler; None is accepted only for direct
-        block construction.
+        Fixed scan elevation in degrees. The offline scheduler refuses a
+        constant-elevation patch without one; ``None`` is accepted for a
+        pong or daisy patch and for direct block construction. On a pong
+        or daisy patch a value is the elevation the scheduler scores,
+        slews to, Sun-clips and records the visit at, while the pattern
+        still follows the field.
     scan_params : ScanParamsDict
         Additional scan-type-specific parameters. The concrete schema
         depends on ``scan_type``: :class:`CEScanParams` for
@@ -296,6 +303,11 @@ class CalibrationSpec:
         Expected duration in seconds.
     target : str or None
         Planet name for planet calibrations, None for in-place operations.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` names no calibration type or ``duration`` is negative.
     """
 
     name: CalibrationType | str
@@ -306,8 +318,8 @@ class CalibrationSpec:
         # object.__setattr__ bypasses frozen=True to coerce str -> CalibrationType.
         if not isinstance(self.name, CalibrationType):
             object.__setattr__(self, "name", CalibrationType.coerce(self.name))
-        if not self.duration > 0:
-            raise ValueError(f"duration must be positive, got {self.duration}")
+        if not self.duration >= 0:
+            raise ValueError(f"duration must be non-negative, got {self.duration}")
 
 
 @dataclass(frozen=True)
@@ -357,14 +369,6 @@ class TimelineBlock:
         Whether this is a rising-side observation.
     scan_type : str
         Scan pattern or calibration type identifier.
-    boresight_angle : float
-        Celestial-frame field rotation of the focal plane in degrees
-        (``nasmyth_sign * elevation + parallactic_angle``), exported as
-        the ECSV ``field_rotation`` column; the TOAST ``boresight_angle``
-        column holds the horizon-frame roll ``-nasmyth_sign * elevation``
-        instead. A derived orientation quantity, not a commandable rotator
-        angle (FYST has no instrument rotator). ``0.0`` means unset; I/O
-        routines will recompute it from az/el as needed.
     metadata : ScienceBlockMetadata or CalibrationBlockMetadata or EmptyBlockMetadata
         Additional per-block metadata. Science blocks populate a
         :class:`ScienceBlockMetadata` shape (ra/dec center, width,
@@ -385,12 +389,17 @@ class TimelineBlock:
         not be built. Read it through :attr:`end_pose_az` rather than
         branching at every call site.
 
+    Raises
+    ------
+    ValueError
+        If ``block_type`` names no :class:`BlockType` member or ``t_stop``
+        is not at or after ``t_start`` (a NaN duration included).
+
     Notes
     -----
     The Python attribute names ``az_start``/``az_end`` deliberately
     carry no ordering implication (the discriminator is ``block_type``).
-    TOAST canonical ECSV columns are still written/read as
-    ``azmin``/``azmax`` for compatibility with external consumers.
+    The ECSV file names the two columns ``azmin``/``azmax``, TOAST's names.
     """
 
     t_start: Time
@@ -404,9 +413,9 @@ class TimelineBlock:
     subscan_index: int = 0
     rising: bool = True
     scan_type: str = ""
-    boresight_angle: float = 0.0
     metadata: TimelineBlockMetadata = field(
         default_factory=dict,  # type: ignore[assignment]
+        hash=False,
     )
     az_final: float | None = None
 
@@ -420,7 +429,7 @@ class TimelineBlock:
                 raise ValueError(
                     f"block_type must be one of {valid}, got {self.block_type!r}"
                 ) from None
-        if self.t_stop.unix < self.t_start.unix:
+        if not self.t_stop.unix >= self.t_start.unix:
             raise ValueError(f"t_stop ({self.t_stop.iso}) must be >= t_start ({self.t_start.iso})")
         # NOTE: az_start/az_end are NOT ordered-checked here. Science and
         # calibration blocks have az_start <= az_end, but SLEW blocks use
@@ -459,7 +468,6 @@ class TimelineBlock:
         duration: float,
         az: float,
         el: float,
-        site: "Site",
         scan_index: int,
         *,
         target: str | None = None,
@@ -475,9 +483,6 @@ class TimelineBlock:
 
         Factory for the common case where the telescope is parked
         (``az_start == az_end == az``) while a calibration operation runs.
-        The boresight angle is computed from the site and the az/el pose
-        via
-        :meth:`~fyst_trajectories.coordinates.Coordinates.get_field_rotation_from_altaz`.
         For retune calibrations emitted *between* subscans, use
         :meth:`retune` instead; that variant carries the parent scan's
         azimuth range so ECSV round-trips preserve the subscan geometry.
@@ -487,8 +492,7 @@ class TimelineBlock:
         source-CES pass: pass ``az_end`` to record the swept azimuth
         envelope, ``az_final`` to record where the sweep actually stops, and
         ``scan_params`` / ``t0_scan`` to record the pass geometry. All five
-        default to the parked single-pose behavior, so a call that omits
-        them is unchanged.
+        default to the parked single pose.
 
         Parameters
         ----------
@@ -503,9 +507,6 @@ class TimelineBlock:
         az, el : float
             Telescope pose during the calibration, in degrees. ``az`` is
             the lower azimuth bound (equal to the upper bound when parked).
-        site : Site
-            Observatory site (supplies ``nasmyth_sign`` and latitude
-            for the boresight angle).
         scan_index : int
             Parent scan counter.
         target : str or None, optional
@@ -513,8 +514,7 @@ class TimelineBlock:
             stored in ``metadata["target"]``.
         az_end : float or None, optional
             Upper azimuth bound of a swept calibration. ``None`` (default)
-            parks at ``az`` (``az_start == az_end == az``). When given, the
-            boresight angle is evaluated at the az-range midpoint.
+            parks at ``az`` (``az_start == az_end == az``).
         az_final : float or None, optional
             Azimuth the sweep ends at, when it differs from ``az_end``.
             ``None`` (default) means the block ends at ``az_end``, which
@@ -591,7 +591,6 @@ class TimelineBlock:
             subscan_index=subscan_index,
             rising=rising,
             scan_type=cal_name,
-            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(0.5 * (az + az_hi), el),
             metadata=meta,
             az_final=None if az_final is None else float(az_final),
         )
@@ -604,7 +603,6 @@ class TimelineBlock:
         az_start: float,
         az_end: float,
         el: float,
-        site: "Site",
         scan_index: int,
     ) -> "TimelineBlock":
         """Construct a CALIBRATION retune block spanning a scan's azimuth range.
@@ -612,8 +610,7 @@ class TimelineBlock:
         Factory for retunes emitted between subscans of a science scan.
         Unlike :meth:`calibration` (which parks at a single azimuth),
         this variant carries the parent scan's ``(az_start, az_end)``
-        so the ECSV round-trip preserves the subscan geometry. The
-        boresight angle is evaluated at the midpoint of the az range.
+        so the ECSV round-trip preserves the subscan geometry.
         A retune sweeps nothing, so that range is geometry rather than
         an executed envelope: the caller supplies the estimate it placed
         the visit with, not the envelope the neighbouring subscans record.
@@ -629,8 +626,6 @@ class TimelineBlock:
             degrees. Typically ``az_start <= az_end``.
         el : float
             Elevation in degrees.
-        site : Site
-            Observatory site.
         scan_index : int
             Parent scan counter.
 
@@ -649,9 +644,6 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="retune",
-            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
-                0.5 * (az_start + az_end), el
-            ),
         )
 
     @classmethod
@@ -661,7 +653,6 @@ class TimelineBlock:
         duration: float,
         az: float,
         el: float,
-        site: "Site",
         scan_index: int,
         *,
         reason: str | None = None,
@@ -671,8 +662,9 @@ class TimelineBlock:
         Emitted whenever no scan was placed: the telescope stays at
         ``(az, el)`` and the timeline advances by ``duration`` seconds.
         No patch scoring above zero is the commonest cause and the one
-        that carries no ``reason``; a refused slew, a pose the Sun zone
-        holds, and the stretch after the last block all label themselves.
+        that carries no ``reason``; a refused slew, a subscan that cannot
+        be planned (``unplannable``), a pose the Sun zone holds, and the
+        stretch after the last block all label themselves.
 
         Parameters
         ----------
@@ -682,8 +674,6 @@ class TimelineBlock:
             Idle interval in seconds.
         az, el : float
             Parked telescope pose, in degrees.
-        site : Site
-            Observatory site.
         scan_index : int
             Scan counter carried forward (no increment for idle).
         reason : str, optional
@@ -709,7 +699,6 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="idle",
-            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(az, el),
             metadata=empty_meta,
         )
 
@@ -721,17 +710,14 @@ class TimelineBlock:
         az_start: float,
         az_end: float,
         el: float,
-        site: "Site",
         scan_index: int,
         *,
         patch_name: str,
     ) -> "TimelineBlock":
         """Construct a SLEW block moving from ``az_start`` to ``az_end``.
 
-        The boresight angle is evaluated at the arithmetic mid-travel
-        azimuth, ``(az_start + az_end) / 2``. Callers are expected to
-        compute the slew duration (including any settle time)
-        themselves and pass it in via ``duration``.
+        Callers are expected to compute the slew duration (including any
+        settle time) themselves and pass it in via ``duration``.
 
         Parameters
         ----------
@@ -746,8 +732,6 @@ class TimelineBlock:
             slews may have ``az_start > az_end``.
         el : float
             Target elevation in degrees.
-        site : Site
-            Observatory site.
         scan_index : int
             Parent scan counter.
         patch_name : str
@@ -770,12 +754,6 @@ class TimelineBlock:
             elevation=el,
             scan_index=scan_index,
             scan_type="slew",
-            # The arithmetic mean is the true mid-travel azimuth of a
-            # coherent pair; a circular mean would pick the short modular
-            # arc the mount does not travel.
-            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
-                0.5 * (az_start + az_end), el
-            ),
             metadata=empty_meta,
         )
 
@@ -788,7 +766,6 @@ class TimelineBlock:
         az_start: float,
         az_end: float,
         el: float,
-        site: "Site",
         scan_index: int,
         *,
         subscan_index: int = 0,
@@ -801,8 +778,6 @@ class TimelineBlock:
         Metadata is populated from the patch (ra/dec center, width,
         height, velocity, scan_params) so the ECSV round-trip can
         reconstruct the trajectory via :func:`schedule_to_trajectories`.
-        The boresight angle is evaluated at the midpoint of the scan's
-        azimuth range.
 
         Parameters
         ----------
@@ -819,8 +794,6 @@ class TimelineBlock:
             scheduler reads it from the subscan's own trajectory.
         el : float
             Elevation in degrees.
-        site : Site
-            Observatory site.
         scan_index : int
             Parent scan counter.
         subscan_index : int, optional
@@ -869,9 +842,6 @@ class TimelineBlock:
             subscan_index=subscan_index,
             rising=rising,
             scan_type=patch.scan_type,
-            boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
-                0.5 * (az_start + az_end), el
-            ),
             metadata=meta,
             az_final=az_final,
         )
@@ -919,6 +889,13 @@ class OverheadModel:
         pass is split into subscans; a pong or daisy visit is capped at
         it, and a pong subscan holds the most whole pattern periods that
         fit after its boundary retune.
+
+    Raises
+    ------
+    ValueError
+        If a duration is negative or NaN, ``min_scan_duration`` is not
+        positive, or ``min_scan_duration`` is not below
+        ``max_scan_duration``.
     """
 
     retune_duration: float = 300.0
@@ -1039,7 +1016,9 @@ class CalibrationPolicy:
     Raises
     ------
     ValueError
-        If a cadence is negative, ``planet_cal_passes`` is below 1,
+        If a cadence is negative, ``planet_targets`` is a str rather than a
+        sequence of names, ``planet_cal_passes`` is below 1,
+        ``planet_min_elevation`` is outside [-90, 90] degrees,
         ``planet_cal_el_step`` is not positive, ``planet_cal_footprint`` is
         not a str naming a known module, or ``planet_cal_scan`` is set with
         no ``planet_targets``.
@@ -1059,6 +1038,11 @@ class CalibrationPolicy:
     planet_cal_footprint: str = "c"
 
     def __post_init__(self) -> None:
+        if isinstance(self.planet_targets, str):
+            raise ValueError(
+                "planet_targets must be a sequence of planet names, got the str "
+                f"{self.planet_targets!r}; wrap a single name as ({self.planet_targets!r},)"
+            )
         object.__setattr__(self, "planet_targets", tuple(self.planet_targets))
         for fld in (
             "retune_cadence",
@@ -1074,7 +1058,12 @@ class CalibrationPolicy:
             raise ValueError(
                 f"beam_map_cadence must be non-negative or None, got {self.beam_map_cadence}"
             )
-        if self.planet_cal_passes < 1:
+        if not -90.0 <= self.planet_min_elevation <= 90.0:
+            raise ValueError(
+                "planet_min_elevation must be within [-90, 90] degrees, got "
+                f"{self.planet_min_elevation}"
+            )
+        if not self.planet_cal_passes >= 1:
             raise ValueError(f"planet_cal_passes must be at least 1, got {self.planet_cal_passes}")
         if self.planet_cal_el_step is not None and not self.planet_cal_el_step > 0:
             raise ValueError(
@@ -1114,7 +1103,11 @@ class ObservingTimeline:
     calibration_policy : CalibrationPolicy
         Calibration cadence policy used.
     metadata : dict
-        Generation parameters, version info, etc.
+        Free-form header fields: the scheduler records ``n_patches`` and
+        ``time_step``, the calibration-night planner its record
+        (``calnight_schema_version``, ``calnight_json``), and a timeline
+        read by :func:`read_timeline` holds the header keys it does not
+        consume.
     """
 
     blocks: list[TimelineBlock]

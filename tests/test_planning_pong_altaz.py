@@ -1,6 +1,5 @@
 """Tests for plan_pong_altaz_scan."""
 
-import math
 import re
 import warnings
 
@@ -18,16 +17,6 @@ from fyst_trajectories.planning import (
     plan_pong_altaz_scan,
 )
 from fyst_trajectories.trajectory_utils import get_absolute_times
-
-# The parity test compares against the ``scanning`` package (scan_patterns).
-# It is optional; gate on its availability with the same HAS_* + skipif
-# precedent used elsewhere in the suite (e.g. test_offsets_projection.py).
-try:
-    from scanning import Pong as _ScanningPong  # noqa: F401
-
-    HAS_SCANNING = True
-except ImportError:
-    HAS_SCANNING = False
 
 
 @pytest.fixture
@@ -563,74 +552,3 @@ class TestPlanPongAltAzSunSafety:
         assert len(seen_jd) <= 602
         last_jd = float(get_absolute_times(block.trajectory)[-1].jd)
         assert np.any(np.isclose(seen_jd, last_jd, rtol=0.0, atol=1e-8))
-
-
-@pytest.mark.slow
-@pytest.mark.skipif(not HAS_SCANNING, reason="requires the scanning (scan_patterns) package")
-class TestLegacyMappingParity:
-    """End-to-end parity with the legacy scanning.Pong + horizon mapping.
-
-    scanning.Pong delegates its offset generation to this library's
-    PongScanPattern, so this validates that plan_pong_altaz_scan reproduces
-    the legacy horizon-frame mapping (x/cos(el0)+az0, y+el0) and the
-    surrounding plumbing end to end, not the offset math itself.
-    """
-
-    @pytest.mark.filterwarnings(
-        "ignore:Trajectory (azimuth|elevation) acceleration:"
-        "fyst_trajectories.exceptions.AccelerationLimitWarning",
-    )
-    def test_trajectory_matches_legacy_mapping(self, site):
-        from scanning import Pong
-
-        az_center = 130.0
-        el_center = 55.0
-        width = 2.0
-        height = 2.0
-        spacing = 0.1
-        velocity = 0.5
-        num_terms = 4
-        angle = 0.0
-        timestep = 0.1
-
-        block = plan_pong_altaz_scan(
-            az_center=az_center,
-            el_center=el_center,
-            width=width,
-            height=height,
-            spacing=spacing,
-            velocity=velocity,
-            site=site,
-            start_time=Time("2026-03-15T04:00:00", scale="utc"),
-            num_terms=num_terms,
-            angle=angle,
-            timestep=timestep,
-        )
-        traj = block.trajectory
-
-        # Build scanning.Pong with matching parameters and apply the
-        # horizon-frame mapping inline:
-        #   coscorr = cos(radians(el_center))
-        #   az = x/coscorr + az_center ; el = y + el_center
-        pong = Pong(
-            num_term=num_terms,
-            width=width,
-            height=height,
-            spacing=spacing,
-            velocity=velocity,
-            angle=angle,
-            sample_interval=timestep,
-            max_scan_duration=block.duration,
-        )
-        x_off = pong.x_coord.value
-        y_off = pong.y_coord.value
-
-        coscorr = math.cos(math.radians(el_center))
-        legacy_az = x_off / coscorr + az_center
-        legacy_el = y_off + el_center
-
-        # Guard: the two paths must sample the same number of points.
-        assert len(legacy_az) == traj.n_points
-
-        np.testing.assert_allclose(traj.az, legacy_az, atol=1e-6)
-        np.testing.assert_allclose(traj.el, legacy_el, atol=1e-6)

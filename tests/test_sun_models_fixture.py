@@ -2,7 +2,8 @@
 
 Runs ALWAYS, with the shared sun-avoidance library absent or present: it
 verifies the checked-in fixture's integrity (schema, the CAD table's
-properties, the SHA pins matching the module constants), regenerates the
+properties, the SHA pins matching the module constants), checks that the CI
+workflow and the documentation install the pinned revision, regenerates the
 ``"scalar"`` model's verdicts (which need no library) against the recorded
 ones, and locks the cross-model containment invariants that the recorded
 verdicts must satisfy. The live half (``test_sun_models_live.py``)
@@ -10,6 +11,7 @@ regenerates the library-backed verdicts and is the drift detector.
 """
 
 import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -27,9 +29,14 @@ from fyst_trajectories.sun_models import (
     make_sun_safe,
 )
 
-FIXTURE = Path(__file__).parent / "data" / "sun_avoidance_parity_e6fa12a.npz"
+FIXTURE = Path(__file__).parent / "data" / "sun_avoidance_parity_baf4e6c.npz"
 
 MODEL_KEYS = ("scalar", "cone45", "cone50", "cad", "cad_msa0", "cad_island")
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The revision an install command for the shared library names, after the "@".
+INSTALL_REVISION = re.compile(r"github\.com/ccatobs/sun-avoidance(?:\.git)?@([\w./-]+)")
 
 
 @pytest.fixture(scope="module")
@@ -52,6 +59,25 @@ def test_fixture_schema(fx):
 def test_fixture_pins_match_module(fx):
     assert str(fx["pinned_sha"]) == SUN_AVOIDANCE_PINNED_SHA
     assert str(fx["cad_table_sha256"]) == CAD_TABLE_SHA256
+
+
+@pytest.mark.parametrize("path", [".github/workflows/tests.yml", "docs/sun_avoidance.rst"])
+def test_install_commands_name_the_pin(path):
+    """The CI oracle job and the sun-avoidance page install the pinned revision.
+
+    Both spell out the revision to install, so a re-pin moves
+    ``SUN_AVOIDANCE_PINNED_SHA`` and both commands together. A source
+    distribution carries the documentation page but not the CI workflows, so
+    the workflow's case skips there.
+    """
+    if path.startswith(".github/") and not (REPO_ROOT / ".github").is_dir():
+        pytest.skip("no .github directory: a source distribution leaves out the CI workflows")
+    revisions = INSTALL_REVISION.findall((REPO_ROOT / path).read_text(encoding="utf-8"))
+    assert revisions, f"{path} has no install command for ccatobs/sun-avoidance"
+    assert set(revisions) == {SUN_AVOIDANCE_PINNED_SHA}, (
+        f"{path} installs {sorted(set(revisions))}, but SUN_AVOIDANCE_PINNED_SHA is "
+        f"{SUN_AVOIDANCE_PINNED_SHA}"
+    )
 
 
 def test_cad_table_digest_folds_crlf(tmp_path):

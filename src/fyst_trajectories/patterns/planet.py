@@ -12,7 +12,7 @@ from ..site import AtmosphericConditions, Site
 from ..trajectory import Trajectory, TrajectoryMetadata
 from ..trajectory_utils import validate_trajectory_bounds
 from .base import AltAzPattern
-from .configs import PlanetTrackConfig
+from .configs import PlanetTrackConfig, SatelliteTrackConfig
 from .registry import register_pattern
 from .utils import (
     compute_velocities,
@@ -34,12 +34,13 @@ class PlanetTrackPattern(AltAzPattern):
 
     Parameters
     ----------
-    config : PlanetTrackConfig
-        Tracking configuration with body name.
+    config : PlanetTrackConfig or SatelliteTrackConfig
+        Tracking configuration with body name. A
+        :class:`SatelliteTrackConfig` also supplies the satellite kernel.
 
     Attributes
     ----------
-    config : PlanetTrackConfig
+    config : PlanetTrackConfig or SatelliteTrackConfig
         The configuration for this pattern.
 
     Examples
@@ -56,7 +57,7 @@ class PlanetTrackPattern(AltAzPattern):
 
     def __init__(
         self,
-        config: PlanetTrackConfig,
+        config: PlanetTrackConfig | SatelliteTrackConfig,
     ):
         self.config = config
 
@@ -89,8 +90,15 @@ class PlanetTrackPattern(AltAzPattern):
         Raises
         ------
         ValueError
-            If ``start_time`` is None, or if ``duration`` yields fewer than
-            two samples at the config timestep.
+            If ``start_time`` is None, if ``duration`` yields fewer than
+            two samples at the config timestep, or, when tracking a
+            satellite (:class:`~fyst_trajectories.patterns.SatelliteTrackPattern`),
+            if no satellite kernel is configured.
+        FileNotFoundError
+            If a satellite's configured kernel path does not exist.
+        ModuleNotFoundError
+            If a satellite is tracked without the optional ``jplephem``
+            dependency (the ``ephemeris`` extra).
         TargetNotObservableError
             If the body is below the horizon or outside telescope limits
             at the requested time. The exception has ``target``,
@@ -109,11 +117,10 @@ class PlanetTrackPattern(AltAzPattern):
             )
 
         timestep = self.config.timestep
-        coords = Coordinates(
-            site,
-            atmosphere=atmosphere,
-            satellite_kernel=getattr(self.config, "satellite_kernel", None),
+        satellite_kernel = (
+            self.config.satellite_kernel if isinstance(self.config, SatelliteTrackConfig) else None
         )
+        coords = Coordinates(site, atmosphere=atmosphere, satellite_kernel=satellite_kernel)
 
         n_points = validate_sample_count(duration, timestep)
         times = np.linspace(0, duration, n_points)
@@ -126,7 +133,7 @@ class PlanetTrackPattern(AltAzPattern):
         el_vel = compute_velocities(el, times, is_angular=False)
 
         with wrap_bounds_error(self.config.body.capitalize(), start_time.iso):
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
         # Stamp the planet's RA/Dec at the trajectory midpoint into the
         # metadata so consumers can recover the pattern center (the same

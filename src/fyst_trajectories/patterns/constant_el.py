@@ -122,7 +122,7 @@ class ConstantElScanPattern(AltAzPattern):
             start_increasing=start_increasing,
         )
 
-        validate_trajectory_bounds(site, az, el)
+        validate_trajectory_bounds(az, el, site=site)
 
         return Trajectory(
             times=times,

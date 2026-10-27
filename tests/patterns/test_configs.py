@@ -311,6 +311,14 @@ class TestPlanetTrackConfig:
         with pytest.raises(ValueError, match="Unknown body"):
             PlanetTrackConfig(timestep=0.1, body="pluto")
 
+    def test_a_body_that_is_not_text_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="Unknown body 'None'"):
+            PlanetTrackConfig(timestep=0.1, body=None)
+
+    def test_a_satellite_that_is_not_text_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="Unknown satellite 'None'"):
+            SatelliteTrackConfig(timestep=0.1, body=None)
+
 
 class TestConfigWarnings:
     """Advisory ``PointingWarning`` paths in config ``__post_init__`` routines.

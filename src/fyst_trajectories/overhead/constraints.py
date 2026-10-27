@@ -87,6 +87,11 @@ class ElevationConstraint(Constraint):
     el_max : float
         Maximum allowed elevation in degrees. Defaults to 90.0
         (``FYST_EL_MAX``).
+
+    Raises
+    ------
+    ValueError
+        If ``el_min`` is not below ``el_max``.
     """
 
     def __init__(self, el_min: float = FYST_EL_MIN, el_max: float = FYST_EL_MAX) -> None:
@@ -131,6 +136,12 @@ class SunAvoidanceConstraint(Constraint):
         Minimum angular distance from the Sun in degrees (scalar mode).
     sun_safe : SunSafePredicate, optional
         Injected sun-safety model (model mode).
+
+    Raises
+    ------
+    ValueError
+        If both or neither of ``min_angle`` and ``sun_safe`` are given, or
+        ``min_angle`` is negative or NaN.
     """
 
     def __init__(
@@ -169,6 +180,16 @@ class SunAvoidanceConstraint(Constraint):
 class MoonAvoidanceConstraint(Constraint):
     """Enforce minimum angular separation from the Moon.
 
+    Parameters
+    ----------
+    min_angle : float
+        Minimum angular distance from the Moon in degrees.
+
+    Raises
+    ------
+    ValueError
+        If ``min_angle`` is negative or NaN.
+
     Notes
     -----
     Not part of the scheduler's default constraint set (elevation +
@@ -185,11 +206,6 @@ class MoonAvoidanceConstraint(Constraint):
     A separation exactly at ``min_angle`` scores 1.0 (clear): the test
     is strictly ``sep < min_angle``, deliberately the inverse of the
     Sun constraint's at-radius-is-unsafe ``<=`` convention.
-
-    Parameters
-    ----------
-    min_angle : float
-        Minimum angular distance from the Moon in degrees.
     """
 
     def __init__(self, min_angle: float = 20.0) -> None:
@@ -230,6 +246,11 @@ class MinDurationConstraint(Constraint):
     sun_safe : SunSafePredicate, optional
         Injected sun-safety model for the forward check. Default ``None``
         keeps the site's scalar exclusion radius.
+
+    Raises
+    ------
+    ValueError
+        If ``min_duration`` is negative or NaN.
     """
 
     def __init__(

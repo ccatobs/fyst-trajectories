@@ -85,8 +85,8 @@ def compute_pong_period(
     a :class:`PongScanPattern`.
 
     This is the canonical entry point for external code (e.g. the
-    scan_patterns cross-validation reference) that needs the period
-    implied by a :class:`PongScanConfig` or a :class:`PongAltAzScanConfig`.
+    scan_patterns package) that needs the period implied by a
+    :class:`PongScanConfig` or a :class:`PongAltAzScanConfig`.
 
     Parameters
     ----------
@@ -118,6 +118,8 @@ def compute_pong_period(
     ...     angle=0.0,
     ... )
     >>> period, nx, ny = compute_pong_period(cfg)
+    >>> round(period, 6), nx, ny
+    (240.0, 15, 16)
     """
     x_numvert, y_numvert, _, _ = _compute_pong_vertices(config.width, config.height, config.spacing)
     vert_spacing = math.sqrt(2) * config.spacing

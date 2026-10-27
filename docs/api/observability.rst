@@ -29,24 +29,32 @@ Usage Examples
 
     reports = check_observability(
         ["uranus", "neptune", "mars"],
-        Time("2026-06-15T05:00:00", scale="utc"),
+        Time("2026-11-15T03:00:00", scale="utc"),
     )
     for r in reports:
-        print(r.summary)            # one-line human-readable verdict
+        print(r.summary)
+    # uranus: observable (el=37.0 deg)
+    # neptune: observable (el=53.8 deg)
+    # mars: NOT observable - below_el_min
     observable_now = [r.name for r in reports if r.observable]
 
 **With a query horizon** (find every observable window within *N* hours)::
 
     reports = check_observability(
         ["uranus", "neptune"],
-        Time("2026-06-15T05:00:00", scale="utc"),
+        Time("2026-11-15T03:00:00", scale="utc"),
         horizon_hours=24.0,
     )
     for r in reports:
         for w in r.windows or ():
-            print(r.name, w.start.iso, "->", w.end.iso,
-                  f"({w.duration_hours:.1f} h)")
+            print(r.name, w.start.iso, "->", w.end.iso, f"({w.duration_hours:.1f} h)")
         print(r.name, "total:", f"{r.total_observable_hours:.1f} h")
+    # uranus 2026-11-15 03:00:00.000 -> 2026-11-15 08:45:00.000 (5.8 h)
+    # uranus 2026-11-16 01:15:00.000 -> 2026-11-16 03:00:00.000 (1.7 h)
+    # uranus total: 7.5 h
+    # neptune 2026-11-15 03:00:00.000 -> 2026-11-15 05:35:00.000 (2.6 h)
+    # neptune 2026-11-15 20:30:00.000 -> 2026-11-16 03:00:00.000 (6.5 h)
+    # neptune total: 9.1 h
 
 A target can have several disjoint windows in one horizon (an evening pass
 and a pre-dawn pass are common); ``windows`` reports all of them in time

@@ -8,8 +8,8 @@ Planning-side renderers for calibration-target work:
   from the true angular separation.
 - :func:`plot_observability_windows`: the Gantt view of the same span, one
   bar lane per target from ``check_observability``'s windows.
-- :func:`plot_array_footprint`: the instantaneous PrimeCam module layout
-  projected onto the sky at a given elevation, at honest angular scale,
+- :func:`plot_array_footprint`: the instantaneous Prime-Cam module layout
+  projected onto the sky at a given elevation, at true angular scale,
   showing the focal-plane rotation.
 
 These functions require ``matplotlib`` (install via
@@ -23,7 +23,8 @@ only to figures the function itself creates).
 
 Examples
 --------
-Render tonight's calibrator visibility in Chilean local time:
+Render 24 h of calibrator visibility from 2026-11-15 16:00 UTC in Chilean
+local time:
 
 >>> from zoneinfo import ZoneInfo
 >>> from astropy.time import Time
@@ -60,7 +61,16 @@ from ..offsets import _rotate_offset, compute_focal_plane_rotation
 from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import AtmosphericConditions, Site, get_fyst_site
 from ..sun_models import make_sun_safe
-from ._common import FOOTPRINT_COLOR, _palette, _unique_offsets
+from ._common import (
+    EXCLUSION_COLOR,
+    SUN_COLOR,
+    WARNING_COLOR,
+    _draw_module_circles,
+    _palette,
+    _require_matplotlib,
+    _tz_label,
+    _unique_offsets,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -90,12 +100,6 @@ proxy curve)."""
 #: Valid ``panels`` entries for :func:`plot_visibility`, in canonical order.
 VISIBILITY_PANELS = ("elevation", "azimuth", "sun_separation")
 
-#: Color of the Sun's own curve (excluded from the target palette).
-SUN_COLOR = "#e6a817"
-#: Overlay color for samples inside the exclusion radius.
-EXCLUSION_COLOR = "#d62728"
-#: Overlay color for samples inside the warning radius.
-WARNING_COLOR = "#ff7f0e"
 #: Color of the sunrise/sunset event lines and their labels.
 EVENT_LINE_COLOR = "0.25"
 _NIGHT_SHADE_COLOR = "0.35"
@@ -103,11 +107,6 @@ _NIGHT_SHADE_COLOR = "0.35"
 #: Per-panel height (inches) when the function creates its own figure.
 _PANEL_HEIGHT = 3.4
 _PANEL_WIDTH = 12.0
-
-
-def _tz_label(tz: tzinfo | None) -> str:
-    """Human-readable axis label for a timezone (``"UTC"`` when None)."""
-    return str(tz) if tz is not None else "UTC"
 
 
 def _wrap_break_indices(az: np.ndarray) -> np.ndarray:
@@ -177,6 +176,24 @@ def _draw_sun_event_lines(ax: "Axes", events, *, annotate: bool) -> None:
                 )
         elif event.kind in dotted:
             ax.axvline(event.time.plot_date, color="0.45", ls=":", lw=0.9, zorder=1)
+
+
+def _format_time_axis(ax: "Axes", x: np.ndarray, tz: tzinfo | None) -> None:
+    """Tick ``ax``'s x-axis as clock times in ``tz`` and fit it to ``x``."""
+    import matplotlib.dates as mdates  # pylint: disable=import-outside-toplevel
+
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=6, maxticks=13, tz=tz))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=tz))
+    ax.set_xlim(x[0], x[-1])
+
+
+def _span_title(kind: str, site: Site, time: Time, horizon_hours: float) -> str:
+    """Auto-title for a span figure: ``"<kind> from <site> - <date> (<h> h from <hh:mm> UTC)"``."""
+    site_name = site.name.strip() or "site"
+    utc_iso = time.utc.iso
+    return (
+        f"{kind} from {site_name} - {utc_iso[:10]} ({horizon_hours:g} h from {utc_iso[11:16]} UTC)"
+    )
 
 
 def plot_visibility(
@@ -290,7 +307,7 @@ def plot_visibility(
         If matplotlib is not installed.
     ValueError
         If ``targets`` or ``panels`` is empty, a panel name is unknown,
-        ``axes`` does not match ``panels`` in length,
+        ``axes`` does not match ``panels`` in length, ``el_min`` is outside [0, 90],
         ``horizon_hours`` / ``step_minutes`` is not a finite positive
         value, or an injected ``sun_model``'s ``batch`` / ``threshold``
         returns the wrong shape for the time grid.
@@ -302,14 +319,8 @@ def plot_visibility(
         ``Coordinates.is_sun_safe`` is refused here; build the model with
         :func:`~fyst_trajectories.sun_models.make_sun_safe`.
     """
-    try:
-        import matplotlib.dates as mdates  # pylint: disable=import-outside-toplevel
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_visibility(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_visibility")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     if not np.isfinite(horizon_hours) or horizon_hours <= 0:
         raise ValueError(f"horizon_hours must be a finite value > 0, got {horizon_hours}")
@@ -330,6 +341,8 @@ def plot_visibility(
     if not target_list:
         raise ValueError("targets must not be empty")
     el_floor = site.telescope_limits.elevation.min if el_min is None else el_min
+    if not np.isfinite(el_floor) or not 0.0 <= el_floor <= 90.0:
+        raise ValueError(f"el_min must be within [0, 90] degrees, got {el_floor}")
 
     grid = _build_time_grid(time, horizon_hours, step_minutes)
     x = grid.plot_date
@@ -467,9 +480,7 @@ def plot_visibility(
     # floats. (Fresh locator/formatter instances per axis, as matplotlib
     # requires.)
     for ax in axes:
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=6, maxticks=13, tz=tz))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=tz))
-        ax.set_xlim(x[0], x[-1])
+        _format_time_axis(ax, x, tz)
     axes[-1].set_xlabel(f"Time ({_tz_label(tz)})", fontsize=11)
 
     handles = [
@@ -497,12 +508,7 @@ def plot_visibility(
 
     if own_fig:
         if title is None:
-            site_name = site.name.strip() or "site"
-            utc_iso = time.utc.iso
-            title = (
-                f"Target visibility from {site_name} - {utc_iso[:10]} "
-                f"({horizon_hours:.0f} h from {utc_iso[11:16]} UTC)"
-            )
+            title = _span_title("Target visibility", site, time, horizon_hours)
         fig.suptitle(title, fontsize=13)
     elif title is not None:
         # Composition mode: never touch the caller's figure-level suptitle;
@@ -576,10 +582,13 @@ def plot_observability_windows(
     extra_targets : dict of str to Target, optional
         Additional catalog searched before the built-in calibrators.
     sun_model : str or predicate, optional
-        Sun-avoidance model deciding the windows, with the same contract
-        as ``plot_visibility``: default ``None`` uses the site's scalar
-        radii; pass a :func:`~fyst_trajectories.sun_models.make_sun_safe`
-        name or any predicate exposing ``batch``.
+        Sun-avoidance model deciding the windows, forwarded to
+        :func:`~fyst_trajectories.observability.check_observability` as
+        ``sun_safe``: default ``None`` uses the site's scalar radii; pass a
+        :func:`~fyst_trajectories.sun_models.make_sun_safe` name or any
+        :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` (one
+        exposing ``batch`` is evaluated in one call over the grid, any
+        other per grid sample).
     tz : datetime.tzinfo, optional
         Timezone for the x-axis labels. Computation is always UTC.
     title : str, optional
@@ -610,14 +619,8 @@ def plot_observability_windows(
         injected ``sun_model`` misbehaves (propagated from
         :func:`~fyst_trajectories.observability.check_observability`).
     """
-    try:
-        import matplotlib.dates as mdates  # pylint: disable=import-outside-toplevel
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_observability_windows(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_observability_windows")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     if not np.isfinite(horizon_hours) or horizon_hours <= 0:
         raise ValueError(
@@ -692,14 +695,13 @@ def plot_observability_windows(
     # and a slightly deeper floor so the sunrise/sunset labels clear the
     # bottom lane.
     ax.set_ylim(-0.75, len(reports) + 0.2)
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=6, maxticks=13, tz=tz))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=tz))
-    ax.set_xlim(x[0], x[-1])
+    _format_time_axis(ax, x, tz)
     ax.set_xlabel(f"Time ({_tz_label(tz)})", fontsize=11)
     ax.grid(axis="x", ls=":", alpha=0.4)
     ax.set_axisbelow(True)
 
     el_floor = site.telescope_limits.elevation.min if el_min is None else el_min
+    el_ceiling = site.telescope_limits.elevation.max if el_max is None else el_max
     if not site.sun_avoidance.enabled:
         policy = "sun avoidance disabled"
     elif sun_model is not None:
@@ -707,8 +709,8 @@ def plot_observability_windows(
     else:
         policy = f"Sun > {site.sun_avoidance.exclusion_radius:.0f} deg"
     criteria = f"observable: el >= {el_floor:.0f} deg, {policy}"
-    if el_max is not None:
-        criteria += f", el <= {el_max:.0f} deg"
+    if el_max is not None or el_ceiling < 90.0:
+        criteria += f", el <= {el_ceiling:.0f} deg"
     if avoid:
         criteria += f", {len(avoid)} avoid zone{'s' if len(avoid) != 1 else ''}"
     ax.legend(
@@ -720,12 +722,7 @@ def plot_observability_windows(
 
     if own_fig:
         if title is None:
-            site_name = site.name.strip() or "site"
-            utc_iso = time.utc.iso
-            title = (
-                f"Observability windows from {site_name} - {utc_iso[:10]} "
-                f"({horizon_hours:.0f} h from {utc_iso[11:16]} UTC)"
-            )
+            title = _span_title("Observability windows", site, time, horizon_hours)
         fig.suptitle(title, fontsize=13)
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
         if show:
@@ -758,7 +755,7 @@ def plot_array_footprint(
     spherical forward map and flattened back, which degenerates toward
     ``el = 90``). The axes are to scale (equal aspect), unlike schematic
     focal-plane rosettes; with the module geometry this package ships,
-    opposite PrimeCam module centres sit ~3.6 deg apart and the full
+    opposite Prime-Cam module centres sit ~3.6 deg apart and the full
     footprint spans ~4.9 deg edge to edge.
 
     The layout depends on elevation only through the Nasmyth rotation;
@@ -802,17 +799,11 @@ def plot_array_footprint(
     ImportError
         If matplotlib is not installed.
     ValueError
-        If ``el`` is outside [0, 90], ``fov_radius_deg`` is not positive,
-        or ``modules`` is empty.
+        If ``el`` is outside [0, 90], ``fov_radius_deg`` is not a positive
+        finite number, or ``modules`` is empty.
     """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-        from matplotlib.patches import Circle  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_array_footprint(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_array_footprint")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     if not np.isfinite(el) or not 0.0 <= el <= 90.0:
         raise ValueError(f"el must be within [0, 90] degrees, got {el}")
@@ -839,28 +830,7 @@ def plot_array_footprint(
     else:
         fig = ax.get_figure()
 
-    for offset, dx, dy in placements:
-        ax.add_patch(
-            Circle(
-                (dx, dy),
-                fov_radius_deg,
-                facecolor=FOOTPRINT_COLOR,
-                alpha=0.25,
-                edgecolor=FOOTPRINT_COLOR,
-                lw=1.4,
-            )
-        )
-        if labels:
-            name = (offset.name or "").removeprefix("PrimeCam-").lower() or "?"
-            ax.annotate(
-                name,
-                xy=(dx, dy),
-                xytext=(0, -14),  # below the centre, clear of the boresight marker
-                textcoords="offset points",
-                ha="center",
-                va="center",
-                fontsize=9,
-            )
+    _draw_module_circles(ax, placements, fov_radius_deg, labels=labels, face_alpha=0.25, lw=1.4)
 
     ax.plot(0.0, 0.0, "+", color="black", ms=10, mew=1.5, zorder=5)
 

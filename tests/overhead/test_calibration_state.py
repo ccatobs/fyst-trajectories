@@ -3,7 +3,8 @@
 import pytest
 from astropy.time import Time, TimeDelta
 
-from fyst_trajectories.overhead import CalibrationState
+from fyst_trajectories import get_fyst_site
+from fyst_trajectories.overhead import CalibrationState, ObservingPatch, generate_timeline
 from fyst_trajectories.overhead.models import CalibrationPolicy, OverheadModel
 
 
@@ -148,3 +149,50 @@ class TestCalibrationState:
         planet_cals = [c for c in needed if c.name == "planet_cal"]
         assert len(planet_cals) == 1
         assert planet_cals[0].target == "jupiter"
+
+
+class TestZeroDurationCalibrations:
+    """A zero duration in the overhead model schedules no such operation."""
+
+    def test_a_zero_duration_calibration_is_not_due(self):
+        t = Time("2026-06-15T02:00:00", scale="utc")
+        overhead = OverheadModel(retune_duration=0.0, skydip_duration=0.0)
+        needed = CalibrationState().needs_calibration(t, CalibrationPolicy(), overhead)
+        assert [c.name for c in needed] == ["pointing_cal", "focus", "planet_cal"]
+
+    def test_a_scan_mode_planet_calibration_is_sized_by_its_passes(self):
+        t = Time("2026-06-15T02:00:00", scale="utc")
+        overhead = OverheadModel(planet_cal_duration=0.0)
+        parked = CalibrationState().needs_calibration(
+            t, CalibrationPolicy(planet_targets=("jupiter",)), overhead
+        )
+        scanned = CalibrationState().needs_calibration(
+            t, CalibrationPolicy(planet_targets=("jupiter",), planet_cal_scan=True), overhead
+        )
+        assert "planet_cal" not in [c.name for c in parked]
+        assert [(c.name, c.duration, c.target) for c in scanned if c.name == "planet_cal"] == [
+            ("planet_cal", 0.0, "jupiter")
+        ]
+
+    def test_the_survey_scheduler_runs_without_them(self):
+        """The model that holds no retune or skydip on a calibration night does here too."""
+        deep56 = ObservingPatch(
+            name="Deep56",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=40.0,
+            height=10.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=50.0,
+        )
+        timeline = generate_timeline(
+            patches=[deep56],
+            site=get_fyst_site(),
+            start_time="2026-06-15T00:00:00",
+            end_time="2026-06-15T01:00:00",
+            overhead_model=OverheadModel(retune_duration=0.0, skydip_duration=0.0),
+        )
+        names = {b.patch_name for b in timeline.calibration_blocks}
+        assert names
+        assert not names & {"retune", "skydip"}

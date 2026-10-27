@@ -25,6 +25,7 @@ from .policy import (
     _policy_from_record,
     read_calibration_night_metadata,
 )
+from .state import _opens_visit
 
 __all__ = [
     "BodySummary",
@@ -41,7 +42,7 @@ __all__ = [
 ]
 
 
-def _minutes(seconds: float) -> float:
+def _in_minutes(seconds: float) -> float:
     return seconds / 60.0
 
 
@@ -278,13 +279,13 @@ def summarize_calibration_night(timeline: ObservingTimeline) -> NightSummary:
             previous_pass_body = None
         elif block.block_type == BlockType.IDLE:
             idle += block.duration
-            idle_reasons[str(block.metadata.get("reason", "unlabelled"))] += _minutes(
+            idle_reasons[str(block.metadata.get("reason", "unlabelled"))] += _in_minutes(
                 block.duration
             )
         elif _is_pass(block):
             body = str(block.metadata.get("target"))
             per_body[body].append(block)
-            if previous_pass_body != body:
+            if previous_pass_body != body or _opens_visit(block):
                 visits[body] += 1
             previous_pass_body = body
         elif block.block_type == BlockType.CALIBRATION:
@@ -304,7 +305,7 @@ def summarize_calibration_night(timeline: ObservingTimeline) -> NightSummary:
                 body=body,
                 visits=visits.get(body, 0),
                 passes=len(passes),
-                minutes_on_source=_minutes(sum(b.duration for b in passes)),
+                minutes_on_source=_in_minutes(sum(b.duration for b in passes)),
                 mean_duty_cycle=sum(duty) / len(duty) if duty else 0.0,
                 requested=tuple(dict(b.metadata.get("requested", {})) for b in passes),
                 applied=tuple(dict(b.metadata.get("applied", {})) for b in passes),
@@ -321,9 +322,9 @@ def summarize_calibration_night(timeline: ObservingTimeline) -> NightSummary:
         usable_interval=None if usable is None else (usable[0], usable[1]),
         targets=tuple(meta["targets"]),
         bodies=tuple(bodies),
-        tuning_minutes=_minutes(tuning),
-        slew_minutes=_minutes(slew),
-        idle_minutes=_minutes(idle),
+        tuning_minutes=_in_minutes(tuning),
+        slew_minutes=_in_minutes(slew),
+        idle_minutes=_in_minutes(idle),
         idle_reasons=dict(idle_reasons),
         deferrals=tuple(meta["deferrals"]),
         drops=tuple(meta["drops"]),
@@ -452,21 +453,21 @@ def dispatch_sheet(timeline: ObservingTimeline) -> str:
         start = span.start.iso[:19]
         duration = f"{span.seconds / 60.0:7.1f} min"
         if _is_pass(block):
-            params = dict(block.metadata.get("scan_params", {}))
-            transition = block.metadata.get("transition", {})
+            record = _pass_record(span, previous)
+            params = dict(record["scan_params"])
             lines.append(
                 f"{n:6d}  {start}  {duration}  source_scan on {params.get('body')}: "
-                f"mode {params.get('mode')}, el_bore {float(params.get('el_bore', 0.0)):.2f} deg, "
-                f"visit wrap az {float(transition.get('wrap', block.az_start)):.1f} deg, "
-                f"legs {block.metadata.get('n_legs')}, "
-                f"duty {float(block.metadata.get('science_fraction', 0.0)):.0%}; "
+                f"mode {record['mode']}, el_bore {float(record['el_bore'] or 0.0):.2f} deg, "
+                f"visit wrap az {record['wrap_az']:.1f} deg, "
+                f"legs {record['n_legs']}, "
+                f"duty {float(record['science_fraction'] or 0.0):.0%}; "
                 f"slack {_pass_slack(previous):.0f} s; elapsed ______"
             )
             lines.append(
                 f"        scan_params={json.dumps(params, sort_keys=True)}  "
-                f"scheduled_t0_unix={_scheduled_t0_unix(span):.3f}"
+                f"scheduled_t0_unix={record['scheduled_t0_unix']:.3f}"
             )
-            unforwarded = _unforwarded_keys(params)
+            unforwarded = record["unforwarded_keys"]
             if unforwarded:
                 lines.append(
                     "        note: confirm the execution layer forwards " + ", ".join(unforwarded)

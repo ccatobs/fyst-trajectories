@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -64,7 +64,10 @@ dev = [
     "numba>=0.57",
     "pytest>=8.0",
     "pytest-cov>=4.0",
-    "ruff>=0.9",
+    # Bump together with the exact pins in .pre-commit-config.yaml and the
+    # lint job of .github/workflows/tests.yml: ruff's formatter style moves
+    # between minor releases.
+    "ruff==0.15.16",
     "pylint>=4.0",
     # Bump together with the exact pin of the typing job in
     # .github/workflows/tests.yml: newer pyright releases add checks.
@@ -76,7 +79,7 @@ dev = [
 ]
 all = [
     "fyst-trajectories[ephemeris,plotting,docs,dev,performance]",
-    "healpy>=1.16; sys_platform != 'win32'",
+    "fyst-trajectories[overhead]; sys_platform != 'win32'",
 ]
 
 [project.urls]
@@ -124,8 +127,9 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# docs/reviews/ is gitignored working material; keep ruff's walk out of it on every platform.
-extend-exclude = ["docs/reviews"]
+# docs/ecosystem/ and docs/reviews/ hold working notes and draft scripts written for other
+# teams, not library code; keep ruff's walk out of them on every platform.
+extend-exclude = ["docs/ecosystem", "docs/reviews"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "D"]
@@ -150,8 +154,6 @@ convention = "numpy"
 # - design metrics: NumPy-style planners take many keyword arguments by
 #   design, and frozen dataclass value types have few methods
 # - duplicate-code: sibling planners/patterns share deliberate structure
-# - import-outside-toplevel: deliberate lazy imports (the matplotlib
-#   boundary in visualization/, cycle-avoiding leaf imports)
 # - line-too-long: ruff owns line length (they disagree only on lines
 #   whose overage is a trailing pragma comment, which ruff exempts)
 # - fixme: TODOs are tracked in the repo docs, not by lint
@@ -165,7 +167,6 @@ disable = [
     "too-many-instance-attributes",
     "too-few-public-methods",
     "duplicate-code",
-    "import-outside-toplevel",
     "line-too-long",
     "fixme",
 ]

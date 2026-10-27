@@ -15,7 +15,6 @@ from astropy import units as u
 from astropy.table import QTable, Table
 from astropy.time import Time
 
-from ..coordinates import Coordinates
 from ..exceptions import PointingWarning
 from ..site import (
     AxisLimits,
@@ -107,9 +106,9 @@ def _encode_retune_events_for_json(meta: dict) -> dict:
     If ``meta`` does not carry the ``retune_events`` key, the input is
     returned unchanged. Otherwise the value (expected to be an iterable of
     :class:`RetuneEvent`) is converted to a list of ``[t_start, duration]``
-    float pairs. Any other JSON-native value is passed through verbatim so
-    callers can construct retune-events entries by hand if they prefer
-    plain Python types.
+    float pairs. An entry that is not a :class:`RetuneEvent` is read as a
+    ``(t_start, duration)`` pair, so callers can build the entries by hand
+    from plain Python types.
     """
     if _RETUNE_EVENTS_META_KEY not in meta:
         return meta
@@ -157,9 +156,15 @@ def write_timeline(
     ``ra_center``, ``dec_center``, ``width``, ``height``, ``velocity``,
     and the JSON payload columns ``scan_params_json`` and
     ``block_meta_json``).
-    ``boresight_angle`` is the TOAST horizon-frame roll
-    (``-nasmyth_sign * elevation``); ``field_rotation`` preserves the
-    block's celestial-frame field rotation in degrees.
+    ``boresight_angle`` holds the roll TOAST's ``SimGround`` applies to the
+    boresight in the az/el frame, one value per row: ``-nasmyth_sign * el``
+    computed from the row's ``el`` column (exact for a constant-elevation
+    row), since TOAST's positive roll turns the focal plane the opposite
+    way to this library's rotation and TOAST adds the parallactic rotation
+    itself. The header key
+    ``boresight_angle_convention`` (``"toast_roll"``) marks the convention;
+    the celestial field rotation of a row is
+    ``Coordinates.get_field_rotation_from_altaz(az, el)``.
     For slew rows ``azmin`` / ``azmax`` carry the from / to azimuths of
     the move and may be unordered; they are true minimum / maximum
     bounds only for science and calibration rows. ``az_final`` holds the
@@ -180,29 +185,28 @@ def write_timeline(
         Timeline to write.
     path : str or Path
         Output file path. Should end in ``.ecsv``.
+
+    Raises
+    ------
+    ValueError
+        If ``timeline.metadata`` holds a key the writer stores itself (the
+        timeline window, the site, overhead and calibration-policy fields,
+        or ``boresight_angle_convention``).
     """
     path = Path(path)
 
+    # TOAST's roll, -nasmyth_sign * el per row, puts a Nasmyth-mounted focal
+    # plane at its mechanical orientation; the docstring states the convention.
+    toast_roll_sign = -timeline.site.nasmyth_sign
     rows = []
     for block in timeline.blocks:
-        # Prefer the stored boresight_angle on the block; fall back to
-        # recomputing from az/el for timelines built without populating
-        # the field (e.g. manually constructed TimelineBlocks).
-        bangle = block.boresight_angle
-        if bangle == 0.0:
-            bangle = Coordinates(timeline.site).get_field_rotation_from_altaz(
-                0.5 * (block.az_start + block.az_end),
-                block.elevation,
-            )
-
         meta = block.metadata
         meta_for_json = _encode_retune_events_for_json(dict(meta))
         rows.append(
             {
                 "start_time": _iso_utc(block.t_start),
                 "stop_time": _iso_utc(block.t_stop),
-                "boresight_angle": -timeline.site.nasmyth_sign * block.elevation,
-                "field_rotation": bangle,
+                "boresight_angle": toast_roll_sign * block.elevation,
                 "name": block.patch_name,
                 "azmin": block.az_start,
                 "azmax": block.az_end,
@@ -261,7 +265,7 @@ def write_timeline(
     # promoted to ``QTable`` at write time (below) so these columns serialize
     # as Quantity mixins, which is what round-trips. ``read_timeline`` reads
     # with a plain ``Table`` and ``float(row[...])``, so it is unaffected.
-    for _deg_col in ("azmin", "azmax", "az_final", "el", "boresight_angle", "field_rotation"):
+    for _deg_col in ("azmin", "azmax", "az_final", "el", "boresight_angle"):
         table[_deg_col].unit = u.deg
 
     # Persist the declared timeline window so total_time / efficiency survive
@@ -272,6 +276,10 @@ def write_timeline(
     table.meta["timeline_start_time"] = _iso_utc(timeline.start_time)
     table.meta["timeline_end_time"] = _iso_utc(timeline.end_time)
     table.meta["timeline_is_empty"] = substituted
+    # Names the convention of the ``boresight_angle`` column; files written
+    # before the key existed hold the celestial field rotation under the
+    # same column name.
+    table.meta["boresight_angle_convention"] = "toast_roll"
     table.meta["site_name"] = timeline.site.name
     table.meta["site_description"] = timeline.site.description
     table.meta["telescope_name"] = timeline.site.name
@@ -280,8 +288,9 @@ def write_timeline(
     table.meta["site_alt"] = timeline.site.elevation * u.m
     # Persist the non-coordinate Site fields that ``_site_from_meta`` would
     # otherwise reset to FYST defaults. nasmyth_port matters most: without it a
-    # custom ``"left"`` port reads back as ``"right"``, negating the mechanical
-    # (elevation) term of the field rotation.
+    # custom ``"left"`` port reads back as ``"right"``, flipping the roll the
+    # ``boresight_angle`` column carries and the mechanical rotation of every
+    # rebuilt pass.
     table.meta["site_nasmyth_port"] = timeline.site.nasmyth_port
     table.meta["site_plate_scale"] = timeline.site.plate_scale
     table.meta["site_sun_enabled"] = timeline.site.sun_avoidance.enabled
@@ -326,6 +335,11 @@ def write_timeline(
     table.meta["calibration_planet_cal_footprint"] = (
         timeline.calibration_policy.planet_cal_footprint
     )
+    clash = sorted(set(timeline.metadata) & set(table.meta))
+    if clash:
+        raise ValueError(
+            f"timeline.metadata keys {clash} are written by write_timeline itself; rename them"
+        )
     table.meta.update(timeline.metadata)
 
     QTable(table).write(str(path), format="ascii.ecsv", overwrite=True)
@@ -458,8 +472,6 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     has_block_type = "block_type" in table.colnames
     has_scan_type = "scan_type" in table.colnames
     has_rising = "rising" in table.colnames
-    has_boresight = "boresight_angle" in table.colnames
-    has_field_rotation = "field_rotation" in table.colnames
     has_metadata = "ra_center" in table.colnames
     has_az_final = "az_final" in table.colnames
 
@@ -519,10 +531,6 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
                 # legal across all union variants.
                 block_meta.update(extra)  # type: ignore[typeddict-item]
 
-        boresight = float(row["boresight_angle"]) if has_boresight else 0.0
-        if has_field_rotation:
-            boresight = float(row["field_rotation"])
-
         # A missing column and a NaN both mean "this block ends at azmax":
         # files written before the column existed read back unchanged.
         az_final: float | None = None
@@ -543,7 +551,6 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
             subscan_index=int(row["subscan_index"]),
             rising=rising,
             scan_type=scan_type,
-            boresight_angle=boresight,
             metadata=block_meta,
             az_final=az_final,
         )
@@ -683,7 +690,6 @@ def _empty_row() -> dict:
         "start_time": _iso_utc(t0),
         "stop_time": _iso_utc(t0),
         "boresight_angle": 0.0,
-        "field_rotation": 0.0,
         "name": "",
         "azmin": 0.0,
         "azmax": 0.0,
@@ -709,6 +715,7 @@ _KNOWN_META_KEYS = frozenset(
         "timeline_start_time",
         "timeline_end_time",
         "timeline_is_empty",
+        "boresight_angle_convention",
         "site_name",
         "site_description",
         "telescope_name",

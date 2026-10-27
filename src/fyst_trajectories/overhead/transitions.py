@@ -76,9 +76,10 @@ class DeferralReason(str, enum.Enum):
     ``UNPLANNABLE``, ``WINDOW_CLOSED``), and the label on an idle stretch
     (``NOTHING_AVAILABLE``, ``SCRIPT_WAITING``, ``WAITING_FOR_PASS``,
     ``WINDOW_CLOSED`` on the stretch a schedule ends with,
-    ``NO_ESCAPE`` when the Sun zone holds the telescope where it sits, and
+    ``NO_ESCAPE`` when the Sun zone holds the telescope where it sits,
     ``UNPLANNABLE`` when the offline scheduler cannot plan a science
-    subscan of the patch it selected).
+    subscan of the patch it selected, and a refused transition's cause
+    when the offline scheduler idles instead of slewing).
     ``NO_WRAP`` and ``LIMITS`` are geometry and drop a target for the
     night; every other refusal passes with time and defers it. Members
     are strings, so they serialise as their values.
@@ -115,12 +116,6 @@ _CAUSE_TO_REASON: dict[str, DeferralReason] = {
     "path_blocked": DeferralReason.SUN_PATH,
 }
 assert set(_CAUSE_TO_REASON) == set(get_args(EncoderSolutionCause))
-
-# The encoder azimuth window is 540 degrees wide, so two azimuths in one
-# coherent frame are never farther apart than that. A larger gap means the
-# caller mixed frames (a raw sky azimuth against an encoder azimuth, or a
-# pose from another wrap convention), which estimate_slew_time cannot detect.
-_FRAME_COHERENCE_LIMIT_DEG = 540.0
 
 
 @dataclass(frozen=True)
@@ -205,6 +200,23 @@ def _default_slew_safe(sun_safe: SunSafePredicate, site: Site) -> SlewSafePredic
         el_speed=limits.elevation.max_velocity,
         el_accel=limits.elevation.max_acceleration,
     )
+
+
+def _require_coherent_frame(current_az: float, az_to: float, site: Site) -> None:
+    """Refuse a chosen azimuth farther from ``current_az`` than the azimuth window is wide.
+
+    Two azimuths in one coherent encoder frame are never farther apart than
+    the window, so a larger gap means the caller mixed frames (a raw sky
+    azimuth against an encoder azimuth), which the slew estimate cannot detect.
+    """
+    limits = site.telescope_limits.azimuth
+    width = limits.max - limits.min
+    if abs(az_to - current_az) > width:
+        raise ValueError(
+            f"current_az={current_az:.3f} and the chosen encoder azimuth {az_to:.3f} are "
+            f"more than {width:.0f} deg apart, so they are not in one "
+            "coherent azimuth frame; pass the current pose in the telescope's encoder frame."
+        )
 
 
 def plan_transition(
@@ -301,9 +313,10 @@ def plan_transition(
     ValueError
         If ``time`` is not scalar, ``settle_time`` or ``hold`` is negative,
         a pose coordinate or a span endpoint is NaN or infinite, the span
-        is malformed, the chosen encoder azimuth lies more than 540 degrees
-        from ``current_az`` (the two are not in one coherent frame), or a
-        detour is requested with a ``slew_safe`` that cannot evaluate a path.
+        is malformed, the chosen encoder azimuth lies farther from
+        ``current_az`` than the azimuth window is wide (the two are not in
+        one coherent frame), or a detour is requested with a ``slew_safe``
+        that cannot evaluate a path.
 
     Examples
     --------
@@ -337,7 +350,7 @@ def plan_transition(
             goal_az,
             goal_el,
             obstime,
-            site,
+            site=site,
             sun_safe=sun_safe,
             slew_safe=slew_safe,
             goal_az_span=goal_az_span,
@@ -351,7 +364,9 @@ def plan_transition(
             # wrap, so the instantaneous solve above prices the leg and this
             # one re-runs the same gate over it. The path check is unchanged:
             # the slew still starts at the grid's first element.
-            duration = estimate_slew_time(current_az, current_el, az_to, el_to, site) + settle_time
+            duration = (
+                estimate_slew_time(current_az, current_el, az_to, el_to, site=site) + settle_time
+            )
             grid = time + TimeDelta([0.0, duration, duration + hold], format="sec")
             solution = _solve(grid)
             az_to, el_to = solution
@@ -372,6 +387,8 @@ def plan_transition(
                 hold=hold,
             )
             if detour is not None:
+                if detour.safe:
+                    _require_coherent_frame(current_az, detour.az_to, site)
                 return detour
         return Transition(
             az_from=current_az,
@@ -383,13 +400,8 @@ def plan_transition(
             cause=cause,
         )
 
-    if abs(az_to - current_az) > _FRAME_COHERENCE_LIMIT_DEG:
-        raise ValueError(
-            f"current_az={current_az:.3f} and the chosen encoder azimuth {az_to:.3f} are "
-            f"more than {_FRAME_COHERENCE_LIMIT_DEG:.0f} deg apart, so they are not in one "
-            "coherent azimuth frame; pass the current pose in the telescope's encoder frame."
-        )
-    duration = estimate_slew_time(current_az, current_el, az_to, el_to, site) + settle_time
+    _require_coherent_frame(current_az, az_to, site)
+    duration = estimate_slew_time(current_az, current_el, az_to, el_to, site=site) + settle_time
     return Transition(
         az_from=current_az,
         el_from=current_el,
@@ -432,8 +444,8 @@ def _plan_detour(
             continue
         az_mid, el_mid = via
         duration = (
-            estimate_slew_time(current_az, current_el, az_mid, el_mid, site)
-            + estimate_slew_time(az_mid, el_mid, az_to, goal_el, site)
+            estimate_slew_time(current_az, current_el, az_mid, el_mid, site=site)
+            + estimate_slew_time(az_mid, el_mid, az_to, goal_el, site=site)
             + settle_time
         )
         if hold > 0.0:
@@ -632,7 +644,9 @@ def plan_escape(
                 continue
             if not sun_safe(az_to, el_to, times[-1]):  # type: ignore[arg-type]
                 continue
-            duration = estimate_slew_time(current_az, current_el, az_to, el_to, site) + settle_time
+            duration = (
+                estimate_slew_time(current_az, current_el, az_to, el_to, site=site) + settle_time
+            )
             key = (float(margins[-1]), -duration)
             if best is None or key > best[0]:
                 best = (

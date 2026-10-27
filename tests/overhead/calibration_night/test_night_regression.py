@@ -74,7 +74,7 @@ def _check_rebuild_and_regate(site, timeline):
             wrap,
             block.elevation,
             t0,
-            site,
+            site=site,
             sun_safe=sun_safe,
             goal_az_span=(block.az_start, block.az_end),
         )

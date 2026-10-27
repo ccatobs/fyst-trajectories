@@ -206,8 +206,9 @@ class Trajectory:
     metadata : TrajectoryMetadata, optional
         Optional metadata about pattern generation.
     scan_flag : np.ndarray or sequence of int or None, optional
-        Per-sample scan phase flag: 0 = unclassified, 1 = constant-velocity
-        science sweep, 2 = turnaround, 3 = retune
+        Per-sample scan phase flag: 0 = unclassified, 1 = science, 2 =
+        turnaround (or any other stretch the pattern moves too slowly to
+        count as science, such as a daisy's start-up ramp), 3 = retune
         pause (``SCAN_FLAG_RETUNE``, written by
         :func:`~fyst_trajectories.retune.inject_retune`). None
         means no flagging info is available. Stored as a one-dimensional

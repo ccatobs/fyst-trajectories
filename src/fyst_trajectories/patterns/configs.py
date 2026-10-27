@@ -159,7 +159,11 @@ class ScanConfig:
     Parameters
     ----------
     timestep : float
-        Time between trajectory points in seconds.
+        Time between trajectory points in seconds. The Daisy samples at exactly
+        this interval; the other patterns place ``round(duration / timestep) + 1``
+        points evenly over ``[0, duration]``, so their interval is
+        ``duration / round(duration / timestep)``, which can fall just below
+        ``timestep``.
 
     Raises
     ------
@@ -421,9 +425,13 @@ class PongAltAzScanConfig(ScanConfig):
 
     Notes
     -----
-    The scan geometry uses a flat-sky (tangent-plane) approximation, so it
-    is accurate for scan dimensions up to about 10 degrees; beyond that,
-    field-edge distortion becomes significant.
+    The mapping applies one azimuth stretch, ``1 / cos(el_center)``, to every
+    row, so the on-sky azimuth extent and speed above hold only on the
+    ``el_center`` row. A row at elevation ``el`` covers
+    ``cos(el) / cos(el_center)`` of its nominal on-sky azimuth extent and
+    speed: for a 10 deg box at ``el_center=60`` the factor runs from 0.85 at
+    the top edge to 1.14 at the bottom, and it grows with ``tan(el_center)``
+    and the box height.
     """
 
     az_center: float
@@ -451,9 +459,9 @@ class PongAltAzScanConfig(ScanConfig):
 class DaisyScanConfig(ScanConfig):
     """Configuration for Daisy (Constant Velocity petal) scan.
 
-    The Daisy pattern is a constant-velocity pattern.
-    The telescope moves in curved petal-shaped paths that repeatedly cross
-    the center of the field.
+    The telescope moves at a constant on-sky speed, after its initial
+    ramp-up, along curved petal-shaped paths that repeatedly cross the
+    center of the field.
 
     Parameters
     ----------
@@ -507,7 +515,8 @@ class DaisyScanConfig(ScanConfig):
     spans ``[0, D - timestep]``, so ``trajectory.duration`` reports
     ``D - timestep``: one timestep short of the other patterns (which span
     ``[0, D]``). This is deliberate: sampling on the integrator grid avoids the
-    ~1% velocity bias that a stretched ``linspace(0, D)`` time axis would inject.
+    velocity bias of about ``timestep / D`` (1% for a 10 s scan at a 0.1 s
+    timestep) that a stretched ``linspace(0, D)`` time axis would inject.
     The per-sample ``times`` array is internally self-consistent, so serialized
     output (``to_path_format``) and ``/path`` dispatch are unaffected.
     """
@@ -603,6 +612,12 @@ class DaisyAltAzScanConfig(ScanConfig):
     turns, exactly as for the celestial Daisy. The duration reporting
     caveat is also shared: a Daisy built with ``.duration(D)`` spans
     ``[0, D - timestep]``, see :class:`DaisyScanConfig`.
+
+    The single azimuth stretch has the same consequence as for
+    :class:`PongAltAzScanConfig`: the on-sky azimuth extent and speed hold
+    only on the ``el_center`` row, and a row at elevation ``el`` covers
+    ``cos(el) / cos(el_center)`` of its nominal on-sky azimuth extent and
+    speed.
     """
 
     az_center: float
@@ -665,7 +680,7 @@ class PlanetTrackConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        body = self.body.lower()
+        body = self.body.lower() if isinstance(self.body, str) else None
         if body not in SOLAR_SYSTEM_BODIES:
             raise ValueError(f"Unknown body '{self.body}'. Valid: {sorted(SOLAR_SYSTEM_BODIES)}")
         # Frozen dataclass: normalise the stored body to lower-case so the
@@ -710,7 +725,7 @@ class SatelliteTrackConfig(ScanConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        body = self.body.lower()
+        body = self.body.lower() if isinstance(self.body, str) else None
         if body not in SATELLITE_BODIES:
             raise ValueError(f"Unknown satellite '{self.body}'. Valid: {sorted(SATELLITE_BODIES)}")
         # Frozen dataclass: normalise the stored body to lower-case so the

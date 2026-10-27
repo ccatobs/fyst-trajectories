@@ -304,17 +304,14 @@ class TestNormalizeAzimuth:
         # A trajectory spanning 600 degrees (wider than 540 degree range)
         az = np.linspace(0, 600, 100)
         # This is already unwrapped (no discontinuities), so unwrap is a no-op
-        with (
-            pytest.warns(PointingWarning, match="Shifted azimuth"),
-            pytest.warns(PointingWarning, match="No 360-degree shift"),
-        ):
+        with pytest.warns(PointingWarning, match="No 360-degree shift"):
             result = normalize_azimuth(az, site)
 
         # The span should be preserved (600 degrees)
         span = result.max() - result.min()
         assert span == pytest.approx(600.0, abs=0.1)
         with pytest.raises(AzimuthBoundsError):
-            validate_trajectory_bounds(site, result, np.full_like(result, 45.0))
+            validate_trajectory_bounds(result, np.full_like(result, 45.0), site=site)
 
     def test_negative_azimuth_input(self):
         """Negative input, outside astropy's [0, 360] convention, passes through unchanged."""
@@ -408,7 +405,7 @@ class TestRewrapTrajectoryAzimuth:
             float(traj.az[0]),
             45.0,
             Time("2026-03-15T12:00:00", scale="utc"),
-            site,
+            site=site,
             goal_az_span=(float(traj.az.min()), float(traj.az.max())),
         )
         commanded = rewrap_trajectory_azimuth(traj, solution.az_shift)

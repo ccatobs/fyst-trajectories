@@ -100,6 +100,19 @@ def plan_pong_scan(
     TrajectoryBoundsError
         If the trajectory exceeds telescope limits.
 
+    Warns
+    -----
+    PointingWarning
+        If the field center is inside the Sun exclusion zone at
+        ``start_time`` (an instant check of the center; the built block is
+        not screened), if :class:`~fyst_trajectories.patterns.PongScanConfig`
+        finds the width, height or velocity unusually large, and when
+        azimuth motion at a high elevation cuts the on-sky azimuth speed.
+        None refuses the plan.
+    VelocityLimitWarning, AccelerationLimitWarning
+        The built trajectory exceeds an axis velocity or acceleration limit
+        (:func:`~fyst_trajectories.trajectory_utils.validate_trajectory_dynamics`).
+
     Examples
     --------
     >>> from astropy.time import Time
@@ -116,6 +129,8 @@ def plan_pong_scan(
     ...     start_time=Time("2026-03-15T01:00:00", scale="utc"),
     ...     timestep=0.1,
     ... )
+    >>> block.computed_params
+    {'period': 240.0..., 'x_numvert': 15, 'y_numvert': 16, 'n_cycles': 1}
     """
     if n_cycles < 1:
         raise ValueError(f"n_cycles must be at least 1, got {n_cycles}")
@@ -289,6 +304,11 @@ def plan_pong_rotation_scans(
         If the target is not observable at the start of a rotation.
     TrajectoryBoundsError
         If a rotation's trajectory exceeds telescope limits.
+
+    Warns
+    -----
+    PointingWarning, VelocityLimitWarning, AccelerationLimitWarning
+        As :func:`plan_pong_scan` warns, once per rotation.
 
     Examples
     --------

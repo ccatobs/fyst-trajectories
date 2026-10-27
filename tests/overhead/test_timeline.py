@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from astropy.time import Time
 
 from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.overhead import (
@@ -14,6 +15,7 @@ from fyst_trajectories.overhead import (
     generate_timeline,
     schedule_to_trajectories,
 )
+from fyst_trajectories.overhead.scheduler import SchedulerContext
 from fyst_trajectories.patterns import PongScanConfig, compute_pong_period
 
 
@@ -318,7 +320,7 @@ class TestGenerateTimeline:
 
 
 class TestTimeStep:
-    """``generate_timeline`` refuses a time step that cannot advance the clock."""
+    """A time step that cannot advance the clock is refused."""
 
     @pytest.mark.parametrize("time_step", [0.0, -1.0, float("nan")])
     def test_a_step_that_is_not_positive_is_refused(self, time_step):
@@ -329,6 +331,17 @@ class TestTimeStep:
                 start_time="2026-06-15T02:00:00",
                 end_time="2026-06-15T02:30:00",
                 time_step=time_step,
+            )
+
+    def test_the_context_refuses_a_step_that_is_not_positive(self):
+        """The refusal sits in ``SchedulerContext.build``, ahead of ``Scheduler.run``."""
+        with pytest.raises(ValueError, match="time_step must be positive"):
+            SchedulerContext.build(
+                patches=[],
+                site=get_fyst_site(),
+                start_time=Time("2026-06-15T02:00:00", scale="utc"),
+                end_time=Time("2026-06-15T02:30:00", scale="utc"),
+                time_step=0.0,
             )
 
 

@@ -27,9 +27,10 @@ Controls the duration of each non-science activity::
 
 ``min_scan_duration`` prevents short, wasteful scans; ``max_scan_duration``
 forces long observations to split into sub-scans, with a retune between
-them whenever one is due (always, at the default ``retune_cadence=0.0``); and
-``beam_map_duration`` starts equal to ``planet_cal_duration`` because beam
-maps run on the same planet targets.
+them whenever one is due (always, at the default ``retune_cadence=0.0``).
+``beam_map_duration`` defaults to the same 600 s as ``planet_cal_duration``
+because beam maps run on the same planet targets; it is a separate field
+and does not follow an override of ``planet_cal_duration``.
 
 A pong sub-scan holds the most whole pattern periods that fit its visit's
 budget, which is at most ``max_scan_duration`` less any retune booked before

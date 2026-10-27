@@ -253,6 +253,19 @@ class TestTrajectoryBuilder:
 
         assert trajectory.pattern_type == "constant_el"
 
+    def test_a_non_finite_centre_is_refused_by_name(self, site):
+        """A NaN RA is refused when the pattern is constructed, naming the field."""
+        builder = (
+            TrajectoryBuilder(site)
+            .at(ra=float("nan"), dec=-30.0)
+            .with_config(_SIDEREAL_CONFIG)
+            .duration(60.0)
+            .starting_at(Time("2026-03-15T04:00:00", scale="utc"))
+        )
+
+        with pytest.raises(ValueError, match="ra must be a finite"):
+            builder.build()
+
 
 class TestBuilderBoundsValidation:
     """Builder must re-validate trajectory bounds after generation.

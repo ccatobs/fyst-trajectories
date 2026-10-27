@@ -463,7 +463,7 @@ class TestPositionContinuity:
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
+            validate_trajectory_dynamics(trajectory.az, trajectory.el, trajectory.times, site=site)
 
         accel_warnings = [
             str(w.message)

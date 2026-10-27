@@ -3,13 +3,13 @@ Installation
 
 **Requires Python 3.10 or higher.**
 
-From GitHub, pinned to a release tag (``v0.11.0`` is the latest; see the
+From GitHub, pinned to a release tag (``v0.12.0`` is the latest; see the
 :doc:`changelog` for versions - pre-1.0, breaking changes arrive only in
 minor releases, never in patches):
 
 .. code-block:: bash
 
-    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.11.0"
+    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.12.0"
 
 Development install
 -------------------
@@ -88,26 +88,16 @@ Cross-validation tests
 ~~~~~~~~~~~~~~~~~~~~~~
 
 Cross-validation tests verify numerical correctness against independent
-implementations. They are gated behind the ``--run-slow`` flag:
+implementations. The Skyfield and Simons Observatory comparisons are gated
+behind the ``--run-slow`` flag:
 
 .. code-block:: bash
 
     pytest tests/ --run-slow
 
 - **Skyfield** - verifies coordinate transforms against an independent astronomy library
+- **Simons Observatory** - compares the source-CES planner with
+  ``schedlib.source.make_source_ces``; it needs ``so3g`` (no Windows build)
+  and upstream ``schedlib``, and is skipped without them
 - **KOSMA** - verifies the focal plane offset model against the KOSMA telescope control
-  system's formulas
-- **scan_patterns** - the AltAz-planner parity tests and the check of the
-  focal-plane projection's absolute sign compare against the ``scanning``
-  package when it is installed and are skipped otherwise, so install it for
-  the full oracle set:
-
-  .. code-block:: bash
-
-      pip install pandas fast-histogram
-      pip install --no-deps "git+https://github.com/ccatobs/scan_patterns.git@refactor/fyst-trajectories"
-
-  ``--no-deps`` is required: that branch pins ``fyst-trajectories`` by URL in
-  its own requirements, so without it pip would replace the checkout under
-  test. ``pandas`` and ``fast-histogram`` are the runtime imports ``--no-deps``
-  skips.
+  system's formulas; these tests are not gated and run with the default suite

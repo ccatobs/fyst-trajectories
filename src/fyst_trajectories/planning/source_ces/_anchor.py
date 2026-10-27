@@ -92,7 +92,7 @@ _ANCHOR_EDGE_STEPS = 3
 # drift >= _ANCHOR_START_LEAD_DEG / 60 s ~ 8.3e-4 deg/s. This supersedes the
 # looser conditioning floor: near transit d(el)/dt -> 0 and the t(el)
 # inversion that places the pass start becomes ill-conditioned; a single
-# PrimeCam module cover spans ~2 * MODULE_FOV_RADIUS_DEG = 1.3 deg in eta, so
+# Prime-Cam module cover spans ~2 * MODULE_FOV_RADIUS_DEG = 1.3 deg in eta, so
 # keeping a module-c pass under ~1 h (3600 s) needs
 # drift >= 1.3 / 3600 ~ 3.6e-4 deg/s. Below the threshold the derivation
 # refuses and asks the caller to anchor away from transit (or pass el_bore
@@ -213,7 +213,7 @@ def _derive_anchored_el_bore(
     atmosphere: AtmosphericConditions | None,
     sampling_step_seconds: float,
     az_accel: float,
-    az_padding: float,
+    az_padding: float | None,
     az_branch: float | None,
 ) -> float:
     """Derive the ``el_bore`` whose pass starts approximately at ``anchor``.
@@ -307,7 +307,8 @@ def _derive_anchored_el_bore(
     """
     sampling_step_seconds = _require_positive(sampling_step_seconds, "sampling_step_seconds")
     az_accel = _require_positive(az_accel, "az_accel")
-    _require_non_negative(az_padding, "az_padding", maximum=AZ_PADDING_MAX_DEG)
+    if az_padding is not None:
+        _require_non_negative(az_padding, "az_padding", maximum=AZ_PADDING_MAX_DEG)
     drift_sign = 1.0 if mode == "rising" else -1.0
     target = el_at_anchor + drift_sign * _ANCHOR_START_LEAD_DEG
     # Whether the source moves in the mode direction at the anchor, which the
@@ -516,18 +517,16 @@ def _resolve_start_time_anchor(
     atmosphere: AtmosphericConditions | None,
     sampling_step_seconds: float,
     az_accel: float,
-    az_padding: float,
+    az_padding: float | None,
     az_branch: float | None,
 ) -> tuple[float, tuple[Time, Time], Literal["rising", "setting"]]:
     """Resolve an approximate ``start_time`` anchor into ``(el_bore, window, mode)``.
 
-    Thin resolution layer that sits in front of the classic search machinery.
     :func:`_resolve_anchor_prefix` handles the shared validation, mode
     resolution, and near-transit guard; this then derives ``el_bore`` so the
     pass starts approximately at the anchor (when it was omitted) and returns
-    a forward search ``window`` opening at the anchor. The caller runs the
-    existing kernel with the returned values, so the classic paths are
-    untouched.
+    a forward search ``window`` opening at the anchor, which the caller
+    hands to the kernel as an explicit window.
     """
     anchor, coords, resolved_mode, el_at_anchor, slope = _resolve_anchor_prefix(
         start_time=start_time,

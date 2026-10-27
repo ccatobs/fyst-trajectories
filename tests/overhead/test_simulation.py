@@ -24,7 +24,7 @@ from fyst_trajectories.overhead.simulation import (
     _slice_to_block_window,
 )
 from fyst_trajectories.overhead.utils import _search_start_record, _search_start_time
-from fyst_trajectories.planning import plan_source_ces
+from fyst_trajectories.planning import plan_daisy_scan, plan_pong_scan, plan_source_ces
 from fyst_trajectories.planning.footprints import resolve_footprint
 
 
@@ -617,3 +617,19 @@ class TestSimulatorErrorTaxonomy:
         )
         with pytest.raises(ScanParamsSchemaError, match="Unknown scan type"):
             _generate_trajectory_for_block(block, site)
+
+
+@pytest.mark.parametrize(
+    ("planner", "table"),
+    [
+        (plan_pong_scan, sim._PONG_REBUILD_DEFAULTS),
+        (plan_daisy_scan, sim._DAISY_REBUILD_DEFAULTS),
+    ],
+)
+def test_rebuild_defaults_repeat_the_planners_own(planner, table):
+    """A rebuild default for a key the planner defaults is the planner's own value."""
+    parameters = inspect.signature(planner).parameters
+    for key, value in table.items():
+        default = parameters[key].default
+        if default is not inspect.Parameter.empty:
+            assert value == default, f"{planner.__name__}({key}=...) defaults to {default}"

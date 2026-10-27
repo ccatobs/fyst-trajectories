@@ -200,9 +200,9 @@ class TestComputePongPeriod:
     """Ground-truth tests for the public ``compute_pong_period`` helper.
 
     ``compute_pong_period`` is exported in ``__all__`` as the canonical entry
-    point for external code (e.g. the scan_patterns cross-validation
-    reference); the Lissajous ``period`` and the two vertex counts it returns
-    are pinned here to hand-derived values.
+    point for external code (e.g. the scan_patterns package); the Lissajous
+    ``period`` and the two vertex counts it returns are pinned here to
+    hand-derived values.
     """
 
     def test_known_square_field_period(self):

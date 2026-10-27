@@ -146,6 +146,7 @@ def _inject_retune_uniform(
     next_due_anchor = float(times[0]) + stagger_offset
 
     generated_events: list[RetuneEvent] = []
+    previous_end = -math.inf
     t0 = float(times[0])
 
     while True:
@@ -155,9 +156,13 @@ def _inject_retune_uniform(
 
         retune_start = due_time
         if prefer_turnarounds and turnaround_starts:
-            retune_start = _snap_to_turnaround(due_time, turnaround_starts, turnaround_window)
+            # Never snap back onto a turnaround an earlier retune already
+            # passed: that would record the same retune twice.
+            ahead = [ta for ta in turnaround_starts if ta >= previous_end]
+            retune_start = _snap_to_turnaround(due_time, ahead, turnaround_window)
 
         retune_end = retune_start + retune_duration
+        previous_end = retune_end
 
         mask = (times >= retune_start) & (times < retune_end) & (scan_flag == SCAN_FLAG_SCIENCE)
         scan_flag[mask] = SCAN_FLAG_RETUNE
@@ -324,9 +329,9 @@ def inject_retune(
 
     The default is ``prefer_turnarounds=False`` (time-based placement),
     which produces uniform coverage. Set to True to snap retunes to nearby
-    turnarounds, which saves only a sliver of science time (~0.04% in the
-    configurations measured) but concentrates gaps at turnaround
-    positions, creating persistent coverage non-uniformity.
+    turnarounds, which saves only a sliver of science time but concentrates
+    gaps at turnaround positions, creating persistent coverage
+    non-uniformity.
 
     Only samples with ``SCAN_FLAG_SCIENCE`` are overwritten with
     ``SCAN_FLAG_RETUNE``; turnaround flags are never modified.
@@ -452,20 +457,22 @@ def inject_retune(
 
     Examples
     --------
-    Uniform cadence::
+    Uniform cadence (``trajectory`` here runs 700 s):
 
-        result = inject_retune(traj, retune_interval=300.0, retune_duration=5.0)
+    >>> result = inject_retune(trajectory)
+    >>> [(event.t_start, event.duration) for event in result.retune_events]
+    [(300.0, 5.0), (605.0, 5.0)]
 
-    Explicit event list (Monte Carlo, log replay, etc.)::
+    Explicit event list (Monte Carlo, log replay, etc.):
 
-        from fyst_trajectories import RetuneEvent
-
-        events = [
-            RetuneEvent(t_start=30.0, duration=5.0),
-            RetuneEvent(t_start=200.0, duration=8.0),
-        ]
-        result = inject_retune(traj, retune_events=events)
-        assert result.retune_events == tuple(events)
+    >>> from fyst_trajectories import RetuneEvent
+    >>> events = [
+    ...     RetuneEvent(t_start=30.0, duration=5.0),
+    ...     RetuneEvent(t_start=200.0, duration=8.0),
+    ... ]
+    >>> result = inject_retune(trajectory, retune_events=events)
+    >>> result.retune_events == tuple(events)
+    True
     """
     # The window applies in both modes, so it is checked before the split.
     if not math.isfinite(turnaround_window) or turnaround_window < 0:

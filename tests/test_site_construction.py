@@ -116,3 +116,7 @@ class TestNasmythPortCanonicalisation:
     def test_unknown_port_still_names_the_value_as_given(self):
         with pytest.raises(ValueError, match="Unknown nasmyth_port 'Middle'"):
             _make_site(nasmyth_port="Middle")
+
+    def test_a_missing_port_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="nasmyth_port must be one of: .*; got None"):
+            _make_site(nasmyth_port=None)

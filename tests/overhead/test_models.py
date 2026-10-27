@@ -145,7 +145,6 @@ class TestObservingPatch:
             az_start=80.0,
             az_end=120.0,
             el=55.0,
-            site=site,
             scan_index=0,
         )
         scan_params = block.metadata["scan_params"]
@@ -167,7 +166,7 @@ class TestCalibrationSpec:
             CalibrationSpec(name="invalid", duration=10.0)
 
     def test_invalid_duration(self):
-        with pytest.raises(ValueError, match="duration must be positive"):
+        with pytest.raises(ValueError, match="duration must be non-negative"):
             CalibrationSpec(name="retune", duration=-1.0)
 
 
@@ -225,6 +224,13 @@ class TestTimelineBlock:
                 scan_index=0,
             )
 
+    @pytest.mark.filterwarnings("ignore:ERFA function:erfa.ErfaWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    def test_a_nan_duration_is_refused(self):
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        with pytest.raises(ValueError, match="t_stop"):
+            TimelineBlock.idle(t0, float("nan"), 0.0, 45.0, 0)
+
     def test_string_block_type_coerced(self):
         t0 = Time("2026-06-15T02:00:00", scale="utc")
         block = TimelineBlock(
@@ -271,7 +277,6 @@ class TestTimelineBlockFactories:
             duration=180.0,
             az=120.0,
             el=45.0,
-            site=site,
             scan_index=3,
             target=None,
         )
@@ -292,7 +297,6 @@ class TestTimelineBlockFactories:
             duration=600.0,
             az=90.0,
             el=30.0,
-            site=site,
             scan_index=0,
             target="jupiter",
         )
@@ -306,7 +310,6 @@ class TestTimelineBlockFactories:
             duration=60.0,
             az=10.0,
             el=20.0,
-            site=site,
             scan_index=7,
         )
         assert block.block_type is BlockType.IDLE
@@ -325,7 +328,6 @@ class TestTimelineBlockFactories:
             az_start=100.0,
             az_end=160.0,
             el=40.0,
-            site=site,
             scan_index=2,
             patch_name="slew_to_deep56",
         )
@@ -355,7 +357,6 @@ class TestTimelineBlockFactories:
             az_start=80.0,
             az_end=120.0,
             el=55.0,
-            site=site,
             scan_index=4,
             subscan_index=2,
             rising=False,
@@ -383,7 +384,6 @@ class TestTimelineBlockFactories:
             az_start=100.0,
             az_end=160.0,
             el=45.0,
-            site=site,
             scan_index=1,
         )
         assert block.block_type is BlockType.CALIBRATION
@@ -414,7 +414,6 @@ class TestTimelineBlockFactories:
             duration=420.0,
             az=48.0,
             el=35.0,
-            site=site,
             scan_index=2,
             target="jupiter",
             az_end=52.0,
@@ -448,7 +447,6 @@ class TestTimelineBlockFactories:
             duration=600.0,
             az=90.0,
             el=30.0,
-            site=site,
             scan_index=0,
             target="saturn",
         )
@@ -471,7 +469,6 @@ class TestTimelineBlockFactories:
                 duration=600.0,
                 az=90.0,
                 el=30.0,
-                site=site,
                 scan_index=0,
                 extra_metadata={"sceince_fraction": 0.9},
             )
@@ -551,6 +548,21 @@ class TestCalibrationPolicy:
         """``planet_cal_scan`` with an empty ``planet_targets`` is refused."""
         with pytest.raises(ValueError, match="planet_targets"):
             CalibrationPolicy(planet_targets=(), planet_cal_scan=True)
+
+    def test_a_single_planet_name_as_a_str_is_refused(self):
+        """A bare str would be split into characters; a one-name tuple constructs."""
+        with pytest.raises(ValueError, match="planet_targets must be a sequence"):
+            CalibrationPolicy(planet_targets="jupiter")
+        assert CalibrationPolicy(planet_targets=("jupiter",)).planet_targets == ("jupiter",)
+
+    def test_a_nan_planet_cal_passes_is_refused(self):
+        with pytest.raises(ValueError, match="planet_cal_passes"):
+            CalibrationPolicy(planet_cal_passes=float("nan"))
+
+    @pytest.mark.parametrize("min_el", [float("nan"), -91.0, 91.0])
+    def test_a_planet_min_elevation_outside_the_sky_is_refused(self, min_el):
+        with pytest.raises(ValueError, match="planet_min_elevation"):
+            CalibrationPolicy(planet_min_elevation=min_el)
 
 
 class TestBeamMapScheduling:
@@ -926,13 +938,11 @@ class TestObservingTimeline:
     def test_end_pose_az_defaults_to_az_end(self, site):
         """A block without ``az_final`` ends at ``az_end``, as every parked block does."""
         t0 = Time("2026-06-15T02:00:00", scale="utc")
-        parked = TimelineBlock.calibration(
-            "pointing_cal", t0, 180.0, 45.0, 50.0, site, scan_index=0
-        )
+        parked = TimelineBlock.calibration("pointing_cal", t0, 180.0, 45.0, 50.0, scan_index=0)
         assert parked.az_final is None
         assert parked.end_pose_az == parked.az_end == 45.0
         swept = TimelineBlock.calibration(
-            "planet_cal", t0, 600.0, 40.0, 50.0, site, scan_index=0, az_end=60.0, az_final=44.0
+            "planet_cal", t0, 600.0, 40.0, 50.0, scan_index=0, az_end=60.0, az_final=44.0
         )
         assert swept.end_pose_az == 44.0
         # The envelope is untouched, so azmin/azmax and the midpoint

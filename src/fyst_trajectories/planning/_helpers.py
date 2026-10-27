@@ -35,10 +35,16 @@ def _coerce_start_time(start_time: str | Time) -> Time:
         where one instant belongs otherwise fails much later and in
         misleading ways, either as a numpy broadcast error or as a
         target-visibility refusal naming an array of times.
+    TypeError
+        If ``start_time`` is neither a string nor a ``Time``.
     """
     if isinstance(start_time, str):
         return Time(start_time, scale="utc")
-    if isinstance(start_time, Time) and not start_time.isscalar:
+    if not isinstance(start_time, Time):
+        raise TypeError(
+            f"start_time must be an ISO string or an astropy Time, got {type(start_time).__name__}"
+        )
+    if not start_time.isscalar:
         raise ValueError(
             f"start_time must be a single instant, got a Time of shape {start_time.shape}"
         )

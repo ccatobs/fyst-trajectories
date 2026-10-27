@@ -98,6 +98,22 @@ class TestPlanConstantElScan:
         assert rising.computed_params["az_stop"] < 180.0
         assert setting.computed_params["az_start"] > 180.0
 
+    def test_a_tt_start_time_records_utc_times(self, site, ecdfs_field, search_time, ecdfs_block):
+        """The recorded times and the summary are UTC whatever scale ``start_time`` is in."""
+        block = plan_constant_el_scan(
+            field=ecdfs_field,
+            elevation=50.0,
+            velocity=0.5,
+            site=site,
+            start_time=search_time.tt,
+            rising=True,
+            angle=170.0,
+        )
+
+        for key in ("start_time_iso", "end_time_iso"):
+            assert block.computed_params[key] == ecdfs_block.computed_params[key]
+        assert block.summary == ecdfs_block.summary
+
     def test_string_start_time(self, site, ecdfs_field):
         block = plan_constant_el_scan(
             field=ecdfs_field,
@@ -915,7 +931,6 @@ class TestPlanConstantElLsaWindow:
             az_start=0.0,
             az_end=10.0,
             el=50.0,
-            site=site,
             scan_index=0,
         )
         block_list = TimelineBlock.science(
@@ -925,7 +940,6 @@ class TestPlanConstantElLsaWindow:
             az_start=0.0,
             az_end=10.0,
             el=50.0,
-            site=site,
             scan_index=0,
         )
 

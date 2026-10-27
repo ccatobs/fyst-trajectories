@@ -11,12 +11,12 @@ observing-night overhead simulator, and a calibration-night planner.
 
 ## Installation
 
-Pin a release tag (`v0.11.0` is the latest; the
+Pin a release tag (`v0.12.0` is the latest; the
 [changelog](https://fyst-trajectories.readthedocs.io/en/latest/changelog.html)
 lists what each release changes).
 
 ```bash
-pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.11.0"
+pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.12.0"
 ```
 
 ## Development
@@ -28,13 +28,4 @@ pip install -e ".[dev]"
 
 pytest tests/
 ruff check . && ruff format --check .
-```
-
-### Cross-validation tests
-
-Cross-validation tests verify correctness against independent implementations.
-They are gated behind the `--run-slow` flag:
-
-```bash
-pytest tests/ --run-slow
 ```

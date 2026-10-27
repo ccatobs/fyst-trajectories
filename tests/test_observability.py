@@ -228,6 +228,15 @@ def test_fixed_target(coordinates):
     assert r.windows
 
 
+def test_caller_catalogue_keyed_in_any_case_resolves():
+    """A caller catalogue keyed in upper case resolves by its own key and lower-cased."""
+    extra = {"PKS1510": Target("PKS1510", TargetKind.FIXED, ra_deg=228.2, dec_deg=-9.1)}
+    for query in ("PKS1510", "pks1510"):
+        r = check_observability([query], T_NIGHT, site=get_fyst_site(), extra_targets=extra)[0]
+        assert r.target is extra["PKS1510"]
+    assert resolve_target("Pks1510", extra=extra) is extra["PKS1510"]
+
+
 def test_fixed_target_rejects_non_finite_ra():
     """A FIXED target with a NaN ra_deg is refused at construction."""
     with pytest.raises(ValueError, match="finite"):
@@ -683,6 +692,11 @@ class TestHorizonArgumentFiniteness:
         """NaN and infinity raise, naming the argument."""
         with pytest.raises(ValueError, match="horizon_hours must be a finite value"):
             check_observability(["jupiter"], self.TIME, horizon_hours=horizon)
+
+    def test_negative_horizon_is_refused(self):
+        """A negative horizon raises, as in ``sun_events``, rather than running instant-only."""
+        with pytest.raises(ValueError, match=r"horizon_hours must be a finite value >= 0, got -3"):
+            check_observability(["jupiter"], self.TIME, horizon_hours=-3.0)
 
     def test_non_finite_step_is_refused(self):
         """A NaN step with a real horizon raises rather than building a bad grid."""

@@ -47,7 +47,6 @@ from .._types import ArrayFootprint, ScanBlock, SourceCESComputedParams
 from ..footprints import offset_footprint_eta, resolve_footprint
 from ._anchor import _derive_anchored_el_bore, _resolve_anchor_prefix, _resolve_start_time_anchor
 from ._kernel import (
-    _DEFAULT_AZ_PADDING_DEG,
     _DEFAULT_SEARCH_HORIZON_HOURS,
     _compute_source_ces_core,
     _SourceCESCore,
@@ -83,7 +82,7 @@ def _resolve_and_compute(
     atmosphere: AtmosphericConditions | None,
     sampling_step_seconds: float,
     az_accel: float,
-    az_padding: float,
+    az_padding: float | None,
     az_branch: float | None,
     allow_partial: bool,
     v_az: float | None,
@@ -176,7 +175,7 @@ def compute_source_ces_params(
     # --- Algorithm ---
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
+    az_padding: float | None = None,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
@@ -240,15 +239,14 @@ def compute_source_ces_params(
     az_accel : float, optional
         Azimuth acceleration in deg/s^2. Default 1.0.
     az_padding : float, optional
-        Extra azimuth padding on each side, in degrees. Default 0.5. Must lie in ``[0, 360]``.
+        Extra azimuth padding on each side, in degrees. ``None`` (default)
+        pads by 0.5. Must lie in ``[0, 360]``; an explicit value, 0.5
+        included, cannot be combined with ``az_throw``.
     az_branch : float, optional
         Centre of azimuth wrap branch.
     allow_partial : bool, optional
         If ``True``, downgrade footprint-not-fully-covered to a warning.
-        With ``start_time`` and no ``el_bore``, ``el_bore`` is derived the
-        same either way and puts the cover's near side after the anchor,
-        so the clip can fall only where the source turns before it
-        crosses the whole cover.
+        See :func:`plan_source_ces`.
     v_az : float, optional
         Override the solved azimuth drift rate (deg/s; a mount-frame
         azimuth coordinate rate, not an on-sky speed).
@@ -261,35 +259,14 @@ def compute_source_ces_params(
         (see :func:`~fyst_trajectories.sun_models.make_sun_safe`) is honored.
         Warn-only either way.
     az_speed : float, optional
-        Per-leg azimuth speed of the sweep in deg/s. ``None`` (default)
-        derives it so a single azimuth leg spans the scanned window,
-        floored at a slow drag; an explicit value makes the
-        sweep a fast drag at that speed. Distinct from ``v_az``: ``v_az``
-        is the slow drift that keeps the window on the source, ``az_speed``
-        is how fast the telescope crosses the window within it. Recorded
-        as ``computed_params["az_speed"]`` either way.
+        Per-leg azimuth speed of the sweep in deg/s; ``None`` (default)
+        derives it. See :func:`plan_source_ces`.
     az_throw : float, optional
-        Width of the swept azimuth window in degrees. ``None`` (default)
-        uses the solved footprint crossing plus ``az_padding`` on each
-        side; an explicit value replaces that padded throw, re-centred on
-        the solved window, and cannot be combined with an explicit
-        ``az_padding``. A value narrower than the footprint crossing warns
-        (the source leaves the window during the pass).
+        Width of the swept azimuth window in degrees; ``None`` (default)
+        uses the padded footprint crossing. See :func:`plan_source_ces`.
     dwell : float, optional
-        Time on source in seconds. ``None`` (default) scans the whole
-        footprint crossing; an explicit value narrows the solved pass
-        symmetrically about the crossing midpoint, so ``t0_iso`` and
-        ``t1_iso`` report the narrowed source window and
-        ``computed_params["crossing_seconds"]`` keeps the full crossing.
-        ``duration`` is that window quantised to whole azimuth legs, so
-        it agrees with ``t1_iso - t0_iso`` only to within half a leg plus
-        turnaround (about 26 s on the slow-drag default, a few seconds at
-        a fast drag). A value longer than the crossing is rejected (every
-        extra second has the source outside the footprint), one shorter
-        than ``sampling_step_seconds`` is rejected as unresolvable, and a
-        shorter one in between warns as a partial pass. With
-        ``start_time`` anchoring the anchor places the full crossing, so
-        the narrowed pass starts half the cut later.
+        Time on source in seconds; ``None`` (default) scans the whole
+        footprint crossing. See :func:`plan_source_ces`.
 
     Returns
     -------
@@ -381,7 +358,7 @@ def compute_source_ces_params(
 
     Examples
     --------
-    Compute source-CES scalars for a Jupiter rising scan on PrimeCam's
+    Compute source-CES scalars for a Jupiter rising scan on Prime-Cam's
     centre module, without building the trajectory:
 
     >>> from astropy.time import Time
@@ -395,7 +372,10 @@ def compute_source_ces_params(
     ...     mode="rising",
     ...     site=get_fyst_site(),
     ... )
-    >>> # params is a SourceCESComputedParams (TypedDict / plain dict).
+    >>> params["mode"], params["n_scans"], params["t0_iso"][:19]
+    ('rising', 11, '2026-03-15 21:53:25')
+    >>> round(params["crossing_seconds"], 1), round(params["duration"], 1)
+    (581.4, 569.9)
     """
     core = _resolve_and_compute(
         source=_SourceSpec(
@@ -485,7 +465,7 @@ def plan_source_ces(
     timestep: float = 0.1,
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
+    az_padding: float | None = None,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
@@ -527,10 +507,10 @@ def plan_source_ces(
         Specification of the on-sky cover that the source must traverse.
         Accepted forms:
 
-        * **InstrumentOffset** - a single offset (e.g. one PrimeCam
+        * **InstrumentOffset** - a single offset (e.g. one Prime-Cam
           module). Built as a 50-vertex circle around ``(dx, dy)``
           with radius :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG`.
-        * **str** - a named PrimeCam module ("c", "i1", ...); resolved
+        * **str** - a named Prime-Cam module ("c", "i1", ...); resolved
           via :func:`~fyst_trajectories.primecam.get_primecam_offset`.
         * **sequence of InstrumentOffset** - one entry per module;
           footprint is the union of per-module circles; the aggregate
@@ -553,7 +533,7 @@ def plan_source_ces(
         a dict sent to one carries the request, not the recorded value.
     window : (Time, Time), optional
         Explicit ``(t_start, t_end)`` search window. Mutually exclusive
-        with ``night``/``mode``.
+        with ``night``; ``mode`` is optional with it (see ``mode``).
     night : Time, optional
         Start of the search window. Used with ``mode`` to pick the
         first rising or setting pass of the source within the next
@@ -605,9 +585,11 @@ def plan_source_ces(
         Azimuth acceleration for the executed scan, deg/s^2. Default
         1.0 (FYST conservative).
     az_padding : float, optional
-        Extra azimuth padding on each side of the solved
-        ``[az_start, az_start + az_throw]`` interval, in degrees.
-        Default 0.5. Must lie in ``[0, 360]``.
+        Extra azimuth padding on each side of the solved footprint
+        crossing, in degrees; the returned ``az_start`` and ``az_throw``
+        include it. ``None`` (default) pads by 0.5. Must lie in ``[0, 360]``; an
+        explicit value, 0.5 included, cannot be combined with
+        ``az_throw``.
     az_branch : float, optional
         Centre of the azimuth wrap branch. If given, ``az_start`` is
         re-expressed in ``[az_branch - 180, az_branch + 180)``.
@@ -648,8 +630,8 @@ def plan_source_ces(
         Width of the swept azimuth window in degrees. ``None`` (default)
         uses the solved footprint crossing plus ``az_padding`` on each
         side; an explicit value replaces that padded throw, re-centred on
-        the solved window, and cannot be combined with an explicit
-        ``az_padding``. A value narrower than the footprint crossing warns
+        the solved window, and cannot be combined with an ``az_padding``
+        (leave it ``None``). A value narrower than the footprint crossing warns
         (the source leaves the window during the pass).
     dwell : float, optional
         Time on source in seconds. ``None`` (default) scans the whole
@@ -776,7 +758,7 @@ def plan_source_ces(
 
     Examples
     --------
-    Plan a Jupiter rising CES on PrimeCam's centre module:
+    Plan a Jupiter rising CES on Prime-Cam's centre module:
 
     >>> from astropy.time import Time
     >>> from fyst_trajectories import get_fyst_site
@@ -799,6 +781,10 @@ def plan_source_ces(
     ...     start_time=Time("2026-03-15T21:41:00", scale="utc"),
     ...     site=get_fyst_site(),
     ... )
+    >>> block.computed_params["mode"], block.computed_params["t0_iso"][:19]
+    ('rising', '2026-03-15 21:41:20')
+    >>> round(block.computed_params["el_bore"], 2)
+    33.29
     """
     core = _resolve_and_compute(
         source=_SourceSpec(
@@ -888,10 +874,10 @@ def plan_source_ces(
     )
     # Post-drift bounds check. validate_trajectory_bounds raises
     # AzimuthBoundsError / ElevationBoundsError on violation.
-    validate_trajectory_bounds(site, trajectory.az, trajectory.el)
+    validate_trajectory_bounds(trajectory.az, trajectory.el, site=site)
     # Post-drift dynamics check (advisory): the drift adds v_az to every
     # leg velocity, so the limits are judged on the returned trajectory.
-    validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
+    validate_trajectory_dynamics(trajectory.az, trajectory.el, trajectory.times, site=site)
 
     summary = (
         f"Source-CES on {source_label} ({mode_resolved}) at el_bore={el_bore:.2f} deg\n"
@@ -949,7 +935,7 @@ def plan_source_ces_passes(
     timestep: float = 0.1,
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
+    az_padding: float | None = None,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
@@ -1065,7 +1051,9 @@ def plan_source_ces_passes(
     az_accel : float, optional
         Azimuth acceleration in deg/s^2. Default 1.0.
     az_padding : float, optional
-        Extra azimuth padding per side in degrees. Default 0.5. Must lie in ``[0, 360]``.
+        Extra azimuth padding per side in degrees. ``None`` (default) pads
+        by 0.5. Must lie in ``[0, 360]``; an explicit value, 0.5 included,
+        cannot be combined with ``az_throw``.
     az_branch : float, optional
         Centre of the azimuth wrap branch.
     allow_partial : bool, optional
@@ -1129,7 +1117,7 @@ def plan_source_ces_passes(
 
     Examples
     --------
-    Three Jupiter-rising passes tiling PrimeCam's centre module:
+    Three Jupiter-rising passes tiling Prime-Cam's centre module:
 
     >>> from astropy.time import Time
     >>> from fyst_trajectories import get_fyst_site

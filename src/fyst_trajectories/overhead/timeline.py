@@ -98,14 +98,40 @@ def generate_timeline(
     fyst_trajectories.overhead.plan_calibration_night : one night of
         solar-system calibration passes planned back to back over a body
         queue; shares this simulator's block model and outputs.
-    """
-    if isinstance(start_time, str):
-        start_time = Time(start_time, scale="utc")
-    if isinstance(end_time, str):
-        end_time = Time(end_time, scale="utc")
-    if not time_step > 0:
-        raise ValueError(f"time_step must be positive, got {time_step}")
 
+    Examples
+    --------
+    Generate a one-night timeline:
+
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.overhead import (
+    ...     ObservingPatch,
+    ...     compute_budget,
+    ...     generate_timeline,
+    ... )
+    >>> site = get_fyst_site()
+    >>> patches = [
+    ...     ObservingPatch(
+    ...         name="Deep56",
+    ...         ra_center=24.0,
+    ...         dec_center=-32.0,
+    ...         width=40.0,
+    ...         height=10.0,
+    ...         scan_type="constant_el",
+    ...         velocity=1.0,
+    ...         elevation=50.0,
+    ...     ),
+    ... ]
+    >>> timeline = generate_timeline(
+    ...     patches=patches,
+    ...     site=site,
+    ...     start_time="2026-06-15T00:00:00",
+    ...     end_time="2026-06-15T12:00:00",
+    ... )
+    >>> stats = compute_budget(timeline)
+    >>> print(f"Efficiency: {stats['efficiency']:.1%}")
+    Efficiency: 23.7%
+    """
     ctx = SchedulerContext.build(
         patches=patches,
         site=site,

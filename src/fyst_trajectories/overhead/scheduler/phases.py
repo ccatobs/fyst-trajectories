@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from astropy.time import Time, TimeDelta
 
-from ...coordinates import Coordinates
 from ...exceptions import PointingError, PointingWarning
 from ...planning import plan_source_ces_passes
 from ...sun_models import make_sun_safe
@@ -217,7 +216,6 @@ def _idle_tick(
         duration=advance,
         az=state.current_az,
         el=state.current_el,
-        site=ctx.site,
         scan_index=state.scan_counter,
         reason=reason,
     )
@@ -279,7 +277,6 @@ def _planet_cal_pass_block(
     t_start: Time,
     scan_index: int,
     subscan_index: int,
-    site: Site,
     az_shift: float,
     search_start: Time,
 ) -> tuple[TimelineBlock, Time, float, float]:
@@ -345,7 +342,6 @@ def _planet_cal_pass_block(
         duration=(t_stop - t_start).sec,
         az=env_lo,
         el=el_bore,
-        site=site,
         scan_index=scan_index,
         target=cal_spec.target,
         az_end=env_hi,
@@ -559,7 +555,6 @@ def _emit_planet_cal_passes(
                 az_start=state.current_az,
                 az_end=transition.az_to,
                 el=transition.el_to,
-                site=ctx.site,
                 scan_index=state.scan_counter,
                 patch_name=f"slew_to_{target}",
             )
@@ -575,7 +570,6 @@ def _emit_planet_cal_passes(
             t_start=t_start,
             scan_index=state.scan_counter,
             subscan_index=position,
-            site=ctx.site,
             az_shift=shift,
             search_start=anchor,
         )
@@ -644,7 +638,6 @@ def _shortest_subscan_fits(
 
 def _emit_retune_block(
     state: SchedulerState,
-    ctx: SchedulerContext,
     spec: CalibrationSpec,
     az_start: float,
     az_end: float,
@@ -657,7 +650,6 @@ def _emit_retune_block(
         az_start=az_start,
         az_end=az_end,
         el=el,
-        site=ctx.site,
         scan_index=state.scan_counter,
     )
     state = state.advanced(
@@ -745,7 +737,6 @@ class CalibrationPhase(Phase):
                 duration=cal_duration,
                 az=state.current_az,
                 el=state.current_el,
-                site=ctx.site,
                 scan_index=state.scan_counter,
                 target=cal_spec.target,
             )
@@ -810,7 +801,7 @@ class PatchSelectionPhase(Phase):
     ``best_az``, ``best_el`` in the result so downstream phases can
     consume them. ``best_az`` is placed in the telescope's cable-wrap
     window on the representative nearest the current pose, so the
-    slew and boresight math downstream operate in one coherent frame.
+    slew and the scan-range math downstream operate in one coherent frame.
     """
 
     def run(
@@ -893,7 +884,7 @@ class PatchSelectionPhase(Phase):
         # Normalize the winning azimuth into the telescope's cable-wrap window
         # before it flows to SlewPhase / ScienceScanPhase. Raw astropy azimuth
         # is in [0, 360); leaving it unnormalized inflates a north-straddling
-        # slew distance and flips the slew boresight angle by ~180 deg.
+        # slew distance.
         return PhaseResult(
             state=state,
             blocks=[],
@@ -1054,7 +1045,6 @@ class SlewPhase(Phase):
                 az_start=state.current_az,
                 az_end=transition.az_to,
                 el=transition.el_to,
-                site=ctx.site,
                 scan_index=state.scan_counter,
                 patch_name=f"slew_to_{best_patch.name}",
             )
@@ -1117,7 +1107,9 @@ class SlewPhase(Phase):
         return env_lo + 360.0 * turns, env_hi + 360.0 * turns
 
 
-def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock | None:
+def _record_executed_azimuth(
+    block: TimelineBlock, site: Site, wrap_ref: float
+) -> TimelineBlock | None:
     """Re-record a science subscan's azimuths from its own trajectory.
 
     A subscan is emitted with the tick's scalar estimate of its azimuth
@@ -1127,8 +1119,10 @@ def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock 
     wider. The subscan's own trajectory is therefore built here, through
     the same reconstruction path a consumer of the finished timeline
     uses, and its azimuth envelope and last sample replace the estimate,
-    so a recorded block and a rebuilt one cannot disagree. This is the
-    same rule the swept calibration blocks follow.
+    so a recorded block and a rebuilt one cover the same sky. The envelope
+    is recorded in the wrap the slew placed the visit on, as a
+    planet-calibration pass's is; ``scan_params`` keep the planner's own
+    solution, so a rebuild returns the trajectory in the planner's wrap.
 
     Returns ``None`` when the trajectory cannot be built (any refusal the
     reconstruction path itself would log and skip): the planner cannot
@@ -1150,18 +1144,18 @@ def _record_executed_azimuth(block: TimelineBlock, site: Site) -> TimelineBlock 
     az = scan_block.trajectory.az
     if az.size == 0:
         return block
-    env_lo, env_hi = float(np.min(az)), float(np.max(az))
-    az_final = float(az[-1])
+    # The envelope and end pose are recorded in the wrap the slew placed the
+    # visit on (``wrap_ref`` is the science window's midpoint in that wrap),
+    # the one the telescope executes; ``scan_params`` keep the planner's own
+    # solution, as a planet-calibration pass does.
+    shift = 360.0 * round((wrap_ref - 0.5 * (float(np.min(az)) + float(np.max(az)))) / 360.0)
+    env_lo, env_hi = float(np.min(az)) + shift, float(np.max(az)) + shift
+    az_final = float(az[-1]) + shift
     return dataclasses.replace(
         block,
         az_start=env_lo,
         az_end=env_hi,
         az_final=None if az_final == env_hi else az_final,
-        # The factory evaluates the boresight angle at the midpoint of the
-        # recorded range, so the widened range moves it too.
-        boresight_angle=Coordinates(site).get_field_rotation_from_altaz(
-            0.5 * (env_lo + env_hi), block.elevation
-        ),
     )
 
 
@@ -1211,7 +1205,6 @@ def _plan_science_subscan(
             az_start=az_start,
             az_end=az_end,
             el=el,
-            site=site,
             scan_index=scan_index,
             subscan_index=subscan_index,
             rising=rising,
@@ -1221,7 +1214,7 @@ def _plan_science_subscan(
             metadata = dict(block.metadata)
             metadata["scan_params"] = {**block.metadata["scan_params"], "n_cycles": n_cycles}
             block = dataclasses.replace(block, metadata=metadata)
-        recorded = _record_executed_azimuth(block, site)
+        recorded = _record_executed_azimuth(block, site, 0.5 * (az_start + az_end))
         if recorded is not None:
             return recorded, duration
     return None
@@ -1486,7 +1479,7 @@ class ScienceScanPhase(Phase):
 
             if retune_spec is not None:
                 state, retune_block = _emit_retune_block(
-                    state, ctx, retune_spec, az_start_sci, az_end_sci, sci_el
+                    state, retune_spec, az_start_sci, az_end_sci, sci_el
                 )
                 blocks.append(retune_block)
             blocks.append(science_block)

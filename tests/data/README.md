@@ -119,7 +119,7 @@ import shutil; shutil.copyfile(download_file(iers.conf.iers_auto_url, cache=True
 ```
 This is the same forward-maintenance trigger as the de421/Titan excerpt windows.
 
-## `sun_avoidance_parity_e6fa12a.npz` - sun-model parity record (record-replay fixture)
+## `sun_avoidance_parity_baf4e6c.npz` - sun-model parity record (record-replay fixture)
 
 The record half of the sun-model record-replay harness (~17 KB).
 Verdicts and geometric thresholds for every `fyst_trajectories.sun_models` configuration
@@ -136,7 +136,7 @@ el=90), plus the loaded CAD table and the SHA pins.
   requiring bit-equality.
 
 ### Provenance
-- **Generated against:** `ccatobs/sun-avoidance` @ `e6fa12a` (the filename carries the
+- **Generated against:** `ccatobs/sun-avoidance` @ `baf4e6c` (the filename carries the
   pin; `fyst_trajectories.sun_models.SUN_AVOIDANCE_PINNED_SHA` / `CAD_TABLE_SHA256` must
   match the recorded values).
 - **Scalar rows:** pinned 45/50 deg radii (explicit, NOT the site defaults), so a

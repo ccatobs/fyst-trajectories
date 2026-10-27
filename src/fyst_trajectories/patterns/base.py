@@ -12,6 +12,7 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 from astropy.time import Time
 
+from .._validation import _require_finite
 from ..site import AtmosphericConditions, Site
 from ..trajectory import Trajectory, TrajectoryMetadata
 
@@ -152,13 +153,18 @@ class CelestialPattern(_PatternBase):
         Declination of pattern center in degrees.
     requires_start_time : bool
         Always True for celestial patterns (coordinate transforms need time).
+
+    Raises
+    ------
+    ValueError
+        If ``ra`` or ``dec`` is not a finite real number.
     """
 
     requires_start_time: ClassVar[bool] = True
 
     def __init__(self, ra: float, dec: float):
-        self.ra = ra
-        self.dec = dec
+        self.ra = _require_finite(ra, "ra")
+        self.dec = _require_finite(dec, "dec")
 
 
 class AltAzPattern(_PatternBase):

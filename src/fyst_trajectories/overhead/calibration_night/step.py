@@ -225,7 +225,11 @@ def _estimate_anchor(state: NightState, ctx: NightContext, body: str, reserved: 
     for _ in range(2):
         az_body, el_body = ctx.body_altaz(body, t_est)
         slew = estimate_slew_time(
-            state.az, state.el, _normalize_az(az_body, ctx.site, ref=state.az), el_body, ctx.site
+            state.az,
+            state.el,
+            _normalize_az(az_body, ctx.site, ref=state.az),
+            el_body,
+            site=ctx.site,
         )
         t_est = state.t + TimeDelta(slew + settle + reserved, format="sec")
     return t_est
@@ -407,29 +411,34 @@ def plan_visit(
 ) -> VisitPlan:
     """Plan one visit of ``body`` from the current state.
 
-    Resolves the scan geometry (overrides, then the table, then the
-    policy), anchors the passes at now plus the slew and the settle, the
-    reserved detector operations and the policy's dispatch lead (the slew
-    priced to where the body will be at the anchor), plans them with
-    the source-CES kernel on the margined footprint (which solves each
-    pass's throw from that footprint unless a throw is requested), keeps
-    the whole passes that end before the night does and, of the later
-    passes of a multi-pass visit, those that start at least the step to
-    them plus the lead after the previous kept pass ends, checks the
-    solved boresight elevation against the band and the solved crossing
-    against the policy's cap, plans the slew to the first pass in a wrap
-    that holds the pass start clear for the length of that pass,
-    re-anchors once if the slew plus the reserved time overruns the pass
-    start, gates the visit on the Sun (the retune pose,
-    both ends of every pass, the whole planned trajectory, and between
-    passes both poses held through the wait and the step itself, fail
-    closed), and assembles the blocks: the slew, the detector operations
-    at the target pose, then one calibration block per pass carrying a relative
-    dispatch dict and the geometry records. A state whose pose the Sun
-    zone has overtaken is moved out first
-    (:func:`~fyst_trajectories.overhead.plan_escape`): the escape leads
-    the blocks as a slew named ``sun_escape`` and everything after it is
-    planned from the escape pose and arrival time.
+    Plans in this order:
+
+    1. A state whose pose the Sun zone has overtaken is moved out first
+       (:func:`~fyst_trajectories.overhead.plan_escape`): the escape leads
+       the blocks as a slew named ``sun_escape``, and everything after it
+       is planned from the escape pose and arrival time.
+    2. The passes are anchored at now plus the slew (priced to where the
+       body will be at the anchor) and the settle, the reserved detector
+       operations and the policy's dispatch lead.
+    3. The scan geometry is resolved at the body's elevation at that
+       anchor: overrides, then the table, then the policy.
+    4. The passes are planned with the source-CES kernel on the margined
+       footprint, which solves each pass's throw from that footprint
+       unless a throw is requested.
+    5. The whole passes that end before the night does are kept and, of
+       the later passes of a multi-pass visit, those that start at least
+       the step to them plus the lead after the previous kept pass ends.
+    6. The solved boresight elevation is checked against the band and the
+       solved crossing against the policy's cap.
+    7. The slew to the first pass is planned in a wrap that holds the pass
+       start clear for the length of that pass; the visit is re-anchored
+       once if the slew plus the reserved time overruns the pass start.
+    8. The visit is gated on the Sun, failing closed: the retune pose, the
+       whole planned trajectory of every pass and, between passes, both
+       poses held through the wait and the step itself.
+    9. The blocks are assembled: the slew, the detector operations at the
+       target pose, then one calibration block per pass carrying a relative
+       dispatch dict and the geometry records.
 
     Parameters
     ----------
@@ -673,7 +682,7 @@ def _dispatchable_passes(
             float(before.trajectory.el[-1]),
             float(p.trajectory.az[0]),
             float(p.trajectory.el[0]),
-            ctx.site,
+            site=ctx.site,
         )
         if wait >= step + lead:
             kept.append(p)
@@ -755,7 +764,7 @@ def _between_passes_gate(
     times = t_end + TimeDelta(np.concatenate([offsets, offsets]), format="sec")
     if not sweep_sun_safe(ctx.sun_safe, az, el, times):
         return DeferralReason.SUN_POINT
-    step = estimate_slew_time(az_end, el_end, az_next, el_next, ctx.site)
+    step = estimate_slew_time(az_end, el_end, az_next, el_next, site=ctx.site)
     t_last = after.trajectory.start_time - TimeDelta(step, format="sec")
     for t_leave in (t_end, max(t_end, t_last)):
         if not ctx.slew_safe(az_end, el_end, az_next, el_next, t_leave):
@@ -764,7 +773,6 @@ def _between_passes_gate(
 
 
 def _parked(
-    ctx: NightContext,
     cal_type: CalibrationType,
     t: Time,
     duration: float,
@@ -779,7 +787,6 @@ def _parked(
         duration=duration,
         az=az,
         el=el,
-        site=ctx.site,
         scan_index=scan_index,
         extra_metadata=extra or None,
     )
@@ -820,7 +827,6 @@ def _assemble_blocks(
                 az_start=az_from,
                 az_end=pose_az,
                 el=el_bore,
-                site=ctx.site,
                 scan_index=scan_index,
                 patch_name=f"slew_to_{body}",
             )
@@ -831,7 +837,7 @@ def _assemble_blocks(
     for cal_type, duration, extra in operations:
         if duration <= 0.0:
             continue
-        blocks.append(_parked(ctx, cal_type, t, duration, pose_az, el_bore, scan_index, **extra))
+        blocks.append(_parked(cal_type, t, duration, pose_az, el_bore, scan_index, **extra))
         t = blocks[-1].t_stop
 
     esc = escape.transition
@@ -857,7 +863,6 @@ def _assemble_blocks(
                     duration=gap,
                     az=pose_az,
                     el=pose_el,
-                    site=ctx.site,
                     scan_index=scan_index,
                     reason=str(DeferralReason.WAITING_FOR_PASS),
                 )
@@ -968,7 +973,6 @@ def _pass_block(
         duration=float(p.duration),
         az=env_lo,
         el=el_bore,
-        site=ctx.site,
         scan_index=scan_index,
         target=body,
         az_end=env_hi,
@@ -1092,7 +1096,6 @@ def advance_idle(
         duration=seconds,
         az=state.az,
         el=state.el,
-        site=ctx.site,
         scan_index=state.scan_counter,
         reason=str(reason),
     )

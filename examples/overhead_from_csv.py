@@ -9,7 +9,7 @@ timeline it produces is a survey-design artifact, not a schedule that drives a
 live observing night.
 
 The CSV schema is ``name,RA,DEC,width,height,priority,velocity,scan_type``,
-with ``RA`` in sexagesimal hour-angle and ``DEC`` in sexagesimal degrees
+with ``RA`` in sexagesimal hours and ``DEC`` in sexagesimal degrees
 (parsed with :class:`astropy.coordinates.SkyCoord`), ``width`` / ``height``
 in degrees, and ``scan_type`` one of ``constant_el``, ``pong``, or ``daisy``.
 The scheduler multiplies each candidate's selection score by
@@ -71,7 +71,7 @@ def load_patches(csv_path: Path) -> list[ObservingPatch]:
     csv_path : Path
         Path to a CSV with columns ``name``, ``RA``, ``DEC``, ``width``,
         ``height``, ``priority``, ``velocity``, ``scan_type``. ``RA`` is
-        sexagesimal hour-angle; ``DEC`` is sexagesimal degrees.
+        sexagesimal hours; ``DEC`` is sexagesimal degrees.
 
     Returns
     -------

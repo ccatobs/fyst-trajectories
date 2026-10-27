@@ -59,9 +59,9 @@ def plan_calibration_night(
     :class:`~fyst_trajectories.overhead.ObservingTimeline` whose
     calibration blocks carry relative dispatch dicts and the geometry
     records, with the night's inputs and every deferral recorded in its
-    metadata; :func:`summarize_calibration_night` and
-    :func:`dispatch_sheet` read it back. Time comes from the state, never
-    from a clock, so the same inputs plan the same night every time.
+    metadata; :func:`summarize_calibration_night`, :func:`dispatch_sheet`
+    and :func:`dispatch_records` read it back. Time comes from the state,
+    never from a clock, so the same inputs plan the same night every time.
 
     Parameters
     ----------

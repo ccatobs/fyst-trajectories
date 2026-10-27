@@ -190,14 +190,16 @@ def test_wrap_ranking_prefers_path_safe(sun_evening):
     goal_sky_az = (sun_az + 90.0) % 360.0  # ~351: encoder images at 351 and -9
     current_az = sun_az - 65.0  # ~196: the nearer image (351) crosses the Sun
 
-    without = choose_encoder_solution(current_az, goal_el, goal_sky_az, goal_el, T_EVENING, site)
+    without = choose_encoder_solution(
+        current_az, goal_el, goal_sky_az, goal_el, T_EVENING, site=site
+    )
     with_path = choose_encoder_solution(
         current_az,
         goal_el,
         goal_sky_az,
         goal_el,
         T_EVENING,
-        site,
+        site=site,
         slew_safe=make_slew_safe("scalar", site=site),
     )
     assert without == pytest.approx((goal_sky_az, goal_el))  # nearest wrap
@@ -219,7 +221,7 @@ def test_all_paths_blocked_raises_with_detour_hint(sun_evening):
             goal_sky_az,
             45.0,
             T_EVENING,
-            get_fyst_site(),
+            site=get_fyst_site(),
             slew_safe=_BlockAllPaths(),
         )
 
@@ -228,7 +230,7 @@ def test_slew_safe_none_unchanged(sun_evening):
     sun_az, _ = sun_evening
     site = get_fyst_site()
     goal_sky_az = (sun_az + 150.0) % 360.0  # far from the Sun: point-safe goal
-    base = choose_encoder_solution(190.0, 45.0, goal_sky_az, 45.0, T_EVENING, site)
+    base = choose_encoder_solution(190.0, 45.0, goal_sky_az, 45.0, T_EVENING, site=site)
     assert base == pytest.approx((goal_sky_az, 45.0))
 
 

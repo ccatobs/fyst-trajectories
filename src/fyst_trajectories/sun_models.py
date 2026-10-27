@@ -114,7 +114,7 @@ __all__ = [
     "make_sun_safe",
 ]
 
-SUN_AVOIDANCE_PINNED_SHA = "e6fa12aa53ce5f5f76d50f8b753e7fe4b4ad8e18"
+SUN_AVOIDANCE_PINNED_SHA = "baf4e6ccafe8309a3d6991903d008c529807a538"
 """ccatobs/sun-avoidance revision the adapter and record-replay fixtures are built against."""
 
 CAD_TABLE_SHA256 = "bdac30878877b20d14fe20fff5d1bd12531306a50eb879a4babfe57ef4216f3b"
@@ -143,7 +143,7 @@ _SUN_CACHE_MAX = 2048
 def _import_sun_avoidance():
     """Import the optional shared library, with an actionable error when absent."""
     try:
-        import sun_avoidance
+        import sun_avoidance  # pylint: disable=import-outside-toplevel
     except ImportError:
         raise ModuleNotFoundError(
             "the shared sun-avoidance library is required for the 'cone' and 'cad' "
@@ -237,7 +237,7 @@ class _BaseSunModel:
         self._site = site
         self._coords = Coordinates(site)
         self._enabled = site.sun_avoidance.enabled
-        self._sun_cache: dict[float, tuple[float, float]] = {}
+        self._sun_cache: dict[tuple[float, float], tuple[float, float]] = {}
 
     def __call__(self, az_deg: float, el_deg: float, time: Time) -> bool:
         """Scalar :class:`~fyst_trajectories.sun_protocols.SunSafePredicate` verdict."""
@@ -274,9 +274,9 @@ class _BaseSunModel:
         if times.isscalar:
             # Scale-invariant key: two Times in different scales can share the
             # same numeric jd while naming instants ~37 s apart (utc vs tai);
-            # keying on the TAI jd both de-collides them and merges one
+            # keying on the TAI two-part date both de-collides them and merges one
             # instant expressed in two scales into a single entry.
-            key = float(times.tai.jd)
+            key = (float(times.tai.jd1), float(times.tai.jd2))
             cached = self._sun_cache.get(key)
             if cached is None:
                 cached = self._coords.get_sun_altaz(times)
@@ -808,6 +808,13 @@ def make_slew_safe(
     ValueError
         On non-positive/non-finite kinematics or ``step_seconds``, or a
         point predicate passed together with model-building keywords.
+
+    Examples
+    --------
+    >>> make_slew_safe("scalar").describe
+    'slew(scalar 45 deg)'
+
+    See :func:`find_sun_safe_detour` for a blocked slew and its detour.
     """
     for name, value in (
         ("az_speed", az_speed),
@@ -923,6 +930,17 @@ def find_sun_safe_detour(
         On invalid steps, on ``el_min``/``el_max`` reversed or outside the
         site's telescope elevation limits, on a non-scalar ``time``, or on
         a ``slew_safe`` without ``evaluate``.
+
+    Examples
+    --------
+    >>> from astropy.time import Time
+    >>> from fyst_trajectories.sun_models import find_sun_safe_detour, make_slew_safe
+    >>> slew_safe = make_slew_safe("scalar")
+    >>> t = Time("2026-11-15T16:00:00", scale="utc")  # the Sun at az 40 deg, el 84 deg
+    >>> slew_safe(-30.0, 40.0, 120.0, 40.0, t)
+    False
+    >>> find_sun_safe_detour(-30.0, 40.0, 120.0, 40.0, t, slew_safe)
+    (45.0, 32.0)
     """
     if not time.isscalar:
         raise ValueError("find_sun_safe_detour takes a scalar start time")

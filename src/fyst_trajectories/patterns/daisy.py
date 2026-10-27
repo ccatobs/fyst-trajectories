@@ -113,8 +113,7 @@ def _daisy_loop_python(
     speed = 0.0
     for step in range(n_internal):
         speed += start_acc * dt
-        if speed >= target_speed:
-            speed = target_speed
+        speed = min(speed, target_speed)
 
         r = math.sqrt(x * x + y * y)
 

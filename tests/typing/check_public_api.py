@@ -12,7 +12,11 @@ from collections.abc import Sequence
 from typing_extensions import assert_type
 
 from fyst_trajectories.dispatch import choose_encoder_solution
-from fyst_trajectories.patterns import rewrap_trajectory_azimuth
+from fyst_trajectories.patterns import (
+    SatelliteTrackConfig,
+    SatelliteTrackPattern,
+    rewrap_trajectory_azimuth,
+)
 from fyst_trajectories.planning import (
     ComputedParams,
     ConstantElComputedParams,
@@ -33,7 +37,7 @@ from fyst_trajectories.planning import (
     plan_source_ces_passes,
 )
 from fyst_trajectories.site import Site
-from fyst_trajectories.trajectory_utils import PathPayload, to_path_payload
+from fyst_trajectories.trajectory_utils import PathPayload, to_path_payload, validate_trajectory
 
 SCAN_DISPATCH_BUFFER_SEC = 10.0
 
@@ -113,6 +117,12 @@ def plan_every_scan(field: FieldRegion, site: Site, start: str) -> list[ScanBloc
     return [*tiling, pong_altaz, daisy, daisy_altaz, ce, source, *passes]
 
 
+def satellite_pattern() -> SatelliteTrackPattern:
+    """Build a satellite track the way its documented example does."""
+    config = SatelliteTrackConfig(timestep=0.1, body="titan", satellite_kernel="titan.bsp")
+    return SatelliteTrackPattern(config=config)
+
+
 def refloor_start_time(payload: PathPayload, now_unix: float) -> float:
     """Push a late start out to the dispatch floor and return the drift."""
     original = payload["start_time"]
@@ -130,11 +140,12 @@ def dispatch(block: ScanBlock[ComputedParams], site: Site, now_unix: float) -> f
         float(trajectory.az[0]),
         float(trajectory.el[0]),
         trajectory.start_time,
-        site,
+        site=site,
         goal_az_span=(float(trajectory.az.min()), float(trajectory.az.max())),
     )
     az_shift: float = solution.az_shift
     commanded = rewrap_trajectory_azimuth(trajectory, az_shift)
+    validate_trajectory(commanded, site=site)
     payload = to_path_payload(commanded)
     refloor_start_time(payload, now_unix)
     coordsys: str = payload["coordsys"]

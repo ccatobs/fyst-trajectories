@@ -17,7 +17,7 @@ from ..offsets import InstrumentOffset, apply_detector_offset
 from ..site import AtmosphericConditions, Site
 from ..trajectory import Trajectory
 from ..trajectory_utils import validate_trajectory_bounds, validate_trajectory_dynamics
-from .base import AltAzPattern, CelestialPattern, ScanPattern
+from .base import AltAzPattern, CelestialPattern
 from .configs import ScanConfig
 from .registry import get_pattern, get_pattern_for_config
 from .utils import validate_sample_count
@@ -277,26 +277,6 @@ class TrajectoryBuilder:
         self._detector_offset = offset
         return self
 
-    @staticmethod
-    def _needs_start_time(pattern_cls: type[ScanPattern]) -> bool:
-        """Check if a pattern class requires a start time.
-
-        Reads the ``requires_start_time`` ClassVar that the ``ScanPattern``
-        protocol declares. CelestialPattern sets it to True, AltAzPattern
-        to False, and PlanetTrackPattern overrides it to True.
-
-        Parameters
-        ----------
-        pattern_cls : type[ScanPattern]
-            The pattern class to check.
-
-        Returns
-        -------
-        bool
-            True if the pattern requires a start time.
-        """
-        return pattern_cls.requires_start_time
-
     def build(self, *, validate_dynamics: bool = True) -> Trajectory:
         """Build the trajectory.
 
@@ -398,7 +378,7 @@ class TrajectoryBuilder:
                     stacklevel=2,
                 )
 
-        if self._needs_start_time(pattern_cls) and self._start_time is None:
+        if pattern_cls.requires_start_time and self._start_time is None:
             raise ValueError(
                 f"{pattern_cls.__name__} requires a start time for coordinate "
                 "transforms. Call .starting_at(start_time) before .build()."
@@ -425,12 +405,14 @@ class TrajectoryBuilder:
         # Validate dynamics after detector offset so the check covers
         # the actual trajectory the telescope will execute.
         if validate_dynamics:
-            validate_trajectory_dynamics(self._site, trajectory.az, trajectory.el, trajectory.times)
+            validate_trajectory_dynamics(
+                trajectory.az, trajectory.el, trajectory.times, site=self._site
+            )
 
         # Defence in depth: patterns already validate their own bounds,
         # but applying a detector offset can push points past telescope
         # limits.  Re-validate the final trajectory here so the builder
         # refuses to hand off an infeasible path to the caller.
-        validate_trajectory_bounds(self._site, trajectory.az, trajectory.el)
+        validate_trajectory_bounds(trajectory.az, trajectory.el, site=self._site)
 
         return trajectory

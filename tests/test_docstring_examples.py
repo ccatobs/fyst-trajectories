@@ -130,11 +130,9 @@ def _doctest_globs():
 
 #: PointingWarning-family advisories a module's docstring examples may emit.
 #: A published example should stay advisory-clean, the rule the rst guard
-#: applies to the pages. The one entry is the example that trips an
-#: advisory today; it leaves the registry when its example is shrunk.
-_EXPECT_DOCTEST_WARNINGS: dict[str, set[str]] = {
-    "fyst_trajectories.planning.daisy": {"AccelerationLimitWarning", "PointingWarning"},
-}
+#: applies to the pages, so the registry is empty; an entry names a module
+#: whose example trips an advisory and leaves when the example is shrunk.
+_EXPECT_DOCTEST_WARNINGS: dict[str, set[str]] = {}
 
 
 @pytest.mark.parametrize("name", MODULE_NAMES)

@@ -256,16 +256,17 @@ planet itself::
     # Get planet position using ephemeris
     planet_az, planet_el = coords.get_body_altaz("jupiter", observation_time)
 
-    # Mechanical (horizon-frame) focal plane rotation
+    # The mechanical (horizon-frame) rotation follows the boresight
+    # elevation, the unknown here: start from the planet's and iterate
     offset = get_primecam_offset("i1")
-    rotation = compute_focal_plane_rotation(el=planet_el, site=site, offset=offset)
-
-    # Compute the boresight position that puts module i1 on the planet
-    bore_az, bore_el = detector_to_boresight(
-        det_az=planet_az, det_el=planet_el,
-        offset=offset,
-        focal_plane_rotation=rotation,
-    )
+    bore_el = planet_el
+    for _ in range(4):
+        rotation = compute_focal_plane_rotation(el=bore_el, site=site, offset=offset)
+        bore_az, bore_el = detector_to_boresight(
+            det_az=planet_az, det_el=planet_el,
+            offset=offset,
+            focal_plane_rotation=rotation,
+        )
 
     # Set up scan centered on boresight position
     config = ConstantElScanConfig(

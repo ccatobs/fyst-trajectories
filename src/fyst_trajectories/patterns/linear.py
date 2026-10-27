@@ -98,7 +98,7 @@ class LinearMotionPattern(AltAzPattern):
         az_vel = np.full(n_points, self.config.az_velocity)
         el_vel = np.full(n_points, self.config.el_velocity)
 
-        validate_trajectory_bounds(site, az, el)
+        validate_trajectory_bounds(az, el, site=site)
 
         return Trajectory(
             times=times,

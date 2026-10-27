@@ -190,6 +190,26 @@ class TestPongAltAzScanPattern:
         traj_rot = PongAltAzScanPattern(_base_config(angle=45.0)).generate(site, duration=60.0)
         assert not np.allclose(traj_no_rot.az, traj_rot.az)
 
+    def test_on_sky_azimuth_factor_matches_the_documented_band(self, site):
+        """A row at el covers cos(el) / cos(el_center) of its nominal azimuth extent.
+
+        The Notes of PongAltAzScanConfig quote 0.85 at the top edge and 1.14 at
+        the bottom for a 10 deg box at el_center=60.
+        """
+        config = PongAltAzScanConfig(
+            timestep=0.1,
+            az_center=180.0,
+            el_center=60.0,
+            width=10.0,
+            height=10.0,
+            spacing=0.1,
+            velocity=0.5,
+        )
+        trajectory = PongAltAzScanPattern(config).generate(site, duration=2000.0, start_time=None)
+        factor = np.cos(np.radians(trajectory.el)) / math.cos(math.radians(config.el_center))
+        assert factor.min() == pytest.approx(0.85, abs=0.005)
+        assert factor.max() == pytest.approx(1.14, abs=0.005)
+
 
 class TestRegistryAndBuilderIntegration:
     """The pattern is discoverable via the registry and the builder."""

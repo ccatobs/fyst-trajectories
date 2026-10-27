@@ -18,12 +18,11 @@ choose the sun-safe azimuth-wrap / encoder ``(az, el)`` to slew to for a scan's
 first sample. Pass the scan's whole azimuth span, so the wrap chosen holds the
 entire trajectory inside the limits once it is shifted::
 
-    from astropy.time import Time
     from fyst_trajectories import get_fyst_site, rewrap_trajectory_azimuth
     from fyst_trajectories.dispatch import choose_encoder_solution
 
     site = get_fyst_site()
-    obstime = Time("2026-03-15T18:00:00", scale="utc")
+    obstime = trajectory.start_time  # when the telescope holds the first sample
 
     solution = choose_encoder_solution(
         current_az=120.0,   # from the live ACU position broadcast

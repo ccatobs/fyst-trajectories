@@ -72,7 +72,6 @@ def _parked_visit(state, ctx, body, overrides=None, *, duration=600.0):
         duration=duration,
         az=state.az,
         el=state.el,
-        site=ctx.site,
         scan_index=state.scan_counter,
         target=body,
     )
@@ -320,16 +319,13 @@ class TestStateBookkeeping:
     def test_commit_feasible_updates_pose_time_and_cadences(self, site):
         ctx = NightContext.build(["saturn"], site, NIGHT_START, NIGHT_END)
         state = NightState.initial(ctx.start_time, (100.0, 40.0))
-        retune = TimelineBlock.calibration(
-            CalibrationType.RETUNE, state.t, 300.0, 120.0, 45.0, site, 0
-        )
+        retune = TimelineBlock.calibration(CalibrationType.RETUNE, state.t, 300.0, 120.0, 45.0, 0)
         pass_block = TimelineBlock.calibration(
             CalibrationType.PLANET_CAL,
             retune.t_stop,
             600.0,
             118.0,
             45.0,
-            site,
             0,
             target="saturn",
             az_end=122.0,

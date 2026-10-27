@@ -81,11 +81,11 @@ def leap_second_day_night(short_night):
         waiting = str(DeferralReason.WAITING_FOR_PASS)
         blocks = [
             TimelineBlock.slew(
-                at(57.0004), 2.9996, 180.0, 334.0, 50.0, site, 0, patch_name="slew_to_saturn"
+                at(57.0004), 2.9996, 180.0, 334.0, 50.0, 0, patch_name="slew_to_saturn"
             ),
-            TimelineBlock.calibration("retune", at(60), 300.0, 334.0, 50.0, site, 0),
+            TimelineBlock.calibration("retune", at(60), 300.0, 334.0, 50.0, 0),
             TimelineBlock.idle(
-                at(360), (start - at(360)).to_value("s"), 334.0, 50.0, site, 0, reason=waiting
+                at(360), (start - at(360)).to_value("s"), 334.0, 50.0, 0, reason=waiting
             ),
             TimelineBlock.calibration(
                 "planet_cal",
@@ -93,7 +93,6 @@ def leap_second_day_night(short_night):
                 600.0,
                 330.0,
                 50.0,
-                site,
                 1,
                 target="saturn",
                 az_end=338.0,

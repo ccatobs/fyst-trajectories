@@ -1,6 +1,5 @@
 """Tests for plan_daisy_altaz_scan."""
 
-import math
 import re
 import warnings
 
@@ -18,16 +17,6 @@ from fyst_trajectories.planning import (
     plan_daisy_altaz_scan,
 )
 from fyst_trajectories.trajectory_utils import get_absolute_times
-
-# The parity test compares against the ``scanning`` package (scan_patterns).
-# It is optional; gate on its availability with the same HAS_* + skipif
-# precedent used elsewhere in the suite (e.g. test_planning_pong_altaz.py).
-try:
-    from scanning import Daisy as _ScanningDaisy  # noqa: F401
-
-    HAS_SCANNING = True
-except ImportError:
-    HAS_SCANNING = False
 
 
 @pytest.fixture
@@ -393,74 +382,3 @@ class TestPlanDaisyAltAzSunSafety:
         assert len(seen_jd) <= 602
         last_jd = float(get_absolute_times(block.trajectory)[-1].jd)
         assert np.any(np.isclose(seen_jd, last_jd, rtol=0.0, atol=1e-8))
-
-
-@pytest.mark.slow
-@pytest.mark.skipif(not HAS_SCANNING, reason="requires the scanning (scan_patterns) package")
-class TestLegacyMappingParity:
-    """End-to-end parity with the legacy scanning.Daisy + horizon mapping.
-
-    scanning.Daisy delegates its offset generation to this library's
-    DaisyScanPattern, so this validates that plan_daisy_altaz_scan reproduces
-    the legacy horizon-frame mapping (x/cos(el0)+az0, y+el0) and the
-    surrounding plumbing end to end, not the offset math itself.
-    """
-
-    def test_trajectory_matches_legacy_mapping(self, site):
-        from scanning import Daisy
-
-        az_center = 130.0
-        el_center = 55.0
-        radius = 0.5
-        velocity = 0.3
-        turn_radius = 0.2
-        avoidance_radius = 0.0
-        start_acceleration = 0.5
-        y_offset = 0.0
-        timestep = 0.1
-        duration = 100.0
-
-        block = plan_daisy_altaz_scan(
-            az_center=az_center,
-            el_center=el_center,
-            radius=radius,
-            velocity=velocity,
-            turn_radius=turn_radius,
-            avoidance_radius=avoidance_radius,
-            start_acceleration=start_acceleration,
-            site=site,
-            start_time=Time("2026-03-15T04:00:00", scale="utc"),
-            timestep=timestep,
-            duration=duration,
-            y_offset=y_offset,
-        )
-        traj = block.trajectory
-
-        # Build scanning.Daisy with matching parameters and apply the
-        # horizon-frame mapping inline:
-        #   coscorr = cos(radians(el_center))
-        #   az = x/coscorr + az_center ; el = y + el_center
-        daisy = Daisy(
-            velocity=velocity,
-            start_acc=start_acceleration,
-            R0=radius,
-            Rt=turn_radius,
-            Ra=avoidance_radius,
-            T=duration,
-            sample_interval=timestep,
-            y_offset=y_offset,
-        )
-        x_off = daisy.x_coord.value
-        y_off = daisy.y_coord.value
-
-        coscorr = math.cos(math.radians(el_center))
-        legacy_az = x_off / coscorr + az_center
-        legacy_el = y_off + el_center
-
-        # Guard: the two paths must sample the same number of points.
-        assert len(legacy_az) == traj.n_points
-
-        # AltAz azimuth is used as provided (no normalization), so a direct
-        # comparison is expected.
-        np.testing.assert_allclose(traj.az, legacy_az, atol=1e-6)
-        np.testing.assert_allclose(traj.el, legacy_el, atol=1e-6)

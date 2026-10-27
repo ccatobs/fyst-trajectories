@@ -71,13 +71,13 @@ check. The low-level checks can also be called directly::
     )
 
     site = get_fyst_site()
-    validate_trajectory(trajectory, site)  # raises out of bounds, warns on dynamics or Sun
+    validate_trajectory(trajectory, site=site)  # raises out of bounds, warns on dynamics or Sun
 
     # Check only position bounds (raises exception if out of range)
-    validate_trajectory_bounds(site, trajectory.az, trajectory.el)
+    validate_trajectory_bounds(trajectory.az, trajectory.el, site=site)
 
     # Check only dynamics (emits warning if limits exceeded)
-    validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
+    validate_trajectory_dynamics(trajectory.az, trajectory.el, trajectory.times, site=site)
 
 Sun avoidance is advisory: a violation warns and never raises, and the check
 is subsampled at roughly 60 s, so a fast scan can cross the exclusion zone
@@ -90,4 +90,4 @@ their own hard sun-avoidance limits independently::
     site = get_fyst_site()
     # trajectory must have start_time set
     abs_times = get_absolute_times(trajectory)
-    validate_sun_avoidance(site, trajectory.az, trajectory.el, abs_times)
+    validate_sun_avoidance(trajectory.az, trajectory.el, abs_times, site=site)

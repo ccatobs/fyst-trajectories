@@ -1,7 +1,7 @@
-"""PrimeCam instrument configuration.
+"""Prime-Cam instrument configuration.
 
-Pre-defined module offsets for the PrimeCam focal-plane instrument on FYST.
-PrimeCam has one center module on the optical axis and six inner-ring modules
+Pre-defined module offsets for the Prime-Cam focal-plane instrument on FYST.
+Prime-Cam has one center module on the optical axis and six inner-ring modules
 at 461.3 mm radius, spaced 60 degrees apart.
 
 The names ``c`` and ``i1`` .. ``i6`` label focal-plane positions, not the
@@ -12,8 +12,11 @@ the two schemes. ``IM0`` is accepted anywhere a module name is (an alias
 for the on-axis position ``c``); the ring designations ``IM1`` .. ``IM6``
 are rejected until the as-built correspondence is confirmed.
 
-The module positions are converted from physical focal-plane coordinates (mm)
-to angular offsets (arcminutes) using ``FYST_PLATE_SCALE`` from ``site.py``.
+The module positions are converted from physical coordinates (mm) on the
+telescope focal surface, where the module bays sit, to angular offsets
+(arcminutes) using ``FYST_PLATE_SCALE`` from ``site.py``, the plate scale of
+that surface (a module's detector plane has its own, larger scale, which the
+library does not carry).
 
 The ring radius and the plate scale used to convert it are design values
 awaiting as-built instrument confirmation; see the pending-verification list
@@ -40,12 +43,13 @@ from types import MappingProxyType
 
 import numpy as np
 
+from ._validation import _require_finite, _require_positive
 from .offsets import InstrumentOffset
 from .site import FYST_PLATE_SCALE
 
 # Module positions use standard polar convention: x = r*cos(theta),
 # y = r*sin(theta), where theta is measured counterclockwise from the
-# +x axis. At zero field rotation, x is the cross-elevation direction
+# +x axis. At zero focal-plane rotation, x is the cross-elevation direction
 # and y is the elevation direction.
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
 # (plate scale, inner ring radius, and inner-ring ordering/parity). The
@@ -56,7 +60,8 @@ from .site import FYST_PLATE_SCALE
 # assumes the cryostat is not clocked relative to the Nasmyth flange.
 
 INNER_RING_RADIUS_MM = 461.3
-"""Inner ring module distance from optical axis in millimeters."""
+"""Inner ring module distance from the optical axis in millimeters, on the
+telescope focal surface."""
 
 
 MODULE_FOV_RADIUS_DEG: float = 0.65
@@ -157,7 +162,7 @@ _IM_TO_POSITION: dict[str, str] = {
 
 
 def get_primecam_offset(module_name: str) -> InstrumentOffset:
-    """Get the offset for a PrimeCam module by name.
+    """Get the offset for a Prime-Cam module by name.
 
     Parameters
     ----------
@@ -224,7 +229,7 @@ def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
     ValueError
         If the tag resolves to no modules.
     TypeError
-        If ``tag`` is not a str or sequence of str.
+        If ``tag`` is not a str or a sequence.
 
     Examples
     --------
@@ -266,14 +271,14 @@ def resolve_offset(
     Provides a single entry point for converting user-facing offset
     specifications into an InstrumentOffset. Handles three cases:
 
-    1. Named PrimeCam module (e.g., "i1", "center") -> predefined offset
+    1. Named Prime-Cam module (e.g., "i1", "center") -> predefined offset
     2. Custom dx/dy values in arcminutes -> new InstrumentOffset
     3. Neither specified -> None (boresight pointing)
 
     Parameters
     ----------
     module : str, optional
-        PrimeCam module name (e.g., "i1", "i3"). Looks up predefined offset.
+        Prime-Cam module name (e.g., "i1", "i3"). Looks up predefined offset.
     dx : float, optional
         Custom cross-elevation offset in arcminutes.
     dy : float, optional
@@ -291,6 +296,9 @@ def resolve_offset(
     ValueError
         If both ``module`` and ``dx``/``dy`` are specified, or if ``dx`` or
         ``dy`` is not finite.
+    KeyError
+        If ``module`` is not a recognised module name (from
+        :func:`get_primecam_offset`).
 
     Examples
     --------
@@ -302,8 +310,8 @@ def resolve_offset(
 
     Custom offset:
 
-    >>> resolve_offset(dx=5.0, dy=3.0, name="I1-I6 midpoint")
-    InstrumentOffset(dx=5.0', dy=3.0', name='I1-I6 midpoint')
+    >>> resolve_offset(dx=5.0, dy=3.0)
+    InstrumentOffset(dx=5.0', dy=3.0', name='custom')
 
     Boresight (no offset):
 
@@ -336,7 +344,7 @@ def primecam_geometry_dict(
     xi_offset_deg: float = 0.0,
     eta_offset_deg: float = 0.0,
 ) -> dict[str, dict[str, list[float] | float]]:
-    """Build a scheduler geometry dict for the PrimeCam modules.
+    """Build a scheduler geometry dict for the Prime-Cam modules.
 
     Adapts :data:`PRIMECAM_MODULES` into the ``{name: {"center": [xi_deg,
     eta_deg], "radius": deg}}`` schema that a scheduler geometry model
@@ -365,6 +373,12 @@ def primecam_geometry_dict(
         ``{name: {"center": [xi_deg, eta_deg], "radius": radius_deg}}`` with
         seven entries (``"c"``, ``"i1"`` .. ``"i6"``).
 
+    Raises
+    ------
+    ValueError
+        If ``radius_deg`` is not a finite positive number, or an offset is
+        not a finite number.
+
     Notes
     -----
     Centers and radius are in **degrees**. The
@@ -380,6 +394,9 @@ def primecam_geometry_dict(
     >>> geom["c"]["center"]
     [0.0, 0.0]
     """
+    radius_deg = _require_positive(radius_deg, "radius_deg")
+    xi_offset_deg = _require_finite(xi_offset_deg, "xi_offset_deg")
+    eta_offset_deg = _require_finite(eta_offset_deg, "eta_offset_deg")
     return {
         name: {
             "center": [offset.dx_deg + xi_offset_deg, offset.dy_deg + eta_offset_deg],

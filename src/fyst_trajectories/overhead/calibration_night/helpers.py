@@ -153,8 +153,8 @@ def json_native(value: Any) -> Any:
     """Coerce a value (recursively) to JSON builtins.
 
     NumPy scalars become Python floats or ints, tuples become lists,
-    mappings are rebuilt with string keys. Anything else is returned
-    unchanged.
+    dicts are rebuilt with string keys. Anything else, another mapping
+    type included, is returned unchanged.
     """
     if isinstance(value, dict):
         return {str(k): json_native(v) for k, v in value.items()}

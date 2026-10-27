@@ -4,8 +4,7 @@ Contains:
 
 * :class:`FieldRegion`, :class:`ArrayFootprint`, and :class:`ScanBlock`:
   the public data containers consumed and returned by the planner
-  functions (``plan_pong_scan``, ``plan_constant_el_scan``,
-  ``plan_daisy_scan``, ``plan_source_ces``).
+  functions of :mod:`fyst_trajectories.planning`.
 * :class:`PongComputedParams`, :class:`PongAltAzComputedParams`,
   :class:`ConstantElComputedParams`, :class:`DaisyComputedParams`,
   :class:`DaisyAltAzComputedParams`, :class:`SourceCESComputedParams`:
@@ -151,7 +150,7 @@ class DaisyAltAzComputedParams(TypedDict):
 
 
 class SourceCESComputedParams(TypedDict):
-    """Computed parameters returned by :func:`plan_source_ces`.
+    """Computed parameters of :func:`compute_source_ces_params` and :func:`plan_source_ces`.
 
     Attributes
     ----------
@@ -242,10 +241,10 @@ class FieldRegion:
     dec_center : float
         Declination of the field center in degrees.
     width : float
-        Angular width of the field in degrees (cross-scan direction).
-        This is the physical angular extent, not the RA span. The
-        cos(dec) projection is applied internally when computing
-        RA boundaries. Must be positive.
+        Angular width of the field in degrees, along RA (east-west)
+        before any rotation a planner applies. This is the physical
+        angular extent, not the RA span; the ``cos(dec)`` division into
+        an RA span is applied internally. Must be positive.
     height : float
         Angular height of the field in degrees (Dec extent). Must be
         positive.
@@ -505,10 +504,22 @@ class ScanBlock(Generic[_ParamsT_co]):
 
     Examples
     --------
-    >>> block = plan_pong_scan(...)  # doctest: +SKIP
-    >>> print(block.summary)  # doctest: +SKIP
-    >>> print(f"Duration: {block.duration:.1f}s")  # doctest: +SKIP
-    >>> print(f"Points: {block.trajectory.n_points}")  # doctest: +SKIP
+    >>> from astropy.time import Time
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.planning import FieldRegion, plan_pong_scan
+    >>> block = plan_pong_scan(
+    ...     FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0),
+    ...     velocity=0.4,
+    ...     spacing=0.1,
+    ...     site=get_fyst_site(),
+    ...     start_time=Time("2026-03-15T01:00:00", scale="utc"),
+    ... )
+    >>> round(block.duration, 1), block.trajectory.n_points
+    (240.0, 2401)
+    >>> block.computed_params["n_cycles"] = 2
+    Traceback (most recent call last):
+        ...
+    TypeError: ...
     """
 
     trajectory: Trajectory

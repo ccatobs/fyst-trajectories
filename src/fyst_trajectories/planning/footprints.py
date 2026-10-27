@@ -82,7 +82,7 @@ def resolve_footprint(
         If the footprint is not one of the accepted shapes, or a
         sequence holds something other than ``InstrumentOffset``.
     KeyError
-        If a string names no PrimeCam module (raised by
+        If a string names no Prime-Cam module (raised by
         :func:`~fyst_trajectories.primecam.get_primecam_offset`).
     """
     if isinstance(footprint, ArrayFootprint):
@@ -175,9 +175,9 @@ def inflate_footprint(fp: ArrayFootprint, margin_deg: float) -> ArrayFootprint:
 
     Applied caller-side before planning and before
     :func:`offset_footprint_eta`, and re-applied on rebuild from the
-    recorded ``footprint_margin``; the kernel itself is unchanged. A zero
-    margin returns an equal copy; a vertex sitting exactly at the centre
-    has no outward direction and stays where it is.
+    recorded ``footprint_margin``; the kernel never sees a margin. A zero
+    margin returns a new footprint with the same cover; a vertex sitting
+    exactly at the centre has no outward direction and stays where it is.
 
     Parameters
     ----------
@@ -196,6 +196,25 @@ def inflate_footprint(fp: ArrayFootprint, margin_deg: float) -> ArrayFootprint:
     ------
     ValueError
         If ``margin_deg`` is not a real number, is negative or is not finite.
+
+    Examples
+    --------
+    The footprint of a centre-module pass planned with a 0.1 deg margin
+    and a 0.4 deg eta step, built in the order a rebuild must follow:
+
+    >>> from fyst_trajectories.planning import (
+    ...     inflate_footprint,
+    ...     offset_footprint_eta,
+    ...     resolve_footprint,
+    ... )
+    >>> base = resolve_footprint("c")
+    >>> fp = offset_footprint_eta(inflate_footprint(base, 0.1), 0.4)
+    >>> fp.cover_xi_deg.size, round(fp.center_eta_deg, 3)
+    (50, 0.4)
+    >>> round(float(base.cover_eta_deg.max() - base.cover_eta_deg.min()), 3)
+    1.297
+    >>> round(float(fp.cover_eta_deg.max() - fp.cover_eta_deg.min()), 3)
+    1.497
     """
     margin_deg = _require_non_negative(margin_deg, "margin_deg")
     dx = fp.cover_xi_deg - fp.center_xi_deg

@@ -36,7 +36,7 @@ FIGURES = DOCS / "figures"
 
 #: Hand-authored diagram exports: committed beside their .html source, not built
 #: by the script.
-DIAGRAMS = ("dispatch_flow", "sim_live_lanes")
+DIAGRAMS = ("dispatch_flow", "plate_scale_surfaces", "sim_live_lanes")
 
 #: Pixel tolerance on each axis (the figures use a fixed size, never a tight box).
 SIZE_TOLERANCE_PX = 2

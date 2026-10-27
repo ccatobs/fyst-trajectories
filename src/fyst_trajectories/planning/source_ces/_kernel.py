@@ -68,10 +68,10 @@ _DEFAULT_SEARCH_HORIZON_HOURS = 24.0
 # legs rather than in one. The floor does not affect the solved drift.
 _MIN_PER_LEG_VELOCITY_DEG_S = 0.05
 
-# Default azimuth padding added to each side of the solved footprint
-# crossing. Named so the planners can tell an explicit padding from the
-# default: an explicit ``az_throw`` replaces the padded throw outright,
-# and combining it with an explicit padding is rejected.
+# Azimuth padding added to each side of the solved footprint crossing when
+# the caller leaves ``az_padding`` as ``None``. A padding the caller gives,
+# this value included, is refused beside ``az_throw``, which replaces the
+# padded throw outright.
 _DEFAULT_AZ_PADDING_DEG = 0.5
 
 # ``stacklevel`` of the kernel's advisories, counted from the stage that issues
@@ -348,7 +348,7 @@ def _validate_kernel_inputs(
     site: Site,
     sampling_step_seconds: float,
     az_accel: float,
-    az_padding: float,
+    az_padding: float | None,
     az_speed: float | None,
     az_throw: float | None,
     dwell: float | None,
@@ -359,8 +359,9 @@ def _validate_kernel_inputs(
     -------
     tuple
         ``(sampling_step_seconds, az_accel, az_padding, az_speed, az_throw,
-        dwell)`` as floats (an omitted optional value stays ``None``): the
-        values the kernel computes with.
+        dwell)`` as floats (an omitted ``az_padding`` is the 0.5 deg
+        default, any other omitted value stays ``None``): the values the
+        kernel computes with.
 
     Raises
     ------
@@ -368,25 +369,32 @@ def _validate_kernel_inputs(
         On a step, acceleration, speed, throw or dwell that is not a
         positive real number (a ``bool``, an array of one or more dimensions
         and text are not real numbers here), an ``az_padding`` that is not a
-        real number in ``[0, 360]``, an ``az_throw`` combined with an explicit
-        ``az_padding``, an ``ArrayFootprint`` whose cover is a single point
-        with ``az_padding`` 0 and no ``az_throw``, a ``dwell`` shorter than
-        ``sampling_step_seconds``, a missing or conflicting source or window,
-        a missing or unknown ``mode``, an array-valued time or a reversed
-        window.
+        real number in ``[0, 360]``, an ``az_throw`` combined with any
+        ``az_padding`` that is not ``None``, an ``ArrayFootprint`` whose
+        cover is a single point with ``az_padding`` 0 and no ``az_throw``, a
+        ``dwell`` shorter than ``sampling_step_seconds``, a missing or
+        conflicting source or window, a missing or unknown ``mode``, an
+        array-valued time or a reversed window.
     ElevationBoundsError
         When ``el_bore`` lies outside ``site.telescope_limits.elevation``.
     """
     sampling_step_seconds = _require_positive(sampling_step_seconds, "sampling_step_seconds")
     az_accel = _require_positive(az_accel, "az_accel")
+    # ``None`` is the default padding. Any value the caller gives is explicit,
+    # one equal to the default included, so it is refused beside ``az_throw``.
+    explicit_padding = az_padding is not None
     # A padding wider than a full turn is meaningless; one below it but past
     # the azimuth range reaches the bounds checks as an AzimuthBoundsError.
-    az_padding = _require_non_negative(az_padding, "az_padding", maximum=AZ_PADDING_MAX_DEG)
+    az_padding = _require_non_negative(
+        _DEFAULT_AZ_PADDING_DEG if az_padding is None else az_padding,
+        "az_padding",
+        maximum=AZ_PADDING_MAX_DEG,
+    )
     if az_speed is not None:
         az_speed = _require_positive(az_speed, "az_speed")
     if az_throw is not None:
         az_throw = _require_positive(az_throw, "az_throw")
-        if az_padding != _DEFAULT_AZ_PADDING_DEG:
+        if explicit_padding:
             raise ValueError(
                 "az_throw replaces the padded throw, so it cannot be combined with an "
                 f"explicit az_padding (got az_throw={az_throw}, az_padding={az_padding})"
@@ -450,9 +458,9 @@ def _validate_kernel_inputs(
                 raise ValueError(
                     f"{label} must be a single instant, got a Time of shape {edge.shape}"
                 )
-        # A reversed or empty window makes the search grid below empty, and
-        # the first reduction over it raised numpy's zero-size message from
-        # inside an error constructor, naming neither argument.
+        # A reversed or empty window would leave the search grid below empty,
+        # and the first reduction over it would fail with numpy's zero-size
+        # message, naming neither argument.
         if (window[1] - window[0]).sec <= 0.0:  # type: ignore[index]
             raise ValueError(
                 f"window end ({window[1].iso}) must be later than window start "  # type: ignore[index]
@@ -596,7 +604,21 @@ def _project_footprint(
         When the boresight inverse for an off-centre footprint cannot be
         solved at ``el_bore``.
     """
-    # az_bore recovery. For a centred footprint (PrimeCam full-array,
+    # Mechanical focal-plane rotation at el_bore (horizon-frame projection,
+    # the parallactic angle is a horizon-to-celestial quantity and does not
+    # enter). The zero-offset stub carries no instrument_rotation, the only
+    # field the rotation reads; the cover vertices already carry their own
+    # focal-plane positions.
+    fp_rot_at_bore = float(
+        compute_focal_plane_rotation(
+            el=el_bore,
+            site=site,
+            offset=InstrumentOffset(dx=0.0, dy=0.0),
+        )
+        + boresight_rot_deg
+    )
+
+    # az_bore recovery. For a centred footprint (Prime-Cam full-array,
     # PRIMECAM_CENTER) the boresight az IS the source az at el_bore.
     # For an off-centre footprint (single module), back out the
     # boresight via the spherical inverse so the array centre lands on
@@ -605,24 +627,6 @@ def _project_footprint(
         az_bore = src_az_at_el_bore
     else:
         center_offset = InstrumentOffset(dx=fp.center_xi_deg * 60.0, dy=fp.center_eta_deg * 60.0)
-        # Mechanical focal-plane rotation at el_bore (horizon-frame
-        # projection, the parallactic angle is a horizon-to-celestial
-        # quantity and does not enter).
-        # ``compute_focal_plane_rotation`` only reads
-        # ``offset.instrument_rotation``, it ignores ``dx``/``dy``, so
-        # the offset is interchangeable for the rotation computation.
-        # Use a zero-offset stub here for clarity (``instrument_rotation``
-        # defaults to 0). ``center_offset`` is retained for the
-        # subsequent ``detector_to_boresight`` call which DOES consume
-        # the offset geometry.
-        fp_rot_at_bore = float(
-            compute_focal_plane_rotation(
-                el=el_bore,
-                site=site,
-                offset=InstrumentOffset(dx=0.0, dy=0.0),
-            )
-            + boresight_rot_deg
-        )
         az_bore_f, _ = detector_to_boresight(
             det_az=src_az_at_el_bore,
             det_el=el_bore,
@@ -631,19 +635,7 @@ def _project_footprint(
         )
         az_bore = float(az_bore_f)
 
-    # Mechanical field rotation for the cover projection (horizon-frame,
-    # as in the az_bore recovery above). Uses a zero-offset
-    # InstrumentOffset (no per-module instrument_rotation; the cover
-    # vertices already carry their own focal-plane positions).
-    cover_field_rot = float(
-        compute_focal_plane_rotation(
-            el=el_bore,
-            site=site,
-            offset=InstrumentOffset(dx=0.0, dy=0.0),
-        )
-        + boresight_rot_deg
-    )
-    az_cover, el_cover = _project_cover_to_altaz(fp, az_bore, el_bore, cover_field_rot)
+    az_cover, el_cover = _project_cover_to_altaz(fp, az_bore, el_bore, fp_rot_at_bore)
     return az_bore, az_cover, el_cover
 
 
@@ -947,6 +939,7 @@ def _screen_pass(
     throw: float,
     el_bore: float,
     nominal_velocity: float,
+    actual_duration: float,
     az_accel: float,
     sun_safe: SunSafePredicate | None,
     source_label: str,
@@ -969,8 +962,11 @@ def _screen_pass(
     # than [az_start, az_stop] on both sides. A one- or two-leg pass has
     # fewer than two turnarounds and is therefore screened slightly wider
     # than it is driven; over-warning is the safe direction for a
-    # warn-only check.
-    arc_times_sec_base = np.linspace(t0_sec, t1_sec, _SUN_SAFETY_ARC_N_SAMPLES)
+    # warn-only check. The trajectory runs for the leg-quantised duration from
+    # t0, which can outlast the source window by up to half a leg plus
+    # turnaround.
+    arc_end_sec = max(t1_sec, t0_sec + actual_duration)
+    arc_times_sec_base = np.linspace(t0_sec, arc_end_sec, _SUN_SAFETY_ARC_N_SAMPLES)
     drift = v_az_solved * (arc_times_sec_base - t0_sec)
     arc_az, arc_el, arc_times = _swept_arc_samples(
         az_min=az_start + drift,
@@ -1013,30 +1009,21 @@ def _assemble(
     az_stop: float,
     v_az_solved: float,
     nominal_velocity: float,
-    duration_window: float,
+    n_scans: int,
+    actual_duration: float,
     az_accel: float,
     el_bore: float,
     boresight_rot_deg: float,
     source_label: str,
     fp: ArrayFootprint,
 ) -> _SourceCESCore:
-    """Quantise the pass to whole legs and assemble the computed parameters and builder state."""
+    """Assemble the computed parameters and builder state of the leg-quantised pass."""
     t0 = crossing.t0
     t1 = crossing.t1
     crossing_seconds = crossing.crossing_seconds
     mode = arc.mode
     src_ra_at_el_bore = arc.src_ra_at_el_bore
     src_dec_at_el_bore = arc.src_dec_at_el_bore
-
-    # Quantise duration the same way the trajectory builder does so the returned
-    # ``actual_duration`` matches what the trajectory builder will
-    # produce. Mirrors the n_scans/duration quantisation in plan_constant_el_scan.
-    n_scans, actual_duration = _quantize_ce_duration(
-        az_throw=throw,
-        velocity=nominal_velocity,
-        duration=duration_window,
-        az_accel=az_accel,
-    )
 
     computed: SourceCESComputedParams = {
         "az_start": float(az_start),
@@ -1099,7 +1086,7 @@ def _compute_source_ces_core(
     # --- Algorithm ---
     sampling_step_seconds: float = 30.0,
     az_accel: float = 1.0,
-    az_padding: float = _DEFAULT_AZ_PADDING_DEG,
+    az_padding: float | None = None,
     az_branch: float | None = None,
     allow_partial: bool = False,
     v_az: float | None = None,
@@ -1203,6 +1190,15 @@ def _compute_source_ces_core(
         sampling_step_seconds=sampling_step_seconds,
         az_speed=az_speed,
     )
+    # The shared CE quantiser, so ``actual_duration`` is the length the
+    # trajectory builder produces, as in plan_constant_el_scan. Computed once
+    # here because the screen covers the trajectory and the assembly records it.
+    n_scans, actual_duration = _quantize_ce_duration(
+        az_throw=throw,
+        velocity=nominal_velocity,
+        duration=duration_window,
+        az_accel=az_accel,
+    )
     if screen:
         _screen_pass(
             coords=coords,
@@ -1214,6 +1210,7 @@ def _compute_source_ces_core(
             throw=throw,
             el_bore=el_bore,
             nominal_velocity=nominal_velocity,
+            actual_duration=actual_duration,
             az_accel=az_accel,
             sun_safe=sun_safe,
             source_label=source_label,
@@ -1226,7 +1223,8 @@ def _compute_source_ces_core(
         az_stop=az_stop,
         v_az_solved=v_az_solved,
         nominal_velocity=nominal_velocity,
-        duration_window=duration_window,
+        n_scans=n_scans,
+        actual_duration=actual_duration,
         az_accel=az_accel,
         el_bore=el_bore,
         boresight_rot_deg=boresight_rot_deg,

@@ -67,9 +67,10 @@ def _field_region_corners(
     # The flat-sky rotation that follows is only a sensible approximation
     # while cos(dec) is non-trivial. ``cos(dec) < 0.01`` corresponds to
     # ``|dec| > 89.43 deg``; beyond that the cylindrical projection breaks
-    # down well before the cos_dec=0 singularity. FYST's lat=-23 deg puts
-    # such declinations below the elevation cut anyway, so the check is
-    # a defensive boundary, not an operationally tight one.
+    # down well before the cos_dec=0 singularity. At FYST's latitude the
+    # south celestial pole stands about 23 deg up, above the 20 deg
+    # elevation floor, so the guard is reachable: a well-formed field there
+    # is refused with a PointingError.
     if abs(cos_dec) < 0.01:
         raise PointingError("FieldRegion too close to celestial pole (|dec| > 89.43 deg)")
     corners = []
@@ -447,9 +448,9 @@ def _compute_ce_duration_from_lsa(
 
     # Find the [idx, idx+1] bracket that contains ``target``.
     idx = int(np.searchsorted(lsa_unwrapped, target, side="right")) - 1
-    # Clamp into [0, len-2] for safety; ``target <= lsa_unwrapped[-1]``
-    # guarantees ``idx+1`` is in range, but ``target == lsa_unwrapped[0]``
-    # would yield ``idx == -1``.
+    # Clamp into [0, len-2]: a target equal to the last sample gives
+    # ``idx == len - 1`` (then ``frac`` is 1), and the lower bound only guards
+    # rounding in ``k``; ``target`` equal to the first sample gives ``idx == 0``.
     idx = max(0, min(idx, len(lsa_unwrapped) - 2))
     lsa_left = lsa_unwrapped[idx]
     lsa_right = lsa_unwrapped[idx + 1]

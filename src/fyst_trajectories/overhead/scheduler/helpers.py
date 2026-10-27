@@ -4,6 +4,7 @@ Dependency-free (no scheduler state); consumed by
 :mod:`.phases` and :mod:`.state`.
 """
 
+import inspect
 import math
 import warnings
 from typing import TYPE_CHECKING
@@ -22,7 +23,7 @@ from ...patterns.daisy import _daisy_reach
 from ...patterns.pong import _pong_peak_offsets
 from ...patterns.turnarounds import swept_az_envelope
 from ...patterns.utils import sky_offsets_to_altaz
-from ...planning import FieldRegion
+from ...planning import FieldRegion, plan_constant_el_scan
 
 # Private planner reuse, on purpose: the scheduler must gate constant-elevation
 # emission on exactly the crossing solve that plan_constant_el_scan runs at
@@ -54,6 +55,11 @@ _CE_ANCHOR_MARGIN_SEC = 60.0
 #: costs a full 12-hour forward search; without a rate limit an infeasible
 #: patch would re-run it every selection tick for the rest of the night.
 _CE_MISS_RESOLVE_SEC = 600.0
+
+#: ``plan_constant_el_scan``'s parameters, read for its ``az_padding`` and
+#: ``az_accel`` defaults, so the swept-envelope estimate follows the planner
+#: the rebuild runs rather than a copy of its defaults.
+_CE_PLANNER_PARAMETERS = inspect.signature(plan_constant_el_scan).parameters
 
 #: Slew allowance folded into the CE readiness lead: a visit may start this
 #: many seconds (plus one scheduler tick) before the pass's opening crossing
@@ -312,10 +318,10 @@ def _ce_swept_az_envelope(
         width=patch.width,
         height=patch.height,
     )
-    az_lo, az_hi = _compute_ce_az_range(
-        field, 0.0, coords, t_open, t_close, float(params.get("az_padding", 2.0))
-    )
-    return swept_az_envelope(az_lo, az_hi, patch.velocity, float(params.get("az_accel", 1.0)))
+    az_padding = params.get("az_padding", _CE_PLANNER_PARAMETERS["az_padding"].default)
+    az_accel = params.get("az_accel", _CE_PLANNER_PARAMETERS["az_accel"].default)
+    az_lo, az_hi = _compute_ce_az_range(field, 0.0, coords, t_open, t_close, float(az_padding))
+    return swept_az_envelope(az_lo, az_hi, patch.velocity, float(az_accel))
 
 
 def _first_crossing(
@@ -733,15 +739,15 @@ def _compute_scan_duration(
     *,
     retune_lead: float = 0.0,
 ) -> float:
-    """Compute how long we can observe this patch.
+    """Return how long this patch can be observed from ``start_time``, in seconds.
 
     For constant-elevation scans, the visit runs until the chosen crossing
     pass closes (:func:`_ce_visit_plan`): a CE drift scan is only plannable
     while its RA-edge crossings lie ahead of the anchor. A plain
     field-center-above-elevation window is not a substitute; it stays open
     long after the pass, all the way to transit and beyond, and emits
-    blocks the planner could never reconstruct. For pong/daisy, we start with the
-    max scan duration (or remaining schedule time) and then clip it to the
+    blocks the planner could never reconstruct. For pong/daisy, the window starts at the
+    max scan duration (or remaining schedule time) and is then clipped to the
     time the whole pattern stays inside the telescope elevation limits
     (:func:`_time_inside_el_limits`), so no part of the scan the planner
     builds leaves them; the window is ``0.0`` while the pattern's edge is

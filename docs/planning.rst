@@ -251,8 +251,8 @@ in the Pong and Daisy planners: on sky the scan moves at
 ``velocity * cos(elevation)``.
 
 Other knobs: ``az_padding`` (extra azimuth margin on each side, default
-2.0° here; the source-CES planner's same-named knob defaults to
-0.5), ``az_accel`` (the turnaround acceleration, in mount-frame azimuth
+2.0° here; the source-CES planner's same-named knob pads by 0.5° when
+unset), ``az_accel`` (the turnaround acceleration, in mount-frame azimuth
 deg/s² rather than on-sky; default 1.0), and
 ``max_search_hours`` (how far past ``start_time`` the crossing search
 looks, 12 h by default; a field whose crossing lies beyond it raises
@@ -465,7 +465,7 @@ Select the time window with either ``night`` + ``mode`` (``"rising"`` or
 
 Other knobs: ``boresight_rot`` (mechanical boresight rotation, deg),
 ``v_az`` (override the solved drift rate), ``az_padding`` (extra azimuth
-margin, default 0.5°), ``az_branch`` (centre of the azimuth wrap branch),
+margin, 0.5° when unset), ``az_branch`` (centre of the azimuth wrap branch),
 and ``allow_partial`` (clip to the observable arc and warn instead of
 raising when the source does not fully cover the footprint at ``el_bore``;
 a source that reaches no vertex of the cover, or a single vertex with
@@ -482,8 +482,8 @@ turn it into a faster, narrower or shorter measurement while keeping the
 same drift solve and Sun check: ``az_speed`` (deg/s) sets the per-leg
 speed of the sweep, distinct from the drift rate ``v_az`` that keeps the
 window on the source; ``az_throw`` (deg) replaces the solved, padded
-window with an explicit one re-centred on it (not combinable with an
-explicit ``az_padding``; narrower than the footprint crossing warns); and
+window with an explicit one re-centred on it (``az_padding`` must then be
+left unset, and a throw narrower than the footprint crossing warns); and
 ``dwell`` (s) narrows the pass symmetrically about the crossing midpoint
 (one longer than the crossing is rejected with
 :class:`~fyst_trajectories.exceptions.DwellExceedsCrossingError`, which
@@ -492,6 +492,24 @@ carries both durations, and one shorter than ``sampling_step_seconds`` with
 pass).
 ``computed_params`` records the speed used as ``az_speed`` and the full
 crossing as ``crossing_seconds`` whether or not the inputs were given.
+
+The default drag and a 1 deg/s sweep of the same pass::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_source_ces
+
+    site = get_fyst_site()
+    night = Time("2026-03-15T00:00:00", scale="utc")
+    for az_speed in (None, 1.0):
+        cp = plan_source_ces(
+            body="jupiter", footprint="c", el_bore=35.0, night=night,
+            mode="rising", site=site, az_speed=az_speed,
+        ).computed_params
+        print(cp["az_speed"], cp["n_scans"], round(cp["crossing_seconds"]))
+    # 0.05 11 581
+    # 1.0 127 581
 
 To see where the source actually travelled across the focal plane during a
 planned pass, :func:`~fyst_trajectories.planning.source_ces_focal_plane_track`

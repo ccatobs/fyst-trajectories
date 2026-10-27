@@ -4,6 +4,7 @@ import dataclasses
 import re
 
 import pytest
+from astropy import units as u
 from astropy.table import QTable, Table
 from astropy.time import Time, TimeDelta
 
@@ -164,6 +165,18 @@ class TestWriteTimeline:
         path = tmp_path / "empty.ecsv"
         write_timeline(timeline, path)
         assert path.exists()
+
+
+class TestReservedMetadataKeys:
+    """``timeline.metadata`` cannot replace a header key the writer stores itself."""
+
+    def test_a_reserved_key_is_refused_by_name(self, tmp_path):
+        timeline = _make_test_timeline()
+        timeline.metadata = {"site_nasmyth_port": "left"}
+        path = tmp_path / "clash.ecsv"
+        with pytest.raises(ValueError, match="site_nasmyth_port"):
+            write_timeline(timeline, path)
+        assert not path.exists()
 
 
 class TestReadTimeline:
@@ -432,6 +445,9 @@ class TestEmptyTimelineRoundTrip:
         table = Table.read(str(path), format="ascii.ecsv")
         assert len(table) == 1
         assert table.meta["timeline_is_empty"] is True
+        # The placeholder row rolls by nothing, and the convention key is written.
+        assert table["boresight_angle"][0] == 0.0
+        assert table.meta["boresight_angle_convention"] == "toast_roll"
 
         reloaded = read_timeline(path)
         assert reloaded.blocks == []
@@ -747,98 +763,80 @@ class TestSiteReconstruction:
         assert not {"site_description", *_LIMIT_KEYS} & set(loaded2.metadata)
 
 
+def _poses(blocks):
+    """Return the fields of each block that an ECSV row carries outside its metadata."""
+    return [
+        (
+            b.t_start.isot,
+            b.t_stop.isot,
+            b.block_type,
+            b.patch_name,
+            b.az_start,
+            b.az_end,
+            b.elevation,
+            b.scan_index,
+            b.subscan_index,
+            b.rising,
+            b.scan_type,
+        )
+        for b in blocks
+    ]
+
+
 class TestBoresightAngle:
-    """``boresight_angle`` round-trips through ECSV."""
+    """``boresight_angle`` is the roll TOAST applies, ``-nasmyth_sign * el``."""
 
-    def test_boresight_roundtrip(self, tmp_path):
-        site = get_fyst_site()
-        t0 = Time("2026-06-15T02:00:00", scale="utc")
-        # Construct a block with a known nonzero boresight_angle.
-        az = 120.0
-        el = 55.0
-        expected = Coordinates(site).get_field_rotation_from_altaz(az, el)
-        block = TimelineBlock(
-            t_start=t0,
-            t_stop=t0 + TimeDelta(60, format="sec"),
-            block_type="science",
-            patch_name="bore",
-            az_start=az - 5,
-            az_end=az + 5,
-            elevation=el,
-            scan_index=0,
-            scan_type="pong",
-            boresight_angle=expected,
-            metadata={
-                "ra_center": 180.0,
-                "dec_center": -30.0,
-                "width": 2.0,
-                "height": 2.0,
-                "velocity": 0.5,
-                "scan_params": {},
-            },
-        )
-        timeline = ObservingTimeline(
-            blocks=[block],
-            site=site,
-            start_time=t0,
-            end_time=t0 + TimeDelta(60, format="sec"),
-            overhead_model=OverheadModel(),
-            calibration_policy=CalibrationPolicy(),
-        )
-
-        path = tmp_path / "bore.ecsv"
-        write_timeline(timeline, path)
-        loaded = read_timeline(path)
-        assert len(loaded.blocks) == 1
-        assert loaded.blocks[0].boresight_angle == pytest.approx(expected, abs=1e-9)
-
-    @pytest.mark.parametrize("port", ["right", "left", "cassegrain"])
-    @pytest.mark.parametrize("stored", [True, False])
-    def test_toast_roll_and_field_rotation(self, tmp_path, port, stored):
+    @pytest.mark.parametrize(("port", "sign"), [("right", 1), ("left", -1), ("cassegrain", 0)])
+    def test_every_row_carries_the_roll_for_its_elevation(self, tmp_path, port, sign):
         timeline = _make_test_timeline()
         timeline.site = dataclasses.replace(timeline.site, nasmyth_port=port)
-        expected = [
-            Coordinates(timeline.site).get_field_rotation_from_altaz(
-                0.5 * (block.az_start + block.az_end), block.elevation
-            )
-            for block in timeline.blocks
+        # Distinct elevations, so a roll taken from any single row cannot pass.
+        timeline.blocks = [
+            dataclasses.replace(block, elevation=el)
+            for block, el in zip(timeline.blocks, (35.0, 50.0, 65.0), strict=True)
         ]
-        if stored:
-            timeline.blocks = [
-                dataclasses.replace(block, boresight_angle=angle + 7.0)
-                for block, angle in zip(timeline.blocks, expected)
-            ]
-            expected = [block.boresight_angle for block in timeline.blocks]
         path = tmp_path / "roll.ecsv"
         write_timeline(timeline, path)
-        table = QTable.read(path)
-        assert list(table["boresight_angle"].to_value("deg")) == [
-            -timeline.site.nasmyth_sign * block.elevation for block in timeline.blocks
-        ]
-        assert list(table["field_rotation"].to_value("deg")) == expected
-        assert [block.boresight_angle for block in read_timeline(path).blocks] == expected
 
-    @pytest.mark.parametrize("has_boresight", [True, False])
-    def test_legacy_boresight_column(self, tmp_path, has_boresight):
-        path = tmp_path / "legacy.ecsv"
-        write_timeline(_make_test_timeline(), path)
-        table = QTable.read(path)
-        table["boresight_angle"] = table["field_rotation"].copy()
-        expected = list(table["boresight_angle"].value) if has_boresight else [0.0] * len(table)
-        table.remove_column("field_rotation")
-        if not has_boresight:
-            table.remove_column("boresight_angle")
-        table.write(path, overwrite=True)
-        assert [block.boresight_angle for block in read_timeline(path).blocks] == expected
+        # The column is TOAST's roll of the boresight in the az/el frame,
+        # which turns the opposite way to the library's rotation, one value
+        # per row; the header key names the convention.
+        table = QTable.read(str(path), format="ascii.ecsv")
+        assert table.meta["boresight_angle_convention"] == "toast_roll"
+        assert list(table["boresight_angle"].to_value(u.deg)) == pytest.approx(
+            [-sign * block.elevation for block in timeline.blocks], abs=1e-12
+        )
 
-    def test_empty_timeline_angle_columns(self, tmp_path):
+        loaded = read_timeline(path)
+        assert loaded.site.nasmyth_port == port
+        assert "boresight_angle_convention" not in loaded.metadata
+
+    def test_an_older_file_reads_the_same_blocks(self, tmp_path):
+        """The reader ignores the column, whatever a file holds there.
+
+        A file written before the convention existed holds the celestial
+        field rotation at the row's mid azimuth under the same column name
+        and carries no header key; a standard TOAST schedule may lack the
+        column altogether.
+        """
         timeline = _make_test_timeline()
-        timeline.blocks = []
-        path = tmp_path / "empty.ecsv"
+        path = tmp_path / "roll.ecsv"
         write_timeline(timeline, path)
-        table = QTable.read(path)
-        for column in ("boresight_angle", "field_rotation"):
-            assert list(table[column].to_value("deg")) == [0.0]
+        expected = _poses(read_timeline(path).blocks)
+
+        table = QTable.read(str(path), format="ascii.ecsv")
+        coords = Coordinates(timeline.site)
+        table["boresight_angle"] = [
+            coords.get_field_rotation_from_altaz(0.5 * (b.az_start + b.az_end), b.elevation)
+            for b in timeline.blocks
+        ] * u.deg
+        del table.meta["boresight_angle_convention"]
+        table.write(str(path), format="ascii.ecsv", overwrite=True)
+        assert _poses(read_timeline(path).blocks) == expected
+
+        table.remove_column("boresight_angle")
+        table.write(str(path), format="ascii.ecsv", overwrite=True)
+        assert _poses(read_timeline(path).blocks) == expected
 
 
 class TestOverheadModelRoundTrip:
@@ -1230,7 +1228,6 @@ class TestToastDegUnits:
     """
 
     def test_angle_columns_carry_deg_units(self, tmp_path):
-        from astropy import units as u
         from astropy.table import QTable
 
         t0 = Time("2026-06-15T02:00:00", scale="utc")

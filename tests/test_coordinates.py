@@ -929,7 +929,7 @@ class TestSunBoundaryParity:
             times = t + TimeDelta(np.array([0.0, 1.0]), format="sec")
             with _warnings.catch_warnings(record=True) as caught:
                 _warnings.simplefilter("always")
-                validate_sun_avoidance(site, np.array([az, az]), np.array([el, el]), times)
+                validate_sun_avoidance(np.array([az, az]), np.array([el, el]), times, site=site)
             flagged = any("EXCLUSION" in str(w.message) for w in caught)
             assert flagged == (not expect_safe)
 
@@ -943,7 +943,7 @@ class TestSunBoundaryParity:
         times = t + TimeDelta(np.array([0.0, 1.0]), format="sec")
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
-            validate_sun_avoidance(site, np.array([az, az]), np.array([el, el]), times)
+            validate_sun_avoidance(np.array([az, az]), np.array([el, el]), times, site=site)
         boundary_flagged = any("EXCLUSION" in str(w.message) for w in caught)
         assert boundary_safe == (not boundary_flagged)
 

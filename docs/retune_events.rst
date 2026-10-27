@@ -12,7 +12,8 @@ uniform cadence and a caller-supplied event list, and both populate
 introspection works the same either way.
 What the field records differs by mode: the event list records the caller's
 request (an event starting at or after the trajectory end stays in the tuple,
-unapplied), the uniform cadence records the placements it made.
+unapplied, with a ``PointingWarning``), the uniform cadence records the
+placements it made.
 ``scan_flag`` is the single record of what was applied.
 
 Dual-mode API
@@ -130,5 +131,5 @@ each, since event-list mode requires the default ``module_index=0`` /
 
 An offline-simulator timeline can carry the events through its ECSV file,
 but nothing copies them there: set a block's ``metadata["retune_events"]``
-from ``trajectory.retune_events`` before writing (see "Retune events" in
+from ``trajectory.retune_events`` before writing (see "Retune Events" in
 :doc:`overhead_io`).

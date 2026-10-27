@@ -278,7 +278,7 @@ def _generate_trajectory_for_block(
 
     Notes
     -----
-    Calibration blocks are dispatched to :func:`_generate_source_ces_trajectory`,
+    Calibration blocks are dispatched to :func:`_rebuild_calibration_pass`,
     which rebuilds the recorded source-CES planet-calibration pass; the pass
     is returned whole once it is found to overlap its block. Science blocks
     take the ``ra_center``/``dec_center`` geometry path below.
@@ -286,30 +286,7 @@ def _generate_trajectory_for_block(
     meta = sblock.metadata
 
     if sblock.block_type == BlockType.CALIBRATION:
-        # The fallback window serves only a pass block with no recorded search
-        # start whose dict holds no absolute window: it re-solves around its
-        # own bounds, from t0_scan to t_stop.
-        pass_start = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
-        scan_block = _generate_source_ces_trajectory(
-            meta, site, fallback_window=(pass_start, sblock.t_stop)
-        )
-        # The pass must overlap its block: a search_start that is not the
-        # block's own repeats a search that can find another crossing (the
-        # next day's, for a record minutes late).
-        traj = scan_block.trajectory
-        inside = int(np.count_nonzero(_block_window_mask(traj, sblock)))
-        if inside < 2:
-            source = (
-                f"search_start {meta['search_start']!r}"
-                if "search_start" in meta
-                else "its recorded pass"
-            )
-            raise BlockNotReconstructableError(
-                f"the pass rebuilt from {source} runs [{traj.start_time.isot} + "
-                f"{float(traj.times[0]):.1f}s .. {float(traj.times[-1]):.1f}s] and has {inside} "
-                f"sample(s) in its block window [{sblock.t_start.isot}, {sblock.t_stop.isot})"
-            )
-        return scan_block
+        return _rebuild_calibration_pass(sblock, site)
 
     required = ("ra_center", "dec_center", "width", "height", "velocity")
     missing = [k for k in required if k not in meta]
@@ -419,6 +396,44 @@ def _generate_trajectory_for_block(
         raise ScanParamsSchemaError(f"Unknown scan type: {sblock.scan_type}")
 
     return _slice_to_block_window(scan_block, sblock)
+
+
+def _rebuild_calibration_pass(sblock: TimelineBlock, site: Site) -> ScanBlock:
+    """Rebuild a planet-calibration pass whole and require it to overlap its block.
+
+    Raises
+    ------
+    ScanParamsSchemaError
+        As :func:`_generate_source_ces_trajectory` raises it.
+    BlockNotReconstructableError
+        If fewer than two samples of the rebuilt pass fall inside the block's
+        ``[t_start, t_stop)`` window.
+    """
+    meta = sblock.metadata
+    # The fallback window serves only a pass block with no recorded search
+    # start whose dict holds no absolute window: it re-solves around its
+    # own bounds, from t0_scan to t_stop.
+    pass_start = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
+    scan_block = _generate_source_ces_trajectory(
+        meta, site, fallback_window=(pass_start, sblock.t_stop)
+    )
+    # The pass must overlap its block: a search_start that is not the
+    # block's own repeats a search that can find another crossing (the
+    # next day's, for a record minutes late).
+    traj = scan_block.trajectory
+    inside = int(np.count_nonzero(_block_window_mask(traj, sblock)))
+    if inside < 2:
+        source = (
+            f"search_start {meta['search_start']!r}"
+            if "search_start" in meta
+            else "its recorded pass"
+        )
+        raise BlockNotReconstructableError(
+            f"the pass rebuilt from {source} runs [{traj.start_time.isot} + "
+            f"{float(traj.times[0]):.1f}s .. {float(traj.times[-1]):.1f}s] and has {inside} "
+            f"sample(s) in its block window [{sblock.t_start.isot}, {sblock.t_stop.isot})"
+        )
+    return scan_block
 
 
 def _block_window_mask(traj: Trajectory, sblock: TimelineBlock) -> np.ndarray:
@@ -656,10 +671,11 @@ def accumulate_hitmaps(
     high-resolution map is where it shows.
     """
     try:
-        import healpy as hp
+        import healpy as hp  # pylint: disable=import-outside-toplevel
     except ImportError:
         raise ImportError(
-            "healpy is required for hitmap accumulation. Install with: pip install healpy"
+            "healpy is required for hitmap accumulation. "
+            "Install it with: pip install 'fyst-trajectories[overhead]'"
         ) from None
 
     npix = hp.nside2npix(nside)
@@ -779,7 +795,25 @@ def compute_budget(timeline: ObservingTimeline) -> BudgetStats:
         calibration breakdown; see :class:`BudgetStats` for the field
         contract.
     """
-    stats: dict = {
+    per_patch: dict[str, PatchBudget] = {}
+    scan_indices: dict[str, set[int]] = {}
+    for block in timeline.science_blocks:
+        patch = per_patch.setdefault(
+            block.patch_name, {"science_time": 0.0, "n_scans": 0, "n_unique_scans": 0}
+        )
+        patch["science_time"] += block.duration
+        patch["n_scans"] += 1
+        scan_indices.setdefault(block.patch_name, set()).add(block.scan_index)
+    for name, indices in scan_indices.items():
+        per_patch[name]["n_unique_scans"] = len(indices)
+
+    calibration_breakdown: dict[str, CalibrationBudget] = {}
+    for block in timeline.calibration_blocks:
+        cal = calibration_breakdown.setdefault(block.scan_type, {"count": 0, "total_time": 0.0})
+        cal["count"] += 1
+        cal["total_time"] += block.duration
+
+    return {
         "total_time": timeline.total_time,
         "science_time": timeline.total_science_time,
         "calibration_time": timeline.total_calibration_time,
@@ -788,35 +822,6 @@ def compute_budget(timeline: ObservingTimeline) -> BudgetStats:
         "efficiency": timeline.efficiency,
         "n_science_scans": timeline.n_science_scans,
         "n_calibration_blocks": len(timeline.calibration_blocks),
+        "per_patch": per_patch,
+        "calibration_breakdown": calibration_breakdown,
     }
-
-    patch_stats = {}
-    for block in timeline.science_blocks:
-        name = block.patch_name
-        if name not in patch_stats:
-            patch_stats[name] = {
-                "science_time": 0.0,
-                "n_scans": 0,
-                "scan_indices": set(),
-            }
-        patch_stats[name]["science_time"] += block.duration
-        patch_stats[name]["n_scans"] += 1
-        patch_stats[name]["scan_indices"].add(block.scan_index)
-
-    for name in patch_stats:
-        patch_stats[name]["n_unique_scans"] = len(patch_stats[name]["scan_indices"])
-        del patch_stats[name]["scan_indices"]
-
-    stats["per_patch"] = patch_stats
-
-    cal_stats = {}
-    for block in timeline.calibration_blocks:
-        cal_type = block.scan_type
-        if cal_type not in cal_stats:
-            cal_stats[cal_type] = {"count": 0, "total_time": 0.0}
-        cal_stats[cal_type]["count"] += 1
-        cal_stats[cal_type]["total_time"] += block.duration
-
-    stats["calibration_breakdown"] = cal_stats
-
-    return cast(BudgetStats, stats)

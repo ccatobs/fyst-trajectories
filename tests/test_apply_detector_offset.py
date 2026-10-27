@@ -1,5 +1,6 @@
 """Tests for apply_detector_offset and the builder's for_detector path."""
 
+import math
 import warnings
 
 import numpy as np
@@ -11,11 +12,13 @@ from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
 from fyst_trajectories.coordinates import Coordinates
+from fyst_trajectories.exceptions import ElevationBoundsError
 from fyst_trajectories.offsets import (
     InstrumentOffset,
     apply_detector_offset,
     boresight_to_detector,
     compute_focal_plane_rotation,
+    detector_to_boresight,
 )
 from fyst_trajectories.patterns import (
     ConstantElScanConfig,
@@ -502,6 +505,23 @@ class TestEarlyExitZeroOffset:
         assert np.max(np.abs(result.az - pong_trajectory.az)) > 1.0
         assert np.max(np.abs(result.el - pong_trajectory.el)) > 0.5
 
+    def test_zero_offset_with_validate_checks_the_bounds(self, site):
+        """``validate=True`` checks a zero-offset trajectory as it does any other."""
+        n = 5
+        trajectory = Trajectory(
+            times=np.linspace(0, 4, n),
+            az=np.full(n, 180.0),
+            el=np.full(n, 5.0),
+            az_vel=np.zeros(n),
+            el_vel=np.zeros(n),
+            start_time=Time("2026-03-15T04:00:00", scale="utc"),
+        )
+
+        with pytest.raises(ElevationBoundsError):
+            apply_detector_offset(
+                trajectory, InstrumentOffset(dx=0.0, dy=0.0), site=site, validate=True
+            )
+
 
 class TestOffsetPathLandsOnTarget:
     """The named detector observes the original target after the offset.
@@ -848,3 +868,23 @@ class TestApplyDetectorOffsetFrameConsistency:
         actual = SkyCoord(actual_az * u.deg, actual_el * u.deg, frame="altaz")
         miss_arcsec = target.separation(actual).to_value(u.arcsec)
         assert miss_arcsec.max() < 0.01
+
+
+class TestApplyDetectorOffsetContraction:
+    """Each pass of the boresight-elevation iteration contracts by at most the offset radius."""
+
+    @pytest.mark.parametrize("module", ["i1", "i2", "i3", "i4", "i5", "i6"])
+    @pytest.mark.parametrize("el", [30.0, 45.0, 70.0])
+    def test_step_ratio_is_at_most_the_offset_radius(self, site, module, el):
+        """Successive elevation steps shrink by at most hypot(dx, dy) in radians."""
+        offset = get_primecam_offset(module)
+        bound = math.radians(math.hypot(offset.dx, offset.dy) / 60.0)
+        bore_el = el
+        steps = []
+        for _ in range(3):
+            rotation = compute_focal_plane_rotation(bore_el, site=site, offset=offset)
+            _, new_bore_el = detector_to_boresight(100.0, el, offset, rotation)
+            steps.append(abs(float(new_bore_el) - bore_el))
+            bore_el = float(new_bore_el)
+        for previous, current in zip(steps, steps[1:]):
+            assert current / previous <= bound * 1.01

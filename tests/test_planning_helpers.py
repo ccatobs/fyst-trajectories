@@ -1,12 +1,14 @@
 """Tests for the private planning helpers and the computed-params validator."""
 
+import datetime
 import math
 
 import pytest
 
 from fyst_trajectories.exceptions import PointingError, PointingWarning
-from fyst_trajectories.planning import validate_computed_params
+from fyst_trajectories.planning import FieldRegion, plan_pong_scan, validate_computed_params
 from fyst_trajectories.planning._ce_geometry import _field_region_corners, _quantize_ce_duration
+from fyst_trajectories.planning._helpers import _coerce_start_time
 
 
 class TestFieldRegionCorners:
@@ -160,3 +162,18 @@ class TestQuantiserDegenerateAndTieCases:
             az_throw=10.0, velocity=1.0, duration=duration, az_accel=1.0
         )
         assert n_scans == expected
+
+
+class TestCoerceStartTime:
+    """A start time that is neither an ISO string nor a ``Time`` is refused by name."""
+
+    _START = datetime.datetime(2026, 3, 15, 1, 0, tzinfo=datetime.timezone.utc)
+
+    def test_a_datetime_is_a_type_error(self):
+        with pytest.raises(TypeError, match="start_time must be an ISO string or an astropy Time"):
+            _coerce_start_time(self._START)
+
+    def test_a_planner_refuses_a_datetime_before_planning(self, site):
+        field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=2.0, height=2.0)
+        with pytest.raises(TypeError, match="start_time .* got datetime"):
+            plan_pong_scan(field, velocity=0.4, spacing=0.1, site=site, start_time=self._START)

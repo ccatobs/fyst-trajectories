@@ -14,7 +14,7 @@ from ..offsets import InstrumentOffset
 from ..planning import ScanBlock, source_ces_focal_plane_track
 from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import Site, get_fyst_site
-from ._common import FOOTPRINT_COLOR, _unique_offsets
+from ._common import _draw_module_circles, _require_matplotlib, _unique_offsets
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -93,16 +93,10 @@ def plot_source_track(
         If matplotlib is not installed.
     ValueError
         If ``block`` is not a source-CES pass, ``fov_radius_deg`` is not
-        positive, or ``modules`` is empty.
+        a positive finite number, or ``modules`` is empty.
     """
-    try:
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-        from matplotlib.patches import Circle  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_source_track(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_source_track")
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
 
     if not np.isfinite(fov_radius_deg) or fov_radius_deg <= 0:
         raise ValueError(f"fov_radius_deg must be a finite value > 0, got {fov_radius_deg}")
@@ -121,30 +115,15 @@ def plot_source_track(
     else:
         fig = ax.get_figure()
 
-    for offset in unique:
-        dx, dy = offset.dx_deg, offset.dy_deg
-        ax.add_patch(
-            Circle(
-                (dx, dy),
-                fov_radius_deg,
-                facecolor=FOOTPRINT_COLOR,
-                alpha=0.18,
-                edgecolor=FOOTPRINT_COLOR,
-                lw=1.2,
-            )
-        )
-        if labels:
-            name = (offset.name or "").removeprefix("PrimeCam-").lower() or "?"
-            ax.annotate(
-                name,
-                xy=(dx, dy),
-                xytext=(0, -14),  # below the centre, clear of the boresight marker
-                textcoords="offset points",
-                ha="center",
-                va="center",
-                fontsize=9,
-                alpha=0.8,
-            )
+    _draw_module_circles(
+        ax,
+        [(offset, offset.dx_deg, offset.dy_deg) for offset in unique],
+        fov_radius_deg,
+        labels=labels,
+        face_alpha=0.18,
+        lw=1.2,
+        label_alpha=0.8,
+    )
 
     ax.plot(xi, eta, color="#d62728", lw=0.8, alpha=0.9, label="source track")
     ax.plot(xi[0], eta[0], "o", color="#d62728", ms=7, mfc="white", mew=1.5, label="pass start")

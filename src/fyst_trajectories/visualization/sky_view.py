@@ -6,8 +6,8 @@ the astronomer's looking-up convention): every visible catalog body, the
 region of sky that is unsafe under the selected sun-avoidance policy
 (drawn to the policy's own boundary, so the directional CAD zone renders
 its true shape), the band below the telescope elevation floor, and
-optionally the PrimeCam footprint projected onto the sky at a boresight, at
-honest angular scale.
+optionally the Prime-Cam footprint projected onto the sky at a boresight, at
+true angular scale.
 
 Two layers are deliberately absent: the surveyed landscape horizon and
 site-structure occlusion. Neither model ships with this package.
@@ -16,7 +16,8 @@ Requires ``matplotlib`` (``pip install fyst-trajectories[plotting]``).
 
 Examples
 --------
-This afternoon's sky with the default policy and the array on the Moon:
+The sky at 2026-11-15 18:00 UTC with the default policy and the array on
+the Moon:
 
 >>> from astropy.time import Time
 >>> from fyst_trajectories.visualization import plot_sky_view
@@ -42,14 +43,17 @@ from ..primecam import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES
 from ..site import Site, get_fyst_site
 from ..sun_models import make_sun_safe
 from ..sun_protocols import ZonedSunSafePredicate
-from ._common import FOOTPRINT_COLOR, _palette, _unique_offsets
-from .visibility import (
-    DEFAULT_VISIBILITY_TARGETS,
+from ._common import (
     EXCLUSION_COLOR,
+    FOOTPRINT_COLOR,
     SUN_COLOR,
     WARNING_COLOR,
+    _palette,
+    _require_matplotlib,
     _tz_label,
+    _unique_offsets,
 )
+from .visibility import DEFAULT_VISIBILITY_TARGETS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -77,10 +81,10 @@ def _boresight_altaz(
         if len(boresight) != 2:
             raise ValueError(f"a boresight tuple must be (az, el), got {boresight!r}")
         az_b, el_b = (float(v) for v in boresight)
-        # (0, 90]: el = 0 is excluded for the same reason a below-horizon
-        # named target is, so both boresight forms agree at the horizon.
         if not np.isfinite(az_b):
             raise ValueError(f"boresight azimuth must be finite, got {az_b}")
+        # (0, 90]: el = 0 is excluded for the same reason a below-horizon
+        # named target is, so both boresight forms agree at the horizon.
         if not 0.0 < el_b <= 90.0:
             raise ValueError(f"boresight elevation must be within (0, 90] degrees, got {el_b}")
         return az_b % 360.0, el_b
@@ -107,8 +111,8 @@ def _footprint_on_sky(
     Each module's focal-plane FOV circle is rotated by the mechanical
     focal-plane rotation in the tangent plane (rotating the center and
     phase-shifting the circle are the same point set) and mapped through
-    the exact spherical forward offset, so outlines are honest at any
-    elevation and offset size.
+    the spherical forward offset, so outlines are exact at any elevation
+    and offset size.
     """
     unique = _unique_offsets(modules)
     ring = np.linspace(0.0, 2.0 * np.pi, _RING_SAMPLES)
@@ -270,7 +274,7 @@ def plot_sky_view(
     above the horizon at ``time`` (targets below it are silently omitted),
     the Sun, the sky region unsafe under the selected sun-avoidance policy,
     the band below the telescope elevation floor, and, when ``boresight``
-    is given, the PrimeCam module FOV outlines projected onto the sky
+    is given, the Prime-Cam module FOV outlines projected onto the sky
     there, at true angular scale with the mechanical focal-plane rotation
     applied.
 
@@ -303,7 +307,7 @@ def plot_sky_view(
         Observing site. Defaults to
         :func:`~fyst_trajectories.site.get_fyst_site`.
     boresight : str, Target, or (az, el) pair, optional
-        Where to project the PrimeCam footprint: a target name or
+        Where to project the Prime-Cam footprint: a target name or
         :class:`~fyst_trajectories.observability.Target` (must be above
         the horizon at ``time``) or an explicit ``(az_deg, el_deg)`` pair
         (tuple, list, or array; elevation in ``(0, 90]``). Default
@@ -384,15 +388,10 @@ def plot_sky_view(
         ``Coordinates.is_sun_safe`` is refused here; build the model with
         :func:`~fyst_trajectories.sun_models.make_sun_safe`.
     """
-    try:
-        import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
-        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
-        from matplotlib.patches import Patch  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        raise ImportError(
-            "matplotlib is required for plot_sky_view(). "
-            "Install it with: pip install fyst-trajectories[plotting]"
-        ) from None
+    _require_matplotlib("plot_sky_view")
+    import matplotlib.colors as mcolors  # pylint: disable=import-outside-toplevel
+    import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
+    from matplotlib.patches import Patch  # pylint: disable=import-outside-toplevel
 
     if not time.isscalar:
         raise ValueError("time must be a scalar Time (one instant); got an array")

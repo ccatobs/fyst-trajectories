@@ -24,20 +24,17 @@ Exception Hierarchy
         OffsetInversionError
         DwellExceedsCrossingError
 
+One rule decides whether an error is a ``PointingError`` or a plain
+``ValueError``. A ``PointingError`` means a well-formed request that cannot
+be satisfied for this site, target and time: a target outside the telescope
+limits, no elevation crossing within the search window, a dwell longer than
+the solved crossing. A plain ``ValueError`` means a malformed request: a
+non-positive timestep, a duplicate pattern name, an unrecognised config.
+
 The offline simulator adds two more ``PointingError`` subclasses,
 ``ScanParamsSchemaError`` and ``BlockNotReconstructableError``, in
-``fyst_trajectories.overhead.exceptions``; they live in that tier and are
-not re-exported here.
-
-One rule decides which of the two an error is. A ``PointingError``
-means a well-formed request that cannot be satisfied for this site,
-target and time: a target outside the telescope limits, no elevation
-crossing within the search window, a dwell longer than the solved
-crossing. A plain ``ValueError`` means a malformed request: a
-non-positive timestep, a duplicate pattern name, an unrecognised
-config. The offline simulator's ``ScanParamsSchemaError`` and
-``BlockNotReconstructableError`` report a recorded block that cannot be
-rebuilt.
+``fyst_trajectories.overhead.exceptions``, for a recorded block that cannot
+be rebuilt; they live in that tier and are not re-exported here.
 
 ``PointingError`` inherits from ``ValueError``, and every exception
 below it inherits from ``PointingError``, so all of them can be caught
@@ -121,7 +118,7 @@ class PointingError(ValueError):
     >>> from fyst_trajectories import validate_trajectory
     >>> from fyst_trajectories.exceptions import PointingError
     >>> try:
-    ...     validate_trajectory(trajectory, site)
+    ...     validate_trajectory(trajectory, site=site)
     ... except PointingError as exc:
     ...     print(f"Pointing error: {exc}")
     """
@@ -147,14 +144,14 @@ class TrajectoryBoundsError(PointingError):
     --------
     Catch and inspect a bounds error:
 
-    >>> from fyst_trajectories import validate_trajectory
+    >>> import numpy as np
     >>> from fyst_trajectories.exceptions import TrajectoryBoundsError
+    >>> from fyst_trajectories.trajectory_utils import validate_trajectory_bounds
     >>> try:
-    ...     validate_trajectory(trajectory, site)
+    ...     validate_trajectory_bounds(np.array([100.0, 100.0]), np.array([10.0, 45.0]), site=site)
     ... except TrajectoryBoundsError as exc:
-    ...     print(f"Axis: {exc.axis}")
-    ...     print(f"Actual: [{exc.actual_min:.2f}, {exc.actual_max:.2f}]")
-    ...     print(f"Limits: [{exc.limit_min}, {exc.limit_max}]")
+    ...     print(exc.axis, [exc.actual_min, exc.actual_max], [exc.limit_min, exc.limit_max])
+    elevation [10.0, 45.0] [20.0, 90.0]
     """
 
     def __init__(
@@ -209,7 +206,7 @@ class AzimuthBoundsError(TrajectoryBoundsError):
     >>> az = np.array([100.0, 400.0])  # 400 exceeds the +360 encoder limit
     >>> el = np.array([45.0, 45.0])
     >>> try:
-    ...     validate_trajectory_bounds(site, az, el)
+    ...     validate_trajectory_bounds(az, el, site=site)
     ... except AzimuthBoundsError as exc:
     ...     print(
     ...         f"Az [{exc.actual_min:.1f}, {exc.actual_max:.1f}] "
@@ -258,7 +255,7 @@ class ElevationBoundsError(TrajectoryBoundsError):
     >>> az = np.array([100.0, 100.0])
     >>> el = np.array([10.0, 45.0])  # 10 is below the 20 deg elevation floor
     >>> try:
-    ...     validate_trajectory_bounds(site, az, el)
+    ...     validate_trajectory_bounds(az, el, site=site)
     ... except ElevationBoundsError as exc:
     ...     print(
     ...         f"El [{exc.actual_min:.1f}, {exc.actual_max:.1f}] "
@@ -409,7 +406,7 @@ class EncoderSolutionError(PointingError):
     >>> site = get_fyst_site(sun_avoidance_enabled=False)
     >>> t = Time("2026-03-15T12:00:00", scale="utc")
     >>> try:
-    ...     choose_encoder_solution(190.0, 45.0, 200.0, 10.0, t, site)
+    ...     choose_encoder_solution(190.0, 45.0, 200.0, 10.0, t, site=site)
     ... except EncoderSolutionError as exc:
     ...     print(exc.cause, exc.goal_el)
     goal_elevation 10.0
@@ -417,14 +414,14 @@ class EncoderSolutionError(PointingError):
 
     def __init__(
         self,
-        cause: "EncoderSolutionCause",
+        cause: EncoderSolutionCause,
         message: str,
         *,
         goal_az: float,
         goal_el: float,
         current_az: float | None = None,
         current_el: float | None = None,
-        candidates: "Sequence[float]" = (),
+        candidates: Sequence[float] = (),
         time_iso: str | None = None,
     ):
         self.cause = cause
@@ -487,7 +484,7 @@ class OffsetInversionError(PointingError):
     (3, 4)
     """
 
-    def __init__(self, message: str, *, indices: "Sequence[int]" = ()):
+    def __init__(self, message: str, *, indices: Sequence[int] = ()):
         self.indices = tuple(int(i) for i in indices)
         super().__init__(message)
 

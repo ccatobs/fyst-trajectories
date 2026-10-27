@@ -8,6 +8,7 @@ get_fyst_site() constructor.
 import tempfile
 from pathlib import Path
 
+import erfa
 import numpy as np
 import pytest
 import yaml
@@ -125,7 +126,10 @@ class TestSiteLoading:
 
     @pytest.mark.parametrize("case", ["empty-file", "scalar-section", "null-nasmyth-port"])
     def test_malformed_config_raises_value_error(self, tmp_path, case):
-        """A document of the wrong shape is reported as the invalid config it is."""
+        """A document of the wrong shape is reported as the invalid config it is.
+
+        A null port reaches ``Site``, which refuses it by the field's name.
+        """
         config = {
             "site": {
                 "name": "Test",
@@ -148,7 +152,12 @@ class TestSiteLoading:
                 config["telescope"]["nasmyth_port"] = None
             config_file.write_text(yaml.dump(config))
 
-        with pytest.raises(ValueError, match=f"Config '{case}.yaml' is malformed"):
+        message = (
+            "nasmyth_port must be one of: .*; got None"
+            if case == "null-nasmyth-port"
+            else f"Config '{case}.yaml' is malformed"
+        )
+        with pytest.raises(ValueError, match=message):
             Site.from_config(config_file)
 
     def test_zero_velocity_config_raises_value_error(self, tmp_path):
@@ -188,6 +197,9 @@ class TestAtmosphericConditions:
             pytest.param(dict(temperature=-5.0), "temperature must be >= 0 K", id="celsius"),
             pytest.param(dict(temperature=float("nan")), "temperature must be >= 0 K", id="nan-t"),
             pytest.param(dict(pressure=float("nan")), "pressure must be >= 0 hPa", id="nan-p"),
+            pytest.param(dict(temperature=float("inf")), "temperature must be >= 0 K", id="inf-t"),
+            pytest.param(dict(pressure=float("inf")), "pressure must be >= 0 hPa", id="inf-p"),
+            pytest.param(dict(obswl=float("nan")), "obswl must be > 0 microns", id="nan-obswl"),
         ],
     )
     def test_validation_rejects_negative_or_nan_pressure_and_temperature(self, kwargs, match):
@@ -196,6 +208,17 @@ class TestAtmosphericConditions:
         values.update(kwargs)
         with pytest.raises(ValueError, match=match):
             AtmosphericConditions(**values)
+
+    @pytest.mark.parametrize("obswl", [0.0, -1.0])
+    def test_validation_rejects_non_positive_obswl(self, obswl):
+        """A non-positive wavelength is refused: ERFA would refract about 2x too much."""
+        optical, _ = erfa.refco(500.0, -8.15, 0.1, 1.0)
+        garbage, _ = erfa.refco(500.0, -8.15, 0.1, obswl)
+        assert garbage / optical == pytest.approx(2.03, abs=0.01)
+        with pytest.raises(ValueError, match="obswl must be > 0 microns"):
+            AtmosphericConditions(
+                pressure=500.0, temperature=265.0, relative_humidity=0.1, obswl=obswl
+            )
 
     def test_no_refraction_zero_kelvin_still_builds(self):
         """The vacuum synonym's 0 K temperature stays legal."""

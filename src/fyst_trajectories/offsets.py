@@ -133,17 +133,22 @@ class InstrumentOffset:
     ) -> "InstrumentOffset":
         """Create an offset from focal plane physical coordinates.
 
-        Converts physical positions in millimeters on the focal plane to
-        angular offsets using the telescope plate scale.
+        Converts a position in millimeters on the telescope focal surface,
+        where the instrument modules sit, to angular offsets using the plate
+        scale of that surface. A position on a module's detector plane,
+        behind the module's reimaging optics, needs that plane's own plate
+        scale, which differs from the telescope's.
 
         Parameters
         ----------
         x_mm : float
-            X position on focal plane in millimeters relative to optical axis.
+            X position on the telescope focal surface in millimeters relative
+            to the optical axis.
         y_mm : float
-            Y position on focal plane in millimeters relative to optical axis.
+            Y position on the telescope focal surface in millimeters relative
+            to the optical axis.
         plate_scale : float
-            Plate scale in arcsec/mm.
+            Plate scale of that surface in arcsec/mm.
         name : str, optional
             Name of the instrument/detector.
         instrument_rotation : float, optional
@@ -344,7 +349,7 @@ def _offset_inverse(
     The closed-form inverse (negated offsets applied via the forward
     formula) has round-trip error of order ``rho^2``. The refinement is
     fixed-point iteration (the residual is added back to the previous
-    estimate; no Jacobian is computed); measured at PrimeCam-scale
+    estimate; no Jacobian is computed); measured at Prime-Cam-scale
     offsets it drops the residual by several orders of magnitude per
     iteration.
 
@@ -375,9 +380,8 @@ def _offset_inverse(
             "boresight elevation is within "
             f"{_POLE_GUARD_DEG:g} deg of +/-90 deg, where azimuth is degenerate "
             "(every boresight azimuth maps to the same pole position, so the "
-            "residual check cannot validate it). This requires an extreme offset "
-            "placing the detector at the zenith and is far outside any realistic "
-            f"PrimeCam pointing envelope.{where}",
+            "residual check cannot validate it). This happens when the detector "
+            f"target, or the boresight that places it, lies at the zenith.{where}",
             indices=bad.tolist() if near_pole.ndim else (),
         )
 
@@ -526,7 +530,8 @@ def detector_to_boresight(
         Detector offset from boresight.
     focal_plane_rotation : float or array
         Orientation of the focal plane relative to the horizon (az/el)
-        axes, in degrees; see :func:`boresight_to_detector`.
+        axes, in degrees; see :func:`boresight_to_detector`. The rotation
+        belongs to the returned boresight elevation, not to ``det_el``.
 
     Returns
     -------
@@ -713,6 +718,18 @@ def compute_focal_plane_rotation(
         Computes the celestial-frame quantity
         ``nasmyth_sign * el + parallactic_angle`` from RA/Dec
         (no instrument_rotation).
+
+    Examples
+    --------
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.offsets import InstrumentOffset, compute_focal_plane_rotation
+    >>> offset = InstrumentOffset(dx=0.0, dy=-106.8, instrument_rotation=15.0)
+    >>> compute_focal_plane_rotation(45.0, site=get_fyst_site(), offset=offset)
+    60.0
+    >>> compute_focal_plane_rotation(
+    ...     45.0, site=get_fyst_site(), offset=offset, parallactic_angle=-30.0
+    ... )
+    30.0
     """
     mechanical = site.nasmyth_sign * el + offset.instrument_rotation
     return mechanical + parallactic_angle
@@ -779,7 +796,7 @@ def apply_detector_offset(
     path), its ``el`` is in the apparent frame and the mechanical rotation
     differs from the vacuum one by ``nasmyth_sign * (refraction bump)``,
     a small boresight effect (a few arcseconds at worst, at the lowest
-    elevations) at PrimeCam offset radii. ``Trajectory``
+    elevations) at Prime-Cam offset radii. ``Trajectory``
     carries no refraction flag, so a refracted input cannot be detected
     here; pair detector offsets with vacuum trajectories.
 
@@ -797,7 +814,7 @@ def apply_detector_offset(
     derivative of its positions, as they are in every trajectory the
     library builds.
 
-    The returned trajectory shares some arrays with the input: ``metadata``,
+    The returned trajectory shares some fields with the input: ``metadata``,
     ``scan_flag`` and ``retune_events`` are the same objects, and a
     zero offset (no shift, whatever its instrument rotation, since a
     rotated zero vector is still zero) returns a copy that shares every
@@ -840,14 +857,16 @@ def apply_detector_offset(
     >>> adjusted = apply_detector_offset(trajectory, offset, site=site)
     """
     if offset.dx == 0.0 and offset.dy == 0.0:
+        if validate:
+            validate_trajectory_bounds(trajectory.az, trajectory.el, site=site)
         return dataclasses.replace(trajectory)
 
     # Horizon-frame projection: the rotation is mechanical only; the
     # parallactic angle is a horizon-to-celestial quantity and has no
     # place in an az/el projection. The Nasmyth term follows the telescope's
     # own (boresight) elevation, the unknown being solved for, so iterate:
-    # each pass shrinks the elevation error by about the offset radius in
-    # radians (0.03 for the inner ring).
+    # each pass shrinks the elevation error by a factor of at most the offset
+    # radius in radians (0.031 for the inner ring).
     bore_el = trajectory.el
     for _ in range(_INVERSE_MAX_ITERATIONS):
         rotation = compute_focal_plane_rotation(bore_el, site=site, offset=offset)
@@ -892,6 +911,6 @@ def apply_detector_offset(
     )
 
     if validate:
-        validate_trajectory_bounds(site, result.az, result.el)
+        validate_trajectory_bounds(result.az, result.el, site=site)
 
     return result

@@ -21,12 +21,15 @@ Scope and limits:
 
 What these tests deliberately do **not** do is assert the exact *membership*
 of ``__all__`` (an intentional add/remove is a normal change, not a
-regression). Detecting accidental removals, a symbol silently dropped from
-``__all__`` entirely, is left to an explicit review that diffs the full
-surface against the source.
+regression). They do hold the root to its stated rule:
+:func:`test_root_reexports_every_public_name_of_its_sources` fails when a
+public name of a module the root imports from is missing from ``__all__``,
+apart from the families documented as module-scoped.
 """
 
+import ast
 import importlib
+import inspect
 
 import pytest
 
@@ -118,3 +121,54 @@ def test_library_subpackage_all_is_sound(module):
     assert [n for n in names if not hasattr(module, n)] == []
     assert [n for n in names if _is_private(n)] == []
     assert len(names) == len(set(names))
+
+
+#: Public names of a module the root draws from that are imported from that module only.
+_MODULE_SCOPED = {
+    "fyst_trajectories.planning": {
+        "inflate_footprint",
+        "offset_footprint_eta",
+        "resolve_footprint",
+    },
+    "fyst_trajectories.sun_protocols": {
+        "BatchSunSafePredicate",
+        "PathSlewSafePredicate",
+        "ZonedSunSafePredicate",
+    },
+}
+
+
+def _root_sources() -> list[str]:
+    """Modules and subpackages the package root imports from."""
+    tree = ast.parse(inspect.getsource(fyst_trajectories))
+    return sorted(
+        {
+            f"fyst_trajectories.{node.module}"
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module
+        }
+    )
+
+
+def _public_names(module_name: str) -> set[str]:
+    """Return a subpackage's ``__all__``, else a module's public top-level definitions."""
+    module = importlib.import_module(module_name)
+    if hasattr(module, "__all__"):
+        return set(module.__all__)
+    names = set()
+    for node in ast.parse(inspect.getsource(module)).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return {n for n in names if not n.startswith("_")}
+
+
+@pytest.mark.parametrize("module_name", _root_sources())
+def test_root_reexports_every_public_name_of_its_sources(module_name):
+    """The root re-exports each public name of the modules it draws from."""
+    expected = _public_names(module_name) - _MODULE_SCOPED.get(module_name, set())
+    missing = sorted(expected - set(fyst_trajectories.__all__))
+    assert not missing, f"{module_name} names missing from fyst_trajectories.__all__: {missing}"

@@ -157,7 +157,18 @@ class TestAzThrowInput:
         assert len(seen) == 2
         span_default = seen[0].max() - seen[0].min()
         span_narrow = seen[1].max() - seen[1].min()
-        assert span_default - span_narrow == pytest.approx(default["az_throw"] - narrow["az_throw"])
+        # The sweep runs to the later of t1 and the quantised trajectory's end,
+        # and the quantised duration depends on the throw, so the drift over
+        # the two sweeps differs by |v_az| times the difference of their ends.
+        window_sec = (Time(default["t1_iso"]) - Time(default["t0_iso"])).to_value(u.s)
+        run_default = max(window_sec, default["duration"])
+        run_narrow = max(window_sec, narrow["duration"])
+        expected = (
+            default["az_throw"]
+            - narrow["az_throw"]
+            + abs(default["v_az"]) * (run_default - run_narrow)
+        )
+        assert span_default - span_narrow == pytest.approx(expected, abs=1e-4)
 
 
 class TestNonScalarTimeInputs:
@@ -253,12 +264,15 @@ class TestSweptEnvelope:
         overshoot = turnaround_overshoot_deg(cp["az_speed"], 1.0)
         assert overshoot == pytest.approx(1.40625)
         # The arc spans the commanded window plus the drift the pass
-        # accumulates between t0 and t1: throw + 2 * overshoot + |v_az| * dt.
+        # accumulates from t0 to the later of t1 and the quantised
+        # trajectory's end: throw + 2 * overshoot + |v_az| * dt.
         # The recorded window is an ISO string truncated to milliseconds, so
         # reconstructing the drift from it carries about a microdegree of
         # slack; that is far below the 1.4 deg the widening adds.
         window_sec = (Time(cp["t1_iso"]) - Time(cp["t0_iso"])).to_value(u.s)
-        expected = cp["az_throw"] + 2 * overshoot + abs(cp["v_az"]) * window_sec
+        run_sec = max(window_sec, cp["duration"])
+        assert run_sec > window_sec  # this pass outlasts its source window
+        expected = cp["az_throw"] + 2 * overshoot + abs(cp["v_az"]) * run_sec
         assert arc_az.max() - arc_az.min() == pytest.approx(expected, abs=1e-4)
 
     @pytest.mark.parametrize("az_speed", [1.0, 2.0])

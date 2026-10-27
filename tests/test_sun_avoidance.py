@@ -102,7 +102,7 @@ class TestValidateSunAvoidance:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_sun_avoidance(custom_site, az, el, abs_times, coords=coordinates)
+            validate_sun_avoidance(az, el, abs_times, site=custom_site, coords=coordinates)
             sun_warnings = [x for x in w if issubclass(x.category, PointingWarning)]
             assert len(sun_warnings) >= 1
             assert "Sun" in str(sun_warnings[0].message)
@@ -127,7 +127,7 @@ class TestValidateSunAvoidance:
         # Pointing at the Sun: the enabled check would warn; disabled is silent.
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            validate_sun_avoidance(disabled_site, az, el, abs_times, coords=coordinates)
+            validate_sun_avoidance(az, el, abs_times, site=disabled_site, coords=coordinates)
 
     def test_subsampling_behavior(self, site, coordinates, obstime):
         """Trajectory with many points uses sparse sun position computation."""
@@ -149,7 +149,7 @@ class TestValidateSunAvoidance:
             return original_get_sun(t)
 
         with patch.object(coordinates, "get_sun_altaz", side_effect=counting_get_sun):
-            validate_sun_avoidance(site, az, el, abs_times, coords=coordinates)
+            validate_sun_avoidance(az, el, abs_times, site=site, coords=coordinates)
 
         # One vectorised ephemeris call over the subsample: 10 s at the 60 s
         # interval keeps only the first and the last point.
@@ -177,7 +177,7 @@ class TestValidateTrajectoryWithSun:
             el_vel=np.zeros(3),
             start_time=None,
         )
-        validate_trajectory(traj, site)
+        validate_trajectory(traj, site=site)
 
     def test_skips_sun_when_check_sun_false(self, site, coordinates, obstime):
         """Sun check is skipped when check_sun=False."""
@@ -198,7 +198,7 @@ class TestValidateTrajectoryWithSun:
         # The trajectory points at the Sun, so only the skip keeps this silent.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            validate_trajectory(traj, site, check_sun=False)
+            validate_trajectory(traj, site=site, check_sun=False)
         assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
 
 
@@ -461,12 +461,12 @@ class TestValidateSunAvoidanceInjectedPredicate:
         # Default path: silent.
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_sun_avoidance(site, az, el, abs_times, coords=coordinates)
+            validate_sun_avoidance(az, el, abs_times, site=site, coords=coordinates)
             assert not [x for x in w if issubclass(x.category, PointingWarning)]
 
         with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
             validate_sun_avoidance(
-                site, az, el, abs_times, coords=coordinates, sun_safe=block_everything
+                az, el, abs_times, site=site, coords=coordinates, sun_safe=block_everything
             )
 
     def test_injected_predicate_consulted_per_subsample(self, site, coordinates, obstime):
@@ -478,7 +478,7 @@ class TestValidateSunAvoidanceInjectedPredicate:
             seen.append((float(a), float(e)))
             return True
 
-        validate_sun_avoidance(site, az, el, abs_times, coords=coordinates, sun_safe=spy)
+        validate_sun_avoidance(az, el, abs_times, site=site, coords=coordinates, sun_safe=spy)
 
         assert seen, "predicate was never consulted"
         # Subsampling is preserved: the 60 s sun-check interval turns 240 points
@@ -497,12 +497,12 @@ class TestValidateSunAvoidanceInjectedPredicate:
 
         # Precondition: scalar default warns at the Sun.
         with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-            validate_sun_avoidance(site, az, el, abs_times, coords=coordinates)
+            validate_sun_avoidance(az, el, abs_times, site=site, coords=coordinates)
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             validate_sun_avoidance(
-                site, az, el, abs_times, coords=coordinates, sun_safe=allow_everything
+                az, el, abs_times, site=site, coords=coordinates, sun_safe=allow_everything
             )
             assert not [x for x in w if issubclass(x.category, PointingWarning)]
 
@@ -521,11 +521,11 @@ class TestValidateSunAvoidanceInjectedPredicate:
         # Default path: no EXCLUSION ZONE warning for this safe trajectory.
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_trajectory(traj, site)
+            validate_trajectory(traj, site=site)
             assert not [x for x in w if "EXCLUSION ZONE" in str(x.message)]
 
         with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-            validate_trajectory(traj, site, sun_safe=block_everything)
+            validate_trajectory(traj, site=site, sun_safe=block_everything)
 
     def test_validate_trajectory_default_none_unchanged(self, site, coordinates, obstime):
         """validate_trajectory with sun_safe=None matches the scalar behavior."""
@@ -542,4 +542,4 @@ class TestValidateSunAvoidanceInjectedPredicate:
         # Trajectory pointed at the Sun warns under the scalar default,
         # with or without an explicit None.
         with pytest.warns(PointingWarning, match="EXCLUSION ZONE"):
-            validate_trajectory(traj, site, sun_safe=None)
+            validate_trajectory(traj, site=site, sun_safe=None)

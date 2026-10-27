@@ -178,6 +178,11 @@ def test_visibility_timezone_labels():
     assert "(UTC)" in fig2.axes[-1].get_xlabel()
 
 
+def test_visibility_title_states_a_sub_hour_span():
+    fig = plot_visibility(T0, ["jupiter"], horizon_hours=0.5, show=False)
+    assert "(0.5 h from" in fig.get_suptitle()
+
+
 def test_visibility_into_caller_axes(monkeypatch):
     calls = []
     monkeypatch.setattr(plt, "show", lambda *a, **k: calls.append(1))
@@ -218,6 +223,10 @@ def test_visibility_validation():
         if bad != 0.0:
             with pytest.raises(ValueError, match="step_minutes"):
                 plot_visibility(T0, ["mars"], step_minutes=bad, show=False)
+    with pytest.raises(ValueError, match="el_min"):
+        plot_visibility(T0, ["mars"], el_min=120.0, show=False)
+    with pytest.raises(ValueError, match="el_min"):
+        plot_visibility(T0, ["mars"], el_min=float("nan"), show=False)
     _, axs = plt.subplots(3, 1)
     with pytest.raises(ValueError, match="axes"):
         plot_visibility(T0, ["mars"], panels=("elevation",), axes=list(axs), show=False)
@@ -500,6 +509,32 @@ def test_windows_injected_model_drives_verdicts_and_legend():
     assert len(_bar_collections(ax)) == 0  # everything unsafe => no windows
     legend_texts = [t.get_text() for t in ax.get_legend().get_texts()]
     assert any("stub policy" in t for t in legend_texts)
+
+
+def test_windows_accept_a_plain_predicate():
+    """A predicate without ``batch`` is consulted per grid sample."""
+    site = get_fyst_site()
+    fig = plot_observability_windows(
+        T0, ["jupiter"], site=site, sun_model=Coordinates(site).is_sun_safe, show=False
+    )
+    assert isinstance(fig, Figure)
+
+
+def test_windows_legend_names_the_site_elevation_ceiling():
+    """A site whose elevation maximum is below 90 deg states the cut it applies."""
+    fyst = get_fyst_site()
+    limits = fyst.telescope_limits
+    elevation = dataclasses.replace(limits.elevation, max=80.0)
+    site = dataclasses.replace(
+        fyst, telescope_limits=dataclasses.replace(limits, elevation=elevation)
+    )
+    fig = plot_observability_windows(T0, ["jupiter"], site=site, show=False)
+    (ax,) = fig.axes
+    legend_texts = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert legend_texts[0].endswith("el <= 80 deg")
+    fig_fyst = plot_observability_windows(T0, ["jupiter"], show=False)
+    (ax_fyst,) = fig_fyst.axes
+    assert "el <=" not in ax_fyst.get_legend().get_texts()[0].get_text()
 
 
 def test_windows_validation():

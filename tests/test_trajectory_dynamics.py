@@ -514,7 +514,7 @@ class TestValidateTrajectoryBounds:
         site = get_fyst_site()
         az = np.array([100.0, 150.0, 200.0])
         el = np.array([45.0, 50.0, 55.0])
-        validate_trajectory_bounds(site, az, el)  # Should not raise
+        validate_trajectory_bounds(az, el, site=site)  # Should not raise
 
     def test_az_below_limit(self):
         site = get_fyst_site()
@@ -522,7 +522,7 @@ class TestValidateTrajectoryBounds:
         el = np.array([45.0, 45.0, 45.0])
 
         with pytest.raises(AzimuthBoundsError, match="azimuth") as exc_info:
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
         err = exc_info.value
         assert err.axis == "azimuth"
@@ -535,7 +535,7 @@ class TestValidateTrajectoryBounds:
         el = np.array([45.0, 45.0, 45.0])
 
         with pytest.raises(AzimuthBoundsError, match="azimuth") as exc_info:
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
         err = exc_info.value
         assert err.axis == "azimuth"
@@ -548,7 +548,7 @@ class TestValidateTrajectoryBounds:
         el = np.array([10.0, 45.0, 50.0])  # 10 < el_min (20)
 
         with pytest.raises(ElevationBoundsError, match="elevation") as exc_info:
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
         err = exc_info.value
         assert err.axis == "elevation"
@@ -561,7 +561,7 @@ class TestValidateTrajectoryBounds:
         el = np.array([45.0, 50.0, 95.0])  # 95 > el_max (90)
 
         with pytest.raises(ElevationBoundsError, match="elevation") as exc_info:
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
         err = exc_info.value
         assert err.axis == "elevation"
@@ -575,7 +575,7 @@ class TestValidateTrajectoryBounds:
         el = np.array([45.0, 45.0, 45.0])
 
         with pytest.raises(ValueError, match="azimuth"):
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
     def test_boundary_values(self):
         """The exact limit values are accepted."""
@@ -583,7 +583,7 @@ class TestValidateTrajectoryBounds:
         limits = site.telescope_limits
         az = np.array([limits.azimuth.min, 0.0, limits.azimuth.max])
         el = np.array([limits.elevation.min, 45.0, limits.elevation.max])
-        validate_trajectory_bounds(site, az, el)  # Should not raise
+        validate_trajectory_bounds(az, el, site=site)  # Should not raise
 
 
 class TestValidateTrajectoryDynamics:
@@ -598,7 +598,7 @@ class TestValidateTrajectoryDynamics:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
             dyn_warnings = [
                 x
                 for x in w
@@ -619,7 +619,7 @@ class TestValidateTrajectoryDynamics:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         assert any(issubclass(x.category, VelocityLimitWarning) for x in w)
 
     def test_high_acceleration_warning_has_acceleration_limit_category(self):
@@ -631,7 +631,7 @@ class TestValidateTrajectoryDynamics:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         assert any(issubclass(x.category, AccelerationLimitWarning) for x in w)
 
     def test_single_point_trajectory_warns_skipped(self):
@@ -642,7 +642,7 @@ class TestValidateTrajectoryDynamics:
         el = np.array([45.0])
 
         with pytest.warns(PointingWarning, match="fewer than 2 points"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     def test_short_trajectory_warns_skipped(self):
         """Two-point trajectory warns that acceleration validation is skipped."""
@@ -655,7 +655,7 @@ class TestValidateTrajectoryDynamics:
             pytest.warns(VelocityLimitWarning),
             pytest.warns(PointingWarning, match="only 2 points") as record,
         ):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         # The velocity check still runs on a short trajectory: 100 deg/s is far
         # over the azimuth limit.
         assert any(issubclass(w.category, VelocityLimitWarning) for w in record)
@@ -671,10 +671,23 @@ class TestValidateTrajectoryDynamics:
             pytest.warns(VelocityLimitWarning),
             pytest.warns(PointingWarning, match="only 3 points") as record,
         ):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         # The velocity check still runs on a short trajectory: 100 deg/s is far
         # over the azimuth limit.
         assert any(issubclass(w.category, VelocityLimitWarning) for w in record)
+
+    def test_a_step_across_the_seam_is_judged_at_its_commanded_size(self):
+        """Encoder azimuths do not wrap: 359.9 to 0.0 is a 359.9 deg move."""
+        site = get_fyst_site()
+        times = np.array([0.0, 0.1, 0.2, 0.3])
+        az = np.array([359.8, 359.9, 0.0, 0.1])
+        el = np.full(4, 45.0)
+
+        with (
+            pytest.warns(AccelerationLimitWarning, match="azimuth acceleration"),
+            pytest.warns(VelocityLimitWarning, match=r"azimuth velocity \(1799\.00 deg/s\)"),
+        ):
+            validate_trajectory_dynamics(az, el, times, site=site)
 
 
 def _uniform_motion(site, axis, factor):
@@ -713,7 +726,7 @@ class TestVelocityLimitTolerance:
                 start_time="2026-09-15T00:00:00",
             )
             trajectory = block.trajectory
-            validate_trajectory_dynamics(site, trajectory.az, trajectory.el, trajectory.times)
+            validate_trajectory_dynamics(trajectory.az, trajectory.el, trajectory.times, site=site)
         derived = np.gradient(np.unwrap(trajectory.az, period=360.0), trajectory.times)
         assert abs(float(np.max(np.abs(derived))) - limit) <= 1e-9 * limit
         velocity = [str(x.message) for x in w if issubclass(x.category, VelocityLimitWarning)]
@@ -726,7 +739,7 @@ class TestVelocityLimitTolerance:
         az, el, times = _uniform_motion(site, axis, 1.0 + 1e-12)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         velocity = [str(x.message) for x in w if issubclass(x.category, VelocityLimitWarning)]
         assert velocity == []
 
@@ -736,7 +749,7 @@ class TestVelocityLimitTolerance:
         site = get_fyst_site()
         az, el, times = _uniform_motion(site, axis, 1.0 + 1e-6)
         with pytest.warns(VelocityLimitWarning, match=f"{axis} velocity"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
 
 def _column_trajectory(az_vel, el_vel, az_rate=1.0):
@@ -755,7 +768,7 @@ def _velocity_messages(trajectory, site):
     """Return the ``VelocityLimitWarning`` messages ``validate_trajectory`` emits."""
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        validate_trajectory(trajectory, site, check_sun=False)
+        validate_trajectory(trajectory, site=site, check_sun=False)
     return [str(x.message) for x in w if issubclass(x.category, VelocityLimitWarning)]
 
 
@@ -782,7 +795,7 @@ class TestValidateTrajectoryVelocityColumns:
         limit = site.telescope_limits.elevation.max_velocity
         assert limit < 2.0
         with pytest.warns(VelocityLimitWarning, match="Commanded elevation velocity column"):
-            validate_trajectory(_column_trajectory(1.0, 2.0), site, check_sun=False)
+            validate_trajectory(_column_trajectory(1.0, 2.0), site=site, check_sun=False)
 
     @pytest.mark.parametrize("factor", [1.0, 1.0 + 1e-12])
     def test_column_at_limit_does_not_warn(self, site, factor):
@@ -856,13 +869,13 @@ class TestValidatorInputGuards:
         az = np.array([100.0, np.nan, 120.0])
         el = np.array([45.0, 50.0, 55.0])
         with pytest.raises(ValueError, match="[Nn]on-finite"):
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
     def test_bounds_rejects_inf(self, site):
         az = np.array([100.0, 110.0, 120.0])
         el = np.array([45.0, np.inf, 55.0])
         with pytest.raises(ValueError, match="[Nn]on-finite"):
-            validate_trajectory_bounds(site, az, el)
+            validate_trajectory_bounds(az, el, site=site)
 
     def test_dynamics_rejects_nan_az(self, site):
         times = np.arange(6) * 0.1
@@ -870,7 +883,7 @@ class TestValidatorInputGuards:
         az[3] = np.nan
         el = np.full(6, 45.0)
         with pytest.raises(ValueError, match="[Nn]on-finite"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     def test_dynamics_rejects_inf_times(self, site):
         times = np.arange(6) * 0.1
@@ -878,21 +891,21 @@ class TestValidatorInputGuards:
         az = np.full(6, 120.0)
         el = np.full(6, 45.0)
         with pytest.raises(ValueError, match="[Nn]on-finite"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     def test_dynamics_rejects_duplicate_times(self, site):
         times = np.array([0.0, 0.1, 0.1, 0.3, 0.4])  # not strictly increasing
         az = np.full(5, 120.0)
         el = np.full(5, 45.0)
         with pytest.raises(ValueError, match="increasing"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     def test_dynamics_rejects_decreasing_times(self, site):
         times = np.array([0.0, 0.1, 0.05, 0.3, 0.4])  # step goes backwards
         az = np.full(5, 120.0)
         el = np.full(5, 45.0)
         with pytest.raises(ValueError, match="increasing"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
 
 class TestIntegralVelocityEqualsPosition:
@@ -1025,13 +1038,13 @@ class TestOnSkyAzimuthAdvisory:
         """The fast, high-elevation half trips the advisory."""
         az, el, times = self._two_speed_trajectory()
         with pytest.warns(PointingWarning, match="reduces on-sky azimuth speed"):
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     def test_message_quotes_the_judged_sample(self, site):
         """The message quotes the judged sample's own numbers, at el 75 deg."""
         az, el, times = self._two_speed_trajectory()
         with pytest.warns(PointingWarning) as record:
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         # The samples at el 75 move at 1.0 deg/s; cos(75 deg) = 0.259, so they
         # cover 0.26 deg/s of sky. cos(20 deg) = 0.940 must not appear.
         assert "to 0.26 deg/s" in _advisory_message(record)
@@ -1044,7 +1057,7 @@ class TestOnSkyAzimuthAdvisory:
         el = np.full(len(times), 30.0)
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
 
 _N_GRID = 1000
@@ -1135,7 +1148,7 @@ class TestJudgedSample:
         times = _ADVISORY_GRIDS[grid]
         az, el = _constant_rate_sweep(times - times[0], rising)
         with pytest.warns(PointingWarning, match="reduces on-sky azimuth speed") as record:
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         assert _SWEEP_AT_70_DEG in _advisory_message(record)
 
     @pytest.mark.parametrize("storage", ["exact-times-at-1.7e9s", "float32"])
@@ -1156,7 +1169,7 @@ class TestJudgedSample:
         # Precondition: the storage spreads the computed speeds.
         assert np.ptp(np.abs(np.gradient(np.asarray(az, float), np.asarray(times, float)))) > 1e-7
         with pytest.warns(PointingWarning, match="reduces on-sky azimuth speed") as record:
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         assert _SWEEP_AT_70_DEG in _advisory_message(record)
 
     @pytest.mark.parametrize(("high_rate", "silent"), [(0.4, True), (0.6, False)])
@@ -1174,7 +1187,7 @@ class TestJudgedSample:
         az = 180.0 + np.cumsum(rate) * 0.1
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         advisories = [str(w.message) for w in record if "on-sky azimuth speed" in str(w.message)]
         if silent:
             assert advisories == []
@@ -1192,7 +1205,7 @@ class TestJudgedSample:
         az = 180.0 + np.cumsum(rate) * 0.1
         el = np.full(times.size, 65.0)
         with pytest.warns(PointingWarning, match="reduces on-sky azimuth speed") as record:
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         # cos(65 deg) = 0.423 and 0.5 * 0.423 = 0.21 deg/s on sky.
         assert "to 0.21 deg/s" in _advisory_message(record)
         assert "(coordinate: 0.50 deg/s, cos(el)=0.423)" in _advisory_message(record)
@@ -1224,7 +1237,7 @@ class TestJudgedSample:
             el = el.astype(np.float32)
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, rel)
+            validate_trajectory_dynamics(az, el, rel, site=site)
         advisories = [str(w.message) for w in record if "on-sky azimuth speed" in str(w.message)]
         assert len(advisories) == 1
         assert quoted in advisories[0]
@@ -1256,7 +1269,7 @@ class TestJudgedSample:
             (az.astype(np.float32), el.astype(np.float32), times),
         ):
             with pytest.warns(PointingWarning, match="reduces on-sky azimuth speed") as record:
-                validate_trajectory_dynamics(site, a, e, t)
+                validate_trajectory_dynamics(a, e, t, site=site)
             messages.add(_advisory_message(record))
         assert len(messages) == 1
         # The legs top out at el 60.07 deg; the fastest sample within 0.001 deg of
@@ -1275,7 +1288,7 @@ class TestJudgedSample:
         el = np.full(times.size, 70.0)
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         advisories = [str(w.message) for w in record if issubclass(w.category, PointingWarning)]
         assert len(advisories) == 1
         assert "(coordinate: 1.00 deg/s, cos(el)=0.342)" in advisories[0]
@@ -1287,7 +1300,7 @@ class TestJudgedSample:
         el = np.full(times.size, 70.0)
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
 
 class TestCoarseSampling:
@@ -1311,7 +1324,7 @@ class TestCoarseSampling:
         el = 60.2 + 0.5 * (times - 10.0)
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
         messages = [str(w.message) for w in record]
         if not warns:
             assert messages == []
@@ -1345,7 +1358,7 @@ class TestNoAzimuthMotion:
         az, el = _fixed_az_ramp(times, az0, el_top=80.0)
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     @pytest.mark.parametrize(
         "case", ["noise-1e-13", "noise-1e-12", "step-1e-9", "round-trip", "float32-midpoint"]
@@ -1385,7 +1398,7 @@ class TestNoAzimuthMotion:
         assert 0.0 < np.ptp(np.asarray(az, dtype=float)) < 1e-4
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            validate_trajectory_dynamics(site, az, el, times)
+            validate_trajectory_dynamics(az, el, times, site=site)
 
     @pytest.mark.parametrize(("span", "silent"), [(5e-4, True), (2e-3, False)])
     def test_the_travel_floor_separates_still_from_moving(self, site, span, silent):
@@ -1396,10 +1409,10 @@ class TestNoAzimuthMotion:
         if silent:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", PointingWarning)
-                validate_trajectory_dynamics(site, az, el, rel)
+                validate_trajectory_dynamics(az, el, rel, site=site)
             return
         with pytest.warns(PointingWarning, match="reduces on-sky azimuth speed") as record:
-            validate_trajectory_dynamics(site, az, el, rel)
+            validate_trajectory_dynamics(az, el, rel, site=site)
         assert "cos(el)=0.259" in _advisory_message(record)
 
     @pytest.mark.parametrize("timestep", [0.1, 0.125, 0.3])
@@ -1435,7 +1448,7 @@ class TestNoAzimuthMotion:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error", PointingWarning)
-            validate_trajectory(trajectory, site, check_sun=False)
+            validate_trajectory(trajectory, site=site, check_sun=False)
 
 
 class TestSunAvoidanceTimesType:
@@ -1452,7 +1465,7 @@ class TestSunAvoidanceTimesType:
         az = np.array([180.0, 181.0, 182.0])
         el = np.array([45.0, 45.0, 45.0])
         with pytest.raises(TypeError, match="times must be an astropy Time"):
-            validate_sun_avoidance(site, az, el, np.array([0.0, 1.0, 2.0]))
+            validate_sun_avoidance(az, el, np.array([0.0, 1.0, 2.0]), site=site)
 
     def test_float_times_with_a_predicate_is_refused(self, site):
         """An injected predicate does not make a numeric time array acceptable."""
@@ -1460,10 +1473,10 @@ class TestSunAvoidanceTimesType:
         el = np.array([45.0, 45.0, 45.0])
         with pytest.raises(TypeError, match="times must be an astropy Time"):
             validate_sun_avoidance(
-                site,
                 az,
                 el,
                 np.array([0.0, 1.0, 2.0]),
+                site=site,
                 sun_safe=lambda a, e, t: True,
             )
 
@@ -1473,4 +1486,4 @@ class TestSunAvoidanceTimesType:
         el = np.array([45.0, 45.0, 45.0])
         step = TimeDelta(1.0, format="sec")
         times = Time("2026-06-15T04:00:00", scale="utc") + np.arange(3) * step
-        validate_sun_avoidance(site, az, el, times)
+        validate_sun_avoidance(az, el, times, site=site)

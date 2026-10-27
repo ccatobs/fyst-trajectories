@@ -17,13 +17,12 @@ _FULL_PRIMECAM_MODULES = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "
 # the ~21:41 UTC rising window the pass tests lean on.
 _JUPITER_RISING_ANCHOR = Time("2026-03-15T21:41:00", scale="utc")
 
-# Paddings the planners refuse as malformed, by test id: a NaN, text and None,
-# an integer past the float range, and paddings wider than a full turn (9e307
-# among them, whose doubled throw would overflow).
+# Paddings the planners refuse as malformed, by test id: a NaN, text, an
+# integer past the float range, and paddings wider than a full turn (9e307
+# among them, whose doubled throw would overflow). None is the default.
 _MALFORMED_AZ_PADDINGS = {
     "nan": float("nan"),
     "text": "0.5",
-    "none": None,
     "9e307": 9e307,
     "int-1e400": 10**400,
     "past-a-turn": 361.0,

@@ -1,20 +1,48 @@
-"""Cross-validation tests between fyst-trajectories and KOSMA focal plane model.
+"""Cross-validation tests between fyst-trajectories and the KOSMA focal-plane model.
 
 This module compares the fyst-trajectories spherical offset model against the
-KOSMA flat-projection focal-plane diagnostic model, reproduced inline below.
-The KOSMA model uses flat-plane trigonometry (2D rotation + linear
-mm-to-arcsec conversion), while fyst-trajectories uses exact spherical
-trigonometry (great-circle offsets).
+KOSMA flat-projection focal-plane model, reproduced inline below. The KOSMA
+model uses flat-plane trigonometry (2D rotation + linear mm-to-arcsec
+conversion), while fyst-trajectories uses exact spherical trigonometry
+(great-circle offsets).
 
 The two models should agree closely for small offsets (< 1 degree) and
 diverge for larger offsets where the flat-earth approximation breaks down.
 
-Key KOSMA constants:
-- plate_scale: 13.89 arcsec/mm
-- focal_length: (180 * 3600) / (plate_scale * pi) + correction
-- Port rotation: +el (Right Nasmyth), -el (Left), flange_rot (Cassegrain)
-- Total rotation: rho = port_rotation + instr_focal_plane_rotation
-- Offset projection: flat 2D rotation by rho, then mm_to_arcsec conversion
+The reproduction follows ``mm_to_arcsec`` and ``compute_focal_plane`` in
+``utils/tests_with_focalplane.py`` of the ``ccatobs/kosma-ocs-translator``
+repository at commit 381a3d333240f312113e7a7c85377681f900ac3c
+(``KOSMA_SOURCE_COMMIT``). That file is a Python conversion of the
+focal-plane model in KOSMA's control code, which it compares with the
+offsets a running KOSMA system reports. The reproduction keeps the model's
+reference-position term and takes the terms added to it, from the rotator
+axis, the boresight offset and the elevation axis (``instr_rotator_axis_*``,
+``instr_boresight_offset_*``, ``instr_elevation_axis_*``), as zero.
+``test_kosma_transcription.py`` runs the file's own definitions against the
+reproduction when a clone of that repository sits beside this checkout.
+
+The constants and parameters below carry KOSMA's names:
+
+- ``tel_plate_scale``: the telescope plate scale in arcsec/mm, which sets the
+  focal length, ``(180 * 3600) / (tel_plate_scale * pi)`` mm.
+  ``KOSMA_PLATE_SCALE`` is the 13.89 that the file's ``test_focal_plane_static``
+  sets; its ``test_focal_plane_with_kio`` reads the value from
+  ``KOSMA_tel2obs.set``.
+- ``instr_focal_length_correction``: millimetres added to that focal length.
+  ``KOSMA_FOCAL_LENGTH_CORRECTION`` is the 0 that ``test_focal_plane_static``
+  sets.
+- ``instr_focal_plane_rotation``: the instrument's focal-plane rotation
+  (alpha_p) in degrees, added to the port rotation ``angle_if`` to give the
+  total rotation ``rho``.
+- ``instr_flange_rotation``: ``angle_if`` at the Cassegrain port. A Nasmyth
+  port turns with the elevation instead, ``+el`` on the right and ``-el`` on
+  the left, and any other port name gives 0.
+
+The reference position (``instr_reference_pos_x``, ``instr_reference_pos_y``)
+is converted from mm to arcsec and turned by ``rho`` in the plane. The file
+does not name the sky axes of the result, ``fp_offset_x_arcsec`` and
+``fp_offset_y_arcsec``; the comparisons below read them as cross-elevation
+and elevation.
 """
 
 import math
@@ -36,18 +64,36 @@ from fyst_trajectories.site import (
 )
 
 # ---------------------------------------------------------------------------
+# Source of the reproduction
+# ---------------------------------------------------------------------------
+
+KOSMA_SOURCE_REPOSITORY = "ccatobs/kosma-ocs-translator"
+"""GitHub repository that holds the reproduced KOSMA focal-plane model."""
+
+KOSMA_SOURCE_FILE = "utils/tests_with_focalplane.py"
+"""Path of the reproduced file in that repository."""
+
+# Keep this one literal of 40 hex digits: the pin checks read this line.
+KOSMA_SOURCE_COMMIT = "381a3d333240f312113e7a7c85377681f900ac3c"
+"""Commit of that repository the reproduction follows.
+
+Moving it is a review of the upstream change: the reproduction, the module
+docstring and this value move together.
+"""
+
+# ---------------------------------------------------------------------------
 # KOSMA model constants
 # ---------------------------------------------------------------------------
 
 KOSMA_PLATE_SCALE = 13.89  # arcsec/mm, intentionally independent of site.plate_scale
-"""FYST plate scale as hardcoded in the KOSMA control system.
+"""FYST plate scale as the reproduced file sets it, KOSMA's ``tel_plate_scale``.
 
 This is defined independently from ``site.plate_scale`` so these cross-validation
 tests compare against the KOSMA model's own constants, not our config values.
 """
 
-KOSMA_FOCAL_LENGTH_CORRECTION = 0.0  # mm (default)
-"""Focal length correction for the instrument (default = 0)."""
+KOSMA_FOCAL_LENGTH_CORRECTION = 0.0  # mm
+"""KOSMA's ``instr_focal_length_correction``, as the reproduced file sets it."""
 
 KOSMA_FOCAL_LENGTH = (180.0 * 3600.0) / (
     KOSMA_PLATE_SCALE * math.pi
@@ -58,7 +104,7 @@ KOSMA_FOCAL_LENGTH = (180.0 * 3600.0) / (
 def kosma_mm_to_arcsec(mm: float) -> float:
     """Convert mm in focal plane to arcsec on sky (KOSMA formula).
 
-    This is the KOSMA formula:
+    This is KOSMA's ``mm_to_arcsec`` at the focal length ``KOSMA_FOCAL_LENGTH``:
         arcsec = mm / (focal_length * pi) * 180 * 3600
 
     Parameters
@@ -80,32 +126,37 @@ def kosma_focal_plane_offset(
     elevation: float,
     port: str = "Right",
     instr_focal_plane_rotation: float = 0.0,
+    instr_flange_rotation: float = 0.0,
 ) -> tuple[float, float]:
     """Compute focal plane offset using the KOSMA flat-projection model.
 
-    This implements the core rotation logic of the KOSMA focal-plane
-    diagnostic model, simplified to the reference position rotation
-    case (zero boresight/elevation axis offsets).
+    This is KOSMA's ``compute_focal_plane`` with the rotator-axis,
+    boresight-offset and elevation-axis terms zero, so the result is the
+    reference position converted to arcsec and turned by ``rho``.
 
     Parameters
     ----------
     ref_x_mm : float
-        Reference position X in mm (focal plane).
+        Reference position X in mm (focal plane), ``instr_reference_pos_x``.
     ref_y_mm : float
-        Reference position Y in mm (focal plane).
+        Reference position Y in mm (focal plane), ``instr_reference_pos_y``.
     elevation : float
-        Telescope elevation in degrees.
+        Telescope elevation in degrees, ``tel_elv_act``.
     port : str
-        Nasmyth port: "Right", "Left", or "Cassegrain".
+        Instrument port, ``instr_port_name``: "Right", "Left", or "Cassegrain",
+        matched by prefix as KOSMA does.
     instr_focal_plane_rotation : float
         Instrument focal plane rotation in degrees (alpha_p in KOSMA).
+    instr_flange_rotation : float
+        Port rotation in degrees at the Cassegrain port; the other ports
+        ignore it.
 
     Returns
     -------
     fp_x_arcsec : float
-        Focal plane X offset in arcseconds.
+        Focal plane X offset in arcseconds, ``fp_offset_x_arcsec``.
     fp_y_arcsec : float
-        Focal plane Y offset in arcseconds.
+        Focal plane Y offset in arcseconds, ``fp_offset_y_arcsec``.
     """
     # Port-dependent rotation (angle_if in KOSMA code)
     if port.startswith("Left"):
@@ -113,7 +164,7 @@ def kosma_focal_plane_offset(
     elif port.startswith("Right"):
         angle_if = elevation
     elif port.startswith("Cass"):
-        angle_if = 0.0  # Cassegrain uses flange_rotation, default 0
+        angle_if = instr_flange_rotation
     else:
         angle_if = 0.0
 
@@ -204,13 +255,16 @@ class TestKOSMACrossValidationRotation:
 
 
 class TestKOSMAParallacticAngleRotation:
-    """Cross-validate the parallactic-angle term of the rotation formula.
+    """Pin the parallactic-angle term of the rotation formula.
 
     KOSMA's ``tel_angle_focal_plane`` corresponds to fyst-trajectories's
-    parallactic angle, added on top of ``nasmyth_sign * el +
-    instrument_rotation``. As with the el sweep, re-deriving the additive sum
-    over many sky positions is tautological; one non-trivial geometry per port
-    pins the sign table and that the PA is added.
+    parallactic angle, but the reproduced model does not apply it: the
+    reproduced file's ``TelescopeData`` carries the field and
+    ``compute_focal_plane`` never reads it. This class therefore pins the
+    library's own composition, the parallactic angle added on top of
+    ``nasmyth_sign * el + instrument_rotation``. As with the el sweep,
+    re-deriving the additive sum over many sky positions is tautological; one
+    non-trivial geometry per port pins the sign table and that the PA is added.
     """
 
     _OBSTIME = Time("2026-03-15T04:00:00", scale="utc")

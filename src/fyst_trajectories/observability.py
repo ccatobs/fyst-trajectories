@@ -13,8 +13,9 @@ sunset, and twilight crossings for an observing site, independent of any
 target list.
 
 It is intentionally importable in isolation: it depends only on
-:mod:`fyst_trajectories.coordinates` and :mod:`fyst_trajectories.site` (astropy +
-numpy underneath).
+:mod:`fyst_trajectories.coordinates`, :mod:`fyst_trajectories.site` and the
+protocol module :mod:`fyst_trajectories.sun_protocols` (astropy + numpy
+underneath).
 
 Two physically distinct kinds of avoidance are kept structurally separate:
 
@@ -145,10 +146,6 @@ class Target:
                 )
 
 
-# Built-in submm flux-calibrator catalog. This resolves names -> positions only;
-# it carries NO avoidance defaults. Titan is a SATELLITE proxied by Saturn, so it
-# needs no kernel; Coordinates resolves Titan's own position only when a JPL
-# satellite kernel is configured (see SATELLITE_BODIES).
 FLUX_CALIBRATORS: Mapping[str, Target] = MappingProxyType(
     {
         "mars": Target("mars", TargetKind.BODY),
@@ -163,7 +160,9 @@ FLUX_CALIBRATORS: Mapping[str, Target] = MappingProxyType(
 """Built-in submm flux-calibrator catalog mapping names to :class:`Target` positions.
 
 Resolution only; it carries no avoidance defaults. Titan is a ``SATELLITE``
-proxied by its parent body. Looked up (after any caller ``extra``) by
+proxied by its parent body, so it needs no satellite kernel here;
+``Coordinates`` resolves Titan's own position only with one (see
+``SATELLITE_BODIES``). Looked up (after any caller ``extra``) by
 ``resolve_target`` and ``check_observability``.
 """
 
@@ -202,15 +201,19 @@ def resolve_target(
     for catalog in (extra, FLUX_CALIBRATORS):
         if not catalog:
             continue
-        if key in catalog:
-            return catalog[key]
+        # A caller's catalogue may key a target in any case, so the keys are
+        # compared lower-cased, like the aliases.
+        for catalog_key, target in catalog.items():
+            if catalog_key.lower() == key:
+                return target
         for target in catalog.values():
             if key in tuple(alias.lower() for alias in target.aliases):
                 return target
 
     raise ValueError(
         f"Unknown target '{name_or_target}'. Known calibrators: "
-        f"{sorted(FLUX_CALIBRATORS)}. Pass a Target (or extra_targets=) for "
+        f"{sorted(FLUX_CALIBRATORS)}. Pass a Target, or add it to the caller "
+        f"catalogue (extra= here, extra_targets= on check_observability), for "
         f"fixed sources or bodies outside the built-in catalog."
     )
 
@@ -628,9 +631,27 @@ def check_observability(
         If ``targets`` is a bare string rather than a list, a target name
         is unknown, an AVOID body cannot be resolved, ``el_min`` or
         ``el_max`` is not finite, ``el_min`` exceeds ``el_max``,
-        ``horizon_hours`` is not finite, ``window_step_minutes`` is not
-        finite or not positive with a horizon requested, or an injected
-        ``sun_safe.batch`` returns the wrong shape for the horizon grid.
+        ``horizon_hours`` is not finite or is negative,
+        ``window_step_minutes`` is not finite or not positive with a horizon
+        requested, or an injected ``sun_safe.batch`` returns the wrong shape
+        for the horizon grid.
+
+    Examples
+    --------
+    >>> from astropy.time import Time
+    >>> from fyst_trajectories.observability import AvoidZone, check_observability
+    >>> reports = check_observability(
+    ...     ["saturn", "mars"],
+    ...     Time("2026-06-15T10:00:00", scale="utc"),
+    ...     avoid=[AvoidZone("moon", 5.0)],
+    ...     horizon_hours=24.0,
+    ... )
+    >>> for report in reports:
+    ...     print(report.summary)
+    saturn: observable (el=52.8 deg)
+    mars: NOT observable - below_el_min, sun_too_close
+    >>> [(w.start.iso[:16], w.end.iso[:16]) for w in reports[0].windows]
+    [('2026-06-15 10:00', '2026-06-15 16:10'), ('2026-06-16 07:20', '2026-06-16 10:00')]
     """
     if isinstance(targets, str):
         raise ValueError(
@@ -652,8 +673,8 @@ def check_observability(
     # comparison below, so a NaN horizon would silently fall back to
     # instant-only mode and return a report with no windows rather than
     # saying why.
-    if horizon_hours is not None and not np.isfinite(horizon_hours):
-        raise ValueError(f"horizon_hours must be a finite value, got {horizon_hours}")
+    if horizon_hours is not None and (not np.isfinite(horizon_hours) or horizon_hours < 0):
+        raise ValueError(f"horizon_hours must be a finite value >= 0, got {horizon_hours}")
     if horizon_hours and horizon_hours > 0:
         if not np.isfinite(window_step_minutes) or window_step_minutes <= 0:
             raise ValueError(
@@ -900,7 +921,7 @@ def sun_events(
     Raises
     ------
     ValueError
-        If ``horizon_hours`` or ``step_minutes`` is not positive.
+        If ``horizon_hours`` or ``step_minutes`` is not a finite value above zero.
 
     Examples
     --------

@@ -15,15 +15,22 @@ tests pin:
   its duration trimmed, mirroring the constant_el branch.
 - Both Sun checks evaluate a pinned ``patch.elevation`` when the
   patch declares one, not the field's own drifting elevation.
+- A science subscan is recorded in the cable wrap the slew placed it on,
+  so the next slew is priced and Sun-checked from the pose the mount holds.
 """
 
 import pytest
 from astropy.time import Time, TimeDelta
 
-from fyst_trajectories.coordinates import Coordinates
+from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.dispatch import estimate_slew_time
+from fyst_trajectories.overhead import (
+    CalibrationPolicy,
+    generate_timeline,
+    schedule_to_trajectories,
+)
 from fyst_trajectories.overhead.constraints import MinDurationConstraint
-from fyst_trajectories.overhead.models import ObservingPatch, OverheadModel, TimelineBlock
+from fyst_trajectories.overhead.models import BlockType, ObservingPatch, OverheadModel
 from fyst_trajectories.overhead.scheduler.helpers import (
     _compute_scan_duration,
     _time_inside_el_limits,
@@ -44,7 +51,7 @@ def sun_radec(coordinates):
 
 
 class TestNorthStraddleSlew:
-    """Cable-wrap normalization drives slew distance and boresight."""
+    """Cable-wrap normalization drives slew distance."""
 
     def test_short_path_slew_time(self, site):
         """From a pose at az 10, raw azimuth 350 is a 20 deg move, not 340 deg.
@@ -59,58 +66,16 @@ class TestNorthStraddleSlew:
         target = _normalize_az(350.0, site, ref=pose)
         assert target == pytest.approx(-10.0, abs=1e-6)
 
-        t_norm = estimate_slew_time(pose, 50.0, target, 50.0, site)
+        t_norm = estimate_slew_time(pose, 50.0, target, 50.0, site=site)
         # 20 deg az slew (FYST az vel=3, accel=1.5): d_accel=6 < 20, so
         # t = 2*t_accel + (20 - 6)/3 = 4 + 4.667 = 8.667 s.
         assert t_norm == pytest.approx(8.667, abs=0.05)
 
         # The un-normalized direct path would be abs(10 - 350) = 340 deg,
         # an order of magnitude longer.
-        t_raw = estimate_slew_time(pose, 50.0, 350.0, 50.0, site)
+        t_raw = estimate_slew_time(pose, 50.0, 350.0, 50.0, site=site)
         assert t_raw > 100.0
         assert t_norm < t_raw / 5.0
-
-    def test_boresight_uses_mid_travel_azimuth(self, site):
-        """A pair written as (355, 5) is a 350 deg unwind, mid-travel 180.
-
-        az_start/az_end arrive in one coherent cable-wrap frame (the
-        scheduler normalizes the slew target relative to the current
-        pose), so the arithmetic mean is the true mid-travel azimuth. A
-        short move across north is recorded as a contiguous pair like
-        (-5, 5); the unwind's mid-travel azimuth is 180, not the 0 a
-        circular mean would report.
-        """
-        # Coherence example, not a discriminator: for a pair this close
-        # the circular and arithmetic means agree.
-        short = TimelineBlock.slew(
-            t_start=_SUN_TIME,
-            duration=10.0,
-            az_start=-5.0,
-            az_end=5.0,
-            el=50.0,
-            site=site,
-            scan_index=0,
-            patch_name="slew_to_test",
-        )
-        assert short.boresight_angle == pytest.approx(
-            Coordinates(site).get_field_rotation_from_altaz(0.0, 50.0), abs=1e-9
-        )
-
-        # The discriminator: the circular mean of this pair is 0 deg, whose
-        # boresight angle is -130 deg, not the mid-travel 180 deg used here.
-        unwind = TimelineBlock.slew(
-            t_start=_SUN_TIME,
-            duration=120.0,
-            az_start=355.0,
-            az_end=5.0,
-            el=50.0,
-            site=site,
-            scan_index=0,
-            patch_name="slew_to_test",
-        )
-        assert unwind.boresight_angle == pytest.approx(
-            Coordinates(site).get_field_rotation_from_altaz(180.0, 50.0), abs=1e-9
-        )
 
 
 class TestSunAwarePongDuration:
@@ -246,3 +211,68 @@ class TestPinnedElevationIsClippedAtThePinnedPose:
         assert constraint.score(patch, t0, float(az), float(el), coordinates) == 1.0
         assert [pose_el for pose_el, _ in seen] == [50.0]
         assert (seen[0][1] - t0).sec == pytest.approx(600.0, abs=1e-6)
+
+
+class TestScienceIsRecordedInTheSlewsWrap:
+    """A subscan's azimuths are the wrap the slew drove the mount to.
+
+    D6 sits at azimuth 270-280 on 2026-03-01 near 11:15 UTC, so it has two
+    in-limits images, near -87 and near 273. The slew reaches it from 180
+    on the 273 branch while the planner solves the daisy on the -87 branch.
+    Recording the planner's branch put the mount 360 deg from where the
+    slew left it, and the next slew to NE (azimuth 38) was priced and
+    Sun-checked from -86.5, a short path that is clear, rather than from
+    273.5, whose only path to 38 crosses the Sun (azimuth 91, elevation 16).
+    """
+
+    @pytest.fixture(scope="class")
+    def night(self):
+        site = get_fyst_site()
+        coordinates = Coordinates(site)
+        ra_ne, dec_ne = coordinates.altaz_to_radec(
+            40.0, 45.0, Time("2026-03-01T11:35:00", scale="utc")
+        )
+        daisy = dict(
+            width=1.0, height=1.0, scan_type="daisy", velocity=0.3, scan_params={"radius": 0.3}
+        )
+        patches = [
+            ObservingPatch(name="D6", ra_center=195.0, dec_center=-5.0, priority=1.0, **daisy),
+            ObservingPatch(
+                name="NE", ra_center=float(ra_ne), dec_center=float(dec_ne), weight=0.01, **daisy
+            ),
+        ]
+        return generate_timeline(
+            patches,
+            site,
+            "2026-03-01T10:50:00",
+            "2026-03-01T12:30:00",
+            calibration_policy=CalibrationPolicy(retune_cadence=0.0),
+        )
+
+    def test_the_subscan_holds_the_pose_the_slew_reached(self, night):
+        blocks = night.blocks
+        i_slew = next(i for i, b in enumerate(blocks) if b.patch_name == "slew_to_D6")
+        slew = blocks[i_slew]
+        science = next(b for b in blocks[i_slew:] if b.block_type == BlockType.SCIENCE)
+        assert science.patch_name == "D6"
+        assert slew.az_end > 180.0
+        assert science.az_start <= slew.az_end <= science.az_end
+        assert science.az_final == pytest.approx(273.50, abs=0.01)
+
+    def test_the_sun_crossing_slew_from_the_recorded_pose_is_refused(self, night):
+        assert not any(b.patch_name == "slew_to_NE" for b in night.blocks)
+        refused = [
+            b
+            for b in night.blocks
+            if b.block_type == BlockType.IDLE and b.metadata.get("reason") == "sun_path"
+        ]
+        assert refused
+        assert all(b.az_start == pytest.approx(273.50, abs=0.01) for b in refused)
+
+    def test_a_rebuild_returns_the_planners_wrap(self, night):
+        (block, scan) = next(
+            (b, s) for b, s in schedule_to_trajectories(night) if b.patch_name == "D6"
+        )
+        az = scan.trajectory.az
+        assert block.az_start - float(az.min()) == pytest.approx(360.0, abs=1e-9)
+        assert block.az_end - float(az.max()) == pytest.approx(360.0, abs=1e-9)

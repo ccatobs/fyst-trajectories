@@ -18,11 +18,11 @@ it is emitted.
 
 Both loops plan an escape under the path-level safety model and the
 schedule's own elevation floor, and both leave the telescope where it is
-when the escape does not fit in what is left of the window, labelling the
-idle ``no_escape``: the pose stays inside the zone whether it is the zone
-or the clock that holds it. Only what follows that differs, and by
-design, the survey loop stopping where the calibration night fills its
-remaining sliver.
+when the escape does not fit in what is left of the window: the pose
+stays inside the zone whether it is the zone or the clock that holds it.
+What follows differs by design: the calibration night idles out the
+sliver labelled ``no_escape``, while the survey loop stops and its tail
+idle, labelled ``window_closed``, closes the window.
 
 Where the two loops still differ, deliberately:
 
@@ -115,7 +115,7 @@ def plan_escape_move(
     el_floor: float | None = None,
     remaining: float,
     scan_index: int = 0,
-    cache: dict | None = None,
+    cache: dict[tuple[float, float, float, float | None, float], Transition | None] | None = None,
 ) -> EscapeMove:
     """Decide what to do about a pose the Sun zone may have overtaken.
 
@@ -197,7 +197,6 @@ def plan_escape_move(
         az_start=az,
         az_end=escape.az_to,
         el=escape.el_to,
-        site=site,
         scan_index=scan_index,
         patch_name=ESCAPE_BLOCK_NAME,
     )

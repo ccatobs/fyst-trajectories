@@ -369,7 +369,7 @@ def test_a_malformed_padding_is_refused_before_the_anchor_probe(site, entry, foo
     """A malformed az_padding is a ValueError naming it even where the probe refuses the anchor.
 
     A negative padding, every padding the planners refuse as malformed (a NaN,
-    an infinity, text, None, past a full turn or past the float range) is
+    an infinity, text, past a full turn or past the float range) is
     refused at anchors where the probe would refuse. The probe never receives
     the caller's padding, so the padding is checked before the probe runs;
     otherwise the probe's refusal would report a malformed argument as an
@@ -770,7 +770,6 @@ def test_a_ring_module_pass_rebuilds_from_its_calibration_night_record(site, mod
         duration=float(planned.duration),
         az=float(traj.az.min()),
         el=cp["el_bore"],
-        site=site,
         scan_index=0,
         target="jupiter",
         az_end=float(traj.az.max()),

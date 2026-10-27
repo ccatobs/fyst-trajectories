@@ -9,7 +9,7 @@ category of input.
 
 FYST hosts two instrument pipelines, Prime-Cam on Simons
 Observatory-derived control software and CHAI on the KOSMA stack. This
-library serves the Prime-Cam lane, and the framing below is written for
+library serves the Prime-Cam pipeline, and the framing below is written for
 it.
 
 Where the Subpackage Fits
@@ -48,7 +48,7 @@ between the overhead-emitted ECSV and live execution: the ECSV is a sim
 artifact, not the schedule the telescope reads.
 
 **Retunes are planning-side only.** Nothing on the live path reads the
-sample-level retune flags: the ``/path`` payload carries positions and
+sample-level retune flags: the ``/path`` points carry times, positions and
 velocities only, and
 :func:`~fyst_trajectories.overhead.schedule_to_trajectories` never calls
 :func:`~fyst_trajectories.retune.inject_retune` when it rebuilds
@@ -88,7 +88,7 @@ user should not be guessing at values they do not control.
      - Operations / commissioning team
      - ``CalibrationPolicy`` cadences and ``OverheadModel`` durations,
        excepting the retune fields (``retune_cadence``,
-       ``retune_duration``), which stay with Layer 1's owner. Reflect
+       ``retune_duration``), which stay with Layer 1's owner. They reflect
        site atmosphere, telescope settling, and calibration strategy, not
        per-proposal knobs.
    * - **Calibration nights**: scan tables and sweep policy

@@ -139,8 +139,8 @@ def choose_encoder_solution(
     goal_az: float,
     goal_el: float,
     obstime: Time,
-    site: Site,
     *,
+    site: Site,
     sun_safe: SunSafePredicate | None = None,
     slew_safe: SlewSafePredicate | None = None,
     goal_az_span: tuple[float, float] | None = None,
@@ -300,9 +300,9 @@ def choose_encoder_solution(
     >>> t = Time("2026-03-15T12:00:00", scale="utc")
     >>> # Sky az 200 deg has encoder images 200 and -160 in [-180, 360];
     >>> # from current az 190 the nearer wrap is 200.
-    >>> choose_encoder_solution(190.0, 45.0, 200.0, 45.0, t, site)
+    >>> choose_encoder_solution(190.0, 45.0, 200.0, 45.0, t, site=site)
     EncoderSolution(az=200.0, el=45.0, az_shift=0.0)
-    >>> az, el = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, t, site)
+    >>> az, el = choose_encoder_solution(190.0, 45.0, 200.0, 45.0, t, site=site)
     >>> az, el
     (200.0, 45.0)
     """
@@ -456,6 +456,7 @@ def estimate_slew_time(
     el1: float,
     az2: float,
     el2: float,
+    *,
     site: Site,
 ) -> float:
     """Estimate telescope slew time between two positions.
@@ -498,7 +499,27 @@ def estimate_slew_time(
     float
         Estimated slew time in seconds. No settle time is included; the
         caller adds its own.
+
+    Raises
+    ------
+    ValueError
+        If any of ``az1``, ``el1``, ``az2`` or ``el2`` is NaN or infinite.
+
+    Examples
+    --------
+    >>> from fyst_trajectories import get_fyst_site
+    >>> from fyst_trajectories.dispatch import estimate_slew_time
+    >>> site = get_fyst_site()
+    >>> round(estimate_slew_time(190.0, 45.0, 200.0, 45.0, site=site), 2)
+    5.33
+    >>> # -160 is sky azimuth 200 one turn away: the slew unwinds the cable wrap
+    >>> round(estimate_slew_time(190.0, 45.0, -160.0, 45.0, site=site), 2)
+    118.67
     """
+    for name, value in (("az1", az1), ("el1", el1), ("az2", az2), ("el2", el2)):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value}")
+
     az_limits = site.telescope_limits.azimuth
     el_limits = site.telescope_limits.elevation
 
