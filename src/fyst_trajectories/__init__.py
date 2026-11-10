@@ -58,7 +58,7 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 from .coordinates import (
     FRAME_ALIASES,
@@ -157,6 +157,7 @@ from .planning import (
     SourceCESComputedParams,
     compute_source_ces_params,
     plan_constant_el_scan,
+    plan_constant_el_window_scan,
     plan_daisy_altaz_scan,
     plan_daisy_scan,
     plan_pong_altaz_scan,
@@ -384,6 +385,7 @@ __all__ = [
     "plan_pong_rotation_scans",
     "plan_pong_rotation_sequence",
     "plan_constant_el_scan",
+    "plan_constant_el_window_scan",
     "plan_daisy_scan",
     "plan_daisy_altaz_scan",
     "plan_source_ces",

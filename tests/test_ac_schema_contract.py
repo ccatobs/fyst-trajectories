@@ -1,9 +1,9 @@
 """Survey-planner (fystplan / OpsDB) to scan-task (typed PCS) schema contract.
 
 The survey planner (KOSMA ``fystplan``) writes per-source scan parameters into
-OpsDB; at dispatch time the expansion layer reads them back, turns them into the
-``scan_params`` of a typed PCS scan task, and the task calls the matching
-``plan_*_scan`` planner in this library. There is no shared schema module
+OpsDB; at dispatch time they are read back and turned into the ``scan_params``
+of a typed PCS scan task, and the task calls the matching ``plan_*_scan``
+planner in this library. There is no shared schema module
 between the two sides. The field names are coupled only by an *implicit*
 adapter, called the ``A->C`` adapter in the assertions below. A planner-side
 rename fails loudly here. The fystplan side is a transcription (the fixtures
@@ -21,7 +21,14 @@ the fixtures below (read-only; never edited by this repo):
 * Daisy - same file, ``get_daisy_params``.
 * CE    - same file, ``create_entry_constant_elevation`` (the ``list_az_table``
   ``s`` dict + the ObsUnit ``nominal_alt`` carrier + the ``onsky_velocity``
-  ``mapping_params`` carrier).
+  ``mapping_params`` carrier). The az-table row has two consumers:
+  ``plan_constant_el_window_scan`` takes one entry of it directly
+  (``az_min``/``az_max`` as ``az_window``, ``duration`` converted from hours to
+  seconds), while ``plan_constant_el_scan`` derives its window and timing from
+  the field and treats the row as structural. The window form's dispatch
+  dictionary carries the row's azimuth pair, elevation and duration in
+  seconds, so the adapter is a rename plus one unit conversion at the script
+  hop.
 
 The renames pinned here (verified against the fystplan source):
 
@@ -41,8 +48,8 @@ keyword of the ``scan_patterns`` package's ``Pong``, not fystplan;
 fystplan and this library already agree. The mapping is asserted as identity so
 that if either side ever drifts to the singular, this test catches it.
 
-For constant elevation ``onsky_velocity`` is not a rename:
-``plan_constant_el_scan`` takes ``velocity`` as the mount-frame azimuth rate
+For constant elevation ``onsky_velocity`` is not a rename: both CE planners
+take ``velocity`` as the mount-frame azimuth rate
 (on-sky speed = ``velocity * cos(elevation)``), so the adapter divides the
 on-sky rate by ``cos(elevation)``. That assumes the fystplan key is on-sky,
 as its name says, which KOSMA has not yet confirmed.
@@ -65,6 +72,7 @@ import pytest
 from fyst_trajectories.planning import (
     FieldRegion,
     plan_constant_el_scan,
+    plan_constant_el_window_scan,
     plan_daisy_scan,
     plan_pong_scan,
     plan_source_ces,
@@ -90,16 +98,18 @@ RENAME_MAP: dict[str, str] = {
 # fystplan emit keys that are labels / structural inputs, NOT direct scalar
 # planner kwargs. ``name`` is a bookkeeping label. ``width``/``height`` are
 # consumed by ``FieldRegion`` (for pong / CE), not passed straight to the
-# planner. The CE az-table geometry keys describe an az window that the planner
-# *derives* internally from the field + elevation, so they are not planner
-# scalar kwargs either.
+# planner. The CE az-table geometry keys are structural for
+# ``plan_constant_el_scan``, which derives its az window and timing from the
+# field + elevation, and direct inputs of ``plan_constant_el_window_scan``,
+# which sweeps the row's window (see the CE window contract below).
 FYSTPLAN_LABEL_KEYS: frozenset[str] = frozenset({"name"})
 FIELDREGION_KEYS: frozenset[str] = frozenset({"width", "height"})
 
-# Planner parameters supplied at dispatch time by the PCS task, NOT carried in
-# any fystplan scan-param dict (the site is fixed; start_time/timestep/duration
-# come from the schedule and the SCAN_DISPATCH_BUFFER_SEC recompute). These are
-# legitimately absent from the OpsDB schema, so the contract must not flag them.
+# Planner parameters supplied at dispatch time by the PCS task (the site is
+# fixed; start_time/timestep come from the schedule and the
+# SCAN_DISPATCH_BUFFER_SEC recompute, and so does duration except in the CE
+# window form, which reads it from the az-table row). The contract must not
+# flag them where a fystplan scan-param dict does not carry them.
 DISPATCH_INFRA_KEYS: frozenset[str] = frozenset({"site", "start_time", "timestep", "duration"})
 
 
@@ -191,19 +201,22 @@ def fystplan_daisy_dict() -> dict:
 def fystplan_ce_dict() -> dict:
     """Constant-elevation carrier keys verbatim from fystplan.
 
-    fystplan splits CE geometry across dicts: the per-elevation ``list_az_table``
-    ``s`` dict (``elevation``/``az_min``/``az_max``/``duration``) plus the
-    ObsUnit ``nominal_alt`` and the ``onsky_velocity`` ``mapping_params``
-    carrier. The union of the keys the dispatch adapter would have to consume is
-    represented here.
+    fystplan splits CE geometry across dicts: the ``list_az_table`` ``s`` dict
+    (``name``, ``elevation``, ``risingsetting``, ``az_min``, ``az_max``,
+    ``duration``) plus the ObsUnit ``nominal_alt`` and the ``onsky_velocity``
+    ``mapping_params`` carrier. The union of the keys the dispatch adapter would
+    have to consume is represented here. The az-table values are lists with one
+    entry per elevation, as OpsDB stores the ``azimuth_range`` row, and its
+    ``duration`` is in hours.
     """
     return {
         "name": "Deep56_ce",
         "nominal_alt": 50.0,
-        "elevation": 50.0,
-        "az_min": 120.0,
-        "az_max": 240.0,
-        "duration": 14400.0,
+        "elevation": [50.0],
+        "risingsetting": "rising",
+        "az_min": [48.0],
+        "az_max": [76.0],
+        "duration": [4.0],
         "onsky_velocity": 0.5,
     }
 
@@ -438,7 +451,8 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     structural_keys = set(fystplan_ce_dict) - {"name", "onsky_velocity"}
     direct_planner_overlap = structural_keys & accepted
     # Of those, only ``elevation`` is also a literal planner kwarg; az_min/
-    # az_max/duration/nominal_alt are not.
+    # az_max/duration/nominal_alt are not, and risingsetting reaches ``rising``
+    # structurally.
     assert direct_planner_overlap == {"elevation"}, (
         f"CE: unexpected direct planner overlap {sorted(direct_planner_overlap)}; "
         f"az_min/az_max/duration are planner-derived, not passed through"
@@ -480,11 +494,234 @@ def test_ce_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
         velocity=velocity,
         site=site,
         start_time="2026-09-15T00:00:00",
-        rising=True,
+        rising=fystplan_ce_dict["risingsetting"] == "rising",
     )
     assert block.trajectory.n_points > 0
     assert block.config.elevation == elevation
     assert block.config.az_speed == pytest.approx(velocity)
+
+
+# ---------------------------------------------------------------------------
+# Constant-elevation window contract (direct).
+#
+# How ``plan_constant_el_window_scan`` consumes one entry of an az-table row:
+# each geometry key fills a planner kwarg, and the labels are dropped (the
+# window's own azimuths decide which side of the meridian it watches).
+# ---------------------------------------------------------------------------
+CE_WINDOW_ROW_MAP: dict[str, str] = {
+    "az_min": "az_window",
+    "az_max": "az_window",
+    "elevation": "elevation",
+    "duration": "duration",  # hours in fystplan, seconds in the planner
+}
+CE_WINDOW_ROW_LABELS: frozenset[str] = frozenset({"name", "risingsetting"})
+
+
+def _ce_window_kwargs(row: dict, index: int, onsky_velocity: float) -> dict:
+    """Return the window-form kwargs for entry ``index`` of an az-table row."""
+    elevation = row["elevation"][index]
+    return {
+        "az_window": (row["az_min"][index], row["az_max"][index]),
+        "elevation": elevation,
+        "duration": row["duration"][index] * 3600.0,
+        "velocity": onsky_velocity / math.cos(math.radians(elevation)),
+    }
+
+
+def test_ce_window_form_consumes_every_az_table_key(fystplan_ce_dict):
+    """Every az-table key is a window-form input or a label.
+
+    Derived from the carrier dict, so a key added there has to be classified
+    here. ``nominal_alt`` and ``onsky_velocity`` come from the other two
+    carriers; the rate reaches ``velocity`` through the frame conversion.
+    """
+    accepted = _planner_param_names(plan_constant_el_window_scan)
+    row_keys = set(fystplan_ce_dict) - {"nominal_alt", "onsky_velocity"}
+    assert row_keys == set(CE_WINDOW_ROW_MAP) | CE_WINDOW_ROW_LABELS, (
+        f"CE window: unclassified az-table keys "
+        f"{sorted(row_keys ^ (set(CE_WINDOW_ROW_MAP) | CE_WINDOW_ROW_LABELS))}"
+    )
+    assert set(CE_WINDOW_ROW_MAP.values()) <= accepted
+    assert "velocity" in accepted
+    assert not CE_WINDOW_ROW_LABELS & accepted
+
+
+def test_ce_window_required_params_are_satisfiable():
+    """Every required window-form param comes from the row or the dispatch.
+
+    The field region is optional: a row whose target no single RA/Dec box
+    describes plans without one.
+    """
+    required = _required_planner_params(plan_constant_el_window_scan)
+    adapter_supplied = set(CE_WINDOW_ROW_MAP.values()) | {"velocity"}
+    missing = required - (adapter_supplied | (DISPATCH_INFRA_KEYS - {"duration"}))
+    assert not missing, (
+        f"CE window: required planner params not covered by the A->C adapter: {sorted(missing)}"
+    )
+    assert "field" not in required
+
+
+def test_ce_window_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
+    """One az-table entry builds a scan over its window, for its hours rounded to whole legs."""
+    kwargs = _ce_window_kwargs(fystplan_ce_dict, 0, fystplan_ce_dict["onsky_velocity"])
+    block = plan_constant_el_window_scan(
+        **kwargs, site=site, start_time="2026-09-15T00:00:00", timestep=1.0
+    )
+    cp = block.computed_params
+    assert (cp["az_start"], cp["az_stop"]) == (48.0, 76.0)
+    assert block.config.elevation == 50.0
+    assert block.config.az_speed == pytest.approx(kwargs["velocity"])
+    # One leg and one turnaround (2 v / a at the default 1 deg/s^2) is the rounding step.
+    step = 28.0 / kwargs["velocity"] + 2.0 * kwargs["velocity"]
+    assert abs(block.duration - 4.0 * 3600.0) <= 0.5 * step
+
+
+# ---------------------------------------------------------------------------
+# Constant-elevation window contract (dispatch dictionary).
+#
+# The ``scan_params`` dictionary the typed PCS ``constant_el_scan`` task
+# receives for a window sweep and forwards to
+# ``plan_constant_el_window_scan``. The script that generates the observing
+# day fills it from an az-table entry: the azimuth pair, elevation and mount
+# azimuth rate as the planner takes them, and ``duration`` already in
+# seconds. The field keys are optional and, when all four are present, are
+# forwarded as a ``FieldRegion`` that only feeds the planner's drift checks.
+# ---------------------------------------------------------------------------
+CE_WINDOW_DISPATCH_KEYS: frozenset[str] = frozenset(
+    {"az_min", "az_max", "elevation", "velocity", "duration", "az_accel"}
+)
+CE_WINDOW_DISPATCH_OPTIONAL_KEYS: frozenset[str] = frozenset({"timestep", "az_padding"})
+CE_WINDOW_DISPATCH_FIELD_KEYS: frozenset[str] = frozenset(
+    {"ra_center", "dec_center", "width", "height"}
+)
+
+
+def _ce_window_dispatch_kwargs(scan_params: dict) -> dict:
+    """Return the window-form kwargs the PCS task builds from its ``scan_params``.
+
+    The azimuth pair becomes ``az_window``; ``elevation``, ``velocity`` and
+    ``duration`` (seconds) pass through verbatim; ``az_accel``, ``timestep``
+    and ``az_padding`` default to 1.0, 0.1 and 0.0. The field is forwarded
+    only when all four field keys are present.
+
+    Raises
+    ------
+    ValueError
+        If only some of the field keys are present.
+    """
+    field_keys = CE_WINDOW_DISPATCH_FIELD_KEYS & set(scan_params)
+    if field_keys and field_keys != CE_WINDOW_DISPATCH_FIELD_KEYS:
+        raise ValueError(
+            f"partial field: missing {sorted(CE_WINDOW_DISPATCH_FIELD_KEYS - field_keys)}"
+        )
+    field = (
+        FieldRegion(**{key: scan_params[key] for key in CE_WINDOW_DISPATCH_FIELD_KEYS})
+        if field_keys
+        else None
+    )
+    return {
+        "field": field,
+        "az_window": (scan_params["az_min"], scan_params["az_max"]),
+        "elevation": scan_params["elevation"],
+        "velocity": scan_params["velocity"],
+        "duration": scan_params["duration"],
+        "az_accel": scan_params.get("az_accel", 1.0),
+        "timestep": scan_params.get("timestep", 0.1),
+        "az_padding": scan_params.get("az_padding", 0.0),
+    }
+
+
+def _ce_window_dispatch_dict(row: dict, index: int, onsky_velocity: float) -> dict:
+    """Return the dispatch dictionary the script builds for entry ``index`` of a row.
+
+    The script converts the row's hours to seconds and the on-sky rate to the
+    mount azimuth rate; the other geometry keys are copied verbatim.
+    """
+    elevation = row["elevation"][index]
+    return {
+        "az_min": row["az_min"][index],
+        "az_max": row["az_max"][index],
+        "elevation": elevation,
+        "velocity": onsky_velocity / math.cos(math.radians(elevation)),
+        "duration": row["duration"][index] * 3600.0,
+        "az_accel": 1.0,
+    }
+
+
+def test_ce_window_dispatch_keys_are_planner_params():
+    """Every kwarg the dispatch dictionary fills is a window-form planner param.
+
+    The dictionary's own keys that are not planner kwargs are exactly the
+    azimuth pair, which becomes ``az_window``.
+    """
+    accepted = _planner_param_names(plan_constant_el_window_scan)
+    full = {key: 1.0 for key in CE_WINDOW_DISPATCH_KEYS | CE_WINDOW_DISPATCH_OPTIONAL_KEYS}
+    full.update({key: 1.0 for key in CE_WINDOW_DISPATCH_FIELD_KEYS})
+    filled = set(_ce_window_dispatch_kwargs(full))
+    assert filled <= accepted, f"CE window dispatch: unknown kwargs {sorted(filled - accepted)}"
+    own_keys = CE_WINDOW_DISPATCH_KEYS | CE_WINDOW_DISPATCH_OPTIONAL_KEYS
+    assert own_keys - accepted == {"az_min", "az_max"}
+
+
+def test_ce_window_dispatch_required_params_are_satisfiable():
+    """Every required window-form param comes from the dictionary or the dispatch."""
+    required = _required_planner_params(plan_constant_el_window_scan)
+    minimal = {key: 1.0 for key in CE_WINDOW_DISPATCH_KEYS}
+    adapter_supplied = set(_ce_window_dispatch_kwargs(minimal))
+    missing = required - (adapter_supplied | DISPATCH_INFRA_KEYS)
+    assert not missing, (
+        f"CE window dispatch: required planner params not covered: {sorted(missing)}"
+    )
+
+
+def test_ce_window_dispatch_chain_reproduces_the_row_call(site, fystplan_ce_dict):
+    """Row, dispatch dictionary and PCS adapter plan the same scan as the row call."""
+    onsky = fystplan_ce_dict["onsky_velocity"]
+    start_time = "2026-09-15T00:00:00"
+    direct = plan_constant_el_window_scan(
+        **_ce_window_kwargs(fystplan_ce_dict, 0, onsky),
+        site=site,
+        start_time=start_time,
+        timestep=1.0,
+    )
+    scan_params = _ce_window_dispatch_dict(fystplan_ce_dict, 0, onsky)
+    scan_params["timestep"] = 1.0
+    kwargs = _ce_window_dispatch_kwargs(scan_params)
+    assert kwargs["field"] is None
+    chained = plan_constant_el_window_scan(**kwargs, site=site, start_time=start_time)
+    for key in ("az_start", "az_stop"):
+        assert chained.computed_params[key] == direct.computed_params[key]
+    assert chained.duration == direct.duration
+    assert chained.config.az_speed == pytest.approx(direct.config.az_speed)
+
+
+def test_ce_window_dispatch_forwards_the_field_only_when_complete(fystplan_ce_dict):
+    """The four field keys become a ``FieldRegion``; none gives no field; some is refused."""
+    scan_params = _ce_window_dispatch_dict(fystplan_ce_dict, 0, 0.5)
+    assert _ce_window_dispatch_kwargs(scan_params)["field"] is None
+    values = {"ra_center": 10.0, "dec_center": -2.0, "width": 30.0, "height": 8.0}
+    field = _ce_window_dispatch_kwargs({**scan_params, **values})["field"]
+    assert isinstance(field, FieldRegion)
+    assert (field.ra_center, field.dec_center, field.width, field.height) == (10.0, -2.0, 30.0, 8.0)
+    with pytest.raises(ValueError, match="partial field"):
+        _ce_window_dispatch_kwargs({**scan_params, "ra_center": 10.0, "dec_center": -2.0})
+
+
+def test_ce_window_dispatch_duration_is_seconds(site, fystplan_ce_dict):
+    """The dictionary's ``duration`` is seconds, taken verbatim by the PCS task."""
+    start_time = "2026-09-15T00:00:00"
+    scan_params = _ce_window_dispatch_dict(fystplan_ce_dict, 0, 0.5)
+    assert scan_params["duration"] == fystplan_ce_dict["duration"][0] * 3600.0
+    kwargs = _ce_window_dispatch_kwargs({**scan_params, "timestep": 1.0})
+    assert kwargs["duration"] == scan_params["duration"]
+    block = plan_constant_el_window_scan(**kwargs, site=site, start_time=start_time)
+    direct = plan_constant_el_window_scan(
+        **_ce_window_kwargs(fystplan_ce_dict, 0, 0.5),
+        site=site,
+        start_time=start_time,
+        timestep=1.0,
+    )
+    assert block.duration == direct.duration
 
 
 # ---------------------------------------------------------------------------
@@ -602,10 +839,9 @@ _PROVENANCE_ONLY = frozenset(
 
 # Load-bearing on rebuild (schedule_to_trajectories applies every one of
 # them) but not read by the pinned execution layer, which re-plans from the
-# keys it forwards and drops the rest without a message. Each is part of the
-# outbound ask to have them forwarded; move a key out of this set only when a
-# re-pinned snapshot shows it forwarded, and then out of the calibration-night
-# copy that the dispatch sheet and dispatch_records read
+# keys it forwards and drops the rest without a message. Move a key out of this
+# set only when a re-pinned snapshot shows it forwarded, and then out of the
+# calibration-night copy that the dispatch sheet and dispatch_records read
 # (overhead/calibration_night/reporting.py, held equal to this set below) and
 # the list on docs/overhead_calibration_night.rst.
 _AWAITING_FORWARD = frozenset(

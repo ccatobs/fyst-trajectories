@@ -85,7 +85,9 @@ Configuration Classes
 
    For field-based observations, prefer
    :func:`~fyst_trajectories.planning.plan_constant_el_scan` over building a
-   ``ConstantElScanConfig`` by hand; see :doc:`../planning`.
+   ``ConstantElScanConfig`` by hand, and for a given azimuth window
+   :func:`~fyst_trajectories.planning.plan_constant_el_window_scan`; see
+   :doc:`../planning`.
 
 .. autoclass:: fyst_trajectories.patterns.PongScanConfig
    :members:

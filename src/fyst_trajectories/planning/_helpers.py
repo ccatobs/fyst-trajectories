@@ -161,11 +161,11 @@ def _build_altaz_trajectory(
     """Build a trajectory from an AltAz-pattern config.
 
     Wraps the fluent ``TrajectoryBuilder`` chain shared by the AltAz
-    planners (``plan_constant_el_scan``, ``plan_pong_altaz_scan``,
-    ``plan_daisy_altaz_scan``) and the source-CES planner. Unlike
-    celestial patterns, altaz patterns do not need an ``.at(ra, dec)``
-    call, but they still want a ``start_time`` so the generated
-    trajectory carries a proper UTC timestamp.
+    planners (``plan_constant_el_scan``, ``plan_constant_el_window_scan``,
+    ``plan_pong_altaz_scan``, ``plan_daisy_altaz_scan``) and the source-CES
+    planner. Unlike celestial patterns, altaz patterns do not need an
+    ``.at(ra, dec)`` call, but they still want a ``start_time`` so the
+    generated trajectory carries a proper UTC timestamp.
 
     Parameters
     ----------

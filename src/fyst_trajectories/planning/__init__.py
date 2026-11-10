@@ -24,7 +24,7 @@ from ._types import (
     SourceCESComputedParams,
     validate_computed_params,
 )
-from .constant_el import plan_constant_el_scan
+from .constant_el import plan_constant_el_scan, plan_constant_el_window_scan
 from .daisy import plan_daisy_scan
 from .daisy_altaz import plan_daisy_altaz_scan
 from .footprints import inflate_footprint, offset_footprint_eta, resolve_footprint
@@ -52,6 +52,7 @@ __all__ = [
     "inflate_footprint",
     "offset_footprint_eta",
     "plan_constant_el_scan",
+    "plan_constant_el_window_scan",
     "plan_daisy_altaz_scan",
     "plan_daisy_scan",
     "plan_pong_altaz_scan",

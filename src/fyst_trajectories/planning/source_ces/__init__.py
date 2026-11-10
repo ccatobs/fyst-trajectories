@@ -283,8 +283,12 @@ def compute_source_ces_params(
         array of one or more dimensions and text are not real numbers here),
         an ``az_padding`` that is not a real number in ``[0, 360]``, a
         reversed window, a ``dwell`` shorter than ``sampling_step_seconds``,
-        or a footprint whose cover is a single point with ``az_padding=0``
-        and no ``az_throw`` (a sweep with no width at any time).
+        a footprint whose cover is a single point with ``az_padding=0``
+        and no ``az_throw`` (a sweep with no width at any time), or a
+        ``start_time`` that holds more than one instant.
+    TypeError
+        If ``start_time`` is given and is neither an ISO string nor an
+        astropy ``Time``.
     DwellExceedsCrossingError
         When ``dwell`` is longer than the solved footprint crossing. A
         :class:`~fyst_trajectories.exceptions.PointingError` subclass that
@@ -668,8 +672,12 @@ def plan_source_ces(
         array of one or more dimensions and text are not real numbers here),
         an ``az_padding`` that is not a real number in ``[0, 360]``, a
         reversed window, a ``dwell`` shorter than ``sampling_step_seconds``,
-        or a footprint whose cover is a single point with ``az_padding=0``
-        and no ``az_throw`` (a sweep with no width at any time).
+        a footprint whose cover is a single point with ``az_padding=0``
+        and no ``az_throw`` (a sweep with no width at any time), or a
+        ``start_time`` that holds more than one instant.
+    TypeError
+        If ``start_time`` is given and is neither an ISO string nor an
+        astropy ``Time``.
     DwellExceedsCrossingError
         When ``dwell`` is longer than the solved footprint crossing. A
         :class:`~fyst_trajectories.exceptions.PointingError` subclass that
@@ -1091,6 +1099,9 @@ def plan_source_ces_passes(
         positive real number, if ``step`` is passed without ``n_passes``, if
         ``dwell`` is given for more than one pass, or as
         :func:`plan_source_ces` raises it.
+    TypeError
+        If ``start_time`` is given and is neither an ISO string nor an
+        astropy ``Time``.
     TargetNotObservableError
         If a pass steps the footprint to a row the source never reaches
         within the search window (propagated from :func:`plan_source_ces`),

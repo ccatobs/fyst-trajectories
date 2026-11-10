@@ -200,7 +200,7 @@ jobs:
         run: |
           pip install "so3g==0.2.7" "jax==0.10.1" ephem pandas
           pip install --no-deps \
-            git+https://github.com/simonsobs/scheduler.git@0ac54bf092cfb54c6422c4c852ba41b3b6cbff9d
+            git+https://github.com/simonsobs/scheduler.git@becb74a9d21a9419546de5945cc272396d1633ee
 
       # Hard env check: fail red, not skip-green, if an oracle install is
       # broken. Assert so3g and the two schedlib modules the SO parity test

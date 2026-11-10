@@ -28,6 +28,7 @@ from fyst_trajectories.planning import (
     ScanBlock,
     SourceCESComputedParams,
     plan_constant_el_scan,
+    plan_constant_el_window_scan,
     plan_daisy_altaz_scan,
     plan_daisy_scan,
     plan_pong_altaz_scan,
@@ -102,6 +103,17 @@ def plan_every_scan(field: FieldRegion, site: Site, start: str) -> list[ScanBloc
     az_throw: float = ce.computed_params["az_throw"]
     start_iso: str = ce.computed_params["start_time_iso"]
 
+    window = plan_constant_el_window_scan(
+        az_window=(101.0, 111.6),
+        elevation=50.0,
+        velocity=0.5,
+        duration=1680.0,
+        site=site,
+        start_time=start,
+    )
+    assert_type(window, ScanBlock[ConstantElComputedParams])
+    n_scans: int = window.computed_params["n_scans"]
+
     source = plan_source_ces(body="mars", footprint="c", start_time=start, site=site)
     assert_type(source, ScanBlock[SourceCESComputedParams])
     v_az: float = source.computed_params["v_az"]
@@ -113,8 +125,8 @@ def plan_every_scan(field: FieldRegion, site: Site, start: str) -> list[ScanBloc
     el_bore: float = passes[0].computed_params["el_bore"]
 
     assert period and az_center and daisy_duration and el_center and az_throw and start_iso
-    assert v_az and el_bore
-    return [*tiling, pong_altaz, daisy, daisy_altaz, ce, source, *passes]
+    assert v_az and el_bore and n_scans
+    return [*tiling, pong_altaz, daisy, daisy_altaz, ce, window, source, *passes]
 
 
 def satellite_pattern() -> SatelliteTrackPattern:

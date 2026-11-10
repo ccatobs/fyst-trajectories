@@ -92,9 +92,12 @@ def plan_pong_scan(
     Raises
     ------
     ValueError
-        If ``n_cycles`` is less than 1, or if any config field is invalid
+        If ``n_cycles`` is less than 1, if any config field is invalid
         (non-positive ``velocity``, ``spacing`` or ``timestep``, or
-        ``num_terms`` below 1).
+        ``num_terms`` below 1), or if ``start_time`` holds more than one
+        instant.
+    TypeError
+        If ``start_time`` is neither an ISO string nor an astropy ``Time``.
     TargetNotObservableError
         If the target is not observable at the requested time.
     TrajectoryBoundsError
@@ -296,7 +299,8 @@ def plan_pong_rotation_scans(
     Raises
     ------
     TypeError
-        If ``angle`` is among the keywords.
+        If ``angle`` is among the keywords, or if ``start_time`` is neither
+        an ISO string nor an astropy ``Time``.
     ValueError
         If ``n_rotations`` is less than 1, or as :func:`plan_pong_scan`
         raises it.

@@ -121,9 +121,12 @@ def plan_pong_altaz_scan(
     Raises
     ------
     ValueError
-        If n_cycles is less than 1, or if any config field is invalid
+        If n_cycles is less than 1, if any config field is invalid
         (non-positive width/height/spacing/velocity/timestep, num_terms < 1, or
-        el_center outside ``(0, 90)``).
+        el_center outside ``(0, 90)``), or if ``start_time`` holds more than
+        one instant.
+    TypeError
+        If ``start_time`` is neither an ISO string nor an astropy ``Time``.
     TrajectoryBoundsError
         If the trajectory exceeds telescope limits.
 

@@ -256,8 +256,9 @@ Where the check runs
        ``plan_pong_altaz_scan`` and ``plan_daisy_altaz_scan`` additionally
        screen the built trajectory over the whole block: every sample when
        ``sun_safe`` is omitted, about 600 evenly spaced samples, both ends
-       included, with an injected model. Warns (``PointingWarning``), never
-       refuses.
+       included, with an injected model.
+       ``plan_constant_el_window_scan`` has no pre-flight and runs that
+       screen alone. Warns (``PointingWarning``), never refuses.
    * - ``plan_source_ces(...)`` and its siblings
      - Pre-flight sweep along the resolved arc (subsampled in time; at the
        midpoint and both edges of the commanded azimuth envelope, which is

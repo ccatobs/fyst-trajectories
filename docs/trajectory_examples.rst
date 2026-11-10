@@ -103,8 +103,10 @@ Constant Elevation Scan
 For field-based observations prefer
 :func:`~fyst_trajectories.planning.plan_constant_el_scan`, which
 auto-computes the azimuth range, the duration and the number of scans from
-the field geometry; :doc:`planning` works it through. For manual control
-(engineering tests, known azimuth ranges), drive
+the field geometry; :doc:`planning` works it through.
+:func:`~fyst_trajectories.planning.plan_constant_el_window_scan` sweeps a
+given azimuth window from a literal start instead. For manual control
+(engineering tests), drive
 ``ConstantElScanConfig`` + ``TrajectoryBuilder`` directly::
 
     from fyst_trajectories import get_fyst_site

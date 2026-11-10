@@ -735,6 +735,66 @@ def compute_focal_plane_rotation(
     return mechanical + parallactic_angle
 
 
+def _solve_boresight(
+    det_az: float | np.ndarray,
+    det_el: float | np.ndarray,
+    offset: InstrumentOffset,
+    *,
+    site: Site,
+) -> tuple[float | np.ndarray, float | np.ndarray]:
+    """Return the boresight Az/El that places a detector at the given Az/El.
+
+    The focal-plane rotation is the mechanical one,
+    ``nasmyth_sign * el + instrument_rotation``, with ``el`` the boresight
+    elevation, the telescope's own elevation axis, which the Nasmyth rotation
+    follows. That elevation is the unknown being solved for, so the rotation
+    and the inversion (:func:`detector_to_boresight`) are iterated together
+    until it settles. :func:`apply_detector_offset` solves a whole trajectory
+    this way; the constant-elevation planners solve one position with it.
+
+    Parameters
+    ----------
+    det_az, det_el : float or array
+        Detector azimuth and elevation in degrees.
+    offset : InstrumentOffset
+        Detector offset from boresight.
+    site : Site
+        Telescope site (provides ``nasmyth_sign``).
+
+    Returns
+    -------
+    bore_az, bore_el : float or array
+        Boresight azimuth and elevation in degrees.
+
+    Raises
+    ------
+    OffsetInversionError
+        If the inversion hits the near-pole azimuth degeneracy or fails to
+        converge (see :func:`detector_to_boresight`), or the boresight
+        elevation does not settle.
+    """
+    # Horizon-frame projection: the rotation is mechanical only; the
+    # parallactic angle is a horizon-to-celestial quantity and has no place in
+    # an az/el projection. Each pass shrinks the elevation error by a factor of
+    # at most the offset radius in radians (0.031 for the inner ring).
+    bore_el = det_el
+    for _ in range(_INVERSE_MAX_ITERATIONS):
+        rotation = compute_focal_plane_rotation(bore_el, site=site, offset=offset)
+        bore_az, new_bore_el = detector_to_boresight(det_az, det_el, offset, rotation)
+        step = float(np.max(np.abs(new_bore_el - bore_el)))
+        bore_el = new_bore_el
+        if step < _INVERSE_EARLY_EXIT_THRESHOLD:
+            break
+    else:
+        if not step <= _INVERSE_FAILURE_THRESHOLD:
+            raise OffsetInversionError(
+                f"The boresight elevation did not settle after {_INVERSE_MAX_ITERATIONS} "
+                f"iterations (last step {step:.2e} deg); the offset is far outside the "
+                "PrimeCam envelope."
+            )
+    return bore_az, bore_el
+
+
 def apply_detector_offset(
     trajectory: Trajectory,
     offset: InstrumentOffset,
@@ -861,32 +921,7 @@ def apply_detector_offset(
             validate_trajectory_bounds(trajectory.az, trajectory.el, site=site)
         return dataclasses.replace(trajectory)
 
-    # Horizon-frame projection: the rotation is mechanical only; the
-    # parallactic angle is a horizon-to-celestial quantity and has no
-    # place in an az/el projection. The Nasmyth term follows the telescope's
-    # own (boresight) elevation, the unknown being solved for, so iterate:
-    # each pass shrinks the elevation error by a factor of at most the offset
-    # radius in radians (0.031 for the inner ring).
-    bore_el = trajectory.el
-    for _ in range(_INVERSE_MAX_ITERATIONS):
-        rotation = compute_focal_plane_rotation(bore_el, site=site, offset=offset)
-        bore_az, new_bore_el = detector_to_boresight(
-            trajectory.az,
-            trajectory.el,
-            offset,
-            rotation,
-        )
-        step = float(np.max(np.abs(new_bore_el - bore_el)))
-        bore_el = new_bore_el
-        if step < _INVERSE_EARLY_EXIT_THRESHOLD:
-            break
-    else:
-        if not step <= _INVERSE_FAILURE_THRESHOLD:
-            raise OffsetInversionError(
-                f"apply_detector_offset: the boresight elevation did not settle after "
-                f"{_INVERSE_MAX_ITERATIONS} iterations (last step {step:.2e} deg); the "
-                "offset is far outside the PrimeCam envelope."
-            )
+    bore_az, bore_el = _solve_boresight(trajectory.az, trajectory.el, offset, site=site)
 
     if len(trajectory.times) < 2:
         # np.gradient needs >=2 samples, so the correction's rate is unknown

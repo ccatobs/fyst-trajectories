@@ -29,7 +29,11 @@ from fyst_trajectories.overhead import (
     write_timeline,
 )
 from fyst_trajectories.overhead.scheduler import helpers as _helpers
-from fyst_trajectories.overhead.scheduler.helpers import _ce_crossing_corridor
+from fyst_trajectories.overhead.scheduler.helpers import (
+    _ce_crossing_corridor,
+    _ce_swept_az_envelope,
+)
+from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
 
 _AUGUST_PATCH = ObservingPatch(
     name="AugustCES",
@@ -207,6 +211,49 @@ def test_a_patch_beside_a_celestial_pole_is_skipped_not_raised():
     )
     assert timeline.blocks
     assert not _science(timeline)
+
+
+def test_the_corridor_is_the_envelope_of_the_pass_the_planner_builds_at_the_limit():
+    """At an azimuth limit the corridor is the rebuilt pass's envelope, a turn apart.
+
+    At 3 deg/s this field's setting pass sweeps (345.14, 354.78) with a
+    5.625 deg turnaround overshoot on each side, past the 360 deg limit, so
+    the planner sweeps it one turn down. The corridor the scheduler slews to
+    and clips against the Sun is the envelope of that trajectory on the
+    field's own branch: the slew re-wraps it to the mount's azimuth, and the
+    Sun clip reads it modulo 360 deg.
+    """
+    site = get_fyst_site()
+    coords = Coordinates(site)
+    start = Time("2026-11-15T18:00:00", scale="utc")
+    patch = ObservingPatch(
+        name="NorthSetting",
+        ra_center=60.0,
+        dec_center=26.25,
+        width=2.0,
+        height=2.0,
+        scan_type="constant_el",
+        velocity=3.0,
+        elevation=40.0,
+    )
+    window = _ce_crossing_corridor(patch, 40.0, False, start, coords, {})
+    assert window is not None
+    lo, hi = _ce_swept_az_envelope(patch, *window, coords)
+
+    block = plan_constant_el_scan(
+        field=FieldRegion(ra_center=60.0, dec_center=26.25, width=2.0, height=2.0),
+        elevation=40.0,
+        velocity=3.0,
+        site=site,
+        start_time=start,
+        rising=False,
+    )
+    az = block.trajectory.az
+    assert lo - 360.0 == pytest.approx(az.min(), abs=0.01)
+    assert hi - 360.0 == pytest.approx(az.max(), abs=0.01)
+    lim = site.telescope_limits.azimuth
+    assert lim.min <= az.min()
+    assert az.max() <= lim.max
 
 
 def test_a_pass_advisory_from_the_gate_is_raised_by_the_rebuild_not_the_night():

@@ -16,6 +16,11 @@ from .registry import register_pattern
 from .turnarounds import quintic_turnaround, swept_az_envelope, turnaround_duration_sec
 from .utils import validate_sample_count
 
+#: How far, in degrees, a sample may lie outside the science range and still be
+#: science: far below any pointing scale, far above the rounding that leaves a
+#: sample on a science edge to either side of it.
+_SCIENCE_EDGE_TOLERANCE_DEG: float = 1e-9
+
 
 @register_pattern("constant_el", config=ConstantElScanConfig)
 class ConstantElScanPattern(AltAzPattern):
@@ -154,8 +159,8 @@ class ConstantElScanPattern(AltAzPattern):
             },
         )
 
+    @staticmethod
     def _compute_scan_positions(
-        self,
         times: np.ndarray,
         az_min: float,
         az_max: float,
@@ -167,7 +172,10 @@ class ConstantElScanPattern(AltAzPattern):
 
         Uses a quintic polynomial turnaround profile. Turnarounds
         happen outside the science region so that every sample within
-        ``[az_min, az_max]`` is at constant cruise velocity.
+        ``[az_min, az_max]`` is at constant cruise velocity, and a sample
+        is science when it lies in that range, to within
+        ``_SCIENCE_EDGE_TOLERANCE_DEG``, as the sample where a cruise meets
+        a turnaround does.
 
         Parameters
         ----------
@@ -248,13 +256,83 @@ class ConstantElScanPattern(AltAzPattern):
         velocities = np.where(in_cruise, vel_cruise, vel_turn)
         positions = np.where(in_cruise, pos_cruise, pos_turn)
 
+        # Samples fall where a cruise meets a turnaround by construction: a block
+        # quantised to whole legs ends on its last leg's edge, and every seam falls
+        # on a sample when the legs and turnarounds last whole timesteps. Rounding
+        # leaves such a sample a few ulps to either side of the edge, so the range is
+        # widened by _SCIENCE_EDGE_TOLERANCE_DEG and science samples are clipped onto
+        # it, which keeps the last bits of the inputs from picking the flag. A zero
+        # throw has no cruise, so none of its samples is science.
+        in_science = (
+            (az_throw > 0.0)
+            & (positions >= az_min - _SCIENCE_EDGE_TOLERANCE_DEG)
+            & (positions <= az_max + _SCIENCE_EDGE_TOLERANCE_DEG)
+        )
         scan_flag[:] = SCAN_FLAG_TURNAROUND
-        in_science = in_cruise & (positions >= az_min) & (positions <= az_max)
         scan_flag[in_science] = SCAN_FLAG_SCIENCE
 
         # The turnaround's peak displacement equals turnaround_overshoot_deg,
         # so every sample already lies inside the envelope; the clip only
         # absorbs floating-point rounding at the turnaround apex.
-        positions = np.clip(positions, motion_min, motion_max)
+        positions = np.where(
+            in_science,
+            np.clip(positions, az_min, az_max),
+            np.clip(positions, motion_min, motion_max),
+        )
 
         return positions, velocities, scan_flag
+
+
+def _ce_az_reach(
+    az_min: float,
+    az_max: float,
+    az_speed: float,
+    az_accel: float,
+    duration: float,
+    timestep: float,
+) -> tuple[float, float]:
+    """Return the lowest and highest azimuth a constant-elevation sweep commands.
+
+    The sweep is the one :meth:`ConstantElScanPattern.generate` makes with
+    ``az_start=az_min`` and ``az_stop=az_max``, the first leg running up,
+    for ``duration`` seconds at ``timestep``, and the extremes are taken over
+    the same samples. So they hold only the turnarounds the sweep makes (one
+    leg makes none, two only the one past ``az_max``), and each turnaround
+    only as far as its samples reach it, which can stop short of the apex
+    :func:`~fyst_trajectories.patterns.turnarounds.swept_az_envelope` gives.
+
+    Parameters
+    ----------
+    az_min, az_max : float
+        The swept range in degrees, ``az_min < az_max``.
+    az_speed : float
+        Azimuth scan speed in deg/s (mount frame).
+    az_accel : float
+        Azimuth acceleration in deg/s^2 (mount frame).
+    duration : float
+        Sweep length in seconds.
+    timestep : float
+        Time between samples in seconds.
+
+    Returns
+    -------
+    lo, hi : float
+        The lowest and highest commanded azimuth in degrees.
+
+    Raises
+    ------
+    ValueError
+        If ``duration`` yields fewer than two samples at ``timestep``
+        (:func:`~fyst_trajectories.patterns.utils.validate_sample_count`).
+    """
+    times = np.linspace(0, duration, validate_sample_count(duration, timestep))
+    # pylint: disable-next=protected-access
+    positions, _, _ = ConstantElScanPattern._compute_scan_positions(
+        times=times,
+        az_min=az_min,
+        az_max=az_max,
+        az_speed=az_speed,
+        az_accel=az_accel,
+        start_increasing=True,
+    )
+    return float(positions.min()), float(positions.max())

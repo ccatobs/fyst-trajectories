@@ -1085,9 +1085,10 @@ class SlewPhase(Phase):
         Falls back to the science window for every other scan type and
         whenever the pass is no longer plannable from here: nothing is
         built yet, so a scalar estimate is all there is. The returned
-        pair is placed on ``slew_az``'s cable-wrap branch, since the
-        planner picks its own branch for the corridor and the two are
-        combined into one contiguous span by the caller.
+        pair is placed on ``slew_az``'s cable-wrap branch: the corridor
+        comes on the field's own branch, not the one the planner places
+        the sweep on, and the caller joins it and ``slew_az`` into one
+        contiguous span.
         """
         if best_patch.scan_type != "constant_el":
             return az_lo_sci, az_hi_sci

@@ -43,13 +43,19 @@ _GRID = "the plot draws the target track on the observability grid it reports on
 _ALLOWED: dict[tuple[str, str], str] = {
     ("overhead.scheduler.helpers", "patterns.daisy._daisy_reach"): _PATTERN_REACH,
     ("overhead.scheduler.helpers", "patterns.pong._pong_peak_offsets"): _PATTERN_REACH,
-    ("overhead.scheduler.helpers", "planning._ce_geometry._compute_ce_az_range"): _PLANNER_SOLVE,
+    ("overhead.scheduler.helpers", "planning._ce_geometry._ce_field_az_range"): _PLANNER_SOLVE,
     ("overhead.scheduler.helpers", "planning._ce_geometry._compute_ce_duration"): _PLANNER_SOLVE,
     ("overhead.simulation", "planning._sun_safety._check_trajectory_sun_safety"): (
         "a rebuilt constant-elevation slice is screened with the planners' own Sun check"
     ),
     ("planning._ce_geometry", "coordinates._threshold_crossings"): (
         "the crossing solve shares the rise and set search's threshold interpolation"
+    ),
+    ("planning._ce_geometry", "offsets._solve_boresight"): (
+        "a sweep's azimuth branch is placed for the boresight the trajectory builder solves"
+    ),
+    ("planning._ce_geometry", "patterns.constant_el._ce_az_reach"): (
+        "a sweep's azimuth branch is placed for the samples the pattern commands"
     ),
     ("visualization.sky_view", "observability._target_altaz_grid"): _GRID,
     ("visualization.sky_view", "offsets._offset_forward"): _FOOTPRINT,

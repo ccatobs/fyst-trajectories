@@ -59,7 +59,8 @@ varies:
 - **Pong** - computes the Pong period from field dimensions, spacing, and
   velocity.
 - **Constant-El** - derives the timing, azimuth range and ``n_scans`` from
-  an elevation crossing or a Local Sidereal Angle window.
+  an elevation crossing or a Local Sidereal Angle window; the window form
+  sweeps a given azimuth window for a given duration from a literal start.
 - **Daisy** - convenience wrapper; parameters map nearly 1:1 to the config.
 - **Source CES** - drags a moving source across an instrument-array
   footprint at fixed boresight elevation.
@@ -258,6 +259,30 @@ deg/s² rather than on-sky; default 1.0), and
 looks, 12 h by default; a field whose crossing lies beyond it raises
 :class:`~fyst_trajectories.exceptions.PointingError`).
 
+The RA edges are the field's own extreme corners, turned by ``angle``, at
+its central declination, so a field across RA 0° or wider than 180° of RA is
+timed by its own extent. The pass lasts the field's RA span at the sidereal
+rate, about 15° per hour, so the trailing crossing of a field more than
+about 180° of RA wide lies beyond the default horizon; a field spanning a
+whole turn of RA has no edges and raises
+:class:`~fyst_trajectories.exceptions.PointingError`.
+
+The azimuth range spans the field's corners and centre at the start, middle
+and end of the pass, padded by ``az_padding``. The first leg runs up from the
+low edge, and each turnaround between legs overshoots the edge it turns at by
+:math:`5 v^2 / (8 a)`, so one leg sweeps the range alone, two legs also reach
+the overshoot past the high edge, and three or more reach both. With
+``detector_offset`` the range is the module's, and the boresight, which the
+mount follows, sweeps the same azimuths moved by an azimuth that is constant
+at the fixed elevation. The azimuth limits are checked at the trajectory's
+samples, about ``timestep`` apart, for the module and for the boresight. A
+sample can stop short of a turnaround's apex, and the mount runs the path
+between the samples too, so the range moves by a whole turn when the branch
+one turn away holds the samples and its own does not, or holds the samples
+and the boresight's whole path, turnarounds included, where its own holds
+only the samples. A range whose samples fit no branch raises
+:class:`~fyst_trajectories.exceptions.AzimuthBoundsError`.
+
 Basic usage::
 
     from fyst_trajectories import get_fyst_site
@@ -331,6 +356,65 @@ beside it::
     )
 
     print(f"Duration: {block.duration / 3600:.1f}h")  # Duration: 1.3h
+
+Sweeping a given azimuth window
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:func:`~fyst_trajectories.planning.plan_constant_el_window_scan` takes the
+azimuth window, the elevation and the duration as given and starts at
+``start_time`` exactly, with no crossing search, so a later start sweeps the
+same window later. Its inputs are those of a constant-elevation
+``azimuth_range`` row in OpsDB (``az_min``, ``az_max``, ``elevation`` and a
+duration, in hours there and in seconds here). The duration is rounded to
+whole azimuth legs as above, so at equal throw, speed and acceleration the
+two planners quantise identically, and ``az_padding`` defaults to 0, so the
+window is commanded as given::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import FieldRegion, plan_constant_el_window_scan
+
+    site = get_fyst_site()
+
+    field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
+    block = plan_constant_el_window_scan(
+        field,                       # optional; read only by the drift checks
+        az_window=(101.0, 111.6),    # the commanded sweep in degrees
+        elevation=50.0,
+        velocity=0.5,                # mount-frame azimuth rate in deg/s
+        duration=1680.0,             # requested seconds, rounded to whole legs
+        site=site,
+        start_time=Time("2026-03-15T17:20:00", scale="utc"),
+    )
+
+    print(block.computed_params["n_scans"])  # 76
+    print(f"Duration: {block.duration:.1f}s")  # Duration: 1686.2s
+
+The pair is the sweep itself, not a modular range: ``az_hi`` must exceed
+``az_lo``, and a window that crosses azimuth 0° (360°) is written
+unwrapped, as ``(355.0, 370.0)`` or ``(-5.0, 10.0)``. The window, its
+turnaround overshoots and the boresight's path under a ``detector_offset``
+are placed on a 360° branch by the field form's rule above, and a window
+whose samples fit no branch raises
+:class:`~fyst_trajectories.exceptions.AzimuthBoundsError`.
+
+``field`` never shapes the trajectory, and the default ``None`` plans
+without one, for a target that no single RA/Dec box describes. Given a
+field, the planner reads its two RA edges at its central declination at
+``start_time``. In a window east of the meridian the field rises through
+``elevation`` and in one west of it the field sets, and each edge crosses on
+the window's side once per sidereal day, so the field's pass runs from the
+leading edge's crossing to the trailing edge's. A scan that lies wholly
+between two passes draws a ``PointingWarning`` saying that it starts after
+the pass before or ends before the pass after, whichever is nearer; a field
+whose central declination never crosses ``elevation`` draws one too. A
+window that reaches the meridian has no single side and is not checked,
+and a field that spans the whole RA circle has no edges to check. The
+built trajectory, turnaround overshoot included, is screened against the
+Sun over the whole block, since the window is fixed in the horizon frame
+while the Sun moves about 15° per hour. These checks warn and never
+refuse.
 
 Planning a Daisy Scan
 ---------------------
@@ -670,8 +754,10 @@ parameters.
 
 ``sun_safe=`` injects a sun-safety predicate
 (:class:`~fyst_trajectories.sun_protocols.SunSafePredicate`) into the
-planner's pre-flight check in place of the built-in scalar radius. This
-is the injection point for the directional CAD-derived model::
+planner's pre-flight check in place of the built-in scalar radius
+(``plan_constant_el_window_scan`` has no pre-flight; the predicate screens
+its built trajectory). This is the injection point for the directional
+CAD-derived model::
 
     from astropy.time import Time
 
@@ -701,16 +787,19 @@ policies and every place the predicate travels.
 means vacuum; pass ``AtmosphericConditions.for_fyst()`` only for output
 that never reaches the telescope.
 ``plan_pong_altaz_scan`` and ``plan_daisy_altaz_scan`` accept it for parity but
-run no coordinate transform, so it does not change their output. See
+run no coordinate transform, so it does not change their output.
+``plan_constant_el_window_scan`` never refracts its commanded window
+either; there the model affects only when its drift checks see the field
+cross the commanded elevation. See
 :ref:`quickstart-planning-refraction` for why that default is
 load-bearing.
 
 Scan Block Output
 -----------------
 
-The six single-scan planners (``plan_pong_scan``, ``plan_constant_el_scan``,
-``plan_daisy_scan``, ``plan_pong_altaz_scan``, ``plan_daisy_altaz_scan`` and
-``plan_source_ces``) return a
+The seven single-scan planners (``plan_pong_scan``, ``plan_constant_el_scan``,
+``plan_constant_el_window_scan``, ``plan_daisy_scan``, ``plan_pong_altaz_scan``,
+``plan_daisy_altaz_scan`` and ``plan_source_ces``) return a
 :class:`~fyst_trajectories.planning.ScanBlock`. The other four entry
 points do not: ``plan_source_ces_passes`` and ``plan_pong_rotation_scans``
 return a list of these blocks (one per pass or rotation),

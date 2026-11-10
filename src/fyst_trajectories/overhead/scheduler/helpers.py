@@ -28,9 +28,9 @@ from ...planning import FieldRegion, plan_constant_el_scan
 # Private planner reuse, on purpose: the scheduler must gate constant-elevation
 # emission on exactly the crossing solve that plan_constant_el_scan runs at
 # reconstruction (planning = execution), so it calls the planner's own solver
-# rather than approximating it. The corridor helper is reused for the same
-# reason: it is where the swept azimuth range comes from at reconstruction.
-from ...planning._ce_geometry import _compute_ce_az_range, _compute_ce_duration
+# rather than approximating it. The field-range helper is reused for the same
+# reason: the planner places its swept azimuth range from it at reconstruction.
+from ...planning._ce_geometry import _ce_field_az_range, _compute_ce_duration
 from ...site import Site
 from ...sun_protocols import _sun_verdicts
 from ..constraints import Constraint, ElevationConstraint, SunAvoidanceConstraint
@@ -277,10 +277,13 @@ def _ce_swept_az_envelope(
 
     The planner's own corridor for the crossing ``[t_open, t_close]`` (the
     azimuth extent of the field's corners over the whole pass, plus
-    padding), widened by one turnaround overshoot per side. That is the
-    range the mount occupies, and it is what the rebuilt trajectory
-    sweeps, so a phase that has to reason about where the telescope goes
-    before any trajectory exists can ask for it here.
+    padding), widened by one turnaround overshoot per side. That holds the
+    range the mount occupies, whatever turnarounds the rebuilt trajectory
+    makes, so a phase that has to reason about where the telescope goes
+    before any trajectory exists can ask for it here. It is not placed on
+    the branch the planner sweeps: the planner chooses that for the sweep
+    it builds, while every consumer here reads the envelope modulo 360 deg
+    or re-wraps it to the slew's azimuth.
 
     It is much wider than the instantaneous field width
     :func:`_compute_az_range` estimates, because the field drifts across
@@ -307,9 +310,11 @@ def _ce_swept_az_envelope(
     Returns
     -------
     tuple of float
-        ``(env_min, env_max)`` in degrees, ordered. The pair may lie
-        outside ``[0, 360)`` when the pass straddles north, the
-        unwrapped representation the planner also returns.
+        ``(env_min, env_max)`` in degrees, ordered, before the planner
+        places the sweep on a branch. The pair may lie outside
+        ``[0, 360)``, and past an azimuth limit, where the pass straddles
+        north (the field's range is unwrapped there) or where the padding or
+        an overshoot carries an edge across north.
     """
     params = patch.scan_params
     field = FieldRegion(
@@ -320,7 +325,7 @@ def _ce_swept_az_envelope(
     )
     az_padding = params.get("az_padding", _CE_PLANNER_PARAMETERS["az_padding"].default)
     az_accel = params.get("az_accel", _CE_PLANNER_PARAMETERS["az_accel"].default)
-    az_lo, az_hi = _compute_ce_az_range(field, 0.0, coords, t_open, t_close, float(az_padding))
+    az_lo, az_hi = _ce_field_az_range(field, 0.0, coords, t_open, t_close, float(az_padding))
     return swept_az_envelope(az_lo, az_hi, patch.velocity, float(az_accel))
 
 

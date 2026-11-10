@@ -10,6 +10,8 @@ from hypothesis import strategies as st
 
 from fyst_trajectories.exceptions import PointingWarning
 from fyst_trajectories.patterns import ConstantElScanConfig, ConstantElScanPattern
+from fyst_trajectories.patterns.constant_el import _ce_az_reach
+from fyst_trajectories.patterns.turnarounds import swept_az_envelope, turnaround_duration_sec
 from fyst_trajectories.trajectory import SCAN_FLAG_SCIENCE, SCAN_FLAG_TURNAROUND
 
 
@@ -213,6 +215,44 @@ class TestTurnaroundBehavior:
         # With overscan, the cruise covers the full 2-degree science region
         at_cruise = np.abs(np.abs(trajectory.az_vel) - 2.0) < 0.1
         assert np.sum(at_cruise) > 0
+
+    @pytest.mark.parametrize(
+        ("legs", "timestep", "reach"),
+        [
+            (1, 0.1, (100.0, 150.0)),
+            (2, 0.1, (100.0, 152.5)),
+            (3, 0.1, (97.5, 152.5)),
+            (3, 1.7, (97.5078, 152.4922)),
+        ],
+    )
+    def test_the_reach_is_taken_over_the_generated_samples(self, site, legs, timestep, reach):
+        """The planners place a sweep's branch by ``_ce_az_reach``, so it must be ``generate``'s.
+
+        The first leg runs up from ``az_min``: one leg reaches neither
+        turnaround, two only the one past ``az_max``, three both, and each
+        only as far as its samples. At 0.1 s a sample falls on each apex,
+        2.5 deg past its edge; at 1.7 s the samples stop 0.0078 deg short.
+        """
+        az_min, az_max, speed, accel = 100.0, 150.0, 2.0, 1.0
+        t_turn = turnaround_duration_sec(speed, accel)
+        duration = legs * (az_max - az_min) / speed + (legs - 1) * t_turn
+        config = ConstantElScanConfig(
+            timestep=timestep,
+            az_start=az_min,
+            az_stop=az_max,
+            elevation=45.0,
+            az_speed=speed,
+            az_accel=accel,
+        )
+        trajectory = ConstantElScanPattern(config).generate(site, duration=duration)
+
+        lo, hi = _ce_az_reach(az_min, az_max, speed, accel, duration, timestep)
+
+        assert (lo, hi) == (trajectory.az.min(), trajectory.az.max())
+        assert (lo, hi) == pytest.approx(reach, abs=1e-4)
+        env_lo, env_hi = swept_az_envelope(az_min, az_max, speed, accel)
+        assert env_lo <= lo
+        assert hi <= env_hi
 
 
 class TestEdgeCases:
@@ -547,3 +587,59 @@ class TestScanFlags:
         # Science region is [100, 150] from _make_trajectory defaults
         assert trajectory.az.min() < 100.0
         assert trajectory.az.max() > 150.0
+
+    def test_a_seam_on_a_sample_is_science(self, site):
+        """A sample where a cruise meets a turnaround sits on the edge at cruise speed.
+
+        A 25 s leg and a 4 s turnaround at a 0.1 s step put all eight seams of the
+        120 s scan on samples; only the 39 samples inside each turnaround are not
+        science.
+        """
+        trajectory = self._make_trajectory(site)
+
+        seams = [250, 290, 540, 580, 830, 870, 1120, 1160]
+        assert np.all(trajectory.scan_flag[seams] == SCAN_FLAG_SCIENCE)
+        assert np.sum(trajectory.scan_flag == SCAN_FLAG_TURNAROUND) == 4 * 39
+
+    @pytest.mark.parametrize(
+        ("az_start", "duration"),
+        [
+            ("0x1.2965a803aca5ap+4", "0x1.ec1bb6e5f81b1p+11"),
+            ("0x1.2965a803aca58p+4", "0x1.ec1bb6e5f81b9p+11"),
+        ],
+    )
+    def test_a_block_of_whole_legs_ends_on_science(self, site, az_start, duration):
+        """The flag of a block's final sample does not hang on the last bits of its inputs.
+
+        The two cases are the same 27-leg source-CES block as the planner built it
+        with SciPy 1.17.0 and 1.18.1: the start azimuth two ulps apart, the duration
+        eight. A block of whole legs ends on its last leg's edge, at cruise speed.
+        """
+        config = ConstantElScanConfig(
+            timestep=0.1,
+            az_start=float.fromhex(az_start),
+            az_stop=float.fromhex("0x1.9df7cb063a22cp+4"),
+            elevation=43.5,
+            az_speed=0.05,
+            az_accel=1.0,
+        )
+        trajectory = ConstantElScanPattern(config).generate(site, float.fromhex(duration))
+
+        assert trajectory.scan_flag[-1] == SCAN_FLAG_SCIENCE
+        assert trajectory.az[-1] == pytest.approx(config.az_stop, abs=1e-12)
+        assert np.sum(trajectory.scan_flag == SCAN_FLAG_TURNAROUND) == 26
+
+    def test_a_zero_throw_has_no_science(self, site):
+        """With ``az_start == az_stop`` the sweep is all turnarounds, seams included."""
+        with pytest.warns(PointingWarning, match="Turnaround distance"):
+            config = ConstantElScanConfig(
+                timestep=0.1,
+                az_start=120.0,
+                az_stop=120.0,
+                elevation=45.0,
+                az_speed=1.0,
+                az_accel=1.0,
+            )
+        trajectory = ConstantElScanPattern(config).generate(site, duration=20.0)
+
+        assert not np.any(trajectory.scan_flag == SCAN_FLAG_SCIENCE)

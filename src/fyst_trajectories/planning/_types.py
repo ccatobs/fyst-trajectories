@@ -82,7 +82,10 @@ class PongAltAzComputedParams(TypedDict):
 
 
 class ConstantElComputedParams(TypedDict):
-    """Computed parameters returned by :func:`plan_constant_el_scan`.
+    """Computed parameters returned by the constant-elevation planners.
+
+    Both :func:`plan_constant_el_scan` and
+    :func:`plan_constant_el_window_scan` return these keys.
 
     Attributes
     ----------
@@ -98,7 +101,9 @@ class ConstantElComputedParams(TypedDict):
         ISO-format UTC start time of the observation.
     end_time_iso : str
         ISO-format UTC time at which the solved pass window closes (the
-        elevation crossing, or the LSA window when one was given).
+        elevation crossing, or the LSA window when one was given); for
+        :func:`plan_constant_el_window_scan`, the start plus the requested
+        duration.
     duration : float
         Trajectory duration in seconds: that window rounded to a whole number
         of azimuth legs, so it differs from ``end_time_iso - start_time_iso``

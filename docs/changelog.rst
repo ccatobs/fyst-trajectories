@@ -17,6 +17,58 @@ the instrument team's ``IM0`` .. ``IM6`` in the first minor release after
 the correspondence to the as-built focal plane is confirmed; the two
 schemes do not correspond index-for-index (see :doc:`instrument_offsets`).
 
+v0.13.0 (2026-11-09)
+--------------------
+
+Additions
+~~~~~~~~~
+
+- **Constant-elevation scans over a given azimuth window.**
+  ``plan_constant_el_window_scan`` sweeps ``az_window`` at one elevation
+  from a literal ``start_time`` for a given duration, the inputs of a
+  constant-elevation ``azimuth_range`` row in OpsDB (its duration in hours
+  there, in seconds here). The duration is rounded to whole azimuth legs as
+  ``plan_constant_el_scan`` rounds its pass.
+  The window is commanded as given and moves by a whole turn only when the
+  azimuths the sweep reaches, its turnarounds included, or the boresight's
+  under a ``detector_offset``, would overrun an azimuth limit. The built
+  trajectory is screened against the Sun, and an optional ``field`` is
+  checked for drifting through the window during the scan; both checks warn
+  and never refuse.
+
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **A constant-elevation pass takes the azimuth branch that holds its
+  turnarounds and its boresight.** ``plan_constant_el_scan`` placed its
+  azimuth range on a branch that held the module's samples but not the
+  turnaround overshoot or, with ``detector_offset``, the boresight's path,
+  and refused the pass with ``AzimuthBoundsError`` when either ran past a
+  limit although the branch one turn away holds the whole sweep. Such a
+  pass now plans one turn over: a 2 × 2° field at RA 60°, Dec +26.25°
+  setting through 40° at 3 deg/s, refused before, plans on
+  (-14.86°, -5.22°). A pass whose own branch holds everything does not move
+  (the rule is on :doc:`planning`). The offline scheduler books the passes
+  it idled through as unplannable: that field's pass on 2026-11-16 gains
+  353 s of science.
+- **A field wider than 180° of RA is timed by its own extent.**
+  ``plan_constant_el_scan`` took the field's leading and trailing RA edges
+  modulo 360°, so a field across RA 0° wider than 180° of RA was timed by
+  the complementary arc: a field 200° of RA wide at Dec -27.8°, centred at
+  RA 10° and rising through 50°, was planned as a 10.65 h pass, or refused
+  when the search began inside it. Its own pass lasts 13.29 h, which
+  ``max_search_hours=36`` plans and the default 12 h refuses, naming the
+  pass's length. A field spanning a whole turn of RA raises
+  ``PointingError`` instead of planning a pass.
+- **A constant-elevation sample on the edge of the science range is
+  science.** The flag of a sample where a leg meets a turnaround depended on
+  the last bits of the inputs: the same recorded source-CES pass ended on a
+  turnaround sample under SciPy 1.17.0 and on a science sample under
+  SciPy 1.18.1. ``ConstantElScanPattern`` now flags a sample within 1e-9° of
+  the science range as science and places it on the range, so a block
+  quantised to whole legs ends on a science sample; 15 of the 21 recorded
+  test passes gain one. The Go TCS ``/path`` body carries no flags.
+
 v0.12.0 (2026-10-27)
 --------------------
 

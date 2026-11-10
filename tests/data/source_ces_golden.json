@@ -110,8 +110,8 @@
      "target_name": "RA=180.000, Dec=-30.000"
     },
     "scan_flag": {
-     "1": 3772,
-     "2": 7
+     "1": 3773,
+     "2": 6
     },
     "start_time": "2026-03-15T08:40:53.937",
     "summary": "Source-CES on RA=180.000, Dec=-30.000 (setting) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [247.87, 250.56] deg (throw 2.69 deg)\n  Drift v_az=-0.00048 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 08:40:53 to 2026-03-15 08:46:55\n  Scans: 7, Duration: 377.8s (6.3min), Trajectory points: 3779",
@@ -244,8 +244,8 @@
      "target_name": "Jupiter"
     },
     "scan_flag": {
-     "1": 5616,
-     "2": 11
+     "1": 5617,
+     "2": 10
     },
     "start_time": "2026-03-15T21:41:20.525",
     "summary": "Source-CES on Jupiter (rising) at el_bore=33.29 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [37.98, 40.53] deg (throw 2.55 deg)\n  Drift v_az=-0.00359 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:41:20 to 2026-03-15 21:50:26\n  Scans: 11, Duration: 562.6s (9.4min), Trajectory points: 5627",
@@ -629,8 +629,8 @@
      "target_name": "Jupiter"
     },
     "scan_flag": {
-     "1": 20603,
-     "2": 15
+     "1": 20604,
+     "2": 14
     },
     "start_time": "2026-03-15T21:42:01.174",
     "summary": "Source-CES on Jupiter (rising) at el_bore=35.00 deg\n  Footprint: 350 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [36.43, 43.30] deg (throw 6.87 deg)\n  Drift v_az=-0.00448 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:42:01 to 2026-03-15 22:15:58\n  Scans: 15, Duration: 2061.7s (34.4min), Trajectory points: 20618",
@@ -662,7 +662,7 @@
     "arrays": {
      "az": {
       "first": 18.58731843409837,
-      "last": 4.1832286985968,
+      "last": 4.183228698596796,
       "max": 25.070443470221647,
       "min": -2.299896337526473,
       "n": 39370,
@@ -746,15 +746,15 @@
      "target_name": "Jupiter"
     },
     "scan_flag": {
-     "1": 39343,
-     "2": 27
+     "1": 39344,
+     "2": 26
     },
     "start_time": "2026-03-15T22:53:57.675",
     "summary": "Source-CES on Jupiter (rising) at el_bore=43.50 deg\n  Footprint: 350 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [18.59, 25.87] deg (throw 7.29 deg)\n  Drift v_az=-0.00551 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 22:53:57 to 2026-03-15 23:59:30\n  Scans: 27, Duration: 3936.9s (65.6min), Trajectory points: 39370",
     "track": {
      "eta": {
       "first": -3.009608800760062,
-      "last": 2.0732493123541174,
+      "last": 2.0732493123541156,
       "max": 2.07472257084611,
       "min": -3.009608800760062,
       "n": 39370,
@@ -763,7 +763,7 @@
      },
      "xi": {
       "first": -0.2117629642942307,
-      "last": -1.286701232761441,
+      "last": -1.2867012327614398,
       "max": 2.5043842190661696,
       "min": -3.9432439635113408,
       "n": 39370,
@@ -874,8 +874,8 @@
       "target_name": "Jupiter"
      },
      "scan_flag": {
-      "1": 5619,
-      "2": 11
+      "1": 5620,
+      "2": 10
      },
      "start_time": "2026-03-15T21:41:43.898",
      "summary": "[Pass 1/3: eta_offset=-0.432 deg (focal-plane row), el_bore=33.70 deg]\nSource-CES on Jupiter (rising) at el_bore=33.70 deg\n  Footprint: 50 cover vertices, center=(0.000, -0.432) deg (xi, eta)\n  Az range: [37.61, 40.16] deg (throw 2.55 deg)\n  Drift v_az=-0.00359 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 21:41:43 to 2026-03-15 21:50:50\n  Scans: 11, Duration: 562.9s (9.4min), Trajectory points: 5630",
@@ -1110,8 +1110,8 @@
       "target_name": "Jupiter"
      },
      "scan_flag": {
-      "1": 6287,
-      "2": 12
+      "1": 6288,
+      "2": 11
      },
      "start_time": "2026-03-15T22:05:48.173",
      "summary": "[Pass 3/3: eta_offset=+0.432 deg (focal-plane row), el_bore=36.30 deg]\nSource-CES on Jupiter (rising) at el_bore=36.30 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.432) deg (xi, eta)\n  Az range: [32.81, 35.43] deg (throw 2.62 deg)\n  Drift v_az=-0.00416 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 22:05:48 to 2026-03-15 22:16:16\n  Scans: 12, Duration: 629.8s (10.5min), Trajectory points: 6299",
@@ -1228,8 +1228,8 @@
      "target_name": "RA=180.000, Dec=-30.000"
     },
     "scan_flag": {
-     "1": 3772,
-     "2": 7
+     "1": 3773,
+     "2": 6
     },
     "start_time": "2026-03-15T08:40:55.853",
     "summary": "Source-CES on RA=180.000, Dec=-30.000 (setting) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [247.87, 250.57] deg (throw 2.69 deg)\n  Drift v_az=-0.00048 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-03-15 08:40:55 to 2026-03-15 08:46:57\n  Scans: 7, Duration: 377.8s (6.3min), Trajectory points: 3779",
@@ -1462,8 +1462,8 @@
      "target_name": "Saturn"
     },
     "scan_flag": {
-     "1": 3555,
-     "2": 7
+     "1": 3556,
+     "2": 6
     },
     "start_time": "2026-09-11T02:28:20.495",
     "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [69.87, 72.41] deg (throw 2.54 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:28:20 to 2026-09-11 02:34:18\n  Scans: 7, Duration: 356.1s (5.9min), Trajectory points: 3562",
@@ -1702,8 +1702,8 @@
      "target_name": "Saturn"
     },
     "scan_flag": {
-     "1": 3726,
-     "2": 7
+     "1": 3727,
+     "2": 6
     },
     "start_time": "2026-09-11T02:56:47.229",
     "summary": "Source-CES on Saturn (rising) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.000, -1.780) deg (xi, eta)\n  Az range: [63.90, 66.57] deg (throw 2.66 deg)\n  Drift v_az=-0.00287 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:56:47 to 2026-09-11 03:02:56\n  Scans: 7, Duration: 373.2s (6.2min), Trajectory points: 3733",
@@ -1819,8 +1819,8 @@
      "target_name": "Saturn"
     },
     "scan_flag": {
-     "1": 3767,
-     "2": 13
+     "1": 3768,
+     "2": 12
     },
     "start_time": "2026-09-11T03:03:21.158",
     "summary": "Source-CES on Saturn (rising) at el_bore=40.00 deg\n  Footprint: 50 cover vertices, center=(0.200, -0.150) deg (xi, eta)\n  Az range: [63.90, 66.59] deg (throw 2.69 deg)\n  Drift v_az=-0.00302 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 03:03:21 to 2026-09-11 03:09:33\n  Scans: 7, Duration: 377.9s (6.3min), Trajectory points: 3780",
@@ -1852,7 +1852,7 @@
     "arrays": {
      "az": {
       "first": 69.91749112041654,
-      "last": 71.48162737041672,
+      "last": 71.48162737041655,
       "max": 73.28782975503785,
       "min": 68.11128873579524,
       "n": 3571,
@@ -1936,28 +1936,28 @@
      "target_name": "Saturn"
     },
     "scan_flag": {
-     "1": 1610,
-     "2": 1961
+     "1": 1611,
+     "2": 1960
     },
     "start_time": "2026-09-11T02:28:20.495",
     "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [69.92, 72.36] deg (throw 2.44 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.50 deg/s^2\n  Source pass: 2026-09-11 02:28:20 to 2026-09-11 02:34:18\n  Scans: 99, Duration: 357.0s (6.0min), Trajectory points: 3571",
     "track": {
      "eta": {
       "first": -1.0975271367874373,
-      "last": 1.0996484122225911,
+      "last": 1.099648412222514,
       "max": 1.5116979998296673,
       "min": -1.494294977424564,
       "n": 3571,
-      "sum": 23.402924517766394,
-      "sumsq": 1868.3645815994792
+      "sum": 23.40292451776628,
+      "sumsq": 1868.364581599479
      },
      "xi": {
       "first": 0.5238979955877918,
-      "last": -0.5121165875917099,
+      "last": -0.5121165875915894,
       "max": 1.8741269875377922,
       "min": -1.8829804635858438,
       "n": 3571,
-      "sum": 9.950086358088924,
+      "sum": 9.950086358089038,
       "sumsq": 3934.3985831151904
      }
     }
@@ -1976,7 +1976,7 @@
      "arrays": {
       "az": {
        "first": 71.56282129628563,
-       "last": 73.1835774278013,
+       "last": 73.18357742780128,
        "max": 75.45431390204125,
        "min": 69.29208482204567,
        "n": 3561,
@@ -2064,15 +2064,15 @@
       "target_name": "Saturn"
      },
      "scan_flag": {
-      "1": 1280,
-      "2": 2281
+      "1": 1281,
+      "2": 2280
      },
      "start_time": "2026-09-11T02:15:13.533",
      "summary": "[Pass 1/2: eta_offset=-0.324 deg (focal-plane row), el_bore=29.90 deg]\nSource-CES on Saturn (rising) at el_bore=29.90 deg\n  Footprint: 50 cover vertices, center=(0.000, -0.324) deg (xi, eta)\n  Az range: [71.56, 74.06] deg (throw 2.49 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:15:13 to 2026-09-11 02:21:07\n  Scans: 77, Duration: 356.0s (5.9min), Trajectory points: 3561",
      "track": {
       "eta": {
        "first": -1.4114073396953857,
-       "last": 0.7746712879927602,
+       "last": 0.774671287992754,
        "max": 1.3717676483918158,
        "min": -1.9805123704158758,
        "n": 3561,
@@ -2081,7 +2081,7 @@
       },
       "xi": {
        "first": 0.6023974719902017,
-       "last": -0.5846382126952357,
+       "last": -0.5846382126952252,
        "max": 2.341907394060463,
        "min": -2.340313610213674,
        "n": 3561,
@@ -2217,7 +2217,7 @@
      "arrays": {
       "az": {
        "first": 72.06282129628563,
-       "last": 72.69186932487449,
+       "last": 72.69186932487446,
        "max": 74.9570793829684,
        "min": 69.79761123819169,
        "n": 3528,
@@ -2305,15 +2305,15 @@
       "target_name": "Saturn"
      },
      "scan_flag": {
-      "1": 887,
-      "2": 2641
+      "1": 888,
+      "2": 2640
      },
      "start_time": "2026-09-11T02:15:13.533",
      "summary": "[Pass 1/2: eta_offset=-0.324 deg (focal-plane row), el_bore=29.90 deg]\nSource-CES on Saturn (rising) at el_bore=29.90 deg\n  Footprint: 50 cover vertices, center=(0.000, -0.324) deg (xi, eta)\n  Az range: [72.06, 73.56] deg (throw 1.49 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:15:13 to 2026-09-11 02:21:07\n  Scans: 89, Duration: 352.7s (5.9min), Trajectory points: 3528",
      "track": {
       "eta": {
        "first": -1.1971106313920525,
-       "last": 0.5463555473180861,
+       "last": 0.5463555473180739,
        "max": 1.1431080276902001,
        "min": -1.7751883977956338,
        "n": 3528,
@@ -2322,7 +2322,7 @@
       },
       "xi": {
        "first": 0.22102457137762577,
-       "last": -0.218350965291437,
+       "last": -0.21835096529141573,
        "max": 1.9585221212904567,
        "min": -1.9676369346738565,
        "n": 3528,
@@ -2423,8 +2423,8 @@
       "target_name": "Saturn"
      },
      "scan_flag": {
-      "1": 913,
-      "2": 2671
+      "1": 914,
+      "2": 2670
      },
      "start_time": "2026-09-11T02:23:39.572",
      "summary": "[Pass 2/2: eta_offset=+0.324 deg (focal-plane row), el_bore=31.20 deg]\nSource-CES on Saturn (rising) at el_bore=31.20 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.324) deg (xi, eta)\n  Az range: [71.25, 72.77] deg (throw 1.52 deg)\n  Drift v_az=-0.00244 deg/s, per-leg az_speed=1.500 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:23:39 to 2026-09-11 02:29:36\n  Scans: 90, Duration: 358.3s (6.0min), Trajectory points: 3584",
@@ -2541,8 +2541,8 @@
      "target_name": "Saturn"
     },
     "scan_flag": {
-     "1": 3693,
-     "2": 13
+     "1": 3694,
+     "2": 12
     },
     "start_time": "2026-09-11T02:28:20.495",
     "summary": "Source-CES on Saturn (rising) at el_bore=32.50 deg\n  Footprint: 50 cover vertices, center=(0.000, 0.000) deg (xi, eta)\n  Az range: [70.37, 71.91] deg (throw 1.54 deg)\n  Drift v_az=-0.00245 deg/s, per-leg az_speed=0.050 deg/s, az_accel=1.00 deg/s^2\n  Source pass: 2026-09-11 02:28:20 to 2026-09-11 02:34:18\n  Scans: 12, Duration: 370.5s (6.2min), Trajectory points: 3706",
@@ -2597,7 +2597,7 @@
    "err_dwell_long",
    "err_near_transit"
   ],
-  "commit": "3234265a07124acc6e5269e5eca8c9b0393d15f4",
+  "commit": "ccd94053c282f22589c5aee54c7f3ee376806196",
   "iers_last_measured_mjd": 61216.0,
   "numpy": "2.3.5",
   "platform": "Windows-11-10.0.26300-SP0",

@@ -116,8 +116,10 @@ def plan_daisy_altaz_scan(
     ValueError
         If any config field is invalid (non-positive
         radius/velocity/turn_radius/start_acceleration/timestep, negative
-        avoidance_radius, or el_center outside ``(0, 90)``), or if
-        ``duration`` is not positive.
+        avoidance_radius, or el_center outside ``(0, 90)``), if ``duration``
+        is not positive, or if ``start_time`` holds more than one instant.
+    TypeError
+        If ``start_time`` is neither an ISO string nor an astropy ``Time``.
     TrajectoryBoundsError
         If the trajectory exceeds telescope limits.
 

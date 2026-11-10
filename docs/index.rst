@@ -195,8 +195,8 @@ limits as keyword defaults (pass ``az_speed=`` and the others there).
    * - Constant-elevation azimuth range
      - projection of the whole field over the whole pass (not an
        elevation-band drift corridor)
-     - none in the planner; build the scan from an explicit
-       ``ConstantElScanConfig`` for another range
+     - ``plan_constant_el_window_scan(az_window=)`` sweeps a given window
+       from a literal start
    * - Constant-elevation azimuth padding
      - 2.0° per side
      - ``plan_constant_el_scan(az_padding=)``

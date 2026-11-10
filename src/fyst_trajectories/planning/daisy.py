@@ -93,8 +93,10 @@ def plan_daisy_scan(
     ValueError
         If any config field is invalid (non-positive ``radius``,
         ``velocity``, ``turn_radius``, ``start_acceleration`` or
-        ``timestep``, or a negative ``avoidance_radius``), or if
-        ``duration`` is not positive.
+        ``timestep``, or a negative ``avoidance_radius``), if ``duration``
+        is not positive, or if ``start_time`` holds more than one instant.
+    TypeError
+        If ``start_time`` is neither an ISO string nor an astropy ``Time``.
     TargetNotObservableError
         If the target is not observable at the requested time.
     TrajectoryBoundsError

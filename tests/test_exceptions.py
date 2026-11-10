@@ -629,6 +629,13 @@ _UNSATISFIABLE = [
     ),
     pytest.param(
         lambda site: _constant_el(
+            site, FieldRegion(ra_center=100.0, dec_center=-80.0, width=2.0, height=25.0)
+        ),
+        "corners pass a celestial pole",
+        id="constant_el_corner_past_pole",
+    ),
+    pytest.param(
+        lambda site: _constant_el(
             site, FieldRegion(ra_center=180.0, dec_center=70.0, width=1.0, height=1.0)
         ),
         "Could not find elevation crossing",
@@ -644,6 +651,19 @@ _UNSATISFIABLE = [
         ),
         "different passes",
         id="constant_el_different_passes",
+    ),
+    pytest.param(
+        lambda site: _constant_el(
+            site,
+            FieldRegion(
+                ra_center=180.0,
+                dec_center=-27.8,
+                width=370.0 * np.cos(np.radians(27.8)),
+                height=2.0,
+            ),
+        ),
+        "a whole turn or more",
+        id="constant_el_whole_turn",
     ),
     pytest.param(
         lambda site: compute_source_ces_params(

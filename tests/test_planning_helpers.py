@@ -40,6 +40,11 @@ class TestFieldRegionCorners:
         with pytest.raises(PointingError, match="too close to celestial pole"):
             _field_region_corners(10.0, 89.5, 4.0, 6.0, 0.0)
 
+    def test_a_corner_past_a_pole_raises(self):
+        """A field at Dec -80 that is 25 deg tall reaches Dec -92.5, which has no RA/Dec."""
+        with pytest.raises(PointingError, match="corners pass a celestial pole"):
+            _field_region_corners(100.0, -80.0, 2.0, 25.0, 0.0)
+
 
 class TestValidateComputedParams:
     """Error paths of the computed_params validator.
