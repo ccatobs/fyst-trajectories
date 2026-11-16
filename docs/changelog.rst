@@ -17,6 +17,24 @@ the instrument team's ``IM0`` .. ``IM6`` in the first minor release after
 the correspondence to the as-built focal plane is confirmed; the two
 schemes do not correspond index-for-index (see :doc:`instrument_offsets`).
 
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **A constant-elevation science block starts when its pass opens.** The
+  offline scheduler selects a constant-elevation visit up to
+  ``time_step`` + 180 s before its crossing pass opens, while the rebuilt
+  trajectory starts at the opening. The part of that lead the boundary
+  retune did not cover was booked as science, so the visit's first science
+  block began before its first sample: by 36 s and 86 s on the two visits
+  of a default night (a 30 × 8° field at RA 330°, Dec -50° through 50°,
+  2026-08-01 23:00 to 07:00 UTC), and by all of the remaining lead with a
+  zero-length retune. That wait is now an idle labelled
+  ``waiting_for_pass`` ahead of the retune, and the first subscan starts at
+  the opening; the default night books 122 s less science and as much more
+  idle. ``metadata["t0_scan"]`` still records the visit's entry time, which
+  the rebuild solves the pass from. A timeline whose retune covers the lead
+  is unchanged.
+
 v0.13.0 (2026-11-09)
 --------------------
 

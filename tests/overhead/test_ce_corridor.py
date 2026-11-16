@@ -13,27 +13,33 @@ solve's advisories to the rebuild.
 """
 
 import warnings
+from dataclasses import replace
 
 import numpy as np
 import pytest
-from astropy.time import Time
+from _scheduler_helpers import _initial_state, _make_ctx
+from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.exceptions import PointingError, PointingWarning
 from fyst_trajectories.overhead import (
     BlockType,
+    CalibrationPolicy,
     ObservingPatch,
+    OverheadModel,
     generate_timeline,
     read_timeline,
     schedule_to_trajectories,
     write_timeline,
 )
 from fyst_trajectories.overhead.scheduler import helpers as _helpers
+from fyst_trajectories.overhead.scheduler import phases as _phases
 from fyst_trajectories.overhead.scheduler.helpers import (
     _ce_crossing_corridor,
     _ce_swept_az_envelope,
 )
 from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
+from fyst_trajectories.trajectory_utils import get_absolute_times
 
 _AUGUST_PATCH = ObservingPatch(
     name="AugustCES",
@@ -62,6 +68,184 @@ def _science(timeline):
     return [b for b in timeline.blocks if b.block_type == BlockType.SCIENCE]
 
 
+def _short_retune_overhead(retune_duration):
+    return OverheadModel(
+        retune_duration=retune_duration,
+        pointing_cal_duration=0.0,
+        focus_duration=0.0,
+        skydip_duration=0.0,
+        planet_cal_duration=0.0,
+        beam_map_duration=0.0,
+    )
+
+
+@pytest.fixture(scope="module", params=[0.0, 60.0], ids=["zero", "short-retune"])
+def ce_wait_night(request):
+    return request.param, generate_timeline(
+        patches=[_AUGUST_PATCH],
+        site=get_fyst_site(),
+        start_time="2026-08-01T23:00:00",
+        end_time="2026-08-02T07:00:00",
+        overhead_model=_short_retune_overhead(request.param),
+        time_step=30.0,
+    )
+
+
+def test_ce_wait_night_is_tiled_and_every_science_block_reconstructs(ce_wait_night):
+    _, timeline = ce_wait_night
+    for left, right in zip(timeline.blocks, timeline.blocks[1:]):
+        assert abs((left.t_stop - right.t_start).sec) < 1e-3
+    pairs = schedule_to_trajectories(timeline)
+    assert len(pairs) == len(_science(timeline)) > 0
+    for block, rebuilt in pairs:
+        assert rebuilt.trajectory.times.size > 0
+        if block.subscan_index == 0:
+            first_sample = get_absolute_times(rebuilt.trajectory)[0]
+            assert 0.0 <= (first_sample - block.t_start).sec < 0.1
+
+
+def test_ce_wait_precedes_retune_and_science_and_preserves_anchor(ce_wait_night):
+    retune_duration, timeline = ce_wait_night
+    coords = Coordinates(get_fyst_site())
+    visits: dict[int, list] = {}
+    for block in _science(timeline):
+        visits.setdefault(block.scan_index, []).append(block)
+    assert len(visits) >= 2
+    assert any(len(group) > 1 for group in visits.values())
+    for group in visits.values():
+        first = group[0]
+        assert first.subscan_index == 0
+        anchor_iso = first.metadata["t0_scan"]
+        assert all(b.metadata["t0_scan"] == anchor_iso for b in group)
+        anchor = Time(anchor_iso, scale="utc")
+        t_open, t_close = _ce_crossing_corridor(
+            _AUGUST_PATCH, 50.0, bool(first.rising), anchor, coords, {}
+        )
+        wait_duration = (t_open - anchor).sec - retune_duration
+        assert wait_duration > 0.0
+        index = timeline.blocks.index(first)
+        if retune_duration:
+            retune = timeline.blocks[index - 1]
+            assert retune.block_type == BlockType.CALIBRATION
+            assert retune.scan_type == "retune"
+            assert retune.duration == pytest.approx(retune_duration)
+            assert abs((retune.t_stop - first.t_start).sec) < 1e-3
+            index -= 1
+        idle = timeline.blocks[index - 1]
+        assert idle.block_type == BlockType.IDLE
+        assert idle.metadata["reason"] == "waiting_for_pass"
+        assert idle.scan_index == first.scan_index
+        assert idle.duration == pytest.approx(wait_duration, abs=5e-3)
+        assert abs((idle.t_start - anchor).sec) < 1e-3
+        assert abs((idle.t_stop - timeline.blocks[index].t_start).sec) < 1e-3
+        previous = timeline.blocks[index - 2]
+        assert idle.az_start == idle.az_end == previous.end_pose_az
+        assert idle.elevation == previous.elevation
+        assert abs((first.t_start - t_open).sec) < 5e-3
+        assert (first.t_start - anchor).sec == pytest.approx(
+            idle.duration + retune_duration, abs=1e-3
+        )
+        assert (group[-1].t_stop - t_close).sec <= 0.01
+
+
+def test_ce_default_overhead_needs_no_pass_wait():
+    timeline = generate_timeline(
+        patches=[_AUGUST_PATCH],
+        site=get_fyst_site(),
+        start_time="2026-08-01T23:00:00",
+        end_time="2026-08-02T07:00:00",
+        time_step=30.0,
+    )
+    assert _science(timeline)
+    for index, block in enumerate(timeline.blocks):
+        if block.block_type != BlockType.SCIENCE or block.subscan_index != 0:
+            continue
+        retune = timeline.blocks[index - 1]
+        assert retune.scan_type == "retune"
+        assert timeline.blocks[index - 2].metadata.get("reason") != "waiting_for_pass"
+
+
+@pytest.fixture
+def ce_wait_phase():
+    coords = Coordinates(get_fyst_site())
+    cache = {}
+    t_open, _ = _ce_crossing_corridor(
+        _AUGUST_PATCH, 50.0, True, Time("2026-08-01T23:00:00"), coords, cache
+    )
+    start = t_open - TimeDelta(180.0, format="sec")
+    ctx = _make_ctx(
+        patches=[_AUGUST_PATCH],
+        start_time=start,
+        end_time=t_open + TimeDelta(600.0, format="sec"),
+        overhead_model=_short_retune_overhead(60.0),
+        time_step=30.0,
+    )
+    ctx.ce_corridors.update(cache)
+    state = _initial_state(ctx).advanced(current_az=100.0, current_el=50.0)
+    selection = _phases.PhaseResult(
+        state=state, selection=_AUGUST_PATCH, best_az=100.0, best_el=50.0
+    )
+    return state, ctx, selection
+
+
+@pytest.mark.parametrize("budget", [179.0, 239.0, None], ids=["too-short", "retune", "refused"])
+def test_ce_wait_is_discarded_when_no_subscan_fits(ce_wait_phase, monkeypatch, budget):
+    state, ctx, selection = ce_wait_phase
+    if budget is None:
+        monkeypatch.setattr(_phases, "_plan_science_subscan", lambda *args, **kwargs: None)
+    else:
+        # The 120 s wait leaves less than a minimum scan, or retune + scan.
+        monkeypatch.setattr(_phases, "_compute_scan_duration", lambda *args, **kwargs: budget)
+    result = _phases.ScienceScanPhase().run(state, ctx, selection=selection)
+    assert result.skip_to_next_iter
+    assert len(result.blocks) == 1
+    idle = result.blocks[0]
+    assert idle.block_type == BlockType.IDLE
+    assert idle.metadata.get("reason") == ("unplannable" if budget is None else None)
+    assert abs((idle.t_start - state.current_time).sec) < 1e-6
+    assert idle.duration == pytest.approx(ctx.time_step)
+    assert result.state.current_time == idle.t_stop
+    assert result.state.cal_state == state.cal_state
+    assert result.state.scan_counter == state.scan_counter
+    assert (result.state.current_az, result.state.current_el) == (100.0, 50.0)
+
+
+def test_ce_wait_keeps_first_retune_due_check_at_entry(ce_wait_phase):
+    state, ctx, selection = ce_wait_phase
+    ctx = replace(ctx, calibration_policy=CalibrationPolicy(retune_cadence=90.0))
+    state = state.advanced(cal_state=state.cal_state.update("retune", state.current_time))
+    result = _phases.ScienceScanPhase().run(state, ctx, selection=selection)
+    assert [b.block_type for b in result.blocks] == [BlockType.IDLE, BlockType.SCIENCE]
+    assert result.blocks[0].duration == pytest.approx(180.0)
+    assert result.state.cal_state == state.cal_state
+
+
+def test_ce_wait_is_removed_before_subscan_split(ce_wait_phase):
+    state, ctx, selection = ce_wait_phase
+    ctx = replace(ctx, overhead_model=replace(ctx.overhead_model, max_scan_duration=700.0))
+    result = _phases.ScienceScanPhase().run(state, ctx, selection=selection)
+    assert [b.block_type for b in result.blocks] == [
+        BlockType.IDLE,
+        BlockType.CALIBRATION,
+        BlockType.SCIENCE,
+    ]
+    assert [b.duration for b in result.blocks] == pytest.approx([120.0, 60.0, 600.0])
+    assert abs((result.blocks[-1].t_stop - ctx.end_time).sec) < 1e-6
+
+
+def test_ce_wait_checks_sun_escape_at_entry(ce_wait_phase, monkeypatch):
+    state, ctx, selection = ce_wait_phase
+    escape = _phases.PhaseResult(state=state, stop=True)
+
+    def check_escape(actual_state, actual_ctx):
+        assert actual_state is state
+        assert actual_ctx is ctx
+        return escape
+
+    monkeypatch.setattr(_phases, "_escape_if_overtaken", check_escape)
+    assert _phases.ScienceScanPhase().run(state, ctx, selection=selection) is escape
+
+
 def test_every_scheduled_ce_block_reconstructs(august_ce_timeline):
     science = _science(august_ce_timeline)
     assert science, "expected science blocks on this night"
@@ -76,13 +260,12 @@ def test_ce_blocks_carry_visit_anchor(august_ce_timeline):
     """Every CE subscan stamps t0_scan, at or before its own start.
 
     The 5 ms tolerance absorbs the ISO-millisecond rounding of the stamp.
-    Each visit's FIRST science block must additionally start within one
-    boundary retune of its anchor (the leading scan-coupled retune is the
-    only thing between the anchor and the first subscan).
+    Each visit's first science block follows its boundary retune and any
+    wait that retune cannot cover. This fixture uses the native 300 s
+    scheduling step, whose readiness lead can exceed the default retune.
     """
-    from fyst_trajectories.overhead import OverheadModel
-
     retune_dur = OverheadModel().retune_duration
+    coords = Coordinates(get_fyst_site())
     science = _science(august_ce_timeline)
     assert science, "expected science blocks on the CE corridor night"
     by_anchor: dict[str, list] = {}
@@ -94,7 +277,11 @@ def test_ce_blocks_carry_visit_anchor(august_ce_timeline):
     for anchor_iso, group in by_anchor.items():
         anchor = Time(anchor_iso, scale="utc")
         first_start = min(b.t_start.unix for b in group)
-        assert first_start - anchor.unix <= retune_dur + 5e-3
+        t_open, _ = _ce_crossing_corridor(
+            _AUGUST_PATCH, 50.0, bool(group[0].rising), anchor, coords, {}
+        )
+        expected_lead = max(retune_dur, (t_open - anchor).sec)
+        assert first_start - anchor.unix == pytest.approx(expected_lead, abs=0.01)
 
 
 def test_default_half_falls_over_to_setting(august_ce_timeline):

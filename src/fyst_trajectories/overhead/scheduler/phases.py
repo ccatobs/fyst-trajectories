@@ -1234,15 +1234,18 @@ class ScienceScanPhase(Phase):
     close, the time a pong or daisy pattern first reaches an elevation
     limit, or the Sun-safe window (for a constant-elevation patch, the
     window over its whole swept azimuth corridor; for pong and daisy,
-    over the field centre's track). For constant-elevation patches the
-    rising flag comes from the crossing pass the visit was planned on,
-    and the visit's own
-    start time is stamped on every subscan as ``metadata["t0_scan"]`` so
-    each one reconstructs from the same anchor; other scan types fall
-    back to the hour-angle sign. Every block of the visit,
-    subscans and boundary retunes alike, is stamped at the science
-    elevation: the patch's pinned ``elevation`` when it has one,
-    otherwise the field centre's elevation at selection time.
+    over the field centre's track). A constant-elevation visit waits at
+    the current pose before its first boundary retune when that retune
+    does not cover the time until the pass opens. This idle is labelled
+    ``waiting_for_pass`` and shares the visit's budget; the remaining
+    duration sets the subscan split and minimum-duration check. The
+    rising flag comes from the crossing pass, and the visit's entry time,
+    before any wait, is stamped on every subscan as ``metadata["t0_scan"]``
+    so each one reconstructs from the same anchor; other scan types fall
+    back to the hour-angle sign. Science subscans and boundary retunes
+    are stamped at the science elevation: the patch's pinned
+    ``elevation`` when it has one, otherwise the field centre's elevation
+    at selection time.
 
     A pong subscan holds a whole number of pattern periods, the most that
     fit the budget after its boundary retune (capped by the patch's own
@@ -1264,6 +1267,7 @@ class ScienceScanPhase(Phase):
     fewer, down to one. A visit that emits nothing idles one tick, with
     ``metadata["reason"]`` set to ``unplannable`` when the planner refused
     its first subscan or a pong period no longer fits after the slew.
+    Such a visit keeps no pass wait and idles from its entry time.
     """
 
     def run(
@@ -1309,11 +1313,18 @@ class ScienceScanPhase(Phase):
                 ctx.time_step + _CE_READY_SLEW_ALLOWANCE_SEC,
             )
 
-        if scan_duration < ctx.overhead_model.min_scan_duration:
+        visit_state = state
+        wait = 0.0
+        if ce_plan is not None:
+            wait = max(
+                0.0, (ce_plan[1] - state.current_time).sec - (0.0 if due is None else due.duration)
+            )
+        remaining_duration = scan_duration - wait
+        if remaining_duration < ctx.overhead_model.min_scan_duration:
             return _emit_idle_tick(state, ctx)
 
-        n_subscans = max(1, math.ceil(scan_duration / ctx.overhead_model.max_scan_duration))
-        subscan_duration = scan_duration / n_subscans
+        n_subscans = max(1, math.ceil(remaining_duration / ctx.overhead_model.max_scan_duration))
+        subscan_duration = remaining_duration / n_subscans
 
         # The observable duration is a WALL-CLOCK budget, not a science-only
         # one: it ends when the crossing pass closes, when the pattern
@@ -1336,6 +1347,23 @@ class ScienceScanPhase(Phase):
 
         az_start_sci, az_end_sci = _compute_az_range(best_patch, best_az, best_el, ctx.site)
 
+        wait_blocks: list[TimelineBlock] = []
+        if wait > 0.0:
+            escaped = _escape_if_overtaken(state, ctx)
+            if escaped is not None:
+                return escaped
+            wait_blocks.append(
+                TimelineBlock.idle(
+                    t_start=state.current_time,
+                    duration=wait,
+                    az=state.current_az,
+                    el=state.current_el,
+                    scan_index=state.scan_counter,
+                    reason=str(DeferralReason.WAITING_FOR_PASS),
+                )
+            )
+            state = state.advanced(current_time=wait_blocks[0].t_stop)
+
         state, sub_blocks, refusal = self._emit_subscans_with_retunes(
             state=state,
             ctx=ctx,
@@ -1348,6 +1376,7 @@ class ScienceScanPhase(Phase):
             az_end_sci=az_end_sci,
             t0_scan=t0_scan,
             deadline=deadline,
+            first_boundary_time=visit_state.current_time if wait > 0.0 else None,
         )
 
         if not sub_blocks:
@@ -1358,7 +1387,7 @@ class ScienceScanPhase(Phase):
             # refused the first subscan; idle one tick like the
             # too-short-scan path, labelled with the refusal, so the outer
             # loop cannot spin in place and the timeline stays tiled.
-            return _emit_idle_tick(state, ctx, reason=refusal)
+            return _emit_idle_tick(visit_state, ctx, reason=refusal)
 
         # The visit leaves the mount wherever its last sweep stopped, which
         # is generally neither envelope bound; the next slew is priced,
@@ -1372,7 +1401,7 @@ class ScienceScanPhase(Phase):
             scan_counter=state.scan_counter + 1,
         )
 
-        return PhaseResult(state=state, blocks=sub_blocks)
+        return PhaseResult(state=state, blocks=wait_blocks + sub_blocks)
 
     @staticmethod
     def _emit_subscans_with_retunes(
@@ -1388,6 +1417,7 @@ class ScienceScanPhase(Phase):
         az_end_sci: float,
         deadline: Time,
         t0_scan: str | None = None,
+        first_boundary_time: Time | None = None,
     ) -> tuple[SchedulerState, list[TimelineBlock], str | None]:
         """Emit ``n_subscans`` science blocks with retunes at scan boundaries.
 
@@ -1420,6 +1450,10 @@ class ScienceScanPhase(Phase):
         here; the next visit's leading boundary (or, for nonzero cadences,
         :class:`CalibrationPhase`) picks it up.
 
+        ``first_boundary_time`` fixes the first retune's due check at the
+        visit's entry, before a CE pass wait; later boundaries use their
+        current time as usual.
+
         Returns
         -------
         state : SchedulerState
@@ -1448,7 +1482,12 @@ class ScienceScanPhase(Phase):
 
         for sub_idx in range(n_subscans):
             remaining = (deadline - state.current_time).sec
-            retune_spec = _due_retune_spec(state, ctx)
+            boundary_state = (
+                state.advanced(current_time=first_boundary_time)
+                if sub_idx == 0 and first_boundary_time is not None
+                else state
+            )
+            retune_spec = _due_retune_spec(boundary_state, ctx)
             retune_dur = retune_spec.duration if retune_spec is not None else 0.0
             # The boundary retune plus a minimum-duration subscan must both
             # fit inside the window; otherwise the visit ends here.

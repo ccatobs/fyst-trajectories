@@ -10,7 +10,12 @@ it, and advances the clock.
 Besides a tick on which nothing is observable, several things make the clock
 advance without a scan. A constant-elevation patch is only selectable while
 its elevation-crossing pass is imminent, so expect idle blocks before such a
-pass opens; a pong or daisy patch, only while its shortest subscan (for a
+pass opens; once it is selected, any wait until the opening that its first
+boundary retune does not cover is an idle labelled ``waiting_for_pass``
+ahead of that retune, and the first subscan starts at the opening. Every
+subscan keeps the visit's entry time, before that wait, as
+``metadata["t0_scan"]``. A pong or daisy patch is selectable only while its
+shortest subscan (for a
 pong, one whole pattern period), and any retune due before it, fit before any
 part of its scan pattern reaches an elevation limit or the Sun reaches the
 field. The pattern reaches well past the field centre: a pong fills its box,

@@ -46,8 +46,8 @@ Read it back and check what it holds::
     from fyst_trajectories.overhead import read_timeline
 
     timeline = read_timeline("schedule.ecsv")
-    print(f"Loaded {len(timeline)} blocks")  # Loaded 30 blocks
-    print(f"Efficiency: {timeline.efficiency:.1%}")  # Efficiency: 45.2%
+    print(f"Loaded {len(timeline)} blocks")  # Loaded 31 blocks
+    print(f"Efficiency: {timeline.efficiency:.1%}")  # Efficiency: 44.8%
 
 The window holds the patch's constant-elevation pass, so the night has
 science in it. A window that closes before the pass opens reports
