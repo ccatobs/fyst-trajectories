@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from _off_axis_offsets import off_axis_offset
 from _source_ces_helpers import (
     _JUPITER_NIGHT,
     _JUPITER_RISING_ANCHOR,
@@ -261,11 +262,11 @@ def test_anchored_passes_first_pass_near_anchor_setting(site):
 
 
 # Neptune rises through this anchor 2.9 deg below its 66.96 deg culmination. The
-# el_bore derivation's probe lifts the i2 module so high that Neptune's arc reaches
-# only the lowest of the module's 50 cover vertices. The anchors that do so form a
+# el_bore derivation's probe lifts the cover at -30 deg so high that Neptune's arc
+# reaches only the lowest of the cover's 50 vertices. The anchors that do so form a
 # band from about 04:35:48.71 to 04:35:49.90, and this is its middle.
 _NEPTUNE_GRAZING_ANCHOR = Time("2026-09-11T04:35:49.303", scale="utc")
-_NEPTUNE_I2 = dict(body="neptune", footprint="i2", az_speed=1.5, az_accel=1.0)
+_NEPTUNE_MINUS_30 = dict(body="neptune", footprint=off_axis_offset(-30), az_speed=1.5, az_accel=1.0)
 
 
 def _computed_params(result):
@@ -279,10 +280,10 @@ def _computed_params(result):
 
 
 @pytest.fixture(scope="module")
-def neptune_i2_pass_with_padding():
+def neptune_minus_30_pass_with_padding():
     """Return the boresight elevation and start of the grazing anchored pass, default padding."""
     cp = compute_source_ces_params(
-        start_time=_NEPTUNE_GRAZING_ANCHOR, site=get_fyst_site(), **_NEPTUNE_I2
+        start_time=_NEPTUNE_GRAZING_ANCHOR, site=get_fyst_site(), **_NEPTUNE_MINUS_30
     )
     return cp["el_bore"], cp["t0_iso"]
 
@@ -295,26 +296,26 @@ def neptune_i2_pass_with_padding():
     "entry", [compute_source_ces_params, plan_source_ces, plan_source_ces_passes]
 )
 def test_an_anchor_whose_probe_grazes_one_vertex_ignores_the_padding(
-    site, entry, neptune_i2_pass_with_padding
+    site, entry, neptune_minus_30_pass_with_padding
 ):
     """With no padding the grazing anchor plans the pass the default padding plans.
 
     The probe reads only the start of its crossing, so the caller's padding has no
-    say in the el_bore it derives. The module's cover sits above the boresight
+    say in the el_bore it derives. The cover at -30 deg sits above the boresight
     there, so the probe's value would lie below Neptune's elevation at the anchor;
     the derivation anchors el_bore on Neptune instead, and the pass starts when
-    Neptune reaches the module, 3.3 min after the anchor.
+    Neptune reaches the cover, 3.3 min after the anchor.
     """
     kwargs = dict(n_passes=1) if entry is plan_source_ces_passes else {}
     result = entry(
         start_time=_NEPTUNE_GRAZING_ANCHOR,
         site=site,
         az_padding=0.0,
-        **_NEPTUNE_I2,
+        **_NEPTUNE_MINUS_30,
         **kwargs,
     )
     cp = _computed_params(result)
-    assert (cp["el_bore"], cp["t0_iso"]) == neptune_i2_pass_with_padding
+    assert (cp["el_bore"], cp["t0_iso"]) == neptune_minus_30_pass_with_padding
     delay = Time(cp["t0_iso"], scale="utc") - _NEPTUNE_GRAZING_ANCHOR
     assert delay.to_value(u.s) == pytest.approx(196.9, abs=0.5)
 
@@ -355,11 +356,12 @@ def test_the_anchor_probe_sweeps_with_the_kernel_padding_whatever_the_callers(
 
 
 # Anchors at which the probe refuses: Neptune at 15.0 deg, below the elevation
-# floor, on c; and just past the i2 band above, where it reaches no cover vertex
+# floor, on c; and just past the band of the cover at -30 deg above, where it
+# reaches no cover vertex
 # (the call then derives el_bore from the cover's projection and plans).
 @pytest.mark.parametrize(
     ("footprint", "anchor"),
-    [("c", "2026-09-11T00:31:00"), ("i2", "2026-09-11T04:36:30")],
+    [("c", "2026-09-11T00:31:00"), (off_axis_offset(-30), "2026-09-11T04:36:30")],
     ids=["below-the-floor", "past-the-band"],
 )
 @pytest.mark.parametrize(
@@ -389,20 +391,22 @@ def test_a_malformed_padding_is_refused_before_the_anchor_probe(site, entry, foo
         assert not isinstance(excinfo.value, PointingError), repr(bad)
 
 
-# The middles of bands of such anchors, on three modules, for planets and a
+# The middles of bands of such anchors, on the covers at 30 and 90 deg, for planets and a
 # fixed source, one, three and seven passes and two margins. At the first three
 # the real solve plans the pass; at the other two it refuses a later pass, whose
 # cover reaches above the source's culmination.
 _GRAZING_BAND_MIDDLES = [
-    pytest.param(dict(body="saturn"), "i4", 1, 0.0, "2026-12-15T22:39:19.912", id="saturn-i4"),
-    pytest.param(dict(ra=30.0, dec=-45.0), "i3", 1, 0.0, "2026-09-11T06:06:32.629", id="dec-45-i3"),
+    pytest.param(dict(body="saturn"), 90, 1, 0.0, "2026-12-15T22:39:19.912", id="saturn-at-90"),
+    pytest.param(
+        dict(ra=30.0, dec=-45.0), 30, 1, 0.0, "2026-09-11T06:06:32.629", id="dec-45-at-30"
+    ),
     pytest.param(
         dict(body="jupiter"),
-        "i3",
+        30,
         1,
         0.0,
         "2026-09-11T13:11:47.316",
-        id="jupiter-i3",
+        id="jupiter-at-30",
         # A daytime pass, which the Sun screen reports.
         marks=[
             pytest.mark.slow,
@@ -411,14 +415,16 @@ _GRAZING_BAND_MIDDLES = [
             ),
         ],
     ),
-    pytest.param(dict(body="mars"), "i4", 3, 0.0, "2026-09-11T11:34:02.414", id="mars-i4-3-passes"),
+    pytest.param(
+        dict(body="mars"), 90, 3, 0.0, "2026-09-11T11:34:02.414", id="mars-at-90-3-passes"
+    ),
     pytest.param(
         dict(body="saturn"),
-        "i3",
+        30,
         7,
         0.6,
         "2026-09-11T05:10:15.604",
-        id="saturn-i3-7-passes-margin",
+        id="saturn-at-30-7-passes-margin",
         marks=pytest.mark.slow,
     ),
 ]
@@ -428,20 +434,18 @@ _GRAZING_BAND_MIDDLES = [
     "ignore:High elevation reduces on-sky azimuth speed:"
     "fyst_trajectories.exceptions.PointingWarning"
 )
-@pytest.mark.parametrize(
-    ("source", "module", "n_passes", "margin", "anchor"), _GRAZING_BAND_MIDDLES
-)
+@pytest.mark.parametrize(("source", "angle", "n_passes", "margin", "anchor"), _GRAZING_BAND_MIDDLES)
 def test_grazing_anchors_end_as_they_do_with_the_default_padding(
-    site, source, module, n_passes, margin, anchor
+    site, source, angle, n_passes, margin, anchor
 ):
     """At every grazing anchor, no padding gives the default padding's passes or refusal.
 
-    Each call is the one the calibration night makes: the margined module, its
-    pass count, a fast drag and no padding beside the solved throw.
+    Each call is the one the calibration night makes: the margined cover at the
+    stated angle, its pass count, a fast drag and no padding beside the solved throw.
     """
     kwargs = dict(
         source,
-        footprint=inflate_footprint(resolve_footprint(module), margin),
+        footprint=inflate_footprint(resolve_footprint(off_axis_offset(angle)), margin),
         start_time=Time(anchor, scale="utc"),
         n_passes=n_passes,
         site=site,
@@ -486,18 +490,25 @@ def test_anchored_below_elevation_floor_raises_target_not_observable(site):
 # A cover that lies beyond the boresight along the source's motion
 # ---------------------------------------------------------------------------
 
-# Jupiter rises through 23.5 deg at this anchor. The i3 and i4 covers sit above
-# the boresight there, so the probe's value put the boresight elevation behind
-# Jupiter, which the search from the anchor meets only on the next day's arc;
-# and between the probe's el_bore and the derived one the focal-plane rotation
-# turns i2's lowest vertex down by more than the 0.05 deg lead, so its pass would
-# have opened before the anchor.
+# Jupiter rises through 23.5 deg at this anchor. The IM2 and IM3 covers sit above
+# the boresight there (IM2 at 120 deg and IM3 at 60 deg in the focal plane, each
+# turned up by the elevation), so the probe's value put the boresight elevation
+# behind Jupiter, which the search from the anchor meets only on the next day's
+# arc.
 _LEAD_RISING = Time("2026-03-15T20:45:00", scale="utc")
+# Jupiter rises through 20.26 deg at this anchor, just above the elevation floor.
+# IM4, at 0 deg in the focal plane, sits nearly level with the boresight there,
+# and between the probe's el_bore and the derived one the focal-plane rotation
+# turns its lowest vertex down by more than the 0.05 deg lead, so its pass would
+# have opened before the anchor.
+_EDGE_RISING = Time("2026-03-15T20:27:00", scale="utc")
 # Jupiter sets through 42.0 deg at this anchor, an hour past its culmination.
-# The i1 and i6 covers sit below the boresight there, the mirror of i3 and i4;
-# an hour later i2's highest vertex turns up past the lead, the mirror of i2
-# rising.
+# The IM1 and IM6 covers sit below the boresight there, the mirror of IM2 and IM3
+# rising; IM5's highest vertex turns up past the lead, the mirror of IM4 rising.
 _LEAD_SETTING = Time("2026-03-16T01:00:00", scale="utc")
+# An hour later the off-axis cover at -30 deg in the focal plane, which straddles
+# the boresight there, has its highest vertex turned up past the lead. No bay
+# takes that edge re-solve at this anchor, so the row uses that explicit offset.
 _LEAD_SETTING_LATER = Time("2026-03-16T02:00:00", scale="utc")
 _LEAD = _anchor_module._ANCHOR_START_LEAD_DEG
 
@@ -509,16 +520,20 @@ def _jupiter_el_at(site, t):
 
 
 # (anchor, module, mode, which check placed el_bore, seconds from the anchor to
-# the pass start).
+# the pass start). The modules are Prime-Cam bays except the last row, an
+# off-axis cover at -30 deg in the focal plane.
 _PLACED_BY_THE_CHECKS = [
-    pytest.param(_LEAD_RISING, "i2", "rising", "edge", 17.0, id="rising-i2"),
-    pytest.param(_LEAD_RISING, "i3", "rising", "source", 283.6, id="rising-i3"),
-    pytest.param(_LEAD_RISING, "i4", "rising", "source", 353.3, id="rising-i4"),
-    pytest.param(_LEAD_SETTING, "i1", "setting", "source", 575.4, id="setting-i1"),
+    pytest.param(_EDGE_RISING, "IM4", "rising", "edge", 16.4, id="rising-IM4"),
+    pytest.param(_LEAD_RISING, "IM2", "rising", "source", 153.7, id="rising-IM2"),
+    pytest.param(_LEAD_RISING, "IM3", "rising", "source", 401.4, id="rising-IM3"),
+    pytest.param(_LEAD_SETTING, "IM1", "setting", "source", 478.2, id="setting-IM1"),
     pytest.param(
-        _LEAD_SETTING, "i6", "setting", "source", 831.8, id="setting-i6", marks=pytest.mark.slow
+        _LEAD_SETTING, "IM6", "setting", "source", 864.8, id="setting-IM6", marks=pytest.mark.slow
     ),
-    pytest.param(_LEAD_SETTING_LATER, "i2", "setting", "edge", 23.2, id="setting-i2"),
+    pytest.param(_LEAD_SETTING, "IM5", "setting", "edge", 41.8, id="setting-IM5"),
+    pytest.param(
+        _LEAD_SETTING_LATER, off_axis_offset(-30), "setting", "edge", 23.2, id="setting-at-minus-30"
+    ),
 ]
 
 
@@ -565,17 +580,17 @@ def test_an_anchored_ring_module_pass_the_checks_place_starts_after_the_anchor(
 def test_allow_partial_leaves_a_derived_pass_whole(site):
     """allow_partial plans the same pass: the derivation puts the near edge ahead either way.
 
-    This is the rising-i2 case above, where the second check lifts el_bore so the
-    pass starts 17 s after the anchor with the whole cover crossed. allow_partial
+    This is the rising-IM4 case above, where the second check lifts el_bore so the
+    pass starts 16 s after the anchor with the whole cover crossed. allow_partial
     tolerates a source that turns before it crosses the cover, so it changes none
     of the parameters and raises no partial-cover advisory (an error in this
     suite); it does not clip the pass at the anchor to start it sooner.
     """
-    kwargs = dict(body="jupiter", footprint="i2", start_time=_LEAD_RISING, site=site)
+    kwargs = dict(body="jupiter", footprint="IM4", start_time=_EDGE_RISING, site=site)
     whole = compute_source_ces_params(**kwargs)
     assert compute_source_ces_params(allow_partial=True, **kwargs) == whole
-    delay = Time(whole["t0_iso"], scale="utc") - _LEAD_RISING
-    assert delay.to_value(u.s) == pytest.approx(17.0, abs=0.5)
+    delay = Time(whole["t0_iso"], scale="utc") - _EDGE_RISING
+    assert delay.to_value(u.s) == pytest.approx(16.4, abs=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -590,15 +605,15 @@ def test_allow_partial_leaves_a_derived_pass_whole(site):
 _NEAR_CULMINATION = Time("2026-03-15T23:00:00", scale="utc")
 
 # (module, which check placed el_bore, seconds from the anchor to the pass start).
-# The i3 and i4 covers lead the boresight there; the others trail it.
+# The IM3 and IM4 covers lead the boresight there; the others trail it.
 _PLANNED_NEAR_CULMINATION = [
-    pytest.param("i1", "edge", 39.4, id="i1", marks=pytest.mark.slow),
-    pytest.param("i2", "edge", 39.4, id="i2", marks=pytest.mark.slow),
-    pytest.param("i3", "source", 966.8, id="i3"),
-    pytest.param("i4", "source", 608.5, id="i4", marks=pytest.mark.slow),
-    pytest.param("i5", "edge", 39.3, id="i5", marks=pytest.mark.slow),
-    # The boresight 0.04 deg below the culmination.
-    pytest.param("i6", "edge", 39.4, id="i6"),
+    pytest.param("IM1", "edge", 39.3, id="IM1", marks=pytest.mark.slow),
+    pytest.param("IM2", "edge", 39.4, id="IM2", marks=pytest.mark.slow),
+    pytest.param("IM3", "source", 1024.3, id="IM3"),
+    pytest.param("IM4", "source", 473.3, id="IM4", marks=pytest.mark.slow),
+    pytest.param("IM5", "edge", 39.4, id="IM5", marks=pytest.mark.slow),
+    # The boresight 0.02 deg below the culmination.
+    pytest.param("IM6", "edge", 39.4, id="IM6"),
 ]
 
 
@@ -665,7 +680,7 @@ def test_a_cover_taller_than_the_climb_left_is_refused_or_clipped_where_the_sour
     and the pass still starts after the anchor with the near side whole.
     """
     anchor = Time("2026-09-11T05:30:00", scale="utc")
-    kwargs = dict(body="saturn", footprint="i2", start_time=anchor, site=site)
+    kwargs = dict(body="saturn", footprint="IM5", start_time=anchor, site=site)
     with pytest.raises(TargetNotObservableError) as refused:
         compute_source_ces_params(**kwargs)
     # The cover-vs-arc guard: the module's extent against Saturn's arc.
@@ -681,13 +696,13 @@ def test_against_the_motion_a_probe_out_of_reach_is_still_a_refusal(site):
     """The fallback reads the cover at the anchor, which does not bound an arc against the motion.
 
     Jupiter sets through 42.0 deg at this anchor, 2.1 deg below its culmination,
-    and the probe for a rising i1 pass lies above it. The rising arc asked for
+    and the probe for a rising IM6 pass lies above it. The rising arc asked for
     starts at Jupiter's next turn, so the probe's refusal stands rather than a
     pass on the next day's arc.
     """
     with pytest.raises(TargetNotObservableError):
         compute_source_ces_params(
-            body="jupiter", footprint="i1", start_time=_LEAD_SETTING, mode="rising", site=site
+            body="jupiter", footprint="IM6", start_time=_LEAD_SETTING, mode="rising", site=site
         )
 
 
@@ -695,7 +710,7 @@ def test_an_offset_inversion_error_from_the_probe_reaches_the_caller(site, monke
     """The fallback takes over only where the source turns before the probe's reach.
 
     This source culminates near the zenith, and at this anchor the probe's
-    off-centre inverse for i3 does not converge. That refusal is not the
+    off-centre inverse for IM2 does not converge. That refusal is not the
     source turning, so it reaches the caller rather than handing el_bore to
     the fallback.
     """
@@ -714,7 +729,7 @@ def test_an_offset_inversion_error_from_the_probe_reaches_the_caller(site, monke
         compute_source_ces_params(
             ra=30.0,
             dec=-23.4,
-            footprint="i3",
+            footprint="IM2",
             start_time=Time("2026-09-11T06:58:20", scale="utc"),
             site=site,
         )
@@ -725,7 +740,7 @@ def test_an_offset_inversion_error_from_the_probe_reaches_the_caller(site, monke
 # The one test in this file that runs the simulator tier's rebuild; marking the
 # test rather than the module keeps the planning tests in the library-tier job.
 @pytest.mark.offline
-@pytest.mark.parametrize("module", ["i2", "i3"])
+@pytest.mark.parametrize("module", ["IM3", "IM6"])
 def test_a_ring_module_pass_rebuilds_from_its_calibration_night_record(site, module):
     """The pass the calibration night plans on the module rebuilds from its block's record.
 
@@ -803,32 +818,43 @@ def test_passes_whose_eta_offsets_lift_the_centre_module_plan_after_the_anchor(s
     assert Time(second["t0_iso"], scale="utc") > Time(first["t1_iso"], scale="utc")
 
 
-# Anchored calls whose derived el_bore already put the boresight elevation and the
-# near edge ahead of the source, recorded before the derivation checked either:
-# the centre module and straddling and trailing ring covers, both directions. The
-# checks leave each alone, so each derives the el_bore and the start it did.
+# Anchored calls whose probe's el_bore already puts the boresight elevation and the
+# near edge ahead of the source, so the checks leave it alone and the call derives
+# the probe's el_bore and start: the centre module in both directions, bays whose
+# covers trail the boresight in both (IM1, IM5 and IM6 rising, IM3 and IM4
+# setting), and IM2 setting, whose cover straddles it. No bay's cover straddles
+# the boresight at the rising anchor, so that row is the off-axis cover at 150 deg
+# in the focal plane; the same cover is kept at the setting anchor, where it
+# straddles the boresight with more to spare than IM2's does.
 _ALREADY_AHEAD = [
     pytest.param(
         "2026-03-15T20:45:00", "c", 24.19668429604154, "2026-03-15 20:45:17.042", id="rising-c"
     ),
     pytest.param(
         "2026-03-15T20:45:00",
-        "i1",
-        25.798616205686614,
-        "2026-03-15 20:45:16.005",
-        id="rising-i1",
+        "IM1",
+        24.988139057943553,
+        "2026-03-15 20:45:26.989",
+        id="rising-IM1",
         marks=pytest.mark.slow,
     ),
     pytest.param(
-        "2026-03-15T20:45:00", "i5", 24.086523160850863, "2026-03-15 20:45:37.826", id="rising-i5"
+        "2026-03-15T20:45:00", "IM5", 25.200407993682333, "2026-03-15 20:45:10.013", id="rising-IM5"
     ),
     pytest.param(
         "2026-03-15T20:45:00",
-        "i6",
-        25.676682917811778,
-        "2026-03-15 20:45:19.086",
-        id="rising-i6",
+        "IM6",
+        25.972327501063877,
+        "2026-03-15 20:45:17.075",
+        id="rising-IM6",
         marks=pytest.mark.slow,
+    ),
+    pytest.param(
+        "2026-03-15T20:45:00",
+        off_axis_offset(150),
+        24.086523160850863,
+        "2026-03-15 20:45:37.826",
+        id="rising-at-150",
     ),
     pytest.param(
         "2026-03-16T01:00:00",
@@ -839,25 +865,25 @@ _ALREADY_AHEAD = [
         marks=pytest.mark.slow,
     ),
     pytest.param(
-        "2026-03-16T01:00:00", "i2", 41.00573883898531, "2026-03-16 01:00:02.621", id="setting-i2"
+        "2026-03-16T01:00:00", "IM2", 40.67076517336515, "2026-03-16 01:01:12.878", id="setting-IM2"
     ),
     pytest.param(
         "2026-03-16T01:00:00",
-        "i3",
-        39.611639361148455,
-        "2026-03-16 01:00:40.273",
-        id="setting-i3",
+        "IM3",
+        39.52011138718073,
+        "2026-03-16 01:00:42.162",
+        id="setting-IM3",
         marks=pytest.mark.slow,
     ),
     pytest.param(
-        "2026-03-16T01:00:00", "i4", 39.910324796305325, "2026-03-16 01:00:49.856", id="setting-i4"
+        "2026-03-16T01:00:00", "IM4", 40.15852826287399, "2026-03-16 01:00:27.596", id="setting-IM4"
     ),
     pytest.param(
         "2026-03-16T01:00:00",
-        "i5",
+        off_axis_offset(150),
         41.58953634624911,
         "2026-03-16 01:01:37.947",
-        id="setting-i5",
+        id="setting-at-150",
         marks=pytest.mark.slow,
     ),
 ]
@@ -874,36 +900,46 @@ def test_a_derivation_already_ahead_of_the_source_is_unchanged(site, iso, module
 
 
 # Anchored calls whose explicit mode runs against Jupiter's motion at the
-# anchor, recorded before the derivation checked anything: the requested arc
-# starts at Jupiter's next turn, which the anchor does not bound. Applied
-# regardless of the motion, the checks would move all three: i1's cover leads
-# the boresight while Jupiter sets and i3's while it rises, and i2's near edge
-# lies behind Jupiter's elevation at the anchor.
+# anchor, which keep the probe's value: the requested arc starts at Jupiter's
+# next turn, which the anchor does not bound. Applied regardless of the motion,
+# the checks would move all four: the IM5 and IM6 covers lead the boresight
+# while Jupiter sets and IM3's while it rises, so each boresight elevation lies
+# behind Jupiter at the anchor, and IM5's near edge lies behind it too. In the
+# last row, the off-axis cover at -30 deg in the focal plane, only the near edge
+# lies behind Jupiter's elevation at the anchor; no bay's cover does that here.
 _AGAINST_THE_MOTION = [
     pytest.param(
         "2026-03-15T20:45:00",
         "setting",
-        "i1",
-        24.460825215970086,
-        "2026-03-16 03:19:46.951",
-        id="rising-anchor-setting-i1",
+        "IM6",
+        24.555743212635953,
+        "2026-03-16 03:20:05.586",
+        id="rising-anchor-setting-IM6",
     ),
     pytest.param(
         "2026-03-15T20:45:00",
         "setting",
-        "i2",
-        23.087104301540105,
-        "2026-03-16 03:19:39.495",
-        id="rising-anchor-setting-i2",
+        "IM5",
+        23.92455578264892,
+        "2026-03-16 03:19:36.830",
+        id="rising-anchor-setting-IM5",
     ),
     pytest.param(
         "2026-03-16T03:00:00",
         "rising",
-        "i3",
-        26.05690119850367,
-        "2026-03-16 21:00:49.836",
-        id="setting-anchor-rising-i3",
+        "IM3",
+        25.805574968660633,
+        "2026-03-16 21:01:08.320",
+        id="setting-anchor-rising-IM3",
         marks=pytest.mark.slow,
+    ),
+    pytest.param(
+        "2026-03-15T20:45:00",
+        "setting",
+        off_axis_offset(-30),
+        23.087104301540105,
+        "2026-03-16 03:19:39.495",
+        id="rising-anchor-setting-at-minus-30",
     ),
 ]
 

@@ -13,6 +13,8 @@ the numeric claims the documentation states:
   measured on a long all-science trajectory;
 - the slew-row ``azmin`` / ``azmax`` semantics (``write_timeline`` and the
   ECSV schema page): from/to azimuths, preserved unordered;
+- the ECSV column table (``overhead_io.rst``): exactly the columns
+  ``write_timeline`` writes;
 - the two rendered tables of code-derived numbers (the PrimeCam inner-ring
   offsets on the offsets page, the pending-verification defaults on the index
   page), cell by cell against the constants they are printed from;
@@ -30,6 +32,7 @@ the numeric claims the documentation states:
 import inspect
 import math
 import re
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -116,14 +119,18 @@ class TestRenderedTables:
         assert ring in text
         printed = {}
         for line in text.splitlines():
-            if not line.startswith("| i"):
+            if not line.startswith("| IM"):
                 continue
-            name, dx, dy = (cell.strip() for cell in line.strip("|").split("|"))
-            printed[name] = (float(dx), float(dy))
-        assert set(printed) == {f"i{index}" for index in range(1, 7)}
-        for name, (dx, dy) in printed.items():
+            name, angle, dx, dy = (cell.strip() for cell in line.strip("|").split("|"))
+            assert angle.endswith("\u00b0"), name
+            printed[name] = (float(angle[:-1]), float(dx), float(dy))
+        assert set(printed) == {f"IM{index}" for index in range(1, 7)}
+        for name, (angle, dx, dy) in printed.items():
             offset = PRIMECAM_MODULES[name]
             assert (dx, dy) == (round(offset.dx, 1), round(offset.dy, 1)), name
+            # The angle column: the bay's direction at elevation 0, counter-clockwise
+            # from +cross-elevation, as atan2(dy, dx) of the constant gives it.
+            assert angle == round(math.degrees(math.atan2(offset.dy, offset.dx))), name
 
     def test_index_defaults_match_the_library_constants(self):
         from fyst_trajectories import primecam, site
@@ -148,6 +155,24 @@ class TestRenderedTables:
         assert set(expected) <= set(cells)
         for parameter, values in expected.items():
             assert _numbers(cells[parameter])[: len(values)] == values, parameter
+
+    def test_index_nasmyth_and_bay_rows_match_the_library(self):
+        from fyst_trajectories import primecam, site
+
+        cells = _list_table_cells("index.rst", "Pending instrument verification")
+        sign = get_fyst_site().nasmyth_sign
+        assert cells["Nasmyth port"].startswith(f'``"{site.FYST_NASMYTH_PORT}"`` ({sign:+d})')
+        assert "counter-clockwise" in cells["Nasmyth port"]
+        angles = [
+            math.degrees(math.atan2(offset.dy, offset.dx))
+            for offset in (getattr(primecam, f"PRIMECAM_IM{index}") for index in range(1, 7))
+        ]
+        bays = cells["Prime-Cam bay positions"]
+        assert f"``IM1`` at focal-plane angle {round(angles[0])}\u00b0" in bays
+        # "stepping clockwise by 60 deg": each next bay sits 60 deg further clockwise.
+        steps = {round((b - a + 180.0) % 360.0 - 180.0) for a, b in pairwise(angles)}
+        assert steps == {-60}
+        assert "stepping clockwise by 60\u00b0" in bays
 
 
 @pytest.mark.offline
@@ -179,7 +204,8 @@ class TestRenderedSimulatorDefaults:
         assert set(expected) <= set(cells)
         for parameter, values in expected.items():
             assert _numbers(cells[parameter])[: len(values)] == values, parameter
-        assert policy.planet_cal_footprint == "c"
+        assert policy.planet_cal_footprint == "IM0"
+        assert "3 passes on ``IM0``" in cells["Planet-calibration scan geometry"]
         assert policy.planet_cal_scan is False
 
 
@@ -254,7 +280,7 @@ class TestLsaWindowDuration:
     two things about it: the scan spans ``(delta_lsa) / 15`` hours of UTC,
     about 0.3 percent longer than the sidereal window it names, and
     ``ScanBlock.duration`` is that span quantised to whole azimuth legs
-    (4793.46 s against the 4800 s window, re-run, not derived).
+    (4791.29 s against the 4800 s window, re-run, not derived).
     """
 
     def test_recorded_window_is_solar_and_duration_is_quantised(self):
@@ -274,7 +300,7 @@ class TestLsaWindowDuration:
             Time(params["end_time_iso"], scale="utc") - Time(params["start_time_iso"], scale="utc")
         ).sec
         assert window == pytest.approx(20.0 / 15.0 * 3600.0, abs=1e-3)
-        assert block.duration == pytest.approx(4793.46, abs=0.01)
+        assert block.duration == pytest.approx(4791.29, abs=0.01)
         assert block.duration < window
 
     def test_a_solar_hour_window_overruns_the_sidereal_one_by_about_0_3_percent(self):
@@ -324,6 +350,59 @@ class TestSlewRowAzimuthOrder:
         table = Table.read(path)
         assert float(table["azmin"][0]) == 180.0
         assert float(table["azmax"][0]) == 120.0
+
+
+@pytest.mark.offline
+class TestEcsvColumnTable:
+    """The ECSV page's column table names exactly the columns ``write_timeline`` writes."""
+
+    def test_table_matches_the_written_columns(self, tmp_path):
+        from astropy.table import Table
+
+        from fyst_trajectories.overhead.io import write_timeline
+        from fyst_trajectories.overhead.models import (
+            CalibrationPolicy,
+            ObservingTimeline,
+            OverheadModel,
+            TimelineBlock,
+        )
+
+        page = (DOCS / "overhead_io.rst").read_text(encoding="utf-8")
+        lines = page.split("ECSV Format\n-----------", 1)[1].splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("+"))
+        table_lines = []
+        for line in lines[start:]:  # the grid table: every line opens with + or |
+            if not line.startswith(("+", "|")):
+                break
+            table_lines.append(line)
+        documented = re.findall(r"^\| ``(\w+)``", "\n".join(table_lines), flags=re.MULTILINE)
+        assert len(documented) == len(set(documented))
+        # The page states no column order, so the names compare as a set.
+
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        block = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(30, format="sec"),
+            block_type="slew",
+            patch_name="slew",
+            az_start=180.0,
+            az_end=120.0,
+            elevation=45.0,
+            scan_index=0,
+            scan_type="none",
+            metadata={},
+        )
+        timeline = ObservingTimeline(
+            blocks=[block],
+            site=get_fyst_site(),
+            start_time=t0,
+            end_time=t0 + TimeDelta(60, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        path = tmp_path / "timeline.ecsv"
+        write_timeline(timeline, path)
+        assert set(documented) == set(Table.read(path).colnames)
 
 
 class TestTransitRotationScaling:

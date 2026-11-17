@@ -407,7 +407,7 @@ def test_doc_page_examples_run(rst, tmp_path, monkeypatch, _doc_seed_trajectory)
                 warnings.simplefilter("always")
                 with contextlib.redirect_stdout(buf):
                     exec(compile(code, f"{key}:{lineno}", "exec"), ns)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             pytest.fail(
                 f"{key}:{lineno} [{kind}] raised {type(exc).__name__}: {exc}\n"
                 f"--- block ---\n{code}\n--- end ---"

@@ -68,9 +68,13 @@ class PongAltAzComputedParams(TypedDict):
     n_cycles : int
         Number of full pattern cycles in the planned observation.
     az_center : float
-        Azimuth of the fixed pattern center in degrees.
+        Azimuth of the fixed pattern center in degrees. With a
+        ``detector_offset`` this is the detector's; the trajectory is the
+        boresight's.
     el_center : float
-        Elevation of the fixed pattern center in degrees.
+        Elevation of the fixed pattern center in degrees. With a
+        ``detector_offset`` this is the detector's; the trajectory is the
+        boresight's.
     """
 
     period: float
@@ -82,17 +86,21 @@ class PongAltAzComputedParams(TypedDict):
 
 
 class ConstantElComputedParams(TypedDict):
-    """Computed parameters returned by the constant-elevation planners.
+    """Computed parameters returned by the constant-elevation planner.
 
-    Both :func:`plan_constant_el_scan` and
-    :func:`plan_constant_el_window_scan` return these keys.
+    Both forms of :func:`plan_constant_el_scan`, the field form and the
+    window form, return these keys.
 
     Attributes
     ----------
     az_start : float
-        Lower azimuth bound of the scan in degrees.
+        Lower azimuth bound of the scan in degrees. With a
+        ``detector_offset`` this is the detector's; the trajectory is the
+        boresight's.
     az_stop : float
-        Upper azimuth bound of the scan in degrees.
+        Upper azimuth bound of the scan in degrees. With a
+        ``detector_offset`` this is the detector's; the trajectory is the
+        boresight's.
     az_throw : float
         Total azimuth throw (``az_stop - az_start``) in degrees.
     n_scans : int
@@ -101,9 +109,8 @@ class ConstantElComputedParams(TypedDict):
         ISO-format UTC start time of the observation.
     end_time_iso : str
         ISO-format UTC time at which the solved pass window closes (the
-        elevation crossing, or the LSA window when one was given); for
-        :func:`plan_constant_el_window_scan`, the start plus the requested
-        duration.
+        elevation crossing, or the LSA window when one was given); for the
+        window form, the start plus the requested duration.
     duration : float
         Trajectory duration in seconds: that window rounded to a whole number
         of azimuth legs, so it differs from ``end_time_iso - start_time_iso``
@@ -127,7 +134,8 @@ class DaisyComputedParams(TypedDict):
     Attributes
     ----------
     duration : float
-        Observation duration in seconds.
+        Duration of the built trajectory in seconds, from its first sample
+        to its last.
     """
 
     duration: float
@@ -142,11 +150,16 @@ class DaisyAltAzComputedParams(TypedDict):
     Attributes
     ----------
     duration : float
-        Observation duration in seconds.
+        Duration of the built trajectory in seconds, from its first sample
+        to its last.
     az_center : float
-        Azimuth of the fixed pattern center in degrees.
+        Azimuth of the fixed pattern center in degrees. With a
+        ``detector_offset`` this is the detector's; the trajectory is the
+        boresight's.
     el_center : float
-        Elevation of the fixed pattern center in degrees.
+        Elevation of the fixed pattern center in degrees. With a
+        ``detector_offset`` this is the detector's; the trajectory is the
+        boresight's.
     """
 
     duration: float
@@ -161,7 +174,8 @@ class SourceCESComputedParams(TypedDict):
     ----------
     az_start : float
         Lower azimuth bound of the scan in degrees (after padding and
-        ``az_branch`` re-wrapping).
+        ``az_branch`` re-wrapping): the window at ``t0_iso``. The commanded
+        path drifts from it by ``v_az`` per second.
     az_throw : float
         Total azimuth throw in degrees (the solved footprint crossing plus
         padding, or the explicit ``az_throw`` when one was given).

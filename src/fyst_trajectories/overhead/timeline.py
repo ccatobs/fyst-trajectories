@@ -39,10 +39,18 @@ def generate_timeline(
     one, schedules a science scan, and advances. Calibration operations
     are injected between scans when cadence thresholds are exceeded.
 
+    A visit is a slew onto the patch and then, for each science subscan,
+    the retune when one is due, an idle labelled ``waiting_for_pass`` at
+    the pose the telescope holds when a constant-elevation scan has not
+    yet started, and the subscan. A science block starts at its scan's
+    first sample and ends one sample interval after its last.
+
     Parameters
     ----------
     patches : list of ObservingPatch
-        Sky regions to observe.
+        Sky regions to observe. A patch with a ``detector_offset`` is
+        scheduled for the boresight that holds that detector on the field,
+        and every pose the timeline records is the boresight's.
     site : Site
         Observatory site configuration.
     start_time : Time or str
@@ -61,22 +69,23 @@ def generate_timeline(
         avoidance constraints from the site configuration.
     time_step : float
         Scheduler tick in seconds: how far the clock advances when no
-        target is available, and (plus a slew allowance) the look-ahead
-        used to decide a constant-elevation pass is imminent enough to
-        start.
+        target is available, and (plus a 180 s slew allowance and the
+        retune due at the visit) the look-ahead used to decide a
+        constant-elevation pass is imminent enough to start.
     sun_safe : SunSafePredicate, optional
         Injected sun-safety model
         (:class:`~fyst_trajectories.sun_protocols.SunSafePredicate`, e.g. from
         :func:`~fyst_trajectories.sun_models.make_sun_safe`) driving the
         default Sun constraint, the mid-scan sun-drift duration clips, the
-        slew gate and the escape move, and the scan-mode planet
+        slew gate and the escape move, the Sun screen every science scan
+        passes before it is booked, and the scan-mode planet
         calibrations (the planet choice, the planner
         ``plan_source_ces_passes``, the slew to the first pass and the
         sweep of every pass). Default ``None`` keeps the site's scalar
         exclusion radius.
         Only consulted while the site has Sun avoidance enabled. When an
         explicit ``constraints`` list is supplied it is used as-is, so
-        ``sun_safe`` no longer sets the patch-selection constraint; it
+        ``sun_safe`` does not set the patch-selection constraint; it
         still drives everything else listed here.
 
     Returns
@@ -89,7 +98,14 @@ def generate_timeline(
     ------
     ValueError
         If ``time_step`` is not positive, two patches share a name, a
-        constant-elevation patch has no pinned ``elevation``, or a pong
+        patch's ``scan_params["timestep"]`` is under the Go TCS ``/path``
+        minimum sample interval of 0.05 s, a constant-elevation patch has
+        no pinned ``elevation`` or one at which the boresight that holds
+        its ``detector_offset`` there lies outside the site's elevation
+        limits or cannot be solved, the planner finds no pass for a
+        constant-elevation patch from any instant of the sidereal day from
+        ``start_time`` (on the side it asks for, or in its
+        ``lsa_window``), or a pong
         patch's pattern period exceeds ``max_scan_duration`` less, at
         ``retune_cadence=0``, the retune booked before every subscan.
 
@@ -130,7 +146,7 @@ def generate_timeline(
     ... )
     >>> stats = compute_budget(timeline)
     >>> print(f"Efficiency: {stats['efficiency']:.1%}")
-    Efficiency: 23.7%
+    Efficiency: 24.0%
     """
     ctx = SchedulerContext.build(
         patches=patches,

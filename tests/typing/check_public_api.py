@@ -28,7 +28,6 @@ from fyst_trajectories.planning import (
     ScanBlock,
     SourceCESComputedParams,
     plan_constant_el_scan,
-    plan_constant_el_window_scan,
     plan_daisy_altaz_scan,
     plan_daisy_scan,
     plan_pong_altaz_scan,
@@ -103,7 +102,7 @@ def plan_every_scan(field: FieldRegion, site: Site, start: str) -> list[ScanBloc
     az_throw: float = ce.computed_params["az_throw"]
     start_iso: str = ce.computed_params["start_time_iso"]
 
-    window = plan_constant_el_window_scan(
+    window = plan_constant_el_scan(
         az_window=(101.0, 111.6),
         elevation=50.0,
         velocity=0.5,
@@ -113,6 +112,17 @@ def plan_every_scan(field: FieldRegion, site: Site, start: str) -> list[ScanBloc
     )
     assert_type(window, ScanBlock[ConstantElComputedParams])
     n_scans: int = window.computed_params["n_scans"]
+
+    watched = plan_constant_el_scan(
+        field,
+        az_window=[101.0, 111.6],
+        elevation=50.0,
+        velocity=0.5,
+        duration=1680.0,
+        site=site,
+        start_time=start,
+    )
+    assert_type(watched, ScanBlock[ConstantElComputedParams])
 
     source = plan_source_ces(body="mars", footprint="c", start_time=start, site=site)
     assert_type(source, ScanBlock[SourceCESComputedParams])
@@ -127,6 +137,72 @@ def plan_every_scan(field: FieldRegion, site: Site, start: str) -> list[ScanBloc
     assert period and az_center and daisy_duration and el_center and az_throw and start_iso
     assert v_az and el_bore and n_scans
     return [*tiling, pong_altaz, daisy, daisy_altaz, ce, window, source, *passes]
+
+
+def constant_el_forms(field: FieldRegion, site: Site, start: str) -> None:
+    """Call each form as the runtime accepts it, and pin what the overloads refuse.
+
+    A field-form argument passed as ``None`` is not given, in either form, so
+    both overloads take it. Each refused call carries an ignore comment, which
+    the config turns into an error the day the call type-checks.
+    """
+    field_form = plan_constant_el_scan(
+        field,
+        elevation=50.0,
+        velocity=0.5,
+        site=site,
+        start_time=start,
+        az_window=None,
+        duration=None,
+    )
+    assert_type(field_form, ScanBlock[ConstantElComputedParams])
+    window_form = plan_constant_el_scan(
+        az_window=(101.0, 111.6),
+        duration=1680.0,
+        elevation=50.0,
+        velocity=0.5,
+        site=site,
+        start_time=start,
+        rising=None,
+        angle=None,
+        lsa_window=None,
+        max_search_hours=None,
+        step_seconds=None,
+    )
+    assert_type(window_form, ScanBlock[ConstantElComputedParams])
+
+    plan_constant_el_scan(
+        az_window=(101.0, 111.6),
+        duration=1680.0,
+        rising=True,  # pyright: ignore[reportArgumentType]
+        elevation=50.0,
+        velocity=0.5,
+        site=site,
+        start_time=start,
+    )
+    plan_constant_el_scan(
+        az_window=(101.0, 111.6),
+        duration=1680.0,
+        angle=10.0,  # pyright: ignore[reportArgumentType]
+        elevation=50.0,
+        velocity=0.5,
+        site=site,
+        start_time=start,
+    )
+    plan_constant_el_scan(
+        field,
+        duration=60.0,  # pyright: ignore[reportArgumentType]
+        elevation=50.0,
+        velocity=0.5,
+        site=site,
+        start_time=start,
+    )
+    plan_constant_el_scan(  # pyright: ignore[reportCallIssue]
+        az_window=(101.0, 111.6), elevation=50.0, velocity=0.5, site=site, start_time=start
+    )
+    plan_constant_el_scan(  # pyright: ignore[reportCallIssue]
+        elevation=50.0, velocity=0.5, site=site, start_time=start
+    )
 
 
 def satellite_pattern() -> SatelliteTrackPattern:

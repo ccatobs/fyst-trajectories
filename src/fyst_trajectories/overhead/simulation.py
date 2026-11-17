@@ -15,6 +15,7 @@ import numpy as np
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
+from .._validation import _require_finite
 from ..coordinates import Coordinates
 from ..exceptions import PointingWarning
 from ..planning import (
@@ -33,15 +34,16 @@ from ..planning.footprints import inflate_footprint, offset_footprint_eta, resol
 from ..site import Site
 from ..trajectory import Trajectory
 from .exceptions import BlockNotReconstructableError, ScanParamsSchemaError
-from .models import BlockType, ObservingTimeline, TimelineBlock
+from .models import BlockType, ObservingTimeline, TimelineBlock, _offset_from_record
 from .schemas import (
     CEScanParams,
     DaisyScanParams,
     PongScanParams,
     TimelineBlockMetadata,
+    WindowScanRecord,
     validate_scan_params,
 )
-from .utils import _search_start_time
+from .utils import _search_start_time, _stored_instant
 
 __all__ = [
     "BudgetStats",
@@ -54,23 +56,19 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# For a pass block written without ``search_start``: the time buffer (seconds)
-# added to each side of the recorded pass before re-solving it. The exact
-# stored [t0, t1] sits on the elevation-crossing edges where the planner's
-# cover-vs-arc guard is most sensitive, so widening the search window keeps
-# the re-solve clear of those edges. The widened window rebuilds the pass
-# only when it holds the source's whole crossing of the footprint and its
-# crossing of the boresight elevation, which a dwell-narrowed pass or an
-# off-centre module can leave outside it. A block that records
-# ``search_start`` is rebuilt by repeating the planner's own search instead.
+# For a pass block without ``search_start``: seconds added to each side of
+# the recorded pass before re-solving it, since the stored [t0, t1] sits on
+# the crossing edges where the planner's cover-vs-arc guard trips. The
+# widened window rebuilds the pass only when it holds the source's whole
+# crossing of the footprint and of the boresight elevation, which a
+# dwell-narrowed pass or an off-centre module can leave outside it. A block
+# that records ``search_start`` repeats the planner's own search instead.
 _SOURCE_CES_WINDOW_BUFFER_SEC = 300.0
 
-# Kernel-override keys of SourceCESScanParams. Each is forwarded to
-# plan_source_ces verbatim when the recorded params carry it and omitted
-# otherwise, so the kernel's own defaults stay authoritative for passes
-# planned without overrides. The rebuild test derives the expected set from
-# the TypedDict, so a key added there without being forwarded here fails
-# that test rather than being dropped silently.
+# Kernel-override keys of SourceCESScanParams, forwarded to plan_source_ces
+# only when recorded, so the kernel's defaults hold otherwise. The rebuild
+# test derives the set from the TypedDict, so a key added there and not here
+# fails it.
 _SOURCE_CES_OVERRIDE_KEYS = ("az_accel", "az_padding", "v_az", "az_speed", "az_throw", "dwell")
 
 # The pattern settings a pong rebuild uses for a key the patch does not
@@ -97,6 +95,31 @@ _DAISY_REBUILD_DEFAULTS: Mapping[str, float] = MappingProxyType(
     }
 )
 
+# How far a window block's stop may fall short of its scan's last sample and
+# still hold it. ObservingTimeline.validate allows 0.01 s between blocks; a
+# window block that stops within that of the last sample (which sits exactly
+# at the scan's duration) keeps it. This compares a block's stop with its
+# scan's end, a question about the block; which side of an edge a sample
+# falls on is _EDGE_TOLERANCE_SEC's.
+_BLOCK_TIME_TOLERANCE_SEC = 0.01
+
+# How far before a block's stored edge a sample still counts as on it. The
+# rebuild reads a block's start and stop as a file stores them, each rounded
+# to the millisecond, so each stored edge lies within 0.5 ms of the instant
+# the scheduler placed. A sample the scheduler placed on the start, measured
+# from the stored start, therefore lies within 0.5 ms of it; one placed on
+# the stop, measured from a trajectory planned from the stored start, within
+# 0.5 ms (the start's rounding) plus 0.5 ms (the stop's) of the stored stop.
+# Twice that 1 ms covers the float noise of the instants, and it is far below
+# any sample interval (the Go TCS accepts none under 50 ms). A sample belongs
+# to a block when it lies at or after the stored start less this, and before
+# the stored stop less this: a sample on the start belongs to the block, one
+# on the stop to the block after it, unless it is the scan's own last sample.
+_EDGE_TOLERANCE_SEC = 2e-3
+
+# The four keys a window block carries when its scan was planned with a field.
+_FIELD_KEYS = ("ra_center", "dec_center", "width", "height")
+
 # Keys the source-CES rebuild reads unconditionally.
 _SOURCE_CES_REQUIRED_KEYS = (
     "body",
@@ -117,7 +140,11 @@ def schedule_to_trajectories(
 
     Reconstructs planning parameters from each block's metadata and calls
     the appropriate ``plan_*`` function, returning one
-    ``(TimelineBlock, ScanBlock)`` pair per reconstructed block.
+    ``(TimelineBlock, ScanBlock)`` pair per reconstructed block. A science
+    block that records ``metadata["detector_offset"]`` is planned with that
+    offset as recorded, whatever the Prime-Cam bay table holds when it is
+    rebuilt, and a constant-elevation one at its recorded
+    ``metadata["detector_elevation"]``, the detector's elevation.
 
     Parameters
     ----------
@@ -155,7 +182,10 @@ def schedule_to_trajectories(
     list of (TimelineBlock, ScanBlock)
         Pairs of timeline blocks and their generated trajectories. A
         science trajectory covers only its own block's
-        ``[t_start, t_stop)`` window: the subscans of one
+        ``[t_start, t_stop)`` window, plus the rebuilt scan's own last
+        sample where that lies on ``t_stop``, as it does for a pong block
+        of whole periods (a block that records a window scan follows the
+        rule below): the subscans of one
         constant-elevation visit are consecutive slices of a single
         crossing solve (anchored at the shared ``metadata["t0_scan"]``),
         not one full pass each, so summing samples over the pairs counts
@@ -164,14 +194,31 @@ def schedule_to_trajectories(
         full solved pass. Calibration passes are one block per pass
         and are returned whole.
 
+        A block that records a window scan (``metadata["window_scan"]``,
+        written by :meth:`TimelineBlock.from_window_scan`) is rebuilt with
+        the window form of
+        :func:`~fyst_trajectories.planning.plan_constant_el_scan` from the
+        scan's start: ``metadata["scan_start"]`` on a block that holds a
+        later stretch of the scan, else the block's own start (after an
+        ECSV round trip, the file's millisecond form of either). The block
+        gets the scan's samples in ``[t_start, t_stop)``, like any other
+        science block, and also the scan's last sample, which sits at the
+        scan's end, when it stops no earlier than that sample less 0.01 s.
+        So the blocks the scheduler cuts one scan into rebuild to
+        consecutive slices of it, and a block as long as its scan to the
+        whole scan. :meth:`TimelineBlock.from_window_scan` writes only a
+        block that rebuilds to the samples of the scan it holds, sample for
+        sample.
+
     Warns
     -----
     PointingWarning
         The planners' advisories for the rebuilt blocks. A
-        constant-elevation block's Sun advisory describes the block's own
-        slice: the slice is screened at every sample against the site's
-        exclusion radius, and the planner's checks of the field centre at
-        the visit's start and of the whole crossing pass are not raised.
+        constant-elevation block's Sun advisory describes the samples the
+        block returns: they are screened at every sample against the
+        site's exclusion radius, and the planner's own Sun checks (of the
+        field centre at the visit's start and of the whole crossing pass,
+        or of the whole window scan) are not raised.
 
     Notes
     -----
@@ -210,16 +257,11 @@ def schedule_to_trajectories(
             scan_block = _generate_trajectory_for_block(sblock, site)
             results.append((sblock, scan_block))
         except (ValueError, KeyError, TypeError) as exc:
-            # ``ScanParamsSchemaError`` and ``BlockNotReconstructableError``
-            # are this subpackage's own refusals and are both ``ValueError``
-            # subclasses. The rest of the tuple is the net for metadata that
-            # is malformed rather than merely incomplete: a recorded
-            # velocity of zero surfaces as a plain ``ValueError`` from config
-            # validation, and a truncated dict as ``KeyError``/``TypeError``
-            # from astropy. A rebuild is best-effort, so every one of those
-            # skips the block with a log line instead of failing the batch.
-            # A pass block's line names the search_start its rebuild repeated,
-            # which the planner's own refusal of that search does not.
+            # Best-effort: the subpackage's own refusals are ValueErrors, and
+            # malformed metadata surfaces as a plain ValueError (a zero
+            # velocity) or as KeyError/TypeError (a truncated dict), so each
+            # skips the block with a log line. A pass block's line names the
+            # search_start its rebuild repeated.
             meta = sblock.metadata
             record = f" (search_start={meta['search_start']!r})" if "search_start" in meta else ""
             logger.warning(
@@ -251,18 +293,23 @@ def _generate_trajectory_for_block(
     ScanBlock
         Generated scan block. Science trajectories are sliced to the
         block's own ``[t_start, t_stop)`` window by
-        :func:`_slice_to_block_window`, so ``duration`` and
+        :func:`_slice_to_block_window`, the block's times read as a
+        timeline file stores them (to the millisecond), so a block rebuilds
+        to the same arrays from memory and from a file; ``duration`` and
         ``trajectory.start_time`` describe the slice while
         ``computed_params`` and ``summary`` describe the full solved
-        pass.
+        pass. A window block holds the samples of its scan in that window
+        and, when its stop is no earlier than the scan's last sample less
+        ``_BLOCK_TIME_TOLERANCE_SEC``, that last sample too
+        (:func:`_window_block_slice`).
 
     Warns
     -----
     PointingWarning
         The planner's advisories for the rebuilt block. A
-        constant-elevation slice is screened against the Sun over its own
-        samples, in place of the planner's checks of the anchor and the
-        whole pass, which can name an instant outside the block.
+        constant-elevation block, of either form, is screened against the
+        Sun over its own samples, in place of the planner's own Sun checks,
+        which can name an instant outside the block.
 
     Raises
     ------
@@ -271,7 +318,13 @@ def _generate_trajectory_for_block(
         keys (``ra_center``, ``dec_center``, ``width``, ``height``,
         ``velocity``), or names a scan type that cannot be rebuilt, or
         ``scan_params`` carries a key not declared for ``sblock.scan_type``,
-        or a calibration pass's ``search_start`` is not two finite numbers.
+        or a calibration pass's ``search_start`` is not two finite numbers,
+        or a window block's record does not match
+        :class:`~fyst_trajectories.overhead.WindowScanRecord` (see
+        :func:`_rebuild_window_scan`), or the recorded ``detector_offset``
+        or ``detector_elevation`` does not match
+        :class:`~fyst_trajectories.overhead.ScienceBlockMetadata` (see
+        :func:`_recorded_detector_elevation`).
     BlockNotReconstructableError
         If the re-solved scan does not overlap the block's time window:
         fewer than two of its samples fall inside ``[t_start, t_stop)``.
@@ -280,13 +333,25 @@ def _generate_trajectory_for_block(
     -----
     Calibration blocks are dispatched to :func:`_rebuild_calibration_pass`,
     which rebuilds the recorded source-CES planet-calibration pass; the pass
-    is returned whole once it is found to overlap its block. Science blocks
-    take the ``ra_center``/``dec_center`` geometry path below.
+    is returned whole once it is found to overlap its block. A science block
+    that records ``window_scan`` is dispatched to
+    :func:`_rebuild_window_scan`, which plans it again with the window form
+    of :func:`~fyst_trajectories.planning.plan_constant_el_scan`. Other
+    science blocks take the ``ra_center``/``dec_center`` geometry path
+    below, planned with the recorded ``detector_offset`` when there is one,
+    and a constant-elevation block then at its ``detector_elevation``.
     """
     meta = sblock.metadata
 
     if sblock.block_type == BlockType.CALIBRATION:
         return _rebuild_calibration_pass(sblock, site)
+
+    # The block's times as a file stores them, so a block held in memory and
+    # the same block read back from a file are rebuilt from the same instants.
+    t_start, t_stop = _stored_window(sblock)
+
+    if "window_scan" in meta:
+        return _rebuild_window_scan(sblock, site)
 
     required = ("ra_center", "dec_center", "width", "height", "velocity")
     missing = [k for k in required if k not in meta]
@@ -303,10 +368,9 @@ def _generate_trajectory_for_block(
     velocity = meta["velocity"]
     scan_params = meta.get("scan_params", {})
 
-    # Validate scan_params shape before dispatch. The ``cast(...)`` below
-    # is a no-op at runtime; without this check, typos like ``"radiu"``
-    # in a Daisy patch or a ``"spacing"`` key on a CE patch would fall
-    # through to the ``.get()`` default silently.
+    # The ``cast(...)`` below is a no-op at runtime; without this check a
+    # mistyped key (``"radiu"`` on a daisy) would fall through to the
+    # ``.get()`` default silently.
     try:
         validate_scan_params(scan_params, sblock.scan_type)
     except KeyError as exc:
@@ -318,25 +382,23 @@ def _generate_trajectory_for_block(
         width=width,
         height=height,
     )
+    offset = _offset_from_record(meta.get("detector_offset"))
+    detector_el = _recorded_detector_elevation(sblock, offset is not None)
 
     if sblock.scan_type == "constant_el":
         ce_params = cast(CEScanParams, scan_params)
-        # CE subscans are slices of one physical crossing scan; the visit
-        # anchor recorded at emission (metadata["t0_scan"]) is the anchor
-        # the scheduler's corridor gate guaranteed the crossing solve
-        # succeeds from. A subscan's own t_start may lie past the opening
-        # crossing (where the forward search can no longer find it), so
-        # blocks without the key (timelines written before ``t0_scan`` was
-        # recorded) fall back to t_start and reconstruct only when that
-        # anchor happens to precede the pass opening.
-        anchor = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
-        # A sidereal window fixes the timing and the azimuth range on its
-        # own, so the planner refuses ``rising`` beside it; the block still
-        # records a rising flag (every science block does) and it is simply
-        # not what placed this pass.
+        # CE subscans are slices of one crossing, re-solved from the visit
+        # anchor (metadata["t0_scan"]) the corridor gate solved it from; a
+        # subscan's own t_start may lie past the opening, where the forward
+        # search cannot find the pass. A block without the key falls
+        # back to t_start and rebuilds only when that precedes the opening.
+        anchor = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else t_start
+        # A sidereal window fixes the timing and the range, so the planner
+        # refuses ``rising`` beside it; the block's rising flag is not
+        # forwarded then.
         lsa_window = ce_params.get("lsa_window")
-        # Forward only what the patch recorded, so the planner's own defaults
-        # stay the single source for the rest.
+        # Forward only what the patch recorded; the planner's defaults hold
+        # for the rest.
         ce_overrides = {
             key: ce_params[key]
             for key in ("az_accel", "timestep", "az_padding")
@@ -350,12 +412,13 @@ def _generate_trajectory_for_block(
             warnings.filterwarnings("ignore", message="EXCLUSION ZONE: ", category=PointingWarning)
             scan_block = plan_constant_el_scan(
                 field=field,
-                elevation=sblock.elevation,
+                elevation=sblock.elevation if detector_el is None else detector_el,
                 velocity=velocity,
                 site=site,
                 start_time=anchor,
                 rising=None if lsa_window is not None else sblock.rising,
                 lsa_window=lsa_window,
+                detector_offset=offset,
                 **ce_overrides,
             )
         scan_block = _slice_to_block_window(scan_block, sblock)
@@ -376,7 +439,8 @@ def _generate_trajectory_for_block(
             field=field,
             velocity=velocity,
             site=site,
-            start_time=sblock.t_start,
+            start_time=t_start,
+            detector_offset=offset,
             **{**_PONG_REBUILD_DEFAULTS, **pong_params},
         )
     elif sblock.scan_type == "daisy":
@@ -388,14 +452,53 @@ def _generate_trajectory_for_block(
             dec=dec_center,
             velocity=velocity,
             site=site,
-            start_time=sblock.t_start,
-            duration=sblock.duration,
+            start_time=t_start,
+            duration=float((t_stop - t_start).sec),
+            detector_offset=offset,
             **{**_DAISY_REBUILD_DEFAULTS, **daisy_params},
         )
     else:
         raise ScanParamsSchemaError(f"Unknown scan type: {sblock.scan_type}")
 
     return _slice_to_block_window(scan_block, sblock)
+
+
+def _recorded_detector_elevation(sblock: TimelineBlock, has_offset: bool) -> float | None:
+    """Return the detector elevation a science block records, or ``None`` when it records none.
+
+    Raises
+    ------
+    ScanParamsSchemaError
+        If a constant-elevation block records ``detector_offset`` without
+        ``detector_elevation`` or the other way round, ``detector_elevation``
+        is not a finite real number, or a block of another scan type records
+        ``detector_elevation``.
+    """
+    meta = sblock.metadata
+    if "detector_elevation" not in meta:
+        if has_offset and sblock.scan_type == "constant_el":
+            raise ScanParamsSchemaError(
+                "a constant-elevation block that records detector_offset must record "
+                "detector_elevation, the elevation the detector scans at"
+            )
+        return None
+    if sblock.scan_type != "constant_el":
+        raise ScanParamsSchemaError(
+            "detector_elevation is recorded only on a constant-elevation block, "
+            f"not on a {sblock.scan_type!r} block"
+        )
+    if not has_offset:
+        raise ScanParamsSchemaError(
+            "detector_elevation is recorded only beside detector_offset, and this block "
+            "records no offset"
+        )
+    value = meta["detector_elevation"]
+    try:
+        return _require_finite(value, "detector_elevation")
+    except (TypeError, ValueError):
+        raise ScanParamsSchemaError(
+            f"detector_elevation must be a finite real number, got {value!r}"
+        ) from None
 
 
 def _rebuild_calibration_pass(sblock: TimelineBlock, site: Site) -> ScanBlock:
@@ -410,13 +513,12 @@ def _rebuild_calibration_pass(sblock: TimelineBlock, site: Site) -> ScanBlock:
         ``[t_start, t_stop)`` window.
     """
     meta = sblock.metadata
+    t_start, t_stop = _stored_window(sblock)
     # The fallback window serves only a pass block with no recorded search
     # start whose dict holds no absolute window: it re-solves around its
     # own bounds, from t0_scan to t_stop.
-    pass_start = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else sblock.t_start
-    scan_block = _generate_source_ces_trajectory(
-        meta, site, fallback_window=(pass_start, sblock.t_stop)
-    )
+    pass_start = Time(meta["t0_scan"], scale="utc") if "t0_scan" in meta else t_start
+    scan_block = _generate_source_ces_trajectory(meta, site, fallback_window=(pass_start, t_stop))
     # The pass must overlap its block: a search_start that is not the
     # block's own repeats a search that can find another crossing (the
     # next day's, for a record minutes late).
@@ -436,23 +538,219 @@ def _rebuild_calibration_pass(sblock: TimelineBlock, site: Site) -> ScanBlock:
     return scan_block
 
 
+def _rebuild_window_scan(sblock: TimelineBlock, site: Site) -> ScanBlock:
+    """Rebuild a science block that records a constant-elevation window scan.
+
+    Plans the recorded scan again with the window form of
+    :func:`~fyst_trajectories.planning.plan_constant_el_scan` from the
+    scan's start: ``metadata["scan_start"]`` when the block records it (a
+    block that is a later slice of the scan), else the block's own start,
+    read as a file stores it. The block gets the samples
+    :func:`_window_block_slice` assigns it. The planner's own Sun advisory
+    is set aside and the returned samples are screened instead, so the
+    advisory names an instant inside the block.
+
+    Raises
+    ------
+    ScanParamsSchemaError
+        If the block's ``scan_type`` is not ``"constant_el"``; the record is
+        not a mapping with exactly the keys of
+        :class:`~fyst_trajectories.overhead.WindowScanRecord`; the block
+        records no ``velocity``; its ``scan_params`` is not empty; it carries
+        some but not all of the four field keys; the recorded
+        ``detector_offset`` is neither ``None`` nor exactly the four fields
+        of an :class:`~fyst_trajectories.offsets.InstrumentOffset`; or a
+        recorded ``scan_start`` is not an ISO time string.
+    BlockNotReconstructableError
+        If fewer than two samples of the scan fall to the block.
+    """
+    meta = sblock.metadata
+    record = meta["window_scan"]  # type: ignore[typeddict-item]
+    if sblock.scan_type != "constant_el":
+        raise ScanParamsSchemaError(
+            f"a block recording window_scan must have scan_type 'constant_el', "
+            f"got {sblock.scan_type!r}"
+        )
+    if not isinstance(record, Mapping):
+        raise ScanParamsSchemaError(
+            f"window_scan must be a mapping of {sorted(WindowScanRecord.__required_keys__)}, "
+            f"got {type(record).__name__}"
+        )
+    missing = sorted(WindowScanRecord.__required_keys__ - set(record))
+    unknown = sorted(set(record) - WindowScanRecord.__required_keys__)
+    if missing or unknown:
+        raise ScanParamsSchemaError(
+            f"window_scan has missing keys {missing} and unknown keys {unknown}; "
+            f"expected exactly {sorted(WindowScanRecord.__required_keys__)}"
+        )
+    if "velocity" not in meta:
+        raise ScanParamsSchemaError(
+            "a window block must record its azimuth rate as metadata key 'velocity'"
+        )
+    if meta.get("scan_params"):
+        raise ScanParamsSchemaError(
+            "a window block's scan_params must be empty: window_scan holds the scan's inputs, "
+            f"got scan_params keys {sorted(meta['scan_params'])}"
+        )
+    present = [key for key in _FIELD_KEYS if key in meta]
+    if present and len(present) != len(_FIELD_KEYS):
+        absent = [key for key in _FIELD_KEYS if key not in meta]
+        raise ScanParamsSchemaError(
+            f"a window block records all four field keys or none; missing {absent}"
+        )
+    offset = _offset_from_record(record["detector_offset"])
+    field = (
+        FieldRegion(
+            ra_center=meta["ra_center"],
+            dec_center=meta["dec_center"],
+            width=meta["width"],
+            height=meta["height"],
+        )
+        if present
+        else None
+    )
+
+    scan_start = _recorded_scan_start(sblock)
+    # The planner's Sun check is set aside, as on the field form above, and
+    # the samples the block returns are screened once below.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="EXCLUSION ZONE: ", category=PointingWarning)
+        scan_block = plan_constant_el_scan(
+            field,
+            az_window=record["az_window"],
+            elevation=record["elevation"],
+            velocity=meta["velocity"],
+            duration=record["duration"],
+            site=site,
+            start_time=scan_start,
+            az_accel=record["az_accel"],
+            timestep=record["timestep"],
+            detector_offset=offset,
+        )
+    scan_block = _window_block_slice(scan_block, sblock)
+    cp = scan_block.computed_params
+    _check_trajectory_sun_safety(
+        site=site,
+        trajectory=scan_block.trajectory,
+        scan_label=(
+            f"constant-elevation window scan over az [{cp['az_start']:.2f}, "
+            f"{cp['az_stop']:.2f}] at el={record['elevation']:.2f}"
+        ),
+    )
+    return scan_block
+
+
+def _window_scan_replays(sblock: TimelineBlock, scan_block: ScanBlock, site: Site) -> bool:
+    """Whether rebuilding ``sblock`` returns ``scan_block``'s trajectory, sample for sample.
+
+    A probe: the scan's advisories were raised when it was planned, so the
+    rebuild's are not raised again. Exceptions from the rebuild propagate.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", PointingWarning)
+        rebuilt = _rebuild_window_scan(sblock, site)
+    return all(
+        np.array_equal(getattr(rebuilt.trajectory, name), getattr(scan_block.trajectory, name))
+        for name in ("times", "az", "el", "az_vel", "el_vel", "scan_flag")
+    )
+
+
+def _stored_window(sblock: TimelineBlock) -> tuple[Time, Time]:
+    """Return a block's start and stop as a timeline file stores them."""
+    return _stored_instant(sblock.t_start), _stored_instant(sblock.t_stop)
+
+
+def _recorded_scan_start(sblock: TimelineBlock) -> Time:
+    """Return the start of the window scan a block holds a slice of.
+
+    It is ``metadata["scan_start"]`` when the block records it, the start of
+    a scan that began before the block, else the block's own start; either
+    is read as a file stores it.
+
+    Raises
+    ------
+    ScanParamsSchemaError
+        If a recorded ``scan_start`` is not an ISO time string.
+    """
+    recorded = sblock.metadata.get("scan_start")
+    if recorded is None:
+        return _stored_instant(sblock.t_start)
+    if not isinstance(recorded, str):
+        raise ScanParamsSchemaError(
+            f"scan_start must be an ISO time string, got {type(recorded).__name__}"
+        )
+    try:
+        return _stored_instant(Time(recorded, format="isot", scale="utc"))
+    except ValueError as err:
+        raise ScanParamsSchemaError(
+            f"scan_start must be an ISO time string, got {recorded!r}"
+        ) from err
+
+
+def _window_block_slice(scan_block: ScanBlock, sblock: TimelineBlock) -> ScanBlock:
+    """Return the samples of a window scan that belong to one of its blocks.
+
+    A window block holds the samples of its scan in its half-open
+    ``[t_start, t_stop)`` as a file stores them (:func:`_block_window_mask`)
+    and, when its stop is no earlier than the scan's last sample less
+    ``_BLOCK_TIME_TOLERANCE_SEC``, that last sample as well, which no later
+    block holds. So a block as long as its scan, or the last of several
+    blocks that each hold a slice of one scan, keeps the scan's end, and a
+    block that ends earlier keeps what lies inside it. A block that holds
+    every sample gets ``scan_block`` back unchanged; any other gets the
+    slice from :func:`_slice_to_block_window`.
+
+    Raises
+    ------
+    BlockNotReconstructableError
+        If fewer than two samples fall to the block.
+    """
+    traj = scan_block.trajectory
+    if traj.start_time is None:
+        return scan_block
+    mask = _block_window_mask(traj, sblock)
+    t_start, t_stop = _stored_window(sblock)
+    last = float(traj.times[-1])
+    if (t_stop - traj.start_time).sec >= last - _BLOCK_TIME_TOLERANCE_SEC:
+        mask[-1] = last >= (t_start - traj.start_time).sec - _EDGE_TOLERANCE_SEC
+    return _slice_to_block_window(scan_block, sblock, mask=mask)
+
+
 def _block_window_mask(traj: Trajectory, sblock: TimelineBlock) -> np.ndarray:
-    """Return which samples of ``traj`` fall inside the block's half-open ``[t_start, t_stop)``."""
-    rel_start = (sblock.t_start - traj.start_time).sec
-    rel_stop = (sblock.t_stop - traj.start_time).sec
-    return (traj.times >= rel_start) & (traj.times < rel_stop)
+    """Return which samples of ``traj`` fall inside the block's half-open ``[t_start, t_stop)``.
+
+    The edges are the block's stored ones, each moved back by
+    ``_EDGE_TOLERANCE_SEC``, so a sample on the start belongs to the block
+    and a sample on the stop does not, whichever way the file rounded them:
+    it is the first sample of the next block of the same scan. The scan's
+    own last sample on the stop is the exception, since no later block
+    holds it: a pong of whole periods stops on its last sample.
+    """
+    t_start, t_stop = _stored_window(sblock)
+    times = traj.times
+    rel_start = (t_start - traj.start_time).sec - _EDGE_TOLERANCE_SEC
+    rel_stop = (t_stop - traj.start_time).sec
+    inside = (times >= rel_start) & (times < rel_stop - _EDGE_TOLERANCE_SEC)
+    if times.size and abs(times[-1] - rel_stop) <= _EDGE_TOLERANCE_SEC:
+        inside[-1] = bool(times[-1] >= rel_start)
+    return inside
 
 
-def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> ScanBlock:
+def _slice_to_block_window(
+    scan_block: ScanBlock, sblock: TimelineBlock, *, mask: np.ndarray | None = None
+) -> ScanBlock:
     """Slice a rebuilt science trajectory to its block's own time window.
 
     A CE subscan re-solves its visit's whole crossing pass, so it comes
     back longer than the block it was rebuilt for; unsliced, a consumer
     summing samples would multiply-count the visit. Only the samples
-    inside ``[t_start, t_stop)`` are kept; the half-open window keeps
-    back-to-back subscans from double-counting their shared boundary
-    sample. ``times`` are re-zeroed and ``start_time`` advanced so
-    the slice keeps the ``times[0] == 0`` convention, and
+    inside ``[t_start, t_stop)`` are kept, the edges as a file stores them,
+    and the trajectory's own last sample when it lies on the stop
+    (:func:`_block_window_mask`); the half-open window keeps back-to-back
+    subscans from double-counting their shared boundary sample, which
+    belongs to the later block. ``times`` are re-zeroed and
+    ``start_time`` advanced so the slice keeps the ``times[0] == 0``
+    convention, and
     ``retune_events`` are dropped (planners emit none; events from a
     pre-slice origin would be misplaced on the slice). The block's
     ``computed_params`` and ``summary`` still describe the full
@@ -460,13 +758,16 @@ def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> Scan
 
     A pong block the offline scheduler writes records the whole number
     of pattern periods it holds as ``n_cycles``, so its rebuild covers
-    exactly the block, to within the last sample the half-open window
-    may drop. A pong block written before ``n_cycles`` was recorded
-    rebuilds one period, sliced to its window: a shorter block keeps the
-    head of the pattern, a longer one only that period.
+    exactly the block, its last sample, on the block's stop, included. A
+    pong block that records no ``n_cycles`` rebuilds one period, sliced to
+    its window: a shorter block keeps the head of the pattern, a longer
+    one only that period.
 
     A trajectory already inside the window (the daisy branch, which
     plans with the block duration) is returned unchanged.
+
+    ``mask``, when given, names the samples to keep in place of the
+    block window's own (:func:`_window_block_slice` passes one).
 
     Raises
     ------
@@ -480,7 +781,8 @@ def _slice_to_block_window(scan_block: ScanBlock, sblock: TimelineBlock) -> Scan
     if traj.start_time is None:
         return scan_block
     t = traj.times
-    mask = _block_window_mask(traj, sblock)
+    if mask is None:
+        mask = _block_window_mask(traj, sblock)
     if bool(mask.all()):
         return scan_block
     idx = np.nonzero(mask)[0]
@@ -558,8 +860,8 @@ def _generate_source_ces_trajectory(
     ------
     ScanParamsSchemaError
         If ``scan_params`` carries a key not declared for ``source_ces`` or
-        lacks one the rebuild reads, or ``search_start`` is not two finite
-        numbers.
+        lacks one the rebuild reads, ``search_start`` is not two finite
+        numbers, or ``footprint`` names no Prime-Cam module.
     BlockNotReconstructableError
         If the block records no ``search_start``, ``scan_params`` carries no
         ``window`` and no ``fallback_window`` was given.
@@ -601,9 +903,11 @@ def _generate_source_ces_trajectory(
     # The margin and the eta offset are load-bearing geometry, not
     # provenance: the margin widens the crossing the pass was solved on, and
     # each pass drags the source through a different focal-plane row, so the
-    # rebuilt pass must use the base footprint inflated then shifted exactly
-    # as it was planned. Resolve the base tag, inflate, then shift.
-    base_footprint = resolve_footprint(params["footprint"])
+    # rebuild inflates then shifts the base footprint as the planner did.
+    try:
+        base_footprint = resolve_footprint(params["footprint"])
+    except KeyError as exc:
+        raise ScanParamsSchemaError(exc.args[0]) from None
     base_footprint = inflate_footprint(base_footprint, params.get("footprint_margin", 0.0))
     pass_footprint = offset_footprint_eta(base_footprint, params["eta_offset_deg"])
 
@@ -639,7 +943,11 @@ def accumulate_hitmaps(
     not per detector). For detector-level hitmaps, project each detector
     offset through
     :func:`~fyst_trajectories.offsets.boresight_to_detector` before
-    binning, or feed the schedule to a dedicated mapping simulator.
+    binning, or feed the schedule to a dedicated mapping simulator. A
+    block that records a ``detector_offset`` rebuilds to the boresight that
+    holds that detector on the field, so its hits here are the
+    boresight's; the detector's are its recorded offset projected the same
+    way.
 
     Parameters
     ----------

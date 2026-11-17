@@ -428,11 +428,11 @@ def plot_visibility(
             masked_y = _with_breaks(np.where(mask, y, np.nan), jumps)
             ax.plot(bx, masked_y, color=zone_color, lw=2.6, zorder=4)
 
-    for panel, ax in zip(panels, axes):
+    for panel, ax in zip(panels, axes, strict=True):
         _shade_night(ax, x, sun_el_shading)
         _draw_sun_event_lines(ax, events, annotate=panel == panels[0])
         if panel == "elevation":
-            for (target, _, t_el, _, overlays, _), color in zip(tracks, colors):
+            for (_target, _, t_el, _, overlays, _), color in zip(tracks, colors, strict=True):
                 draw_target_curve(ax, t_el, overlays, color)
             ax.plot(x, sun_el, color=SUN_COLOR, lw=2.2, zorder=2)
             ax.axhline(el_floor, color="0.3", ls="--", lw=1.0, zorder=1)
@@ -447,7 +447,7 @@ def plot_visibility(
             ax.set_ylim(0.0, 90.0)
             ax.set_ylabel("Elevation [deg]", fontsize=10)
         elif panel == "azimuth":
-            for (target, t_az, _, _, overlays, _), color in zip(tracks, colors):
+            for (_target, t_az, _, _, overlays, _), color in zip(tracks, colors, strict=True):
                 draw_target_curve(ax, t_az, overlays, color)
             sun_jumps = _wrap_break_indices(sun_az)
             ax.plot(
@@ -461,7 +461,7 @@ def plot_visibility(
             ax.set_yticks(np.arange(0.0, 361.0, 90.0))
             ax.set_ylabel("Azimuth [deg]", fontsize=10)
         else:  # sun_separation
-            for (target, _, _, sep, _, threshold), color in zip(tracks, colors):
+            for (_target, _, _, sep, _, threshold), color in zip(tracks, colors, strict=True):
                 ax.plot(x, sep, color=color, lw=1.4, zorder=3)
                 if threshold is not None:
                     # The target's own (direction-dependent) minimum-safe
@@ -485,7 +485,7 @@ def plot_visibility(
 
     handles = [
         plt.Line2D([], [], color=color, lw=1.6, label=track[0].name)
-        for track, color in zip(tracks, colors)
+        for track, color in zip(tracks, colors, strict=True)
     ]
     handles.append(plt.Line2D([], [], color=SUN_COLOR, lw=2.2, label="Sun"))
     if sun_cfg.enabled:
@@ -770,8 +770,8 @@ def plot_array_footprint(
         :func:`~fyst_trajectories.site.get_fyst_site`.
     modules : mapping of str to InstrumentOffset, optional
         Modules to draw. Default
-        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (alias keys
-        pointing at the same offset are drawn once).
+        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (keys that
+        name one offset are drawn once).
     fov_radius_deg : float, optional
         Per-module on-sky FOV radius in degrees. Default
         :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG` (0.65).

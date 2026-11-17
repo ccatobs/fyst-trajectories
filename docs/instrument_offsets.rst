@@ -20,9 +20,9 @@ Point a named Prime-Cam module at the target instead of the boresight::
     start_time = Time("2026-03-15T02:00:00", scale="utc")
 
     # Use predefined Prime-Cam offset
-    offset = get_primecam_offset("i1")
+    offset = get_primecam_offset("IM6")
 
-    # Boresight adjusted so module i1 tracks the target
+    # Boresight adjusted so module IM6 tracks the target
     trajectory = (
         TrajectoryBuilder(site)
         .at(ra=180.0, dec=-30.0)
@@ -54,9 +54,17 @@ the parallactic angle.
 
 **Mechanical rotation**, :math:`\theta_\mathrm{mech}`, is the focal plane's
 orientation relative to the horizon axes and needs no celestial metadata.
-``nasmyth_sign`` is +1 for Right Nasmyth, -1 for Left, 0 for Cassegrain,
-from ``Site.nasmyth_port`` (default ``"right"``, a port still pending
-confirmation; see :ref:`index-pending-verification`);
+``nasmyth_sign`` comes from ``Site.nasmyth_port``: ``"right"`` gives +1
+(the default), ``"left"`` -1 and ``"cassegrain"`` 0. The library uses only
+the sign, and the name does not say which side of FYST the receiver is on.
+Offsets are drawn
+as seen looking out at the sky, with elevation up and azimuth increasing
+to the right, and a positive rotation turns the focal plane
+counter-clockwise in that view. With the default sign the layout turns
+counter-clockwise by the boresight elevation: a position at angle
+:math:`\theta_0` at elevation 0° sits at :math:`\theta_0 + \mathrm{el}`.
+The default follows the instrument team's optical model of the receiver
+and awaits an on-sky check (see :ref:`index-pending-verification`).
 ``instrument_rotation`` is the instrument's fixed rotation relative to
 the Nasmyth flange, on ``InstrumentOffset`` (default 0.0). This is the
 rotation the az/el projections use (``apply_detector_offset``,
@@ -65,14 +73,15 @@ celestial and AltAz patterns.
 
 .. figure:: figures/primecam_footprint.png
    :alt: The seven Prime-Cam modules on sky at elevation 30° and at elevation
-      70°; the whole layout turns by 40° between the panels.
+      70°; the whole layout turns counter-clockwise by 40° between the panels.
    :width: 100%
 
    The mechanical rotation at work (``plot_array_footprint`` at 30° and 70°
-   elevation): with no celestial input, the whole layout turns through the
-   40° elevation change. Drawn for the default right Nasmyth port and the
-   commissioning module geometry, both awaiting instrument-team
-   confirmation (see :ref:`index-pending-verification`).
+   elevation): with no celestial input, the whole layout turns
+   counter-clockwise through the 40° elevation change. Drawn with the
+   default rotation sign and bay positions, which follow the instrument
+   team's optical model and await an on-sky check (see
+   :ref:`index-pending-verification`).
 
 **Celestial rotation**, :math:`\theta_\mathrm{sky}`, adds the parallactic angle,
 giving the orientation relative to the equatorial axes: the quantity for
@@ -160,27 +169,33 @@ Predefined offsets for the Prime-Cam focal plane
 this layout, and ``primecam_geometry_dict()`` exports it as a
 scheduler geometry schema):
 
-**Center**: ``get_primecam_offset("c")`` or ``PRIMECAM_CENTER`` - at boresight (0, 0)
+**Center**: ``get_primecam_offset("IM0")`` or ``PRIMECAM_IM0`` - at boresight (0, 0)
 
 **Inner Ring** (1.78° = 106.8 arcmin from center):
 
-+------------+----------------+----------------+
-| Name       | dx (arcmin)    | dy (arcmin)    |
-+============+================+================+
-| i1         | 0.0            | -106.8         |
-+------------+----------------+----------------+
-| i2         | 92.5           | -53.4          |
-+------------+----------------+----------------+
-| i3         | 92.5           | 53.4           |
-+------------+----------------+----------------+
-| i4         | 0.0            | 106.8          |
-+------------+----------------+----------------+
-| i5         | -92.5          | 53.4           |
-+------------+----------------+----------------+
-| i6         | -92.5          | -53.4          |
-+------------+----------------+----------------+
+The angle is each bay's position at elevation 0°, counter-clockwise from
+the direction of increasing azimuth, looking out at the sky.
+
++------------+----------+----------------+----------------+
+| Name       | Angle    | dx (arcmin)    | dy (arcmin)    |
++============+==========+================+================+
+| IM1        | 180°     | -106.8         | 0.0            |
++------------+----------+----------------+----------------+
+| IM2        | 120°     | -53.4          | 92.5           |
++------------+----------+----------------+----------------+
+| IM3        | 60°      | 53.4           | 92.5           |
++------------+----------+----------------+----------------+
+| IM4        | 0°       | 106.8          | 0.0            |
++------------+----------+----------------+----------------+
+| IM5        | -60°     | 53.4           | -92.5          |
++------------+----------+----------------+----------------+
+| IM6        | -120°    | -53.4          | -92.5          |
++------------+----------+----------------+----------------+
 
 .. note::
+
+   The bay angles follow the instrument team's optical model of the
+   receiver and await an on-sky check.
 
    These positions are derived from the default plate scale (13.89 arcsec/mm,
    the scale at the telescope focal surface where the module bays sit) and
@@ -228,49 +243,42 @@ at the telescope's places every detector too close to its module centre.
 
 **Module naming**
 
-The names ``c`` and ``i1`` .. ``i6`` label *positions* on the focal plane:
-one on-axis position and six inner-ring positions. They are not identities
-of the instrument modules that occupy them. Which observing band is
-installed at which position is deployment configuration, tracked by the
-observatory, and deliberately not modelled by this library.
+``IM0`` .. ``IM6`` are the Prime-Cam instrument team's designations for
+the seven module bays, ``IM0`` on the optical axis and ``IM1`` .. ``IM6``
+on the inner ring (see Fig. 1 of Keller et al. 2026, "CCAT: Design and
+Characterization of the 350 GHz Instrument Module", arXiv:2608.05121,
+where the figure writes them ``Im0`` .. ``Im6``). They label *positions*
+on the focal plane, not the instrument modules that occupy them: which
+module is installed in which bay is deployment configuration, tracked by
+the observatory, and deliberately not modelled by this library.
 
-The Prime-Cam instrument team designates the same positions ``IM0``
-(on-axis) through ``IM6`` (inner ring); see Fig. 1 of Keller et al. 2026,
-"CCAT: Design and Characterization of the 350 GHz Instrument Module",
-arXiv:2608.05121, for the first four planned modules, where the
-figure writes them ``Im0`` .. ``Im6``. Module names resolve
-case-insensitively here, so the casing is a spelling difference only. The
-two schemes do **not** correspond index-for-index: on sky, they number the
-ring in opposite senses, so ``i1`` must not be translated to ``IM1``. The
-correspondence is pending confirmation against the as-built focal plane
-(see :ref:`index-pending-verification`), after which the library plans to
-adopt the ``IM`` designations (see :doc:`changelog`). Today, ``IM0`` is
-accepted anywhere a module name is (an alias for the on-axis ``c``, the one
-mirror-invariant position); ``IM1`` .. ``IM6`` are rejected until the
-confirmation lands.
+Module names resolve case-insensitively, and ``c`` and ``center`` are
+accepted for ``IM0``. Looking out at the sky, ``IM1`` .. ``IM6`` run
+clockwise round the ring. The positions follow the instrument team's
+optical model of the receiver; an on-sky check is still to come (see
+:ref:`index-pending-verification`).
 
 **Access**::
 
     from fyst_trajectories.primecam import (
-        PRIMECAM_I1,
+        PRIMECAM_IM6,
         PRIMECAM_MODULES,
         get_primecam_offset,
         resolve_offset,
     )
 
-    offset = get_primecam_offset("i1")  # Case-insensitive
-    offset = PRIMECAM_I1                # Direct access
+    offset = get_primecam_offset("IM6")  # Case-insensitive
+    offset = PRIMECAM_IM6                # Direct access
 
     for name, offset in PRIMECAM_MODULES.items():
         print(f"{name}: dx={offset.dx:.1f}', dy={offset.dy:.1f}'")
-        # c: dx=0.0', dy=0.0'
-        # center: dx=0.0', dy=0.0'
-        # i1: dx=0.0', dy=-106.8'
-        # i2: dx=92.5', dy=-53.4'
-        # i3: dx=92.5', dy=53.4'
-        # i4: dx=0.0', dy=106.8'
-        # i5: dx=-92.5', dy=53.4'
-        # i6: dx=-92.5', dy=-53.4'
+        # IM0: dx=0.0', dy=0.0'
+        # IM1: dx=-106.8', dy=0.0'
+        # IM2: dx=-53.4', dy=92.5'
+        # IM3: dx=53.4', dy=92.5'
+        # IM4: dx=106.8', dy=0.0'
+        # IM5: dx=53.4', dy=-92.5'
+        # IM6: dx=-53.4', dy=-92.5'
 
 ``resolve_offset`` is the entry point when the offset comes from user
 input (CLI, config file, API request): it handles all three cases in one
@@ -279,7 +287,7 @@ call, named module, custom dx/dy, or boresight (``None``)::
     from fyst_trajectories.primecam import resolve_offset
 
     # Named module -> predefined InstrumentOffset
-    offset = resolve_offset(module="i1")
+    offset = resolve_offset(module="IM6")
 
     # Custom angular offset (arcmin)
     offset = resolve_offset(dx=10.0, dy=5.0, name="my-detector")
@@ -290,7 +298,7 @@ call, named module, custom dx/dy, or boresight (``None``)::
     # No arguments -> None (boresight pointing)
     offset = resolve_offset()
 
-``resolve_module_tag`` expands a comma-separated module tag (``"i1,i2"``,
+``resolve_module_tag`` expands a comma-separated module tag (``"IM5,IM6"``,
 a list of names, or ``"all"``) into a ``list[InstrumentOffset]``. Pass it
 straight to ``plan_source_ces(footprint=...)`` to point the centroid of
 the selected modules at a source::
@@ -303,7 +311,7 @@ the selected modules at a source::
 
     block = plan_source_ces(
         body="jupiter",
-        footprint=resolve_module_tag("i1,i2"),  # centroid of i1 and i2 on Jupiter
+        footprint=resolve_module_tag("IM5,IM6"),  # centroid of IM5 and IM6 on Jupiter
         el_bore=35.0,
         night=Time("2026-03-15T00:00:00", scale="utc"),
         mode="rising",
@@ -335,13 +343,13 @@ Custom Offsets
 
     # Convert a position on the telescope focal surface to an angular offset
     offset = InstrumentOffset.from_focal_plane(
-        x_mm=399.5,            # Cross-elevation position (mm)
-        y_mm=-230.65,          # Elevation position (mm)
+        x_mm=230.65,           # Cross-elevation position (mm)
+        y_mm=-399.5,           # Elevation position (mm)
         plate_scale=site.plate_scale,  # 13.89 arcsec/mm at that surface
-        name="i2-position",
+        name="IM5-position",
     )
     print(f"Angular offset: {offset.dx:.1f}' x {offset.dy:.1f}'")
-    # Angular offset: 92.5' x -53.4'
+    # Angular offset: 53.4' x -92.5'
 
     # With instrument rotation (e.g., dewar at 15 degree angle)
     offset = InstrumentOffset.from_focal_plane(

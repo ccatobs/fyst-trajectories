@@ -3,13 +3,16 @@ Installation
 
 **Requires Python 3.10 or higher.**
 
-From GitHub, pinned to a release tag (``v0.13.0`` is the latest; see the
+From GitHub, pinned to a release tag (``v0.14.0`` is the latest; see the
 :doc:`changelog` for versions - pre-1.0, breaking changes arrive only in
 minor releases, never in patches):
 
 .. code-block:: bash
 
-    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.13.0"
+    pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.14.0"
+
+A host without network access also needs a current IERS table for astropy; see
+:ref:`earth-orientation-data`.
 
 Development install
 -------------------

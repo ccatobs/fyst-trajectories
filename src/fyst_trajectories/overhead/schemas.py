@@ -7,7 +7,7 @@ type.
 """
 
 from collections.abc import Mapping
-from typing import TypedDict
+from typing import Any, TypedDict
 
 __all__ = [
     "CEScanParams",
@@ -21,6 +21,7 @@ __all__ = [
     "SourceCESScanParams",
     "TimelineBlockMetadata",
     "TransitionRecord",
+    "WindowScanRecord",
     "validate_scan_params",
 ]
 
@@ -35,20 +36,27 @@ class CEScanParams(TypedDict, total=False):
     Attributes
     ----------
     az_min : float
-        Explicit lower azimuth bound in degrees. The pair steers where the
-        scan is placed - the slew target and the cable-wrap branch - and is
-        never passed to
-        :func:`~fyst_trajectories.planning.plan_constant_el_scan`, which
-        derives its own azimuth range from the field geometry, so it does
-        not bound the trajectory the scan executes.
+        Lower end of the azimuth window in degrees, given together with
+        ``az_max`` (``az_min < az_max``; a window across azimuth 0/360 is
+        written unwrapped, as (355, 370) or (-5, 10)). The subscans of a
+        visit up to the next retune are consecutive stretches of one scan
+        of the window form of
+        :func:`~fyst_trajectories.planning.plan_constant_el_scan`, in whole
+        legs, sweeping the window widened by ``az_padding`` on each side,
+        and a new scan starts after each retune; the visit is timed by the
+        field's crossing of the patch elevation on the window's side of the
+        meridian. Not combined with ``lsa_window``; a window that reaches
+        the meridian needs ``rising``.
     az_max : float
-        Explicit upper azimuth bound in degrees. See ``az_min``.
+        Upper end of the azimuth window in degrees. See ``az_min``.
     az_accel : float
         Azimuth acceleration in deg/s^2.
     az_padding : float
         Extra azimuth padding on each side in degrees.
     timestep : float
-        Trajectory time step in seconds.
+        Trajectory time step in seconds. :func:`generate_timeline` refuses
+        a patch whose ``timestep`` is under the Go TCS ``/path`` minimum
+        sample interval of 0.05 s.
     lsa_window : tuple or list of (min_lsa, max_lsa)
         Local Sidereal Angle window in degrees. When supplied, the
         constant-elevation planner derives ``start_time`` / ``duration``
@@ -63,12 +71,16 @@ class CEScanParams(TypedDict, total=False):
         (east-of-meridian) half of the field's transit, ``False`` for
         the setting (west-of-meridian) half. When omitted, the scheduler
         takes whichever half opens its next plannable crossing pass
-        first. When supplied, the patch is only selectable while the sky
-        side matches this request, and the value is forwarded to the
-        planner's ``rising`` argument so the emitted trajectory covers
-        the requested half. Not forwarded alongside ``lsa_window``: the
-        sidereal window fixes both the timing and the azimuth range, and
-        the planner rejects the pair.
+        first. When supplied, only that half's pass is solved and booked,
+        and on a patch without an azimuth window the value is forwarded to
+        the planner's ``rising`` argument so the emitted trajectory covers
+        the requested half. Beside an azimuth window it names the window's
+        side (east of the meridian is the rising one) and must agree with
+        it. Beside ``lsa_window`` it is not read: the
+        sidereal window fixes both the timing and the side of the azimuth
+        range, so the scheduler selects, books and rebuilds the patch as
+        it would without ``rising``, and the planner, which refuses the
+        pair, is called without it.
     """
 
     az_min: float
@@ -99,7 +111,9 @@ class PongScanParams(TypedDict, total=False):
     num_terms : int
         Number of Fourier terms for smooth turnarounds.
     timestep : float
-        Trajectory time step in seconds.
+        Trajectory time step in seconds. :func:`generate_timeline` refuses
+        a patch whose ``timestep`` is under the Go TCS ``/path`` minimum
+        sample interval of 0.05 s.
     angle : float
         Rotation angle of the scan pattern in degrees.
     n_cycles : int
@@ -139,7 +153,9 @@ class DaisyScanParams(TypedDict, total=False):
     start_acceleration : float
         Ramp-up acceleration in deg/s^2.
     timestep : float
-        Trajectory time step in seconds.
+        Trajectory time step in seconds. :func:`generate_timeline` refuses
+        a patch whose ``timestep`` is under the Go TCS ``/path`` minimum
+        sample interval of 0.05 s.
     """
 
     radius: float
@@ -176,10 +192,11 @@ class SourceCESScanParams(TypedDict, total=False):
     body : str
         Solar-system body the pass tracked (e.g. ``"jupiter"``).
     footprint : str
-        The base Prime-Cam module before the per-pass eta shift, by its
-        canonical name: ``"c"`` or ``"i1"`` .. ``"i6"``, whichever spelling
-        or alias (``"IM0"``, ``"center"``) the policy named it by.
-        ``eta_offset_deg`` records the shift applied to it.
+        The base Prime-Cam module bay before the per-pass eta shift:
+        ``"c"`` for the on-axis bay, whichever spelling (``"IM0"``,
+        ``"c"``, ``"center"``) the policy named it by, and ``"IM1"`` ..
+        ``"IM6"`` for a ring bay. ``eta_offset_deg`` records the shift
+        applied to it.
     el_bore : float
         Fixed boresight elevation of this pass in degrees. Passes step
         this value monotonically so the source crosses each footprint row
@@ -193,11 +210,9 @@ class SourceCESScanParams(TypedDict, total=False):
     boresight_rot : float or None
         Mechanical boresight rotation in degrees, the source-CES planner's
         ``boresight_rot`` argument. Neither the offline scheduler nor the
-        calibration-night planner requests a rotation: the scheduler
-        records the value the source-CES planner resolves an unset
-        rotation to, ``0.0``, and a calibration-night pass records the
-        request itself, ``None``. The source-CES planner reads ``None`` as
-        ``0.0``, so both rebuild to the same pass.
+        calibration-night planner requests a rotation, and both record
+        the request itself, ``None``, which the source-CES planner reads
+        as ``0.0``.
     timestep : float
         Trajectory sample spacing in seconds used to build the pass.
     eta_offset_deg : float
@@ -333,6 +348,53 @@ def validate_scan_params(params: Mapping[str, object], scan_type: str) -> None:
         )
 
 
+class WindowScanRecord(TypedDict):
+    """The inputs of one constant-elevation window scan, as a science block records them.
+
+    A science :class:`TimelineBlock` written by
+    :meth:`TimelineBlock.from_window_scan` carries one of these under
+    ``metadata["window_scan"]``: what the window form of
+    :func:`~fyst_trajectories.planning.plan_constant_el_scan` needs to plan
+    the same scan again, so
+    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rebuilds the
+    block with that planner. The azimuth rate is the block's ``velocity`` key
+    and the field, when the scan was planned with one, its ``ra_center``,
+    ``dec_center``, ``width`` and ``height`` keys. Every key is required and
+    every value is a JSON builtin.
+
+    Attributes
+    ----------
+    az_window : list of float
+        ``[az_lo, az_hi]`` in degrees, the window as commanded: the padding
+        is already included and the pair sits on the 360 deg branch the
+        planner chose.
+    elevation : float
+        Commanded elevation of the window in degrees: the detector's when
+        ``detector_offset`` is recorded, while the block's own
+        ``elevation`` is the boresight's.
+    duration : float
+        The scan's built length in seconds, a whole number of azimuth legs,
+        not the duration first requested.
+    az_accel : float
+        Azimuth acceleration in deg/s^2.
+    timestep : float
+        Trajectory time step in seconds.
+    detector_offset : dict or None
+        ``None``, or the four fields of the
+        :class:`~fyst_trajectories.offsets.InstrumentOffset` the scan was
+        planned with (``dx`` and ``dy`` in arcmin, ``name``,
+        ``instrument_rotation`` in degrees), kept by value so the block
+        replays the boresight that was planned.
+    """
+
+    az_window: list[float]
+    elevation: float
+    duration: float
+    az_accel: float
+    timestep: float
+    detector_offset: dict[str, Any] | None
+
+
 class ScienceBlockMetadata(TypedDict, total=False):
     """Metadata attached to a science :class:`TimelineBlock`.
 
@@ -340,7 +402,13 @@ class ScienceBlockMetadata(TypedDict, total=False):
     by :func:`generate_timeline` populate the six geometry/scan keys
     (``t0_scan`` is added only on constant-elevation subscans) so
     :func:`schedule_to_trajectories` can reconstruct the trajectory
-    after an ECSV round-trip.
+    after an ECSV round-trip. A block written by
+    :meth:`TimelineBlock.from_window_scan` carries ``velocity``, an empty
+    ``scan_params``, ``window_scan``, the four field keys only when the
+    scan was planned with a field, and ``scan_start`` only when the block
+    starts after its scan does. Any other science block of a patch that
+    carries a ``detector_offset`` also carries ``detector_offset`` and, on
+    a constant-elevation block, ``detector_elevation``.
 
     Attributes
     ----------
@@ -362,7 +430,35 @@ class ScienceBlockMetadata(TypedDict, total=False):
         ISO UTC timestamp of the visit's planner anchor (constant-elevation
         subscans only): the time the scheduler gated the crossing solve
         on, used by :func:`schedule_to_trajectories` as the
-        reconstruction anchor instead of the subscan's own start.
+        reconstruction anchor instead of the subscan's own start. A block
+        that carries ``window_scan`` is rebuilt from that record and
+        ``scan_start`` instead, and this key is not read.
+    window_scan : WindowScanRecord, optional
+        The inputs of a constant-elevation window scan (see
+        :class:`WindowScanRecord`). A block that carries it is rebuilt with
+        the window form of
+        :func:`~fyst_trajectories.planning.plan_constant_el_scan`.
+    scan_start : str, optional
+        ISO UTC time, to the millisecond, of the start of the window scan a
+        block holds a later stretch of, beside ``window_scan`` on such a
+        block only: the rebuild plans the scan from it and keeps the
+        block's own samples. A block that starts with its scan does not
+        carry it.
+    detector_offset : dict, optional
+        The four fields of the
+        :class:`~fyst_trajectories.offsets.InstrumentOffset` the block was
+        planned with (``dx`` and ``dy`` in arcmin, ``name``,
+        ``instrument_rotation`` in degrees), written by
+        :meth:`TimelineBlock.science` for a patch that carries one and
+        passed back to the planner on a rebuild, so the block replays the
+        offset it was planned with. A block written by
+        :meth:`TimelineBlock.from_window_scan` keeps its offset inside
+        ``window_scan`` instead.
+    detector_elevation : float, optional
+        Elevation in degrees the detector scans at, on a constant-elevation
+        block that records ``detector_offset`` (and only there, always
+        beside it): the elevation the rebuild plans at, while the block's
+        own ``elevation`` is the boresight's.
     """
 
     ra_center: float
@@ -372,6 +468,10 @@ class ScienceBlockMetadata(TypedDict, total=False):
     velocity: float
     scan_params: ScanParamsDict
     t0_scan: str
+    window_scan: WindowScanRecord
+    scan_start: str
+    detector_offset: dict[str, Any]
+    detector_elevation: float
 
 
 class ScanGeometryRecord(TypedDict, total=False):
@@ -453,10 +553,9 @@ class CalibrationBlockMetadata(TypedDict, total=False):
         (``CalibrationPolicy.planet_cal_scan``). Absent for parked
         (fixed-duration) calibrations.
     t0_scan : str, optional
-        ISO UTC time the scan geometry actually begins, present alongside
-        ``scan_params``. The block's ``t_start`` may precede this when
-        inter-pass repointing and acquisition time are folded into the
-        block.
+        ISO UTC time the pass begins, present alongside ``scan_params``:
+        the pass's first sample, which is where the block starts, to the
+        millisecond the string holds.
     search_start : list of float, optional
         Where the planner's search for this pass began, present alongside
         ``scan_params``: ``[jd1, jd2]``, the two parts of the UTC Julian

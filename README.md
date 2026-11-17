@@ -11,12 +11,12 @@ observing-night overhead simulator, and a calibration-night planner.
 
 ## Installation
 
-Pin a release tag (`v0.13.0` is the latest; the
+Pin a release tag (`v0.14.0` is the latest; the
 [changelog](https://fyst-trajectories.readthedocs.io/en/latest/changelog.html)
 lists what each release changes).
 
 ```bash
-pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.13.0"
+pip install "fyst-trajectories @ git+https://github.com/ccatobs/fyst-trajectories.git@v0.14.0"
 ```
 
 ## Development

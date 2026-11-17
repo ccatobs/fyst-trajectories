@@ -133,7 +133,7 @@ def test_passes_tile_footprint_extent(site, jupiter_three_passes):
     )
     measured = [_source_focalplane_eta_mean(b, site, coords) for b in by_offset]
     assert measured == sorted(measured), f"coverage centres not monotonic: {measured}"
-    for b, m in zip(by_offset, measured):
+    for b, m in zip(by_offset, measured, strict=True):
         expected = b.trajectory.metadata.pattern_params["pass_eta_offset_deg"]
         assert m == pytest.approx(expected, abs=0.1), (
             f"coverage centre {m:.3f} does not track eta offset {expected:.3f}"

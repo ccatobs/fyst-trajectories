@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING, Any
 from astropy.time import Time, TimeDelta
 
 from .._readonly import ReadOnlyDict
+from .._validation import _require_finite
+from ..offsets import InstrumentOffset
+from ..patterns import ConstantElScanConfig
+from ..planning._ce_geometry import _lsa_window_endpoints, _window_side
+from .exceptions import ScanParamsSchemaError
 from .schemas import (
     CalibrationBlockMetadata,
     EmptyBlockMetadata,
@@ -20,12 +25,13 @@ from .schemas import (
     ScienceBlockMetadata,
     SourceCESScanParams,
     TimelineBlockMetadata,
+    WindowScanRecord,
     validate_scan_params,
 )
-from .utils import _require_module_tag
+from .utils import _require_module_tag, _stored_instant, _stored_isot, _utc_instant
 
 if TYPE_CHECKING:
-    from ..planning import FieldRegion
+    from ..planning import FieldRegion, ScanBlock
     from ..site import Site
 
 __all__ = [
@@ -113,12 +119,9 @@ class CalibrationType(str, enum.Enum):
         return _CAL_TYPE_STATE_FIELD[self]
 
 
-# Private lookup tables keyed on :class:`CalibrationType`. Keeping both
-# mappings here puts a new calibration type's duration and state entries
-# side by side; :meth:`OverheadModel.get_calibration_duration` and
-# :meth:`CalibrationState.update` read them. See the docstrings on
-# :attr:`CalibrationType.duration_field` and
-# :attr:`CalibrationType.state_field` for the public API.
+# Private lookup tables keyed on :class:`CalibrationType`, read by
+# :meth:`OverheadModel.get_calibration_duration` and
+# :meth:`CalibrationState.update`; a new calibration type needs an entry in both.
 _CAL_TYPE_DURATION_FIELD: dict[CalibrationType, str] = {
     CalibrationType.RETUNE: "retune_duration",
     CalibrationType.POINTING_CAL: "pointing_cal_duration",
@@ -136,6 +139,57 @@ _CAL_TYPE_STATE_FIELD: dict[CalibrationType, str] = {
     CalibrationType.PLANET_CAL: "last_planet_cal",
     CalibrationType.BEAM_MAP: "last_beam_map",
 }
+
+_OFFSET_FIELDS = frozenset(f.name for f in dataclasses.fields(InstrumentOffset))
+
+
+def _offset_record(offset: InstrumentOffset | None) -> dict[str, Any] | None:
+    """Return ``offset`` as a block records it: ``None``, or its fields as a dict.
+
+    The dict is :func:`dataclasses.asdict` of the offset: its ``name``,
+    ``dx`` and ``dy`` in arcmin, and ``instrument_rotation`` in degrees.
+
+    Raises
+    ------
+    ValueError
+        If ``offset.name`` is neither a str nor ``None``, since a block's
+        metadata is written to a file as JSON.
+    """
+    if offset is None:
+        return None
+    if not isinstance(offset.name, (str, type(None))):
+        raise ValueError(
+            "detector_offset.name must be a str or None, since the block records the "
+            f"offset as JSON; got {offset.name!r}"
+        )
+    return dataclasses.asdict(offset)
+
+
+def _offset_from_record(record: Any) -> InstrumentOffset | None:
+    """Return the offset a block recorded with :func:`_offset_record`.
+
+    Raises
+    ------
+    ScanParamsSchemaError
+        If ``record`` is neither ``None`` nor a mapping of exactly the four
+        fields of an :class:`~fyst_trajectories.offsets.InstrumentOffset`,
+        with a str or ``None`` name and finite numbers for the rest.
+    """
+    if record is None:
+        return None
+    if (
+        isinstance(record, Mapping)
+        and set(record) == _OFFSET_FIELDS
+        and isinstance(record["name"], (str, type(None)))
+    ):
+        try:
+            return InstrumentOffset(**record)
+        except (TypeError, ValueError):
+            pass
+    raise ScanParamsSchemaError(
+        "detector_offset must be None or the fields dx, dy, name and "
+        f"instrument_rotation of an InstrumentOffset, got {record!r}"
+    )
 
 
 @dataclass(frozen=True)
@@ -169,12 +223,11 @@ class ObservingPatch:
     weight : float
         Multiplies the patch's selection score (see ``priority``).
     elevation : float or None
-        Fixed scan elevation in degrees. The offline scheduler refuses a
-        constant-elevation patch without one; ``None`` is accepted for a
-        pong or daisy patch and for direct block construction. On a pong
-        or daisy patch a value is the elevation the scheduler scores,
-        slews to, Sun-clips and records the visit at, while the pattern
-        still follows the field.
+        Fixed scan elevation in degrees, for a constant-elevation patch.
+        The offline scheduler refuses a constant-elevation patch without
+        one; ``None`` is accepted there for direct block construction. A
+        pong or daisy patch takes ``None`` only: its pattern is scanned
+        where the field is on the sky, at the elevation the field has.
     scan_params : ScanParamsDict
         Additional scan-type-specific parameters. The concrete schema
         depends on ``scan_type``: :class:`CEScanParams` for
@@ -184,14 +237,41 @@ class ObservingPatch:
         ``pop`` and the other mutating methods raise ``TypeError``. Derive
         an edited patch with :func:`dataclasses.replace`, and convert with
         ``dict(...)`` before editing a copy or dumping it to YAML.
+    detector_offset : InstrumentOffset or None
+        Focal-plane offset of the detector the patch is observed with, as
+        :func:`~fyst_trajectories.get_primecam_offset` returns it for a
+        Prime-Cam bay; ``None`` (the default) is the boresight. An offset
+        with ``dx`` and ``dy`` both zero is stored as ``None``, whatever its
+        ``name`` and ``instrument_rotation``. On a constant-elevation patch
+        that carries one, ``elevation`` is the detector's elevation. Every
+        science block :meth:`TimelineBlock.science` writes for the patch
+        records the offset by value, and
+        :func:`~fyst_trajectories.overhead.schedule_to_trajectories` plans
+        the block's rebuild with it.
+        :func:`~fyst_trajectories.overhead.generate_timeline` schedules the
+        patch for the boresight that holds the detector on the field, and
+        the blocks it writes carry the boresight's azimuth and elevation.
 
     Raises
     ------
+    TypeError
+        If ``detector_offset`` is neither an
+        :class:`~fyst_trajectories.offsets.InstrumentOffset` nor ``None``.
     ValueError
         If ``width``, ``height``, ``velocity``, or ``priority`` is not
         positive, ``weight`` is negative, ``scan_type`` is not one of
-        ``"constant_el"`` / ``"pong"`` / ``"daisy"``, or ``scan_params``
-        carries a key that scan type does not declare.
+        ``"constant_el"`` / ``"pong"`` / ``"daisy"``, a pong or daisy
+        patch is given an ``elevation``, ``scan_params``
+        carries a key that scan type does not declare, its ``lsa_window``
+        is not a pair of real numbers in ``[0, 360)`` with unequal
+        endpoints, its azimuth window (``az_min`` and ``az_max``) gives one
+        key without the other, a value that is not a finite real number,
+        ``az_min`` not less than ``az_max``, or stands beside
+        ``lsa_window``, a window that reaches a meridian azimuth comes
+        without ``rising``, a ``rising`` names the side of the meridian the
+        window does not lie on, or
+        ``detector_offset.name`` is neither a str nor ``None`` (a block
+        records the offset as JSON).
     """
 
     name: str
@@ -210,9 +290,21 @@ class ObservingPatch:
     scan_params: ScanParamsDict = field(  # type: ignore[assignment]
         default_factory=dict, hash=False
     )
+    detector_offset: InstrumentOffset | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scan_params", ReadOnlyDict(self.scan_params))
+        offset = self.detector_offset
+        if offset is not None:
+            if not isinstance(offset, InstrumentOffset):
+                raise TypeError(
+                    "detector_offset must be an InstrumentOffset or None, "
+                    f"got {type(offset).__name__}"
+                )
+            # Refuses a name the blocks of this patch could not record.
+            _offset_record(offset)
+            if offset.dx == 0.0 and offset.dy == 0.0:
+                object.__setattr__(self, "detector_offset", None)
         if not self.width > 0:
             raise ValueError(f"width must be positive, got {self.width}")
         if not self.height > 0:
@@ -224,6 +316,12 @@ class ObservingPatch:
         if self.scan_type not in ("constant_el", "pong", "daisy"):
             raise ValueError(
                 f"scan_type must be 'constant_el', 'pong', or 'daisy', got '{self.scan_type}'"
+            )
+        if self.scan_type != "constant_el" and self.elevation is not None:
+            raise ValueError(
+                f"patch {self.name!r} is a {self.scan_type} patch with elevation "
+                f"{self.elevation}: a {self.scan_type} pattern is scanned where the field is "
+                "on the sky, so its elevation cannot be set; leave elevation as None"
             )
         if not self.velocity > 0:
             raise ValueError(f"velocity must be positive, got {self.velocity}")
@@ -237,6 +335,67 @@ class ObservingPatch:
             validate_scan_params(self.scan_params, self.scan_type)
         except KeyError as exc:
             raise ValueError(exc.args[0]) from None
+        lsa_window = self.scan_params.get("lsa_window")
+        if lsa_window is not None:
+            try:
+                _lsa_window_endpoints(lsa_window)
+            except ValueError as exc:
+                raise ValueError(
+                    f"patch {self.name!r}: scan_params['lsa_window'] is refused: {exc}"
+                ) from None
+        self._check_azimuth_window()
+
+    def _check_azimuth_window(self) -> None:
+        """Refuse an azimuth window a visit could not sweep, or one whose side is unclear.
+
+        The window is ``scan_params["az_min"]`` and ``["az_max"]`` (only a
+        constant-elevation patch declares them): both or neither, real
+        finite numbers with ``az_min < az_max``, not beside ``lsa_window``.
+        The window watches the crossing on its side of the meridian; one
+        that reaches a meridian azimuth needs ``rising``, and a ``rising``
+        that names the other side is refused.
+        """
+        params = self.scan_params
+        given = [key for key in ("az_min", "az_max") if key in params]
+        if not given:
+            return
+        if len(given) == 1:
+            other = "az_max" if given[0] == "az_min" else "az_min"
+            raise ValueError(
+                f"patch {self.name!r}: scan_params gives {given[0]} without {other}; an "
+                "azimuth window needs both"
+            )
+        az_min = _require_finite(params["az_min"], "scan_params['az_min']")
+        az_max = _require_finite(params["az_max"], "scan_params['az_max']")
+        if not az_min < az_max:
+            raise ValueError(
+                f"patch {self.name!r}: az_min must be less than az_max, got ({az_min}, "
+                f"{az_max}). The pair is the window the scan sweeps, from az_min up to az_max: "
+                "write a window across azimuth 0/360 unwrapped, as (355, 370) or (-5, 10)."
+            )
+        if params.get("lsa_window") is not None:
+            raise ValueError(
+                f"patch {self.name!r}: an azimuth window (az_min, az_max) and lsa_window "
+                "cannot both be given: lsa_window times the pass by the sidereal angle and "
+                "places its azimuth range itself, while the window is swept as given."
+            )
+        side = _window_side(az_min, az_max)
+        rising = params.get("rising")
+        if side is None and rising is None:
+            raise ValueError(
+                f"patch {self.name!r}: the azimuth window ({az_min}, {az_max}) reaches the "
+                "meridian (an azimuth that is a multiple of 180 deg), so it lies on neither "
+                "side where the field rises or sets through the elevation; give "
+                "scan_params['rising'] to name the crossing the visit watches."
+            )
+        if side is not None and rising is not None and bool(rising) != (side == "rising"):
+            where = "east" if side == "rising" else "west"
+            raise ValueError(
+                f"patch {self.name!r}: scan_params['rising'] is {rising}, but the azimuth "
+                f"window ({az_min}, {az_max}) lies {where} of the meridian, where the field "
+                f"{'rises' if side == 'rising' else 'sets'} through the elevation; drop "
+                "rising, or give the window on the other side."
+            )
 
     @classmethod
     def from_field_region(
@@ -354,7 +513,7 @@ class TimelineBlock:
         trajectory, so it includes the drift a pass crosses and the
         turnaround overshoot past each science edge. A parked
         calibration has ``az_start == az_end``; a retune emitted between
-        subscans instead carries its parent scan's estimated range as
+        subscans instead carries the range of the subscan after it as
         geometry for the ECSV round trip.
     elevation : float
         Elevation in degrees.
@@ -363,8 +522,14 @@ class TimelineBlock:
     subscan_index : int
         Sub-scan index within a split observation (0 if unsplit). A
         multi-pass calibration emitted as one scan numbers its passes
-        here, so ``(scan_index, subscan_index)`` identifies every block
-        of a timeline uniquely.
+        here. The pair ``(scan_index, subscan_index)`` does not identify a
+        block. In a timeline from
+        :func:`~fyst_trajectories.overhead.generate_timeline` it is unique
+        among the science blocks, and separately among the calibration
+        passes, which count their scans on a counter of their own, so a
+        pass can share a science block's pair; the idle, slew and parked
+        calibration blocks share the pair of a scan block. A block is told
+        apart by its times.
     rising : bool
         Whether this is a rising-side observation.
     scan_type : str
@@ -375,9 +540,12 @@ class TimelineBlock:
         height, velocity, scan_params), calibration blocks use
         :class:`CalibrationBlockMetadata` (cal_type, optional target),
         and slew/idle blocks default to an empty :class:`EmptyBlockMetadata`.
-        For science blocks, the geometry keys must be populated for
-        :func:`schedule_to_trajectories` to reconstruct trajectories
-        after an ECSV round-trip.
+        :func:`schedule_to_trajectories` reconstructs a science block's
+        trajectory from these keys, after an ECSV round-trip too: from the
+        geometry keys for a block written from a patch, or from the
+        ``window_scan`` record for a block written by
+        :meth:`from_window_scan`, which carries the four field keys only
+        when its scan was planned with a field.
     az_final : float or None
         Azimuth in degrees the telescope is left at when the block ends,
         recorded only when it differs from ``az_end``. A sweep stops at
@@ -386,8 +554,20 @@ class TimelineBlock:
         from is carried in this separate field. ``None`` (the default)
         means the block ends at ``az_end``: parked calibrations, idles and
         slews always do, and so does a swept block whose trajectory could
-        not be built. Read it through :attr:`end_pose_az` rather than
-        branching at every call site.
+        not be built. A retune the offline scheduler emits between
+        subscans records here the azimuth the telescope holds through it,
+        where the slew or the previous subscan left it. Read it through
+        :attr:`end_pose_az` rather than branching at every call site.
+    el_final : float or None
+        Elevation in degrees the telescope is left at when the block ends,
+        recorded only when it differs from ``elevation``. The offline
+        scheduler records it on a pong or daisy subscan: such a block is
+        stamped at the field centre's elevation where it starts (the
+        boresight's that holds the detector there, for a patch with a
+        ``detector_offset``), and its pattern follows the field, so it
+        ends at the elevation of its trajectory's last sample. ``None``
+        (the default) means the block ends at ``elevation``, as every other
+        block does. Read it through :attr:`end_pose_el`.
 
     Raises
     ------
@@ -418,6 +598,7 @@ class TimelineBlock:
         hash=False,
     )
     az_final: float | None = None
+    el_final: float | None = None
 
     def __post_init__(self) -> None:
         # object.__setattr__ bypasses frozen=True to coerce str -> BlockType.
@@ -431,14 +612,9 @@ class TimelineBlock:
                 ) from None
         if not self.t_stop.unix >= self.t_start.unix:
             raise ValueError(f"t_stop ({self.t_stop.iso}) must be >= t_start ({self.t_start.iso})")
-        # NOTE: az_start/az_end are NOT ordered-checked here. Science and
-        # calibration blocks have az_start <= az_end, but SLEW blocks use
-        # the fields as "from" (az_start) and "to" (az_end), and the from
-        # position can exceed the to position when the telescope slews
-        # westward. The block_type discriminator captures the semantic
-        # difference; enforcing ordering here would break the scheduler.
-        # ObservingTimeline.validate applies the ordering check per block
-        # type after the fact, where the discriminator is available.
+        # az_start/az_end are not order-checked here: a SLEW block holds
+        # "from" and "to", and "from" exceeds "to" on a westward slew.
+        # ObservingTimeline.validate checks the order per block type.
 
     @property
     def duration(self) -> float:
@@ -459,6 +635,16 @@ class TimelineBlock:
         when the trajectory the pose is read from could not be built.
         """
         return self.az_end if self.az_final is None else self.az_final
+
+    @property
+    def end_pose_el(self) -> float:
+        """Elevation in degrees the telescope is left at when the block ends.
+
+        ``el_final`` when the block records one, otherwise ``elevation``.
+        With :attr:`end_pose_az` this is the pose the next move starts
+        from, and the pose :meth:`ObservingTimeline.validate` follows.
+        """
+        return self.elevation if self.el_final is None else self.el_final
 
     @classmethod
     def calibration(
@@ -484,8 +670,9 @@ class TimelineBlock:
         Factory for the common case where the telescope is parked
         (``az_start == az_end == az``) while a calibration operation runs.
         For retune calibrations emitted *between* subscans, use
-        :meth:`retune` instead; that variant carries the parent scan's
-        azimuth range so ECSV round-trips preserve the subscan geometry.
+        :meth:`retune` instead; that variant carries the azimuth range of
+        the subscan after it so ECSV round-trips preserve the subscan
+        geometry.
 
         The optional ``az_end`` / ``az_final`` / ``scan_params`` / ``t0_scan``
         / ``rising`` keywords support a planet calibration planned as a
@@ -609,11 +796,12 @@ class TimelineBlock:
 
         Factory for retunes emitted between subscans of a science scan.
         Unlike :meth:`calibration` (which parks at a single azimuth),
-        this variant carries the parent scan's ``(az_start, az_end)``
+        this variant carries a subscan's ``(az_start, az_end)``
         so the ECSV round-trip preserves the subscan geometry.
         A retune sweeps nothing, so that range is geometry rather than
-        an executed envelope: the caller supplies the estimate it placed
-        the visit with, not the envelope the neighbouring subscans record.
+        an executed envelope: the offline scheduler supplies the range of
+        the subscan the retune precedes, and sets ``az_final`` to the
+        azimuth the telescope holds through it.
 
         Parameters
         ----------
@@ -622,8 +810,8 @@ class TimelineBlock:
         duration : float
             Retune duration in seconds.
         az_start, az_end : float
-            Azimuth bounds inherited from the parent science scan, in
-            degrees. Typically ``az_start <= az_end``.
+            Azimuth bounds of the science subscan the retune belongs to,
+            in degrees. Typically ``az_start <= az_end``.
         el : float
             Elevation in degrees.
         scan_index : int
@@ -663,8 +851,14 @@ class TimelineBlock:
         ``(az, el)`` and the timeline advances by ``duration`` seconds.
         No patch scoring above zero is the commonest cause and the one
         that carries no ``reason``; a refused slew, a subscan that cannot
-        be planned (``unplannable``), a pose the Sun zone holds, and the
-        stretch after the last block all label themselves.
+        be planned or has two samples closer than the Go TCS ``/path``
+        minimum interval (``unplannable``), a subscan with a sample inside
+        the Sun zone (``sun_scan``: the site's exclusion radius, which PCS
+        enforces, and the night's injected Sun model when one is given), a
+        subscan PCS refuses for an axis speed or acceleration
+        (``axis_dynamics``), the wait for a pass to open
+        (``waiting_for_pass``), a pose the Sun zone holds, and the stretch
+        after the last block all label themselves.
 
         Parameters
         ----------
@@ -772,12 +966,19 @@ class TimelineBlock:
         rising: bool = True,
         t0_scan: str | None = None,
         az_final: float | None = None,
+        el_final: float | None = None,
     ) -> "TimelineBlock":
         """Construct a SCIENCE block for a subscan of ``patch``.
 
         Metadata is populated from the patch (ra/dec center, width,
         height, velocity, scan_params) so the ECSV round-trip can
         reconstruct the trajectory via :func:`schedule_to_trajectories`.
+        For a patch that carries a ``detector_offset`` the block also
+        records ``metadata["detector_offset"]``, the offset's fields, and,
+        on a constant-elevation patch, ``metadata["detector_elevation"]``,
+        the patch's ``elevation``: the elevation the detector scans at,
+        which the rebuild plans at. Neither key is written for a patch
+        without an offset.
 
         Parameters
         ----------
@@ -793,7 +994,9 @@ class TimelineBlock:
             The subscan's executed azimuth envelope; the offline
             scheduler reads it from the subscan's own trajectory.
         el : float
-            Elevation in degrees.
+            The block's elevation in degrees, the boresight's: for a
+            constant-elevation patch with a ``detector_offset`` it differs
+            from the patch's ``elevation``, which is the detector's.
         scan_index : int
             Parent scan counter.
         subscan_index : int, optional
@@ -810,12 +1013,21 @@ class TimelineBlock:
         az_final : float or None, optional
             Azimuth the subscan's sweep ends at, when it differs from the
             ``az_end`` envelope bound. Default ``None``.
+        el_final : float or None, optional
+            Elevation the subscan ends at, when it differs from ``el``.
+            Default ``None``.
 
         Returns
         -------
         TimelineBlock
             A SCIENCE block with ``patch_name=patch.name`` and
             ``scan_type=patch.scan_type``.
+
+        Raises
+        ------
+        ValueError
+            If ``patch`` is a constant-elevation patch with a
+            ``detector_offset`` and no ``elevation``.
         """
         meta: ScienceBlockMetadata = {
             "velocity": patch.velocity,
@@ -830,6 +1042,17 @@ class TimelineBlock:
         }
         if t0_scan is not None:
             meta["t0_scan"] = t0_scan
+        offset_record = _offset_record(patch.detector_offset)
+        if offset_record is not None:
+            meta["detector_offset"] = offset_record
+            if patch.scan_type == "constant_el":
+                if patch.elevation is None:
+                    raise ValueError(
+                        f"patch {patch.name!r} carries a detector_offset and no elevation: a "
+                        "constant-elevation block with an offset needs a pinned elevation, "
+                        "the detector's, which its rebuild plans at"
+                    )
+                meta["detector_elevation"] = float(patch.elevation)
         return cls(
             t_start=t_start,
             t_stop=t_start + TimeDelta(duration, format="sec"),
@@ -844,7 +1067,235 @@ class TimelineBlock:
             scan_type=patch.scan_type,
             metadata=meta,
             az_final=az_final,
+            el_final=el_final,
         )
+
+    @classmethod
+    def from_window_scan(
+        cls,
+        scan_block: "ScanBlock",
+        *,
+        site: "Site",
+        patch_name: str,
+        scan_index: int,
+        subscan_index: int = 0,
+        field: "FieldRegion | None" = None,
+        detector_offset: "InstrumentOffset | None" = None,
+        span: "tuple[Time | str, Time | str] | None" = None,
+    ) -> "TimelineBlock":
+        """Construct a SCIENCE block that records one constant-elevation window scan.
+
+        ``scan_block`` is what the window form of
+        :func:`~fyst_trajectories.planning.plan_constant_el_scan` (given
+        ``az_window`` and ``duration``) returned. The block records that
+        planner's inputs under
+        ``metadata["window_scan"]`` (a :class:`WindowScanRecord`), so
+        :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rebuilds
+        it with the same planner, from memory and after an ECSV round trip.
+        The azimuth rate is stored as ``metadata["velocity"]``, and the field,
+        when one is given, as the four field keys; ``scan_params`` is empty.
+
+        ``field`` and ``detector_offset`` must be the ones given to the
+        planner: the scan block does not hold them. A whole scan from the
+        field form of the same planner is accepted too when it replays, and
+        is recorded, and rebuilt, as the window scan it swept.
+
+        Without ``span`` the block holds the whole scan: ``t_start`` is the
+        trajectory's start (held as a UTC instant) and ``t_stop`` the start
+        plus the scan's duration. With ``span=(t_start, t_stop)`` the block
+        is that stretch of the scan, so one scan can be booked as several
+        consecutive blocks: it holds the scan's samples in ``[t_start,
+        t_stop)``, and the scan's last sample too when ``t_stop`` is no
+        earlier than that sample less 0.01 s. A block that starts after the
+        scan's first sample records the scan's start as
+        ``metadata["scan_start"]``, the time its rebuild plans the scan
+        from. ``az_start`` and ``az_end`` are the boresight's azimuth
+        envelope over the samples the block holds, turnaround overshoot
+        included, as on every swept block, ``az_final`` the azimuth of its
+        last sample when that is not ``az_end``, and ``elevation`` the
+        boresight's; with a ``detector_offset`` these differ from the window
+        and elevation the record holds, which are the detector's.
+        ``rising`` is whether the commanded window's midpoint lies east of
+        the meridian.
+
+        Not recorded: the planner's ``atmosphere`` and ``sun_safe`` (a
+        rebuild runs the planner's warn-only checks with their defaults and
+        screens the Sun with the site's scalar exclusion radius),
+        ``az_padding`` (already inside the recorded window) and the duration
+        first requested. The record holds the built duration, so a rebuilt
+        block's ``computed_params["end_time_iso"]`` is the start plus the
+        built duration, and the planner's long-block and field-drift
+        advisories are judged on it.
+
+        The block is rebuilt once before it is returned, as
+        :func:`~fyst_trajectories.overhead.schedule_to_trajectories` rebuilds
+        it, and refused unless that returns ``scan_block``'s trajectory, or
+        with ``span`` the samples of it the block holds, sample for sample.
+        That costs one more call of the planner, about the time the planner
+        itself took. The ``field`` never shapes the trajectory, so this does
+        not check it.
+
+        Parameters
+        ----------
+        scan_block : ScanBlock
+            The block the window form of
+            :func:`~fyst_trajectories.planning.plan_constant_el_scan`
+            returned, whole.
+        site : Site
+            The site the scan was planned for.
+        patch_name : str
+            Name written to the block and to the ECSV ``name`` column.
+        scan_index : int
+            Parent scan counter.
+        subscan_index : int, optional
+            Sub-scan index. Default 0.
+        field : FieldRegion or None, optional
+            The field given to the planner, if any. Default ``None``.
+        detector_offset : InstrumentOffset or None, optional
+            The detector offset given to the planner, if any. Default
+            ``None``.
+        span : tuple of (Time or str, Time or str), optional
+            The block's start and stop when it holds a stretch of the scan
+            rather than all of it; a string is read as UTC. Default
+            ``None``, the whole scan.
+
+        Returns
+        -------
+        TimelineBlock
+            A SCIENCE block with ``scan_type="constant_el"``.
+
+        Raises
+        ------
+        ValueError
+            If ``scan_block`` is not a constant-elevation scan, its
+            trajectory has no ``start_time``, it is a slice of a longer scan
+            (its ``duration`` differs from ``computed_params["duration"]``),
+            ``span`` does not stop after it starts or starts before the
+            scan, ``detector_offset.name`` is neither a str nor ``None``, or
+            the block written for it does not rebuild to it: a modified
+            trajectory, or a ``detector_offset`` or planner other than the
+            ones used. A ``span`` that holds fewer than two samples of the
+            scan raises
+            :class:`~fyst_trajectories.overhead.BlockNotReconstructableError`,
+            a ``ValueError``.
+
+        Examples
+        --------
+        >>> from astropy.time import Time
+        >>> from fyst_trajectories.overhead import TimelineBlock
+        >>> from fyst_trajectories.planning import plan_constant_el_scan
+        >>> scan = plan_constant_el_scan(
+        ...     az_window=(59.7, 67.0),
+        ...     elevation=43.0,
+        ...     velocity=0.6,
+        ...     duration=1200.0,
+        ...     site=site,
+        ...     start_time=Time("2026-11-15T08:00:00", scale="utc"),
+        ... )
+        >>> block = TimelineBlock.from_window_scan(
+        ...     scan, site=site, patch_name="COSMOS", scan_index=0
+        ... )
+        >>> block.metadata["window_scan"]["az_window"]
+        [59.7, 67.0]
+        >>> print(block.t_stop.iso, sorted(block.metadata))
+        2026-11-15 08:20:01.800 ['scan_params', 'velocity', 'window_scan']
+        """
+        config = scan_block.config
+        traj = scan_block.trajectory
+        if not isinstance(config, ConstantElScanConfig):
+            raise ValueError(
+                "from_window_scan records a window scan of plan_constant_el_scan, whose config "
+                f"is a ConstantElScanConfig; got {type(config).__name__}"
+            )
+        if traj.start_time is None:
+            raise ValueError(
+                "the scan block's trajectory has no start_time; pass the block "
+                "plan_constant_el_scan returned for an az_window"
+            )
+        if scan_block.duration != scan_block.computed_params["duration"]:
+            # The head of a longer scan can pass the rebuild below in memory
+            # and still lose its last sample once a file rounds the block's stop.
+            raise ValueError(
+                f"the scan block lasts {scan_block.duration} s of a "
+                f"{scan_block.computed_params['duration']} s scan: a slice cannot be replayed "
+                "from its start; pass the whole block the planner returned"
+            )
+        offset_record = _offset_record(detector_offset)
+        scan_start = _utc_instant(traj.start_time)
+        if span is None:
+            t_start = scan_start
+            t_stop = t_start + TimeDelta(float(scan_block.duration), format="sec")
+        else:
+            t_start, t_stop = (_utc_instant(t) for t in span)
+            if t_stop <= t_start:
+                raise ValueError(
+                    f"span must stop after it starts, got [{t_start.isot}, {t_stop.isot})"
+                )
+            if _stored_instant(t_start) < _stored_instant(scan_start):
+                raise ValueError(
+                    f"span starts at {t_start.isot}, before the scan's start {scan_start.isot}"
+                )
+
+        meta: ScienceBlockMetadata = {"velocity": float(config.az_speed), "scan_params": {}}
+        if field is not None:
+            meta["ra_center"] = float(field.ra_center)
+            meta["dec_center"] = float(field.dec_center)
+            meta["width"] = float(field.width)
+            meta["height"] = float(field.height)
+        record: WindowScanRecord = {
+            "az_window": [float(config.az_start), float(config.az_stop)],
+            "elevation": float(config.elevation),
+            "duration": float(scan_block.duration),
+            "az_accel": float(config.az_accel),
+            "timestep": float(config.timestep),
+            "detector_offset": offset_record,
+        }
+        meta["window_scan"] = record
+        if _stored_isot(t_start) != _stored_isot(scan_start):
+            meta["scan_start"] = _stored_isot(scan_start)
+        block = cls(
+            t_start=t_start,
+            t_stop=t_stop,
+            block_type=BlockType.SCIENCE,
+            patch_name=patch_name,
+            az_start=0.0,
+            az_end=0.0,
+            elevation=float(traj.el[0]),
+            scan_index=scan_index,
+            subscan_index=subscan_index,
+            rising=(0.5 * (config.az_start + config.az_stop)) % 360.0 < 180.0,
+            scan_type="constant_el",
+            metadata=meta,
+        )
+        # Imported here: simulation imports this module.
+        # pylint: disable-next=import-outside-toplevel,cyclic-import
+        from .simulation import _window_block_slice, _window_scan_replays
+
+        held = scan_block
+        if span is not None:
+            # The samples the block holds, counted from the scan's start as
+            # the rebuild reads it.
+            stored = dataclasses.replace(traj, start_time=_stored_instant(scan_start))
+            held = _window_block_slice(dataclasses.replace(scan_block, trajectory=stored), block)
+        az = held.trajectory.az
+        az_end = float(az.max())
+        az_last = float(az[-1])
+        block = dataclasses.replace(
+            block,
+            az_start=float(az.min()),
+            az_end=az_end,
+            elevation=float(held.trajectory.el[0]),
+            az_final=None if az_last == az_end else az_last,
+        )
+
+        if not _window_scan_replays(block, held, site):
+            raise ValueError(
+                "the block written for this scan does not rebuild to it: planning what it "
+                "records again does not return the trajectory given. Pass the whole block "
+                "plan_constant_el_scan returned, unmodified, with the detector_offset it "
+                "was planned with."
+            )
+        return block
 
 
 @dataclass(frozen=True)
@@ -913,11 +1364,9 @@ class OverheadModel:
             val = getattr(self, fld.name)
             if not val >= 0:
                 raise ValueError(f"{fld.name} must be non-negative, got {val}")
-        # ``min_scan_duration > 0`` is a tighter contract than ``>= 0``: every
-        # downstream phase tests scan candidates against this floor, so a
-        # zero minimum would let a one-sample scan emit a sub-second
-        # ``TimelineBlock``. Settle/calibration durations may legitimately be
-        # zero (e.g. fixture runs) so we only tighten the scan-duration knob.
+        # Strictly positive: every phase tests scan candidates against this
+        # floor, and a zero floor would admit a sub-second science block.
+        # Settle and calibration durations may be zero.
         if self.min_scan_duration <= 0:
             raise ValueError(f"min_scan_duration must be positive, got {self.min_scan_duration}")
         if self.min_scan_duration >= self.max_scan_duration:
@@ -948,9 +1397,10 @@ class CalibrationPolicy:
     """Cadences for calibration operations.
 
     A cadence of 0 keeps that calibration permanently due: retune then
-    fires immediately before every science subscan (plus once at
-    startup) and never on an idle tick, while every other calibration
-    type fires on each scheduler iteration, idle ticks included.
+    fires before every science subscan, ahead of any wait for its pass
+    to open (plus once at startup), and never on an idle tick, while
+    every other calibration type fires on each scheduler iteration, idle
+    ticks included.
     Cadences are in seconds. Default values are commissioning-era
     placeholders. Ownership is per-field: ``retune_cadence`` is an
     instrument-team input; the remaining cadences belong to the
@@ -960,8 +1410,9 @@ class CalibrationPolicy:
     ----------
     retune_cadence : float
         Seconds between KID retunes. 0 = scan-coupled: a retune fires
-        immediately before every science subscan (and once at startup),
-        never on idle ticks. Placeholder pending Prime-Cam confirmation.
+        before every science subscan, ahead of any wait for its pass to
+        open (and once at startup), never on idle ticks. Placeholder
+        pending Prime-Cam confirmation.
     pointing_cadence : float
         Seconds between pointing corrections. Default ``3600.0`` (1 h).
     focus_cadence : float
@@ -1005,13 +1456,14 @@ class CalibrationPolicy:
         ``pass_index``.
         Instrument/operations-team placeholder.
     planet_cal_footprint : str
-        Prime-Cam module tag defining the base footprint the passes tile
-        (e.g. ``"c"``). Must be a known module tag (see
-        ``get_primecam_offset`` in :doc:`/api/offsets`); an unknown tag, or
-        a value that is not a str, raises :class:`ValueError` at
-        construction. The passes' ``scan_params`` name the module by its
-        canonical name (``"c"`` for any spelling of the centre module).
-        Default ``"c"``. Instrument/operations-team placeholder.
+        Prime-Cam module bay defining the base footprint the passes tile:
+        any name ``get_primecam_offset`` (in :doc:`/api/offsets`) takes,
+        ``"IM0"`` .. ``"IM6"`` in any case, or ``"c"`` or ``"center"`` for
+        ``IM0``. An unknown name, or a value that is not a str, raises
+        :class:`ValueError` at construction. The passes' ``scan_params``
+        name the on-axis bay ``"c"``, whichever spelling the policy used,
+        and a ring bay by its ``IM`` name (``"IM1"`` .. ``"IM6"``).
+        Default ``"IM0"``. Instrument/operations-team placeholder.
 
     Raises
     ------
@@ -1035,7 +1487,7 @@ class CalibrationPolicy:
     planet_cal_scan: bool = False
     planet_cal_passes: int = 3
     planet_cal_el_step: float | None = None
-    planet_cal_footprint: str = "c"
+    planet_cal_footprint: str = "IM0"
 
     def __post_init__(self) -> None:
         if isinstance(self.planet_targets, str):
@@ -1071,10 +1523,8 @@ class CalibrationPolicy:
             )
         if self.planet_cal_scan and not self.planet_targets:
             raise ValueError("planet_cal_scan=True needs at least one entry in planet_targets")
-        # Validate the footprint tag at construction (regardless of
-        # planet_cal_scan) so a bad tag fails fast here instead of escaping
-        # as a KeyError from the first planet-cal emission and aborting
-        # generate_timeline.
+        # Checked even with planet_cal_scan off, so a bad tag fails here rather
+        # than inside generate_timeline at the first planet calibration.
         _require_module_tag("planet_cal_footprint", self.planet_cal_footprint)
 
 
@@ -1216,7 +1666,8 @@ class ObservingTimeline:
         previous pose-setting block established. Science,
         calibration, and slew blocks hand their
         :attr:`~fyst_trajectories.overhead.TimelineBlock.end_pose_az`
-        and ``elevation`` forward; an idle leaves the pose unchanged.
+        and :attr:`~fyst_trajectories.overhead.TimelineBlock.end_pose_el`
+        forward; an idle leaves the pose unchanged.
         Only the slew's azimuth is checked, because a slew block
         records its target elevation and carries no starting
         elevation to compare. The tracker starts at the first
@@ -1286,7 +1737,7 @@ class ObservingTimeline:
                         f"{b.az_start:.3f} but the previous block ended at az "
                         f"{pose_az:.3f}"
                     )
-                pose_az, pose_el = b.end_pose_az, b.elevation
+                pose_az, pose_el = b.end_pose_az, b.end_pose_el
             elif b.block_type == BlockType.IDLE:
                 if pose_az is not None and (
                     abs(b.az_start - pose_az) > pose_tol or abs(b.elevation - pose_el) > pose_tol
@@ -1299,7 +1750,7 @@ class ObservingTimeline:
                 # Parked: the pose carries through unchanged.
             else:
                 # Science and calibration blocks hand their end pose
-                # forward; see ``az_final``.
-                pose_az, pose_el = b.end_pose_az, b.elevation
+                # forward; see ``az_final`` and ``el_final``.
+                pose_az, pose_el = b.end_pose_az, b.end_pose_el
 
         return warnings_list

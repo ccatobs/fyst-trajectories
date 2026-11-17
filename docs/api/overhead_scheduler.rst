@@ -39,6 +39,9 @@ Each phase reads a
 and returns a
 :class:`~fyst_trajectories.overhead.scheduler.PhaseResult` with
 emitted blocks and the updated state.
+The slew :class:`~fyst_trajectories.overhead.scheduler.SlewPhase` books
+for a science visit ends at the first sample of the visit's first
+science subscan; see :ref:`overhead-integration-slew-onto-scan`.
 
 .. autoclass:: fyst_trajectories.overhead.scheduler.Phase
    :members:

@@ -643,3 +643,105 @@ class TestScanFlags:
         trajectory = ConstantElScanPattern(config).generate(site, duration=20.0)
 
         assert not np.any(trajectory.scan_flag == SCAN_FLAG_SCIENCE)
+
+
+def _science_runs(scan_flag: np.ndarray) -> int:
+    """Count the runs of consecutive science samples."""
+    science = np.concatenate([[False], scan_flag == SCAN_FLAG_SCIENCE, [False]])
+    return int(np.sum(science[1:] & ~science[:-1]))
+
+
+@pytest.fixture(scope="module")
+def short_turnaround_source_pass():
+    """Plan a Jupiter pass whose 3 deg throw sets the 0.05 deg/s floor: a 0.1 s turnaround."""
+    from fyst_trajectories import get_fyst_site
+    from fyst_trajectories.planning import plan_source_ces
+
+    return plan_source_ces(
+        body="jupiter",
+        footprint="IM0",
+        el_bore=35.0,
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="rising",
+        az_throw=3.0,
+        site=get_fyst_site(),
+    )
+
+
+class TestLegsAtTurnaroundsOfOneSample:
+    """Each leg is one run of science samples, even when a turnaround fits between two samples.
+
+    A turnaround lasts ``2 v / a``; at 0.05 deg/s and 1 deg/s^2 that is 0.1 s,
+    one timestep, so when the leg seams fall on samples no sample lies outside
+    the science range. The sample where the velocity reverses starts the next
+    leg and is flagged as turnaround, so the legs stay apart.
+    """
+
+    def test_a_source_pass_at_the_speed_floor_has_one_run_per_leg(
+        self, short_turnaround_source_pass
+    ):
+        block = short_turnaround_source_pass
+        assert block.computed_params["az_speed"] == pytest.approx(0.05)
+
+        assert _science_runs(block.trajectory.scan_flag) == block.computed_params["n_scans"]
+
+    def test_its_trackpoint_rows_end_every_leg(self, short_turnaround_source_pass):
+        from fyst_trajectories import to_trackpoint_format
+
+        block = short_turnaround_source_pass
+        rows = to_trackpoint_format(block.trajectory)
+
+        assert sum(row["az_flag"] == 2 for row in rows) == block.computed_params["n_scans"] == 10
+
+    @pytest.mark.filterwarnings(
+        "ignore:Turnaround distance:fyst_trajectories.exceptions.PointingWarning"
+    )
+    @pytest.mark.parametrize(
+        ("velocity", "throw", "timestep"),
+        [
+            (velocity, throw, timestep)
+            for velocity in (0.05, 0.1, 0.5, 1.0)
+            for throw in (0.05, 0.5, 3.0, 10.0)
+            for timestep in (0.05, 0.1, 0.2)
+            if throw / velocity >= timestep
+        ],
+    )
+    def test_a_window_scan_has_one_run_per_leg(self, site, velocity, throw, timestep):
+        """Science runs equal the legs whenever a leg's cruise lasts at least one timestep.
+
+        A shorter cruise can hold no sample of its own, so its leg cannot be
+        told apart; the planner's turnaround-overshoot advisory covers those,
+        and the grid leaves them out.
+        """
+        from fyst_trajectories.planning import plan_constant_el_scan
+
+        cruise = throw / velocity
+        block = plan_constant_el_scan(
+            az_window=(100.0, 100.0 + throw),
+            elevation=45.0,
+            velocity=velocity,
+            duration=6.0 * (cruise + 2.0 * velocity),
+            timestep=timestep,
+            site=site,
+            start_time=Time("2026-03-15T17:20:00", scale="utc"),
+        )
+
+        assert _science_runs(block.trajectory.scan_flag) == block.computed_params["n_scans"]
+
+    def test_the_named_window_at_the_floor_has_one_run_per_leg(self, site):
+        """The window (100, 103) at 0.05 deg/s for 600 s puts every seam on a sample."""
+        from fyst_trajectories.planning import plan_constant_el_scan
+
+        block = plan_constant_el_scan(
+            az_window=(100.0, 103.0),
+            elevation=45.0,
+            velocity=0.05,
+            duration=600.0,
+            timestep=0.1,
+            site=site,
+            start_time=Time("2026-03-15T17:20:00", scale="utc"),
+        )
+
+        assert block.computed_params["n_scans"] == 10
+        assert _science_runs(block.trajectory.scan_flag) == 10
+        assert np.sum(block.trajectory.scan_flag == SCAN_FLAG_TURNAROUND) == 9

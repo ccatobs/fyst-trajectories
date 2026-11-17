@@ -525,8 +525,8 @@ def validate_sun_avoidance(
         # Injected directional model: consult it on the subsamples. ``False``
         # marks an unsafe (inside-the-zone) sample. Warn once, naming the
         # first unsafe subsample, mirroring the scalar branch's single
-        # closest-approach warning. The ~60 s subsampling above is preserved
-        # so injection does not regress performance.
+        # closest-approach warning. The ~60 s subsampling above bounds the
+        # cost of the model's calls.
         verdicts = _sun_verdicts(
             sun_safe, sample_az, sample_el, sample_times, what="trajectory subsample"
         )
@@ -609,6 +609,30 @@ def to_arrays(
 #: (ACU ICD 2.0 section 8.9.3).
 GO_TCS_MIN_SAMPLE_INTERVAL_SEC: float = 0.05
 
+# The four axis limits below are those of the Go TCS command layer
+# (``commands.go`` at telescope-control-system b7bbbf9): azimuthSpeedMax,
+# elevationSpeedMax, azimuthAccelMax and elevationAccelMax.
+
+#: Azimuth speed limit of the Go TCS command layer, in deg/s. A commanded point
+#: whose azimuth speed exceeds it is refused. The site's advisory limit
+#: (``Site.telescope_limits.azimuth.max_velocity``) has the same value at FYST.
+GO_TCS_AZ_MAX_VELOCITY: float = 3.0
+
+#: Elevation speed limit of the Go TCS command layer, in deg/s. A commanded
+#: point whose elevation speed exceeds it is refused. Wider than the site's
+#: advisory limit (``Site.telescope_limits.elevation.max_velocity``).
+GO_TCS_EL_MAX_VELOCITY: float = 1.5
+
+#: Azimuth acceleration limit of the Go TCS command layer, in deg/s^2: the axis
+#: maximum it plans its own moves with. Wider than the site's advisory limit
+#: (``Site.telescope_limits.azimuth.max_acceleration``).
+GO_TCS_AZ_MAX_ACCELERATION: float = 6.0
+
+#: Elevation acceleration limit of the Go TCS command layer, in deg/s^2: the
+#: axis maximum it plans its own moves with. Wider than the site's advisory
+#: limit (``Site.telescope_limits.elevation.max_acceleration``).
+GO_TCS_EL_MAX_ACCELERATION: float = 1.5
+
 
 def to_path_format(trajectory: Trajectory) -> list[list[float]]:
     """Convert trajectory to the ``points`` list for the Go TCS ``/path`` endpoint.
@@ -636,10 +660,13 @@ def to_path_format(trajectory: Trajectory) -> list[list[float]]:
         ``GO_TCS_MIN_SAMPLE_INTERVAL_SEC`` (50 ms). The Go TCS ``/path``
         receiver hard-rejects such a body with HTTP 400 (ACU ICD 2.0 section 8.9.3),
         so the check is enforced here at the serialization boundary rather
-        than failing at POST time. A time grid built at exactly 0.05 s
-        (``timestep=0.05``) usually carries float round-off just below it,
-        which this check and Go TCS both refuse, so choose a timestep above
-        0.05 s.
+        than failing at POST time. The test is on the trajectory's own
+        sample spacing, so for a requested step within rounding of 0.05 s
+        the verdict rests on the last bits of that spacing: a pong snapped
+        to 0.05 s (``timestep=0.0500001`` included) falls just below it by
+        float round-off and is refused, while a constant-elevation field
+        pass, whose length is not a whole number of steps, can land just
+        above it and pass. ``timestep=0.051`` passes.
 
     Notes
     -----

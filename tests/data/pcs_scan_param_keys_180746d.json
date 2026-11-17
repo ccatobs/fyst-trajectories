@@ -1,0 +1,80 @@
+{
+  "repository": "ccatobs/pcs",
+  "commit": "180746d",
+  "path": "pcs/agents/acu_interface/trajectory.py",
+  "description": "scan_params keys each typed scan task's trajectory builder reads at this revision, by task; a key a builder does not read is dropped without a message at this revision",
+  "tasks": {
+    "constant_el_scan": {
+      "function": "build_constant_el_payload",
+      "keys": [
+        "angle",
+        "az_accel",
+        "az_padding",
+        "dec_center",
+        "elevation",
+        "height",
+        "lsa_window",
+        "max_search_hours",
+        "ra_center",
+        "rising",
+        "step_seconds",
+        "timestep",
+        "velocity",
+        "width"
+      ]
+    },
+    "pong_scan": {
+      "function": "build_pong_payload",
+      "keys": [
+        "angle",
+        "dec_center",
+        "height",
+        "n_cycles",
+        "num_terms",
+        "ra_center",
+        "spacing",
+        "timestep",
+        "velocity",
+        "width"
+      ]
+    },
+    "daisy_scan": {
+      "function": "build_daisy_payload",
+      "keys": [
+        "avoidance_radius",
+        "dec",
+        "duration",
+        "ra",
+        "radius",
+        "start_acceleration",
+        "timestep",
+        "turn_radius",
+        "velocity",
+        "y_offset"
+      ]
+    },
+    "source_scan": {
+      "function": "build_source_payload",
+      "keys": [
+        "allow_partial",
+        "az_accel",
+        "az_branch",
+        "az_padding",
+        "body",
+        "boresight_rot",
+        "dec",
+        "el_bore",
+        "footprint",
+        "mode",
+        "pm_dec",
+        "pm_ra",
+        "ra",
+        "ref_epoch",
+        "sampling_step_seconds",
+        "timestep",
+        "v_az",
+        "window"
+      ]
+    }
+  }
+}

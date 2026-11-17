@@ -11,7 +11,7 @@ from fyst_trajectories import PRIMECAM_MODULES, plan_source_ces
 # picked from a sweep over 2026 to give well-behaved Jupiter/sidereal
 # arcs at FYST.
 _JUPITER_NIGHT = Time("2026-03-15T00:00:00", scale="utc")
-_FULL_PRIMECAM_MODULES = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+_FULL_PRIMECAM_MODULES = list(PRIMECAM_MODULES.values())
 
 # A Jupiter rising anchor on the test night (el ~ 32.6 deg, climbing). Reuses
 # the ~21:41 UTC rising window the pass tests lean on.

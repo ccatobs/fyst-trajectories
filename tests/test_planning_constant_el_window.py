@@ -1,5 +1,6 @@
-"""Tests for plan_constant_el_window_scan."""
+"""Tests for the window form of plan_constant_el_scan, selected by az_window with duration."""
 
+import inspect
 import math
 import re
 import warnings
@@ -7,6 +8,7 @@ from decimal import Decimal
 
 import numpy as np
 import pytest
+from _off_axis_offsets import off_axis_offset
 from astropy import units as u
 from astropy.coordinates import FK5, SkyCoord
 from astropy.time import Time
@@ -33,7 +35,6 @@ from fyst_trajectories.planning import (
     FieldRegion,
     ScanBlock,
     plan_constant_el_scan,
-    plan_constant_el_window_scan,
     validate_computed_params,
 )
 from fyst_trajectories.planning._ce_geometry import (
@@ -140,7 +141,7 @@ def _plan(site, field=None, **overrides):
         start_time=_NIGHT,
     )
     kwargs.update(overrides)
-    return plan_constant_el_window_scan(field, **kwargs)
+    return plan_constant_el_scan(field, **kwargs)
 
 
 def _replay(block, **overrides):
@@ -156,13 +157,13 @@ def _replay(block, **overrides):
         start_time=block.trajectory.start_time,
     )
     kwargs.update(overrides)
-    return plan_constant_el_window_scan(**kwargs)
+    return plan_constant_el_scan(**kwargs)
 
 
 @pytest.fixture(scope="module")
 def example_block():
     """Return the docstring example's block."""
-    return plan_constant_el_window_scan(_FIELD, site=get_fyst_site(), **_EXAMPLE)
+    return plan_constant_el_scan(_FIELD, site=get_fyst_site(), **_EXAMPLE)
 
 
 @pytest.fixture(scope="module", params=["rising", "setting"])
@@ -181,7 +182,7 @@ def field_pass(request):
     return side, block
 
 
-class TestPlanConstantElWindowScan:
+class TestWindowForm:
     """Block shape, the literal start, the window as commanded, and the summary."""
 
     def test_basic_plan(self, example_block):
@@ -272,7 +273,7 @@ class TestPlanConstantElWindowScan:
         assert shift == pytest.approx(600.0, abs=1e-6)
 
     def test_the_field_never_shapes_the_trajectory(self, site, example_block):
-        bare = plan_constant_el_window_scan(None, site=site, **_EXAMPLE)
+        bare = plan_constant_el_scan(None, site=site, **_EXAMPLE)
         assert bare.computed_params == example_block.computed_params
         assert bare.config == example_block.config
         np.testing.assert_array_equal(bare.trajectory.az, example_block.trajectory.az)
@@ -283,7 +284,7 @@ class TestPlanConstantElWindowScan:
     def test_a_tt_start_time_records_utc_times(self, site, example_block):
         """The recorded times and the summary are UTC whatever scale ``start_time`` is in."""
         start = _EXAMPLE["start_time"].tt
-        block = plan_constant_el_window_scan(_FIELD, site=site, **{**_EXAMPLE, "start_time": start})
+        block = plan_constant_el_scan(_FIELD, site=site, **{**_EXAMPLE, "start_time": start})
         for key in ("start_time_iso", "end_time_iso"):
             assert block.computed_params[key] == example_block.computed_params[key]
         assert block.summary == example_block.summary
@@ -292,7 +293,7 @@ class TestPlanConstantElWindowScan:
         self, site, example_block
     ):
         """An ISO string and a JSON-shaped list plan exactly what a Time and a tuple do."""
-        block = plan_constant_el_window_scan(
+        block = plan_constant_el_scan(
             _FIELD,
             site=site,
             **{**_EXAMPLE, "start_time": "2026-03-15T17:20:00", "az_window": [101.0, 111.6]},
@@ -312,7 +313,7 @@ class TestPlanConstantElWindowScan:
         ],
     )
     def test_a_decimal_argument_plans_as_its_float(self, site, example_block, name, value):
-        block = plan_constant_el_window_scan(_FIELD, site=site, **{**_EXAMPLE, name: value})
+        block = plan_constant_el_scan(_FIELD, site=site, **{**_EXAMPLE, name: value})
         assert block.computed_params == example_block.computed_params
         assert block.config == example_block.config
         np.testing.assert_array_equal(block.trajectory.az, example_block.trajectory.az)
@@ -340,10 +341,166 @@ class TestPlanConstantElWindowScan:
         assert np.sum(~science) == 75 * 9
         assert science[0] and science[-1]
 
-    def test_the_planner_is_public(self):
-        assert fyst_trajectories.plan_constant_el_window_scan is plan_constant_el_window_scan
-        assert "plan_constant_el_window_scan" in fyst_trajectories.__all__
-        assert "plan_constant_el_window_scan" in planning.__all__
+
+class TestOnePlannerTwoForms:
+    """One public planner: ``az_window`` with ``duration`` selects the window form.
+
+    The five field-form arguments default to ``None``, meaning not given; any
+    other value of one is refused beside ``az_window``, by a ``ValueError``
+    naming it, before anything is computed. ``duration`` is refused without
+    ``az_window`` the same way.
+    """
+
+    @pytest.mark.parametrize(
+        ("extra", "name"),
+        [
+            pytest.param({"rising": True}, "rising", id="rising"),
+            pytest.param({"rising": False}, "rising", id="rising-false"),
+            pytest.param({"lsa_window": (310.0, 10.0)}, "lsa_window", id="lsa_window"),
+            pytest.param({"angle": 170.0}, "angle", id="angle"),
+            pytest.param({"angle": 10.0}, "angle", id="angle-10"),
+            pytest.param({"angle": 0.0}, "angle", id="angle-zero"),
+            pytest.param({"angle": np.float64(0.0)}, "angle", id="angle-numpy-scalar"),
+            pytest.param({"angle": np.zeros(2)}, "angle", id="angle-array"),
+            pytest.param({"max_search_hours": 12.0}, "max_search_hours", id="max_search_hours"),
+            pytest.param({"step_seconds": 30.0}, "step_seconds", id="step_seconds"),
+        ],
+    )
+    def test_a_field_form_argument_beside_az_window_is_refused(self, site, extra, name):
+        with pytest.raises(ValueError, match=rf"^{name} is not accepted with az_window: ") as info:
+            plan_constant_el_scan(_FIELD, site=site, **_EXAMPLE, **extra)
+        assert "belongs to the field form" in str(info.value)
+        assert not isinstance(info.value, PointingError)
+
+    @pytest.mark.parametrize(
+        ("extra", "name"),
+        [
+            pytest.param(
+                {
+                    "step_seconds": 30.0,
+                    "max_search_hours": 12.0,
+                    "lsa_window": (310.0, 10.0),
+                    "angle": 10.0,
+                    "rising": True,
+                },
+                "rising",
+                id="all-five",
+            ),
+            pytest.param(
+                {"lsa_window": (310.0, 10.0), "angle": 10.0}, "angle", id="angle-and-lsa_window"
+            ),
+            pytest.param(
+                {"step_seconds": 30.0, "max_search_hours": 12.0},
+                "max_search_hours",
+                id="the-search-pair",
+            ),
+        ],
+    )
+    def test_of_several_field_form_arguments_the_first_in_the_signature_is_named(
+        self, site, extra, name
+    ):
+        with pytest.raises(ValueError, match=rf"^{name} is not accepted with az_window: "):
+            plan_constant_el_scan(_FIELD, site=site, **_EXAMPLE, **extra)
+
+    def test_the_cross_form_refusal_comes_before_any_other_check(self, site):
+        """A malformed window is not reached: the cross-form refusal comes first."""
+        with pytest.raises(ValueError, match=r"^rising is not accepted with az_window: "):
+            plan_constant_el_scan(
+                _FIELD, site=site, **{**_EXAMPLE, "az_window": (111.6, 101.0)}, rising=True
+            )
+
+    @pytest.mark.parametrize("duration", [1680.0, 0.0], ids=["positive", "zero"])
+    def test_duration_without_az_window_is_refused(self, site, duration):
+        """Refused as an argument of the other form, before its value is judged."""
+        refusal = r"^duration is not accepted without az_window: "
+        with pytest.raises(ValueError, match=refusal) as info:
+            plan_constant_el_scan(
+                _FIELD,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time="2026-03-15T17:00:00",
+                duration=duration,
+            )
+        assert "belongs to the window form" in str(info.value)
+
+    @pytest.mark.parametrize(
+        ("overrides", "match"),
+        [
+            pytest.param({"az_window": (5.0, 1.0)}, r"^az_window must have az_hi > az_lo", id="az"),
+            pytest.param({"elevation": math.nan}, r"^elevation must", id="elevation"),
+            pytest.param({"velocity": -1.0}, r"^velocity must", id="velocity"),
+            pytest.param({}, r"^duration must be a real number, got None$", id="duration-alone"),
+        ],
+    )
+    def test_a_missing_duration_is_refused_in_its_turn(self, site, overrides, match):
+        """Without ``duration``, a malformed argument checked before it is named first.
+
+        The window form checks ``az_window``, ``elevation`` and ``velocity``
+        before ``duration``, so a missing ``duration`` is named only when they
+        pass.
+        """
+        kwargs = {k: v for k, v in _EXAMPLE.items() if k != "duration"}
+        with pytest.raises(ValueError, match=match) as info:
+            plan_constant_el_scan(_FIELD, site=site, **{**kwargs, **overrides})
+        assert not isinstance(info.value, PointingError)
+
+    def test_neither_a_field_nor_az_window_is_refused(self, site):
+        with pytest.raises(ValueError, match=r"needs a field or an az_window") as info:
+            plan_constant_el_scan(
+                elevation=50.0, velocity=0.5, site=site, start_time="2026-03-15T17:00:00"
+            )
+        assert not isinstance(info.value, PointingError)
+
+    def test_a_field_form_argument_passed_as_none_is_accepted_beside_az_window(
+        self, site, example_block
+    ):
+        """``None`` is not given, so forwarding all five as ``None`` plans the window."""
+        block = plan_constant_el_scan(
+            _FIELD,
+            site=site,
+            **_EXAMPLE,
+            rising=None,
+            angle=None,
+            lsa_window=None,
+            max_search_hours=None,
+            step_seconds=None,
+        )
+        assert block.summary == example_block.summary
+        np.testing.assert_array_equal(block.trajectory.az, example_block.trajectory.az)
+
+    def test_the_field_forms_angle_none_and_zero_plan_the_unrotated_field(self, site):
+        kwargs = dict(elevation=50.0, velocity=0.5, site=site, start_time="2026-03-15T17:00:00")
+        default = plan_constant_el_scan(_FIELD, **kwargs)
+        for angle in (None, 0.0):
+            block = plan_constant_el_scan(_FIELD, **kwargs, angle=angle)
+            assert block.computed_params == default.computed_params
+            np.testing.assert_array_equal(block.trajectory.az, default.trajectory.az)
+        rotated = plan_constant_el_scan(_FIELD, **kwargs, angle=170.0)
+        assert rotated.computed_params != default.computed_params
+
+    def test_the_signature_holds_both_forms(self):
+        params = inspect.signature(plan_constant_el_scan).parameters
+        for name in (
+            "az_window",
+            "duration",
+            "rising",
+            "angle",
+            "lsa_window",
+            "max_search_hours",
+            "step_seconds",
+        ):
+            assert params[name].default is None, name
+
+    def test_the_window_planners_old_name_is_gone(self):
+        assert not hasattr(fyst_trajectories, "plan_constant_el_window_scan")
+        assert not hasattr(planning, "plan_constant_el_window_scan")
+        assert "plan_constant_el_window_scan" not in fyst_trajectories.__all__
+        assert "plan_constant_el_window_scan" not in planning.__all__
+        with pytest.raises(ImportError):
+            exec("from fyst_trajectories import plan_constant_el_window_scan", {})
+        with pytest.raises(ImportError):
+            exec("from fyst_trajectories.planning import plan_constant_el_window_scan", {})
 
 
 class TestWindowQuantisation:
@@ -370,7 +527,7 @@ class TestWindowQuantisation:
     def test_the_field_forms_pass_replays_bit_for_bit(self, field_pass):
         """Given a pass's window, start and crossing time, the window form builds that pass.
 
-        Both planners round the crossing to whole legs with one quantiser and
+        Both forms round the crossing to whole legs with one quantiser and
         build from one start, so the leg count, the rounded duration and every
         sample agree.
         """
@@ -405,6 +562,86 @@ class TestWindowBranchPlacement:
         limits = site.telescope_limits.azimuth
         assert limits.min <= block.trajectory.az.min()
         assert block.trajectory.az.max() <= limits.max
+
+    @pytest.mark.parametrize(
+        ("window", "n_scans"),
+        [
+            pytest.param(
+                dict(
+                    az_window=(-178.04917435311467, -40.246759103332664),
+                    elevation=50.0,
+                    velocity=2.5,
+                    timestep=0.07,
+                    duration=461.06,
+                ),
+                8,
+                id="eight-legs",
+            ),
+            pytest.param(
+                dict(az_window=(-200.0, -58.15), elevation=45.0, velocity=1.0, duration=141.85),
+                1,
+                id="one-leg",
+            ),
+            pytest.param(
+                dict(az_window=(-215.0, -73.15), elevation=45.0, velocity=1.0, duration=425.55),
+                3,
+                id="three-legs",
+            ),
+            pytest.param(
+                dict(
+                    az_window=(-208.0758, -0.045),
+                    elevation=45.0,
+                    velocity=1.0,
+                    az_accel=1.0,
+                    timestep=0.1,
+                    duration=313.04619999999994,
+                ),
+                1,
+                id="half-a-leg-at-the-limit",
+            ),
+            pytest.param(
+                dict(
+                    az_window=(-204.7, -37.4),
+                    elevation=45.0,
+                    velocity=1.0,
+                    az_accel=1.0,
+                    timestep=0.1,
+                    duration=251.95,
+                ),
+                2,
+                id="half-a-leg",
+            ),
+        ],
+    )
+    def test_a_window_moved_up_a_turn_plans_again_from_where_it_was_placed(
+        self, site, window, n_scans
+    ):
+        """Planned from the window it returned, for its built duration, a scan comes back whole.
+
+        The placed throw differs from the written one in its last bits. The
+        legs are counted on the window as written, which is the sweep the
+        branch was chosen for, and timed on the placed throw, the one the
+        pattern sweeps. The last two durations sit on half a leg of the written
+        throw, where the count must not be taken a second time.
+        """
+        first = plan_constant_el_scan(site=site, start_time=_NIGHT, **window)
+        assert first.config.az_start == window["az_window"][0] + 360.0
+        assert first.computed_params["n_scans"] == n_scans
+        again = plan_constant_el_scan(
+            site=site,
+            start_time=_NIGHT,
+            **{
+                **window,
+                "az_window": (first.config.az_start, first.config.az_stop),
+                "duration": first.duration,
+            },
+        )
+        assert again.duration == first.duration
+        assert again.computed_params["n_scans"] == first.computed_params["n_scans"]
+        for name in ("times", "az", "el", "az_vel", "el_vel", "scan_flag"):
+            np.testing.assert_array_equal(
+                getattr(again.trajectory, name), getattr(first.trajectory, name), err_msg=name
+            )
 
     def test_turnarounds_past_a_limit_move_the_window_a_turn(self, site):
         """At 3 deg/s a turnaround overshoots by 5.6 deg, so a window ending at 359.9 moves down.
@@ -479,28 +716,30 @@ class TestWindowBranchPlacement:
         )
 
     @pytest.mark.parametrize(
-        ("module", "window", "legs", "placed"),
+        ("angle", "window", "legs", "placed"),
         [
-            pytest.param("i2", (184.79, 359.9), 3, (-175.21, -0.1), id="i2-low-apex"),
-            pytest.param("i5", (-180.5, -4.7855), 2, (179.5, 355.2145), id="i5-high-apex"),
+            pytest.param(-30, (184.79, 359.9), 3, (-175.21, -0.1), id="at-minus-30-low-apex"),
+            pytest.param(150, (-180.5, -4.7855), 2, (179.5, 355.2145), id="at-150-high-apex"),
         ],
     )
-    def test_a_sweep_is_placed_where_its_samples_fit(self, site, module, window, legs, placed):
+    def test_a_sweep_is_placed_where_its_samples_fit(self, site, angle, window, legs, placed):
         """Where no branch holds the whole sweep, its samples, which stop short of an apex, decide.
 
         At 2 deg/s a turnaround's apex lies 2.5 deg past its edge. Each
-        window as given overruns a limit (i2's high turnaround passes 360 deg,
-        i5's low edge lies below -180 deg), and one turn away the boresight's
-        low apex under module i2 (2.29 deg lower in azimuth than the window)
-        lies just below -180 deg, and its high apex under i5 (2.29 deg higher)
-        just above 360 deg, so no branch holds either sweep whole. The pattern
-        and the builder check samples, and those 0.1 s apart stop short of
-        both apexes, so each window moves a turn and plans.
+        window as given overruns a limit (the high turnaround of the window swept
+        by the detector at -30 deg passes 360 deg, the low edge of the one swept
+        by the detector at 150 deg lies below -180 deg), and one turn away the
+        boresight's low apex under the detector at -30 deg (2.29 deg lower in
+        azimuth than the window) lies just below -180 deg, and its high apex
+        under the detector at 150 deg (2.29 deg higher) just above 360 deg, so
+        no branch holds either sweep whole. The pattern and the builder check
+        samples, and those 0.1 s apart stop short of both apexes, so each
+        window moves a turn and plans.
         """
         velocity = 2.0
         t_turn = turnaround_duration_sec(velocity, 1.0)
         duration = legs * (window[1] - window[0]) / velocity + (legs - 1) * t_turn
-        offset = get_primecam_offset(module)
+        offset = off_axis_offset(angle)
         block = _plan(
             site,
             az_window=window,
@@ -550,15 +789,15 @@ class TestWindowBranchPlacement:
         assert block.trajectory.az.max() <= limits.max
 
     def test_a_sweep_stays_where_the_mount_path_fits(self, site):
-        """The module's own path can pass a limit that the mount's does not; the window stays.
+        """The detector's own path can pass a limit that the mount's does not; the window stays.
 
-        The window above, swept by module i2: the module's path still turns
-        at 360.0005 deg, but the boresight, which the mount follows, sits
-        2.29 deg lower in azimuth at el 40, so its whole path fits, and the
-        module's samples 0.1 s apart stop short of 360. The window keeps its
+        The window above, swept by the detector at -30 deg: the detector's path
+        still turns at 360.0005 deg, but the boresight, which the mount follows,
+        sits 2.29 deg lower in azimuth at el 40, so its whole path fits, and the
+        detector's samples 0.1 s apart stop short of 360. The window keeps its
         branch.
         """
-        offset = get_primecam_offset("i2")
+        offset = off_axis_offset(-30)
         window = (300.0, 357.5005)
         block = _plan(
             site,
@@ -583,15 +822,15 @@ class TestWindowBranchPlacement:
         """Where both branches hold the samples, the one that holds the mount's whole path is taken.
 
         Three legs at 2 deg/s across (182.4995, 355.2146) turn at both edges,
-        2.5 deg past each. Swept by module i5, whose boresight sits 2.29 deg
-        higher in azimuth at el 40, the boresight's high apex lies at
+        2.5 deg past each. Swept by the detector at 150 deg, whose boresight
+        sits 2.29 deg higher in azimuth at el 40, the boresight's high apex lies at
         360.0005 deg. The samples 0.1 s apart stop short of it, so the window
         could be built as given, but the mount, which follows the boresight,
         would pass the limit between them. One turn down the boresight's
-        whole path fits, and the module's samples stop short of its low apex
+        whole path fits, and the detector's samples stop short of its low apex
         at -180.0005, so the window moves there.
         """
-        offset = get_primecam_offset("i5")
+        offset = off_axis_offset(150)
         d = _boresight_az_offset(40.0, offset, site)
         window = (182.4995, 355.2146)
         block = _plan(
@@ -681,22 +920,22 @@ class TestWindowBranchPlacement:
         assert block.trajectory.az.max() <= limits.max
 
     @pytest.mark.parametrize(
-        ("module", "window", "placed"),
+        ("angle", "window", "placed"),
         [
-            pytest.param("i2", (186.0, 358.0), (-174.0, -2.0), id="i2-high-turn-past-360"),
-            pytest.param("i5", (-178.0, -6.0), (-178.0, -6.0), id="i5-no-low-turn"),
+            pytest.param(-30, (186.0, 358.0), (-174.0, -2.0), id="at-minus-30-high-turn-past-360"),
+            pytest.param(150, (-178.0, -6.0), (-178.0, -6.0), id="at-150-no-low-turn"),
         ],
     )
     def test_an_off_axis_two_leg_sweep_is_placed_by_the_turnarounds_it_makes(
-        self, site, module, window, placed
+        self, site, angle, window, placed
     ):
         """A 100 s sweep at 3 deg/s is two legs, which turn only at the high edge.
 
-        With module i2 the window's high turnaround reaches 363.62 deg, so the
-        window moves a turn down, where the boresight, 2.29 deg lower, fits
-        too. With module i5 nothing turns at the low edge, -178 deg, and the
-        high turnaround and the boresight, 2.29 deg higher, end below 2 deg, so
-        the window keeps its branch.
+        With the detector at -30 deg the window's high turnaround reaches
+        363.62 deg, so the window moves a turn down, where the boresight,
+        2.29 deg lower, fits too. With the detector at 150 deg nothing turns at
+        the low edge, -178 deg, and the high turnaround and the boresight,
+        2.29 deg higher, end below 2 deg, so the window keeps its branch.
         """
         block = _plan(
             site,
@@ -704,7 +943,7 @@ class TestWindowBranchPlacement:
             elevation=40.0,
             velocity=3.0,
             duration=100.0,
-            detector_offset=get_primecam_offset(module),
+            detector_offset=off_axis_offset(angle),
         )
         cp = block.computed_params
         assert cp["n_scans"] == 2
@@ -714,22 +953,22 @@ class TestWindowBranchPlacement:
         assert block.trajectory.az.max() <= limits.max
 
     @pytest.mark.parametrize(
-        ("module", "window", "placed"),
+        ("angle", "window", "placed"),
         [
-            pytest.param("i5", (345.14, 354.78), (-14.86, -5.22), id="i5-past-360"),
-            pytest.param("i2", (-176.0, -168.0), (184.0, 192.0), id="i2-past-minus-180"),
+            pytest.param(150, (345.14, 354.78), (-14.86, -5.22), id="at-150-past-360"),
+            pytest.param(-30, (-176.0, -168.0), (184.0, 192.0), id="at-minus-30-past-minus-180"),
         ],
     )
     def test_an_off_axis_module_takes_the_branch_its_boresight_holds(
-        self, site, module, window, placed
+        self, site, angle, window, placed
     ):
         """A detector offset moves the boresight's turnarounds, and the branch must hold them.
 
-        At el 40 module i5 puts the boresight 2.29 deg higher in azimuth than
-        the window and i2 2.29 deg lower. At 2.2 deg/s each window's own
-        turnaround envelope, 3.03 deg beyond each end, fits its branch, but
-        the boresight's runs past 360 deg or below -180 deg, so the window
-        moves a whole turn.
+        At el 40 the detector at 150 deg puts the boresight 2.29 deg higher in
+        azimuth than the window and the one at -30 deg 2.29 deg lower. At
+        2.2 deg/s each window's own turnaround envelope, 3.03 deg beyond each
+        end, fits its branch, but the boresight's runs past 360 deg or below
+        -180 deg, so the window moves a whole turn.
         """
         block = _plan(
             site,
@@ -737,7 +976,7 @@ class TestWindowBranchPlacement:
             elevation=40.0,
             velocity=2.2,
             duration=600.0,
-            detector_offset=get_primecam_offset(module),
+            detector_offset=off_axis_offset(angle),
         )
         cp = block.computed_params
         assert (cp["az_start"], cp["az_stop"]) == pytest.approx(placed)
@@ -748,7 +987,8 @@ class TestWindowBranchPlacement:
     def test_the_commanded_window_must_fit_as_well(self, site):
         """The pattern checks the commanded window and the builder the boresight, so both must fit.
 
-        Module i2 puts the boresight 2.29 deg lower in azimuth than the window.
+        The detector at -30 deg puts the boresight 2.29 deg lower in azimuth than
+        the window.
         At 3 deg/s the window's turnaround envelope ends at 360.41, past the
         limit, while the boresight's ends at 358.11, inside it; the window
         still moves a turn down, since the pattern checks the window's
@@ -760,12 +1000,12 @@ class TestWindowBranchPlacement:
             elevation=40.0,
             velocity=3.0,
             duration=600.0,
-            detector_offset=get_primecam_offset("i2"),
+            detector_offset=off_axis_offset(-30),
         )
         cp = block.computed_params
         assert (cp["az_start"], cp["az_stop"]) == pytest.approx((-14.86, -5.22))
 
-    @pytest.mark.parametrize("module", ["i1", "i2", "i3", "i4", "i5", "i6"])
+    @pytest.mark.parametrize("module", ["IM1", "IM2", "IM3", "IM4", "IM5", "IM6"])
     def test_the_boresight_sits_a_constant_azimuth_from_the_window(self, site, module):
         """At a fixed elevation the offset moves the boresight by one azimuth, the rule's input."""
         offset = get_primecam_offset(module)
@@ -820,7 +1060,9 @@ class TestWindowRefusals:
             pytest.param({"az_window": (101.0, 101.0)}, r"az_hi > az_lo", id="equal-ends"),
             pytest.param({"az_window": 101.0}, r"must be a pair", id="scalar"),
             pytest.param({"az_window": (100.0, 105.0, 110.0)}, r"must be a pair", id="triple"),
-            pytest.param({"az_window": None}, r"must be a pair", id="none"),
+            pytest.param(
+                {"az_window": None}, r"needs a field or an az_window", id="none-and-no-field"
+            ),
             pytest.param({"az_window": (math.nan, 111.6)}, r"az_window\[0\] must", id="nan-lo"),
             pytest.param({"az_window": (101.0, math.inf)}, r"az_window\[1\] must", id="inf-hi"),
             pytest.param({"az_window": (True, 111.6)}, r"az_window\[0\] must", id="bool-lo"),
@@ -857,7 +1099,7 @@ class TestWindowRefusals:
         assert cp["n_scans"] == 1
 
     @pytest.mark.parametrize("field", [None, _FIELD], ids=["no-field", "field"])
-    @pytest.mark.parametrize("module", [None, "i1"])
+    @pytest.mark.parametrize("module", [None, "IM2"])
     @pytest.mark.parametrize("elevation", [-30.0, -5.0, 5.0, 10.0, 95.0])
     def test_an_elevation_outside_the_limits_is_refused(self, site, elevation, module, field):
         """The build refuses the elevation before the drift checks run, so nothing warns."""
@@ -871,13 +1113,13 @@ class TestWindowRefusals:
     def test_a_module_at_the_zenith_is_refused_for_every_sample(self, site):
         """The boresight solve fails at el 90, and the builder's refusal names the samples."""
         with pytest.raises(OffsetInversionError) as excinfo:
-            _plan(site, elevation=90.0, detector_offset=get_primecam_offset("i1"))
+            _plan(site, elevation=90.0, detector_offset=get_primecam_offset("IM2"))
         assert excinfo.value.indices
 
     def test_a_module_whose_boresight_solve_does_not_converge_is_refused(self, site):
-        """At el 88.5, inside the elevation limits, the boresight solve for i1 does not converge."""
+        """At el 88.5, inside the elevation limits, IM2's boresight solve does not converge."""
         with pytest.raises(OffsetInversionError, match="failed to converge"):
-            _plan(site, elevation=88.5, detector_offset=get_primecam_offset("i1"))
+            _plan(site, elevation=88.5, detector_offset=get_primecam_offset("IM2"))
 
     @pytest.mark.filterwarnings(
         "ignore:Turnaround distance:fyst_trajectories.exceptions.PointingWarning"

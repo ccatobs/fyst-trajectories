@@ -32,6 +32,6 @@ def test_schema_names_are_the_overhead_exports():
     """Every ``overhead.schemas`` public name is the object ``overhead`` exports."""
     from fyst_trajectories.overhead import schemas
 
-    assert len(schemas.__all__) == 12
+    assert len(schemas.__all__) == 13
     assert [n for n in schemas.__all__ if n not in overhead.__all__] == []
     assert [n for n in schemas.__all__ if getattr(overhead, n) is not getattr(schemas, n)] == []

@@ -12,6 +12,7 @@ import logging
 import math
 import re
 import warnings
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -22,7 +23,7 @@ from astropy.table import Table
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import MODULE_FOV_RADIUS_DEG, PRIMECAM_MODULES, get_fyst_site
-from fyst_trajectories.exceptions import PointingWarning
+from fyst_trajectories.exceptions import PointingError, PointingWarning
 from fyst_trajectories.overhead import (
     BOOTSTRAP_POSE,
     BlockNotReconstructableError,
@@ -41,6 +42,7 @@ from fyst_trajectories.overhead import (
     TimelineBlock,
     TuningPolicy,
     VisitPlan,
+    _execution_screen,
     advance_idle,
     commit_visit,
     dispatch_sheet,
@@ -57,6 +59,7 @@ from fyst_trajectories.overhead.calibration_night import step
 from fyst_trajectories.overhead.calibration_night.tables import table_for
 from fyst_trajectories.overhead.simulation import _generate_trajectory_for_block
 from fyst_trajectories.overhead.utils import _search_start_time
+from fyst_trajectories.planning.source_ces import _anchor as _anchor_module
 
 NIGHT_START = "2026-09-11T06:30:00"
 NIGHT_END = "2026-09-11T08:00:00"
@@ -286,7 +289,7 @@ class TestContextInputs:
 class TestPolicyFootprint:
     """The footprint tag is resolved when the policy is built, as a body name is by the context."""
 
-    @pytest.mark.parametrize("tag", ["c,i1", "zzz", "IM1", "all", "", " c"])
+    @pytest.mark.parametrize("tag", ["c,IM1", "zzz", "IM7", "all", "", " c"])
     def test_a_tag_naming_no_module_is_refused_when_the_policy_is_built(self, tag):
         """The tag fails here, not at the first visit's footprint lookup.
 
@@ -299,16 +302,29 @@ class TestPolicyFootprint:
         with pytest.raises(ValueError, match=re.escape(prefix)) as caught:
             CalibrationNightPolicy(footprint=tag)
         available = str(caught.value).split("Available: ", 1)[1].split(", ")
-        assert {*PRIMECAM_MODULES, "im0"} <= set(available)
+        assert available == list(PRIMECAM_MODULES)
 
-    @pytest.mark.parametrize("tag", [None, ["c", "i1"], 0])
+    @pytest.mark.parametrize("tag", ["i1", "I4", "i6"])
+    def test_a_retired_ring_label_is_refused_with_the_note(self, tag):
+        """The labels ``i1`` .. ``i6`` name no bay, and the message says so."""
+        expected = (
+            f"footprint: Unknown PrimeCam module '{tag}'. "
+            "Available: IM0, IM1, IM2, IM3, IM4, IM5, IM6. "
+            "The labels i1..i6 are no longer defined: the ring is the bays IM1..IM6, "
+            "at different positions, and i<n> is not IM<n>."
+        )
+        with pytest.raises(ValueError) as caught:
+            CalibrationNightPolicy(footprint=tag)
+        assert str(caught.value) == expected
+
+    @pytest.mark.parametrize("tag", [None, ["c", "IM1"], 0])
     def test_a_footprint_that_is_not_a_string_is_refused(self, tag):
         """A malformed argument is a ``ValueError`` saying what is expected."""
         expected = f"footprint must be a str naming one Prime-Cam module, got {tag!r}"
         with pytest.raises(ValueError, match=re.escape(expected)):
             CalibrationNightPolicy(footprint=tag)
 
-    @pytest.mark.parametrize("tag", ["c", "C", "center", "IM0", "i1", "I6"])
+    @pytest.mark.parametrize("tag", ["c", "C", "center", "IM0", "im0", "IM1", "Im3", "im6"])
     def test_a_module_name_in_any_case_is_accepted(self, tag):
         assert CalibrationNightPolicy(footprint=tag).footprint == tag
 
@@ -465,7 +481,8 @@ class TestRealVisit:
         assert meta["solved"]["crossing_seconds"] > 0.0
         assert 0.3 < meta["science_fraction"] < 0.8
         assert meta["transition"]["path"] == "direct"
-        assert meta["module_crossings"]["c"] > 0.0
+        assert set(meta["module_crossings"]) == set(PRIMECAM_MODULES)
+        assert meta["module_crossings"]["IM0"] > 0.0
         assert meta["t0_scan"] == block.t_start.iso
 
     def test_pass_dict_requests_no_boresight_rotation(self, saturn_visit):
@@ -533,20 +550,42 @@ class TestRealVisit:
         )
         assert not np.array_equal(rebuilt.trajectory.az, plan.passes[0].trajectory.az)
 
-    def test_the_centre_module_by_its_im_label_is_not_warned(self, site):
-        """``IM0`` names the centre module, so the visit records no off-centre advisory.
+    @pytest.mark.parametrize("tag", ["IM0", "im0", "Center"])
+    def test_the_on_axis_bay_in_any_spelling_is_written_c_and_not_warned(self, site, tag):
+        """``IM0``, ``c`` and ``center`` name the on-axis bay, so no off-centre advisory.
 
         The execution layer's centred-only check compares the dict's
         ``footprint`` as a string and accepts ``"c"`` and ``"center"``
-        only, so the dict names the module ``"c"``, not ``"IM0"``.
+        only, so the dict names the bay ``"c"`` whatever the policy's
+        spelling; the policy keeps the spelling it was given.
         """
-        policy = CalibrationNightPolicy(footprint="IM0")
+        policy = CalibrationNightPolicy(footprint=tag)
         ctx = NightContext.build(["saturn"], site, NIGHT_START, NIGHT_END, policy=policy)
         state = NightState.initial(ctx.start_time)
         plan = plan_visit(state, ctx, "saturn")
         assert plan.feasible, plan.summary
         assert not any("centred footprints only" in w for w in plan.warnings)
         assert plan.blocks[-1].metadata["scan_params"]["footprint"] == "c"
+        assert ctx.policy.footprint == tag
+
+    def test_a_ring_bay_is_written_by_its_im_name_and_warned(self, site):
+        """A ring bay plans for simulation, with the execution layer's limit recorded.
+
+        The policy names the bay in lower case; the dict carries its key,
+        ``IM4``, and the visit's warnings say the execution layer takes
+        centred footprints only.
+        """
+        policy = CalibrationNightPolicy(footprint="im4")
+        ctx = NightContext.build(["saturn"], site, NIGHT_START, NIGHT_END, policy=policy)
+        state = NightState.initial(ctx.start_time)
+        plan = plan_visit(state, ctx, "saturn")
+        assert plan.feasible, plan.summary
+        expected = (
+            "footprint 'im4' is planned for simulation; the execution layer accepts "
+            "centred footprints only"
+        )
+        assert expected in plan.warnings
+        assert plan.blocks[-1].metadata["scan_params"]["footprint"] == "IM4"
 
     def test_unknown_body_raises(self, saturn_visit):
         ctx, state, _ = saturn_visit
@@ -752,7 +791,7 @@ def _waits(plan):
     wrap_shift = plan.transition.az_to - float(plan.passes[0].trajectory.az[0])
     blocks = [b for b in plan.blocks if b.scan_type == "planet_cal"]
     waits = []
-    for before, after, p in zip(blocks, blocks[1:], plan.passes[1:]):
+    for (before, after), p in zip(pairwise(blocks), plan.passes[1:], strict=True):
         start = (float(p.trajectory.az[0]) + wrap_shift, float(p.trajectory.el[0]))
         waits.append((before.t_stop, (before.end_pose_az, before.elevation), after.t_start, start))
     return waits
@@ -793,7 +832,7 @@ class TestMultiPassVisit:
         wrap_shift = plan.transition.az_to - float(plan.passes[0].trajectory.az[0])
         pass_blocks = [b for b in plan.blocks if b.scan_type == "planet_cal"]
         assert len(pass_blocks) == 3
-        for block, p in zip(pass_blocks, plan.passes):
+        for block, p in zip(pass_blocks, plan.passes, strict=True):
             assert block.az_final == pytest.approx(float(p.trajectory.az[-1]) + wrap_shift)
             assert block.elevation == pytest.approx(float(p.computed_params["el_bore"]))
         # The elevations really do step, so the pose checks below are not
@@ -830,7 +869,7 @@ class TestMultiPassVisit:
         write_timeline(timeline, path)
         reloaded = read_timeline(path)
         assert reloaded.validate() == []
-        for before, after in zip(timeline.blocks, reloaded.blocks):
+        for before, after in zip(timeline.blocks, reloaded.blocks, strict=True):
             if before.az_final is None:
                 assert after.az_final is None
             else:
@@ -854,7 +893,7 @@ class TestMultiPassVisit:
         for timeline in (_visit_timeline(ctx, state, plan.blocks), reloaded):
             pairs = _rebuild(timeline)
             assert len(pairs) == len(plan.passes) == 3
-            for (_, rebuilt), planned in zip(pairs, plan.passes):
+            for (_, rebuilt), planned in zip(pairs, plan.passes, strict=True):
                 _assert_same_pass(rebuilt, planned)
 
     def test_a_blocked_step_between_passes_is_refused(self, three_pass_visit):
@@ -1199,6 +1238,84 @@ class TestPlanVisitRefusals:
         assert len(planned) == 1 and planned[0].safe
         assert sweeps == [False]
 
+    @pytest.mark.parametrize(
+        ("limit", "value"),
+        [("GO_TCS_AZ_MAX_ACCELERATION", 1.4), ("GO_TCS_AZ_MAX_VELOCITY", 1.4)],
+        ids=["az_accel", "az_speed"],
+    )
+    def test_a_pass_past_a_go_tcs_axis_limit_is_refused(self, site, monkeypatch, limit, value):
+        """A pass the screen judges past an axis limit is not booked.
+
+        The policy refuses a value past the limits at construction, so the
+        screen's limit is lowered under the defaults (a turnaround peak of
+        1.5 deg/s^2, a sweep of 1.5 deg/s) to reach the gate.
+        """
+        monkeypatch.setattr(_execution_screen, limit, value)
+        plan = _saturn_visit(site)
+        assert plan.reason is DeferralReason.AXIS_DYNAMICS
+        assert plan.blocks == () and plan.transition is None
+
+    @pytest.mark.parametrize(
+        ("build", "message"),
+        [
+            (
+                lambda: CalibrationNightPolicy(az_speed=3.01),
+                r"az_speed 3\.01 deg/s exceeds the Go TCS azimuth velocity limit of 3\.0 deg/s",
+            ),
+            (
+                lambda: CalibrationNightPolicy(az_accel=4.01),
+                r"az_accel 4\.01 deg/s\^2 gives a turnaround peak of 6\.01\d* deg/s\^2 "
+                r"\(1\.5 x az_accel\), which exceeds the Go TCS azimuth acceleration limit "
+                r"of 6\.0 deg/s\^2",
+            ),
+            (
+                lambda: ScanOverrides(az_speed=3.5),
+                r"az_speed 3\.5 deg/s exceeds .* limit of 3\.0 deg/s",
+            ),
+            (
+                lambda: ScanOverrides(az_accel=4.5),
+                r"az_accel 4\.5 deg/s\^2 gives a turnaround peak of 6\.75 deg/s\^2",
+            ),
+        ],
+        ids=["policy_speed", "policy_accel", "override_speed", "override_accel"],
+    )
+    def test_a_sweep_no_pass_could_run_is_refused_at_construction(self, build, message):
+        """No time of night lifts a Go TCS axis limit, so the value is refused at once."""
+        with pytest.raises(ValueError, match=message):
+            build()
+
+    def test_a_sweep_at_the_go_tcs_axis_limits_is_accepted(self):
+        """The limits are strict, as the screen judges them: a value at the limit passes."""
+        CalibrationNightPolicy(az_speed=3.0, az_accel=4.0)
+        ScanOverrides(az_speed=3.0, az_accel=4.0)
+
+    def test_an_idle_after_a_screened_pass_carries_the_screens_reason(self, site):
+        """The tick a screened pass leaves idle says why, not that nothing was available."""
+        policy = CalibrationNightPolicy(retry_after_seconds=300.0, time_step=300.0)
+        for reason in (DeferralReason.SUN_SCAN, DeferralReason.AXIS_DYNAMICS):
+            ctx = NightContext.build(
+                ["saturn"],
+                site,
+                NIGHT_START,
+                NIGHT_END,
+                policy=policy,
+                visit_planner=_RefuseOnce(reason),
+            )
+            first, second = _run(ctx).blocks[:2]
+            assert first.scan_type == "idle" and first.metadata["reason"] == str(reason)
+            assert second.scan_type == "planet_cal"
+
+    def test_a_pass_inside_the_site_radius_is_refused_when_the_model_clears_it(self, site):
+        """The site's exclusion radius, which PCS enforces, is asked of every pass sample.
+
+        The night's own Sun model clears everything, and a radius of 179 deg
+        holds every sample of the pass inside it.
+        """
+        wide = get_fyst_site(sun_exclusion_radius=179.0, sun_warning_radius=179.5)
+        plan = _saturn_visit(wide, sun_safe=fake_sun_model(True), slew_safe=lambda *_: True)
+        assert plan.reason is DeferralReason.SUN_SCAN
+        assert plan.blocks == () and plan.transition is None
+
     def test_a_late_slew_past_the_reanchor_closes_the_window(self, site, monkeypatch):
         """The one re-anchor is spent and the slew is still late.
 
@@ -1245,40 +1362,60 @@ class TestPlanVisitRefusals:
                 assert "dwell" not in block.metadata["requested"]
 
 
-def test_a_visit_whose_anchor_probe_grazes_the_module_plans_as_under_the_table(site):
+def test_a_visit_whose_anchor_probe_grazes_the_module_plans_as_under_the_table(site, monkeypatch):
     """The solved-throw night plans the body's pass where the table-throw night does.
 
-    The night starts so that its first Neptune visit on i2, on 2026-09-11, is
-    anchored at 04:35:49.303 (no dispatch lead, so the start alone places the
-    anchor), 2.9 deg below Neptune's culmination and in the
-    middle of the band of anchors where the probe that derives the boresight
-    elevation lifts the module so high that Neptune reaches only one of its
-    cover vertices. The probe reads only its start, so the padding the solved
-    throw plans with (none) has no say. The module's cover lies above the
-    boresight there, so under either throw the boresight elevation is anchored
-    on Neptune and the pass starts when Neptune reaches the module, 3.3 min
-    after the anchor; only the swept throw differs.
+    The night starts so that its first Neptune visit on IM3, on 2026-09-11, is
+    anchored at 04:32:22.945 (no dispatch lead, so the start alone places the
+    anchor), 3.3 deg below Neptune's culmination and in the middle of the band
+    of anchors, from about 04:32:21.77 to 04:32:24.12, where the probe that
+    derives the boresight elevation lifts the bay so high that Neptune reaches
+    only one of its cover vertices. The probe reads only its start, so the
+    padding the solved throw plans with (none) has no say; the spy below shows
+    that the probe, swept with no padding, would have no width. IM3 sits 60 deg
+    round the ring, turned by the boresight elevation to above the boresight,
+    so under either throw the boresight elevation is anchored on Neptune and
+    the pass starts when Neptune reaches the bay, 7.8 min after the anchor;
+    only the swept throw differs.
     """
+    # The anchor probe is the only kernel call the anchor module makes; the spy
+    # repeats it with no padding and keeps the outcome by the probe's anchor.
+    unpadded = {}
+    real_kernel = _anchor_module._compute_source_ces_core
+
+    def spy(**kwargs):
+        try:
+            real_kernel(**{**kwargs, "az_padding": 0.0})
+        except PointingError as exc:
+            unpadded[kwargs["window"][0].iso] = str(exc)
+        else:
+            unpadded[kwargs["window"][0].iso] = None
+        return real_kernel(**kwargs)
 
     def night(use_table_throw):
         policy = CalibrationNightPolicy(
-            footprint="i2", use_table_throw=use_table_throw, dispatch_lead_seconds=0.0
+            footprint="IM3", use_table_throw=use_table_throw, dispatch_lead_seconds=0.0
         )
         timeline = plan_calibration_night(
             ["neptune"],
             site,
-            "2026-09-11T04:19:51.985",
+            "2026-09-11T04:16:26.206",
             "2026-09-11T04:55:00",
             policy=policy,
         )
         (block,) = [b for b in timeline.blocks if b.scan_type == "planet_cal"]
         return block
 
-    solved, table = night(False), night(True)
+    monkeypatch.setattr(_anchor_module, "_compute_source_ces_core", spy)
+    solved = night(False)
+    monkeypatch.undo()
+    table = night(True)
+    anchor = _search_start_time(solved.metadata["search_start"]).iso
+    assert "crosses the footprint cover at a single azimuth" in unpadded[anchor]
     for block in (solved, table):
         # The search start is the anchor, which pins the visit to the band's middle.
-        assert _search_start_time(block.metadata["search_start"]).iso == "2026-09-11 04:35:49.303"
-        assert block.metadata["t0_scan"] == "2026-09-11 04:39:06.237"
+        assert _search_start_time(block.metadata["search_start"]).iso == "2026-09-11 04:32:22.945"
+        assert block.metadata["t0_scan"] == "2026-09-11 04:40:08.885"
     assert solved.metadata["scan_params"]["el_bore"] == table.metadata["scan_params"]["el_bore"]
     crossing = solved.metadata["solved"]["crossing_seconds"]
     assert crossing == table.metadata["solved"]["crossing_seconds"]
@@ -1406,9 +1543,10 @@ class TestSunEscape:
         """Every body offered in one tick asks the same question; it is solved once.
 
         An infeasible visit leaves the state where it was, so the driver
-        walks on to the next body from the identical pose and time, and
-        the idle after them asks a third time. Each search is a Sun
-        ephemeris solve, so the context memoizes them.
+        walks on to the next body from the identical pose and time. The
+        idle after them asks about the pose for the idle's length, a
+        question of its own, and asking it again is free. Each search is a
+        Sun ephemeris solve, so the context memoizes them.
         """
         from fyst_trajectories.overhead import _moves
 
@@ -1432,9 +1570,12 @@ class TestSunEscape:
 
         assert plan_visit(state, ctx, "saturn").reason is DeferralReason.NO_ESCAPE
         assert plan_visit(state, ctx, "uranus").reason is DeferralReason.NO_ESCAPE
+        assert len(seen) == 1
+
+        advance_idle(state, ctx, 600.0, DeferralReason.NOTHING_AVAILABLE)
         advance_idle(state, ctx, 600.0, DeferralReason.NOTHING_AVAILABLE)
 
-        assert len(seen) == 1
+        assert len(seen) == 2
 
 
 def _planned(site, overrides=None, **context):
@@ -1512,13 +1653,15 @@ class TestPassRebuildRepeatsTheSearch:
         assert _rebuild_visit(ctx, state, plan, _without_search_start(plan.blocks)) == []
 
     def test_an_off_centre_pass_crossing_its_elevation_after_it_rebuilds(self, site):
-        """On ``i3`` Saturn reaches the boresight elevation 21 min after the pass starts.
+        """On ``IM4`` Saturn reaches the boresight elevation 19 min after the pass starts.
 
-        The kernel places the module on the source from that crossing, so a
-        search that ends 300 s after the 12 min pass has nothing to place it
-        from and the rebuild is refused.
+        The boresight elevation turns IM4 to above the boresight, so the
+        setting source crosses the bay before it descends to the boresight
+        elevation. The kernel places the bay on the source from that
+        crossing, so a search that ends 300 s after the 12 min pass has
+        nothing to place it from and the rebuild is refused.
         """
-        ctx, state, plan = _planned(site, policy=CalibrationNightPolicy(footprint="i3"))
+        ctx, state, plan = _planned(site, policy=CalibrationNightPolicy(footprint="IM4"))
         ((_, rebuilt),) = _rebuild_visit(ctx, state, plan)
         _assert_same_pass(rebuilt, plan.passes[0])
         assert _rebuild_visit(ctx, state, plan, _without_search_start(plan.blocks)) == []
@@ -1686,7 +1829,7 @@ def _assert_same_state(resumed, driver):
     assert _same_time(resumed.t, driver.t)
     assert (resumed.az, resumed.el) == pytest.approx((driver.az, driver.el), abs=1e-9)
     assert [b.scan_type for b in resumed.blocks] == [b.scan_type for b in driver.blocks]
-    for got, want in zip(resumed.blocks, driver.blocks):
+    for got, want in zip(resumed.blocks, driver.blocks, strict=True):
         assert _same_time(got.t_start, want.t_start) and _same_time(got.t_stop, want.t_stop)
     for f in dataclasses.fields(driver.cal_state):
         got, want = getattr(resumed.cal_state, f.name), getattr(driver.cal_state, f.name)
@@ -1808,7 +1951,7 @@ class TestResumeFromTimeline:
             plan = plan_visit(resumed, ctx_r, "saturn")
             assert (plan.feasible, plan.reason) == (expected.feasible, expected.reason)
             assert [b.scan_type for b in plan.blocks] == [b.scan_type for b in expected.blocks]
-            for got, want in zip(plan.blocks, expected.blocks):
+            for got, want in zip(plan.blocks, expected.blocks, strict=True):
                 assert _same_time(got.t_start, want.t_start)
                 assert _same_time(got.t_stop, want.t_stop)
 
@@ -1909,6 +2052,21 @@ class TestResumeFromTimeline:
         with pytest.raises(ValueError, match="usable interval"):
             NightContext.from_timeline(tampered)
 
+    def test_a_usable_interval_that_is_not_a_pair_is_refused(self, short_night):
+        from fyst_trajectories.overhead.calibration_night.policy import (
+            encode_calibration_night_metadata,
+        )
+
+        _, timeline = short_night
+        meta = read_calibration_night_metadata(timeline)
+        start, _ = meta["usable_interval"]
+        tampered = dataclasses.replace(
+            timeline,
+            metadata=encode_calibration_night_metadata({**meta, "usable_interval": [start]}),
+        )
+        with pytest.raises(ValueError, match=r"usable interval must be a \(start, end\) pair"):
+            NightContext.from_timeline(tampered)
+
     def test_a_record_without_the_throw_switch_resumes_on_the_table(self, short_night, monkeypatch):
         """A payload written before ``use_table_throw`` existed swept the table's throw."""
         _, timeline = short_night
@@ -1960,7 +2118,7 @@ class TestResumeFromTimeline:
         assert read_calibration_night_metadata(timeline)["policy"]["dispatch_lead_seconds"] == lead
         assert NightContext.from_timeline(timeline).policy.dispatch_lead_seconds == lead
 
-    @pytest.mark.parametrize("tag", ["IM0", "I3"])
+    @pytest.mark.parametrize("tag", ["IM0", "Im3"])
     def test_a_night_on_any_module_name_reads_back(self, site, tag, tmp_path):
         """The tag is recorded as given, and the record rebuilds the same policy."""
         policy = CalibrationNightPolicy(footprint=tag)
@@ -1983,11 +2141,11 @@ class TestResumeFromTimeline:
         )
         timeline = _run(ctx)
         meta = read_calibration_night_metadata(timeline)
-        policy = {**meta["policy"], "footprint": "c,i1"}
+        policy = {**meta["policy"], "footprint": "c,IM1"}
         tampered = dataclasses.replace(
             timeline, metadata=encode_calibration_night_metadata({**meta, "policy": policy})
         )
-        refusal = re.escape("footprint: Unknown PrimeCam module 'c,i1'")
+        refusal = re.escape("footprint: Unknown PrimeCam module 'c,IM1'")
         with pytest.raises(ValueError, match=refusal):
             NightContext.from_timeline(tampered)
         with pytest.raises(ValueError, match=refusal):
@@ -2313,3 +2471,23 @@ class TestSkydipAfterRetune:
             for got, want in zip(plan.blocks, second.blocks, strict=True):
                 assert _same_time(got.t_start, want.t_start)
                 assert _same_time(got.t_stop, want.t_stop)
+
+
+def test_module_crossings_reports_keys_naming_one_offset_once(site):
+    """Two keys that name one offset are reported once, under the first key."""
+    from fyst_trajectories.overhead.calibration_night.helpers import module_crossings
+    from fyst_trajectories.planning import plan_source_ces
+
+    block = plan_source_ces(
+        body="jupiter",
+        footprint="IM0",
+        el_bore=35.0,
+        night=Time("2026-03-15T00:00:00", scale="utc"),
+        mode="rising",
+        site=site,
+    )
+    centre = PRIMECAM_MODULES["IM0"]
+    modules = {"c": centre, "center": centre, "IM4": PRIMECAM_MODULES["IM4"]}
+    crossings = module_crossings(block, site, modules=modules)
+    assert list(crossings) == ["c", "IM4"]
+    assert crossings["c"] == module_crossings(block, site)["IM0"] > 0.0

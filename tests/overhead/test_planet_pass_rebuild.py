@@ -135,47 +135,64 @@ _DWELL_300 = {"default": ScanParameterTable((ElevationBin(30.0, 80.0, 3.0, 300.0
 # (targets, start, end, planner keywords, the keys some pass dict must carry,
 # whether the blocks without ``search_start`` miss a pass).
 _NIGHTS = {
-    "c": (*_PAGE_NIGHT, {}, (), False),
-    # Saturn twice: setting, the i1 cover leads the boresight, so el_bore is
-    # anchored on Saturn, which crosses it less than 300 s before each pass.
-    "i1": (*_PAGE_NIGHT, {"policy": CalibrationNightPolicy(footprint="i1")}, (), False),
-    "i3": (*_PAGE_NIGHT, {"policy": CalibrationNightPolicy(footprint="i3")}, (), True),
-    "i6": (*_PAGE_NIGHT, {"policy": CalibrationNightPolicy(footprint="i6")}, (), True),
-    # A later pass of the first visit crosses its boresight elevation more
-    # than 300 s before it starts.
-    "i1, 7 passes, margin 0.3": (
+    "IM0": (*_PAGE_NIGHT, {}, (), False),
+    # Saturn three times, setting: near el 61 the boresight elevation turns IM5
+    # level with the boresight, and Saturn crosses each pass's boresight
+    # elevation during the pass.
+    "IM5": (*_PAGE_NIGHT, {"policy": CalibrationNightPolicy(footprint="IM5")}, (), False),
+    # IM3 is turned to above the boresight: Saturn crosses each pass's boresight
+    # elevation more than 300 s after the pass ends.
+    "IM3": (*_PAGE_NIGHT, {"policy": CalibrationNightPolicy(footprint="IM3")}, (), True),
+    # IM6 is turned to below the boresight, ahead of the setting source, so
+    # el_bore is anchored on Saturn, which crosses it more than 300 s before
+    # each pass.
+    "IM6": (*_PAGE_NIGHT, {"policy": CalibrationNightPolicy(footprint="IM6")}, (), True),
+    # Saturn twice, two hours later and near el 34: IM1 is turned to below the
+    # boresight by less, so el_bore is anchored on Saturn, which crosses it
+    # less than 300 s before each pass.
+    "IM1": (
+        ["saturn"],
+        "2026-09-11T09:05:00",
+        "2026-09-11T09:50:00",
+        {"policy": CalibrationNightPolicy(footprint="IM1")},
+        (),
+        False,
+    ),
+    # Later passes of the first visit cross their boresight elevation more
+    # than 300 s before they start.
+    "IM6, 7 passes, margin 0.3": (
         ["saturn"],
         "2026-09-10T08:00:00",
         "2026-09-10T10:00:00",
-        {"policy": CalibrationNightPolicy(footprint="i1", n_passes=7, footprint_margin=0.3)},
+        {"policy": CalibrationNightPolicy(footprint="IM6", n_passes=7, footprint_margin=0.3)},
         ("footprint_margin",),
         True,
     ),
-    "i6, 7 passes, margin 0.6": (
+    "IM6, 7 passes, margin 0.6": (
         ["saturn"],
         "2026-09-10T07:40:00",
         "2026-09-10T10:00:00",
-        {"policy": CalibrationNightPolicy(footprint="i6", n_passes=7, footprint_margin=0.6)},
+        {"policy": CalibrationNightPolicy(footprint="IM6", n_passes=7, footprint_margin=0.6)},
         ("footprint_margin",),
         True,
     ),
-    "i2, table throw, margin 0.3": (
+    "IM5, table throw, margin 0.3": (
         *_PAGE_NIGHT,
         {
             "policy": CalibrationNightPolicy(
-                footprint="i2", use_table_throw=True, footprint_margin=0.3
+                footprint="IM5", use_table_throw=True, footprint_margin=0.3
             )
         },
         ("az_throw", "footprint_margin"),
         False,
     ),
     # Three back-to-back Saturn visits, one per override.
-    "i4, per-visit overrides": (
+    "IM2, per-visit overrides": (
         ["saturn"],
         "2026-09-11T06:30:00",
         "2026-09-11T08:00:00",
         {
-            "policy": CalibrationNightPolicy(footprint="i4"),
+            "policy": CalibrationNightPolicy(footprint="IM2"),
             "selection": ScriptedSelection(
                 [
                     ("saturn", ScanOverrides(az_speed=1.0)),
@@ -210,16 +227,18 @@ def test_every_calibration_night_pass_rebuilds_as_planned(case, captured, tmp_pa
 
 # One offline-scheduler planet calibration per footprint, at an anchor where it
 # plans passes: (body, anchor, passes, whether the blocks without
-# ``search_start`` miss a pass). On i1, i3, i4 and i6 the source crosses the
-# boresight elevation of some pass more than 300 s after the pass ends.
+# ``search_start`` miss a pass). On IM1, IM3, IM4 and IM6 the source crosses the
+# boresight elevation of some pass more than 300 s after the pass ends; on IM2
+# and IM5 it crosses the boresight elevation of each pass during the pass or
+# less than 300 s before it starts, inside the widened window.
 _SCHEDULER = {
-    "c": ("saturn", "2026-08-10T05:05:00", 1, False),
-    "i1": ("jupiter", "2026-02-10T00:40:00", 3, True),
-    "i2": ("saturn", "2026-06-10T15:10:00", 3, False),
-    "i3": ("saturn", "2026-06-10T13:20:00", 3, True),
-    "i4": ("uranus", "2026-10-10T09:20:00", 3, True),
-    "i5": ("saturn", "2026-10-10T05:20:00", 3, False),
-    "i6": ("neptune", "2026-06-10T10:00:00", 3, True),
+    "IM0": ("saturn", "2026-08-10T05:05:00", 1, False),
+    "IM1": ("jupiter", "2026-02-10T00:40:00", 3, True),
+    "IM2": ("neptune", "2026-06-10T10:00:00", 3, False),
+    "IM3": ("saturn", "2026-06-10T13:20:00", 3, True),
+    "IM4": ("saturn", "2026-06-10T13:20:00", 3, True),
+    "IM5": ("uranus", "2026-10-10T09:20:00", 3, False),
+    "IM6": ("jupiter", "2026-02-10T00:40:00", 3, True),
 }
 
 
@@ -303,14 +322,14 @@ def _given_in(iso, scale):
 
 @pytest.mark.parametrize("scale", _SCALES)
 def test_a_night_given_in_another_scale_rebuilds_as_planned(scale, captured, tmp_path):
-    """The ``i6`` page night with its window ends given in ``scale`` rebuilds bit for bit.
+    """The ``IM6`` page night with its window ends given in ``scale`` rebuilds bit for bit.
 
     The planner holds every time in UTC, so each pass block records the UTC
     instant its search began at and its UTC start as ``t0_scan``, which the
     capture matches on. The blocks without ``search_start`` miss the night's
     passes, so the recorded instant is what places each rebuilt pass.
     """
-    targets, start, end, kwargs, _, old_rule_misses = _NIGHTS["i6"]
+    targets, start, end, kwargs, _, old_rule_misses = _NIGHTS["IM6"]
     timeline = plan_calibration_night(
         targets,
         get_fyst_site(),
@@ -324,9 +343,9 @@ def test_a_night_given_in_another_scale_rebuilds_as_planned(scale, captured, tmp
 
 @pytest.mark.parametrize("scale", _SCALES)
 def test_a_scheduler_calibration_from_another_scale_rebuilds_as_planned(scale, captured, tmp_path):
-    """The ``i6`` calibration planned from a state and window in ``scale`` rebuilds bit for bit."""
-    _, iso, n_passes, old_rule_misses = _SCHEDULER["i6"]
-    timeline = _scheduler_calibration("i6", _given_in(iso, scale))
+    """The ``IM6`` calibration planned from a state and window in ``scale`` rebuilds bit for bit."""
+    _, iso, n_passes, old_rule_misses = _SCHEDULER["IM6"]
+    timeline = _scheduler_calibration("IM6", _given_in(iso, scale))
     assert {b.t_start.scale for b in timeline.blocks} == {"utc"}
     passes = _assert_every_pass_rebuilds_as_planned(timeline, captured, tmp_path, old_rule_misses)
     assert len(passes) == n_passes

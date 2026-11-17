@@ -62,6 +62,41 @@ operator dispatches those rows (see :doc:`overhead_calibration_night`);
 nothing in the library dispatches them, and a survey night from
 :func:`~fyst_trajectories.overhead.generate_timeline` has no such rows.
 
+.. _overhead-integration-slew-onto-scan:
+
+The Slew onto a Science Scan
+----------------------------
+
+A simulated science visit is a slew, a retune when one is due, a wait
+when a constant-elevation pass has not opened yet, then the scan. The slew
+ends at the first sample of that scan, in azimuth and elevation. On the
+live lane the scan task likewise builds the trajectory first and slews to
+its first sample.
+
+.. figure:: figures/slew_onto_scan.png
+   :alt: Telescope azimuth against time for one simulated constant-elevation visit. The slew
+      ends at the scan's first sample; the telescope waits there through any hold and the
+      retune, and the scan begins where the telescope already is.
+   :width: 100%
+
+   One simulated constant-elevation visit: the slew ends at the scan's
+   first sample, where the telescope waits until the scan begins.
+
+Where that sample is depends on the scan. A constant-elevation scan
+begins wherever its sweep of the azimuth range (see :doc:`planning`)
+stands when the scan starts, a window scan at the low end of its window,
+and a pong or daisy at its field centre as it stands then.
+
+The slew's length and its target depend on each other, since the first
+sample depends on when the visit starts and the visit starts once the
+slew has arrived. :class:`~fyst_trajectories.overhead.scheduler.SlewPhase`
+solves the two in rounds. Each round takes a trial start for the visit,
+first the scheduler's current time, and plans the slew to the first
+sample of a visit starting then. A slew that arrives by that start is
+booked to end at it, the move followed by any hold in the same block;
+one that arrives later moves the trial start to its arrival and is
+planned again.
+
 Parameter Ownership
 -------------------
 

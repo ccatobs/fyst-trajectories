@@ -105,6 +105,10 @@ def test_planning_reexports_are_consistent_with_top_level():
     [
         ("DEFAULT_RETUNE_DURATION_SEC", "fyst_trajectories.retune"),
         ("GO_TCS_MIN_SAMPLE_INTERVAL_SEC", "fyst_trajectories.trajectory_utils"),
+        ("GO_TCS_AZ_MAX_VELOCITY", "fyst_trajectories.trajectory_utils"),
+        ("GO_TCS_EL_MAX_VELOCITY", "fyst_trajectories.trajectory_utils"),
+        ("GO_TCS_AZ_MAX_ACCELERATION", "fyst_trajectories.trajectory_utils"),
+        ("GO_TCS_EL_MAX_ACCELERATION", "fyst_trajectories.trajectory_utils"),
         ("TRACKPOINT_NEW_LEG_GROUP_SIZE", "fyst_trajectories.trajectory_utils"),
         ("EncoderSolutionCause", "fyst_trajectories.exceptions"),
     ],

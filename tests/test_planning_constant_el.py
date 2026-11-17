@@ -1,13 +1,18 @@
 """Tests for plan_constant_el_scan."""
 
+import functools
+import inspect
 import math
 import warnings
 from decimal import Decimal
+from pathlib import Path
 
 import numpy as np
 import pytest
+from _off_axis_offsets import off_axis_offset
 from astropy import units as u
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
+from scipy.optimize import brentq
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.coordinates import Coordinates
@@ -21,17 +26,49 @@ from fyst_trajectories.exceptions import (
 from fyst_trajectories.patterns.configs import ConstantElScanConfig
 from fyst_trajectories.patterns.constant_el import _ce_az_reach
 from fyst_trajectories.patterns.turnarounds import swept_az_envelope, turnaround_overshoot_deg
-from fyst_trajectories.planning import FieldRegion, ScanBlock, plan_constant_el_scan
+from fyst_trajectories.planning import (
+    FieldRegion,
+    ScanBlock,
+    plan_constant_el_scan,
+)
 from fyst_trajectories.planning._ce_geometry import (
     _boresight_az_offset,
+    _ce_field_az_range,
     _compute_ce_az_range,
     _compute_ce_duration,
     _compute_ce_duration_from_lsa,
+    _field_region_corners,
+    _quantize_ce_duration,
 )
 from fyst_trajectories.primecam import get_primecam_offset
+from fyst_trajectories.site import AtmosphericConditions
+from fyst_trajectories.trajectory_utils import get_absolute_times
 
 # One turn of the Earth relative to the stars, in seconds.
 _SIDEREAL_DAY_SEC = 86164.0905
+
+
+def _unit_vectors(az_deg, el_deg):
+    """Horizon-frame unit vectors of azimuths and elevations in degrees."""
+    az, el = np.radians(az_deg), np.radians(el_deg)
+    return np.stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+
+
+def _sun_separation_of_every_sample(site, trajectory):
+    """Angle in degrees between each sample and the Sun.
+
+    The Sun is solved once a second and its unit vector interpolated to the
+    samples; it moves about 0.004 deg in a second, so the interpolation is
+    exact to far below the 0.1 deg an advisory prints.
+    """
+    times = get_absolute_times(trajectory)
+    rel = (times - times[0]).sec
+    grid = np.arange(0.0, rel[-1] + 1.0, 1.0)
+    sun_az, sun_el = Coordinates(site).get_sun_altaz(times[0] + TimeDelta(grid, format="sec"))
+    sun = np.stack([np.interp(rel, grid, c) for c in _unit_vectors(sun_az, sun_el)])
+    sun /= np.linalg.norm(sun, axis=0)
+    cosine = np.sum(sun * _unit_vectors(trajectory.az, trajectory.el), axis=0)
+    return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
 
 
 @pytest.fixture(scope="module")
@@ -254,7 +291,7 @@ class TestPlanConstantElScan:
     @pytest.mark.parametrize(
         ("name", "value", "lsa_window"),
         [
-            pytest.param("az_padding", Decimal("2.0"), None, id="az_padding"),
+            pytest.param("az_padding", Decimal("0.0"), None, id="az_padding"),
             pytest.param("velocity", Decimal("0.5"), None, id="velocity"),
             pytest.param("az_accel", Decimal("1.0"), None, id="az_accel"),
             pytest.param("elevation", Decimal("50.0"), None, id="elevation"),
@@ -331,6 +368,71 @@ class TestPlanConstantElScan:
         assert science.sum() > traj.n_points * 0.5
 
 
+# The branch-placement tests sweep this field west of the meridian at el 40, at 2 deg/s
+# and 1 deg/s^2 (so each turnaround overshoots its edge by 2.5 deg), over a sidereal window.
+_BRANCH_FIELD = FieldRegion(ra_center=70.0, dec_center=-10.0, width=50.0, height=60.0)
+_BRANCH_START = Time("2026-09-15T00:00:00", scale="utc")
+_BRANCH_TIMESTEPS = np.linspace(0.8, 1.2, 81)
+
+
+def _plan_branch_case(site, lsa_window, **kwargs) -> ScanBlock:
+    """Plan the branch-placement field over ``lsa_window``."""
+    return plan_constant_el_scan(
+        field=_BRANCH_FIELD,
+        elevation=40.0,
+        velocity=2.0,
+        site=site,
+        start_time=_BRANCH_START,
+        lsa_window=lsa_window,
+        **kwargs,
+    )
+
+
+def _tune_apex_past_limit(site, lsa_window, *, high, shift, offset_deg):
+    """Return a padding and timestep that put one turnaround apex just past an azimuth limit.
+
+    The planner's own range for the field, planned once without padding, is
+    padded so that, moved by ``shift``, the apex of the turnaround at its
+    high (``high``) or low edge, moved by ``offset_deg`` (the boresight's
+    azimuth minus the swept range's), lies past the limit on that side by
+    half the distance the nearest sample stops short of it (at most
+    ``3 a dt**2 / 16``), by the pattern's own arithmetic. Of the candidate
+    timesteps the one that leaves both halves widest is taken, so the case
+    holds whatever the range. Returns ``(unpadded_range, padding, timestep,
+    depth, inside)``: how far the apex lies past the limit and the nearest
+    sample inside it, in degrees.
+    """
+    bare = _plan_branch_case(site, lsa_window, timestep=1.0).computed_params
+    lo0, hi0 = bare["az_start"], bare["az_stop"]
+    assert 180.0 < lo0 < hi0 < 360.0
+    duration = _compute_ce_duration_from_lsa(lsa_window, Coordinates(site), _BRANCH_START)[2]
+    limits = site.telescope_limits.azimuth
+    overshoot = turnaround_overshoot_deg(2.0, 1.0)
+    sign = 1.0 if high else -1.0
+    limit = limits.max if high else limits.min
+    edge = (hi0 if high else lo0) + shift
+
+    def place(depth, timestep):
+        padding = sign * (limit - edge - offset_deg) - overshoot + depth
+        lo, hi = lo0 - padding + shift, hi0 + padding + shift
+        _, built = _quantize_ce_duration(
+            az_throw=hi - lo, velocity=2.0, duration=duration, az_accel=1.0
+        )
+        sample = _ce_az_reach(lo, hi, 2.0, 1.0, built, timestep)[1 if high else 0] + offset_deg
+        return padding, sign * (limit - sample)
+
+    best = None
+    for timestep in _BRANCH_TIMESTEPS:
+        # The sample stops short of the apex by depth + inside; split that gap evenly.
+        depth = 3.0 * 1.0 * timestep**2 / 32.0
+        _, inside = place(depth, timestep)
+        depth = 0.5 * (depth + inside)
+        padding, inside = place(depth, timestep)
+        if best is None or min(depth, inside) > min(best[3], best[4]):
+            best = ((lo0, hi0), padding, float(timestep), depth, inside)
+    return best
+
+
 class TestCEGeometryWrapHandling:
     """The RA = 0 and az = 0/360 wraps, and a pass's branch at the azimuth limits.
 
@@ -341,68 +443,62 @@ class TestCEGeometryWrapHandling:
     a whole turn or more.
     """
 
-    def test_az_range_handles_north_transit(self, site):
+    @pytest.mark.parametrize(
+        ("rising", "expected"),
+        [(True, (22.337, 31.937)), (False, (328.063, 337.663))],
+    )
+    def test_az_range_handles_north_transit(self, site, rising, expected):
         """``_compute_ce_az_range`` returns a contiguous range for north-transiting sources.
 
-        At FYST (lat = -22.99 deg), a source at RA = 0 deg, dec = +35 deg transits
-        through north around 04:50 UTC on 2026-09-16, with corner azimuths
-        straddling the 0/360 discontinuity. The naive ``min``/``max``
-        computation reports a ~358 deg throw; the unwrapped result should
-        be a few-degree throw matching the field width.
+        At FYST (lat = -22.99 deg), a 4 x 4 deg field at Dec +35 transits
+        north of the zenith, its corners culminating between el 30.0 and
+        34.0. At el 25 every corner crosses, east of north as the field
+        rises and west of it as it sets, so each side's range is one
+        contiguous interval of about 10 deg on that side, padded by 0.5 deg.
         """
         coords = Coordinates(site)
         field = FieldRegion(ra_center=0.0, dec_center=35.0, width=4.0, height=4.0)
-        obs_start = Time("2026-09-16T04:30:00", scale="utc")
-        obs_end = Time("2026-09-16T05:10:00", scale="utc")
-
         az_min, az_max, _, _ = _compute_ce_az_range(
             field,
-            angle=0.0,
-            coords_obj=coords,
-            obs_start=obs_start,
-            obs_end=obs_end,
-            padding=0.5,
+            0.0,
+            25.0,
+            rising,
+            coords,
+            Time("2026-09-16T04:30:00", scale="utc"),
+            0.5,
             velocity=0.5,
             az_accel=1.0,
-            duration=(obs_end - obs_start).sec,
+            duration=1200.0,
             timestep=0.1,
         )
-
-        throw = az_max - az_min
-        # The field is 4 deg wide; the temporal sweep adds ~10 deg of azimuth
-        # variation as it transits. A wrapped (broken) result would be
-        # close to 358 deg.
-        assert throw < 30.0, f"az_throw {throw:.2f} deg suggests az-wrap was not handled"
-        assert throw > field.width
+        assert (az_min, az_max) == pytest.approx(expected, abs=1e-3)
+        side = (0.0, 180.0) if rising else (180.0, 360.0)
+        assert side[0] < az_min < az_max < side[1]
 
     def test_az_range_normal_field_unchanged(self, site):
-        """``_compute_ce_az_range`` is unchanged for fields away from the discontinuity.
+        """A field crossing well away from the meridian gets a modest range inside [0, 360).
 
-        A southern-hemisphere field that transits well away from north
-        should never trigger the wrap-detection branch.
+        The rotated E-CDF-S box of the docstring example rises through el 50
+        east of the meridian; with 0.5 deg of padding its range is
+        (99.95, 112.61), placed on the branch it lies on.
         """
         coords = Coordinates(site)
-        # ECDFS-like field; pick an obs window when it's actually visible
-        # so the per-time azimuth values are coherent.
         field = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
-        obs_start = Time("2026-03-15T08:30:00", scale="utc")
-        obs_end = Time("2026-03-15T09:30:00", scale="utc")
         az_min, az_max, _, _ = _compute_ce_az_range(
             field,
-            angle=170.0,
-            coords_obj=coords,
-            obs_start=obs_start,
-            obs_end=obs_end,
-            padding=0.5,
+            170.0,
+            50.0,
+            True,
+            coords,
+            Time("2026-03-15T17:20:00", scale="utc"),
+            0.5,
             velocity=0.5,
             az_accel=1.0,
-            duration=(obs_end - obs_start).sec,
+            duration=1650.0,
             timestep=0.1,
         )
-        # Throw should be modest and well inside [0, 360)
-        assert 0.0 <= az_min < 360.0
-        assert 0.0 <= az_max < 360.0
-        assert (az_max - az_min) < 60.0
+        assert (az_min, az_max) == pytest.approx((99.952, 112.614), abs=1e-3)
+        assert 0.0 <= az_min < az_max < 180.0
 
     def test_ra_wrap_handled_for_field_near_ra_zero(self, site):
         """``_compute_ce_duration`` correctly identifies edges for RA ~ 0 fields.
@@ -457,9 +553,9 @@ class TestCEGeometryWrapHandling:
     def test_north_transit_planning_succeeds(self, site):
         """End-to-end: ``plan_constant_el_scan`` works for a north-transiting source.
 
-        A wrapped ``_compute_ce_az_range`` result is a ~358 deg throw, which
-        overflows the configured azimuth range and either crashes downstream
-        validation or produces a nonsense scan.
+        The 2 x 2 deg field at Dec +35 sets through el 30 just west of north,
+        its border meeting that elevation over (341.63, 350.01): a short
+        throw on the west side, not one wrapped round the 0/360 azimuth.
         """
         field = FieldRegion(ra_center=0.0, dec_center=35.0, width=2.0, height=2.0)
         block = plan_constant_el_scan(
@@ -471,18 +567,19 @@ class TestCEGeometryWrapHandling:
             rising=False,
             angle=0.0,
         )
-        # az_throw must be small (matches field width plus temporal sweep)
-        assert block.computed_params["az_throw"] < 30.0
+        cp = block.computed_params
+        assert (cp["az_start"], cp["az_stop"]) == pytest.approx((341.627, 350.005), abs=1e-3)
+        assert cp["az_throw"] < 30.0
 
     def test_setting_north_crossing_plans_in_range(self, site):
-        """A setting scan straddling north plans with azimuth inside telescope limits.
+        """A setting scan whose range ends at the northern meridian plans inside the limits.
 
-        At dec = +35 the field transits north at el ~ 32.0; at el = 31.9 the
-        setting crossing sits just west of north while the field's RA span keeps
-        the trailing corners east of north, so the window samples straddle 0/360
-        with the majority on the west side. The planned trajectory must come out
-        on the in-limits near-zero branch (as the rising pass does), not on the
-        equivalent branch extending past the 360 deg azimuth limit.
+        The field's northern corners, at Dec +36, culminate at el 31.0, short
+        of el 31.9, so they never reach it and the setting range runs to the
+        meridian: (347.59, 360.0). The turnarounds overshoot 360 deg, so the
+        planned trajectory must come out on the in-limits near-zero branch,
+        (-12.41, 0.0), not on the equivalent branch extending past the 360 deg
+        azimuth limit.
         """
         field = FieldRegion(ra_center=180.0, dec_center=35.0, width=4.0, height=2.0)
         block = plan_constant_el_scan(
@@ -497,19 +594,22 @@ class TestCEGeometryWrapHandling:
         lim = site.telescope_limits.azimuth
         assert block.trajectory.az.min() >= lim.min
         assert block.trajectory.az.max() <= lim.max
-        assert block.computed_params["az_throw"] < 30.0
+        cp = block.computed_params
+        assert cp["az_start"] == pytest.approx(-12.411, abs=1e-3)
+        assert cp["az_stop"] == 0.0
 
     def test_setting_north_crossing_az_range_within_limits(self, site):
-        """``_compute_ce_az_range`` keeps a west-heavy straddle window within limits.
+        """``_compute_ce_az_range`` keeps a range that ends at the meridian within limits.
 
         Same regime as the end-to-end test above, exercised at the helper level:
-        the setting window sits mostly west of north, and the returned interval
-        must be the 360 deg branch that fits the telescope range, not the
-        equivalent one extending past 360.
+        the setting range runs to the northern meridian, (345.63, 362.0) with
+        the 2 deg padding, and the returned interval must be the 360 deg branch
+        that fits the telescope range, (-14.37, 2.0), not the equivalent one
+        extending past 360.
         """
         coords = Coordinates(site)
         field = FieldRegion(ra_center=180.0, dec_center=35.0, width=4.0, height=2.0)
-        t_start, t_end, duration = _compute_ce_duration(
+        t_start, _, duration = _compute_ce_duration(
             field,
             angle=0.0,
             elevation=31.9,
@@ -519,11 +619,12 @@ class TestCEGeometryWrapHandling:
         )
         az_min, az_max, _, _ = _compute_ce_az_range(
             field,
-            angle=0.0,
-            coords_obj=coords,
-            obs_start=t_start,
-            obs_end=t_end,
-            padding=2.0,
+            0.0,
+            31.9,
+            False,
+            coords,
+            t_start,
+            2.0,
             velocity=0.5,
             az_accel=1.0,
             duration=duration,
@@ -532,20 +633,22 @@ class TestCEGeometryWrapHandling:
         lim = site.telescope_limits.azimuth
         assert az_min >= lim.min
         assert az_max <= lim.max
-        # The interval stays contiguous and field-sized across the crossing.
-        assert 0.0 < az_max - az_min < 30.0
+        assert az_min == pytest.approx(345.627 - 360.0, abs=1e-3)
+        assert az_max == 2.0
 
     def test_setting_padding_overflow_az_range_within_limits(self, site):
         """Azimuth padding alone must not push the returned interval past 360.
 
-        A wide setting field at dec = +25, el = 40 samples azimuths up to
-        ~359.3 deg without straddling north, but the 2 deg padding pushes the
-        raw maximum to ~361.3 deg. The returned interval must sit on the branch
-        that fits the telescope range.
+        A wide field at Dec +20.85 sets through el 40 with every corner
+        crossing it, its border meeting that elevation over (316.30, 358.62),
+        short of the northern meridian; its turnarounds at 0.5 deg/s reach
+        358.78, inside the limit, but the 2 deg padding pushes the maximum to
+        360.62. The returned interval must sit on the branch that fits the
+        telescope range.
         """
         coords = Coordinates(site)
-        field = FieldRegion(ra_center=0.0, dec_center=25.0, width=12.0, height=12.0)
-        t_start, t_end, duration = _compute_ce_duration(
+        field = FieldRegion(ra_center=0.0, dec_center=20.85, width=12.0, height=12.0)
+        t_start, _, duration = _compute_ce_duration(
             field,
             angle=0.0,
             elevation=40.0,
@@ -553,13 +656,12 @@ class TestCEGeometryWrapHandling:
             base_search_time=Time("2026-09-15T05:21:00", scale="utc"),
             rising=False,
         )
+        args = (field, 0.0, 40.0, False, coords, t_start)
+        raw_min, raw_max = _ce_field_az_range(*args, 0.0)
+        assert (raw_min, raw_max) == pytest.approx((316.298, 358.622), abs=1e-3)
         az_min, az_max, _, _ = _compute_ce_az_range(
-            field,
-            angle=0.0,
-            coords_obj=coords,
-            obs_start=t_start,
-            obs_end=t_end,
-            padding=2.0,
+            *args,
+            2.0,
             velocity=0.5,
             az_accel=1.0,
             duration=duration,
@@ -568,15 +670,17 @@ class TestCEGeometryWrapHandling:
         lim = site.telescope_limits.azimuth
         assert az_min >= lim.min
         assert az_max <= lim.max
-        assert 0.0 < az_max - az_min < 60.0
+        assert (az_min, az_max) == pytest.approx((raw_min - 362.0, raw_max - 358.0), abs=1e-9)
 
     def test_rising_north_crossing_control_on_near_zero_branch(self, site):
         """Rising-pass control: the already-in-range branch is not shifted.
 
         Same field, elevation, and anchor as the setting regression above but
-        rising = True. The rising window (east of north) is already inside the
-        telescope limits, so the branch placement must leave it on the near-zero
-        branch; a spurious whole-turn shift would move the endpoints by 360 deg.
+        rising = True. The rising range starts at the northern meridian, 0 deg,
+        and runs east to 12.41 deg; its turnarounds reach -0.16 deg, inside the
+        telescope limits, so the branch placement must leave it on the
+        near-zero branch; a spurious whole-turn shift would move the endpoints
+        by 360 deg.
         """
         field = FieldRegion(ra_center=180.0, dec_center=35.0, width=4.0, height=2.0)
         block = plan_constant_el_scan(
@@ -592,23 +696,22 @@ class TestCEGeometryWrapHandling:
         az = block.trajectory.az
         assert az.min() >= lim.min
         assert az.max() <= lim.max
-        # Near-zero branch (loose tolerance; a whole-turn error is 360 deg off).
         cp = block.computed_params
-        assert cp["az_start"] == pytest.approx(-1.12, abs=2.0)
-        assert cp["az_stop"] == pytest.approx(12.49, abs=2.0)
+        assert cp["az_start"] == 0.0
+        assert cp["az_stop"] == pytest.approx(12.411, abs=1e-3)
 
     def test_a_setting_pass_takes_the_branch_that_holds_its_turnarounds(self, site):
         """The azimuth branch is chosen for the turnaround envelope, not the padded range.
 
-        A 2 x 2 deg field at Dec +26.25 culminates at el 40.76 in the north,
-        so it sets through el 40 just west of north, over (345.14, 354.78)
-        with the 2 deg padding. The turnarounds overshoot that range by
-        5 v^2 / (8 a) on each side: 0.16 deg at 0.5 deg/s, which stays below
-        the 360 deg limit, and 5.625 deg at 3 deg/s, which reaches 360.40, so
-        the faster pass sweeps the same range one turn down, where its
-        envelope (-20.49, 0.40) is inside the limits.
+        A 2 x 2 deg field at Dec +25.8 sets through el 40 just west of north,
+        its border meeting that elevation over (342.25, 355.59). The
+        turnarounds overshoot that range by 5 v^2 / (8 a) on each side:
+        0.16 deg at 0.5 deg/s, which stays below the 360 deg limit, and
+        5.625 deg at 3 deg/s, which reaches 361.21, so the faster pass sweeps
+        the same range one turn down, where its envelope (-23.38, 1.21) is
+        inside the limits.
         """
-        field = FieldRegion(ra_center=60.0, dec_center=26.25, width=2.0, height=2.0)
+        field = FieldRegion(ra_center=60.0, dec_center=25.8, width=2.0, height=2.0)
         start = Time("2026-11-15T18:00:00", scale="utc")
         slow, fast = (
             plan_constant_el_scan(
@@ -621,60 +724,60 @@ class TestCEGeometryWrapHandling:
             )
             for velocity in (0.5, 3.0)
         )
-        assert slow.computed_params["az_start"] == pytest.approx(345.136, abs=1e-3)
-        assert slow.computed_params["az_stop"] == pytest.approx(354.778, abs=1e-3)
+        assert slow.computed_params["az_start"] == pytest.approx(342.249, abs=1e-3)
+        assert slow.computed_params["az_stop"] == pytest.approx(355.588, abs=1e-3)
         for key in ("az_start", "az_stop"):
             assert fast.computed_params[key] == slow.computed_params[key] - 360.0
-        assert fast.trajectory.az.max() == pytest.approx(0.403, abs=0.01)
+        assert fast.trajectory.az.max() == pytest.approx(1.213, abs=0.01)
         lim = site.telescope_limits.azimuth
         for block in (slow, fast):
             assert lim.min <= block.trajectory.az.min()
             assert block.trajectory.az.max() <= lim.max
 
     def test_an_off_axis_module_takes_the_branch_its_boresight_holds(self, site):
-        """The setting pass above, swept by module i5 at 2.2 deg/s, moves a turn down.
+        """The setting pass above, swept by the detector at 150 deg at 2.2 deg/s, moves a turn down.
 
-        The module's turnaround envelope, (345.14, 354.78) widened by 3.03 deg
+        The detector's turnaround envelope, (342.25, 355.59) widened by 3.03 deg
         on each side, ends below 360 deg, but at el 40 the boresight sits
-        2.29 deg higher in azimuth than the module, so its envelope ends at
-        360.09; the pass is placed one turn down, where both fit.
+        2.29 deg higher in azimuth than the detector, so its envelope ends at
+        360.90; the pass is placed one turn down, where both fit.
         """
         block = plan_constant_el_scan(
-            field=FieldRegion(ra_center=60.0, dec_center=26.25, width=2.0, height=2.0),
+            field=FieldRegion(ra_center=60.0, dec_center=25.8, width=2.0, height=2.0),
             elevation=40.0,
             velocity=2.2,
             site=site,
             start_time=Time("2026-11-15T18:00:00", scale="utc"),
             rising=False,
-            detector_offset=get_primecam_offset("i5"),
+            detector_offset=off_axis_offset(150),
         )
-        assert block.computed_params["az_start"] == pytest.approx(345.136 - 360.0, abs=1e-3)
-        assert block.computed_params["az_stop"] == pytest.approx(354.778 - 360.0, abs=1e-3)
-        assert block.trajectory.az.max() == pytest.approx(0.09, abs=0.01)
+        assert block.computed_params["az_start"] == pytest.approx(342.249 - 360.0, abs=1e-3)
+        assert block.computed_params["az_stop"] == pytest.approx(355.588 - 360.0, abs=1e-3)
+        assert block.trajectory.az.max() == pytest.approx(0.90, abs=0.01)
         lim = site.telescope_limits.azimuth
         assert lim.min <= block.trajectory.az.min()
         assert block.trajectory.az.max() <= lim.max
 
     def test_the_commanded_range_must_fit_as_well(self, site):
-        """The pattern checks the module's range and the builder the boresight, so both must fit.
+        """The pattern checks the detector's range and the builder the boresight, so both must fit.
 
-        At 3 deg/s, swept by module i2, the range's turnaround envelope ends
-        at 360.40 deg, past the limit, while the boresight, 2.29 deg lower,
-        ends at 358.11, inside it; the pass still moves a turn down, since the
-        pattern checks the module's samples, which pass the limit, before the
-        offset is applied.
+        At 3 deg/s, swept by the detector at -30 deg, the range's turnaround
+        envelope ends at 361.21 deg, past the limit, while the boresight,
+        2.29 deg lower, ends at 358.92, inside it; the pass still moves a turn
+        down, since the pattern checks the detector's samples, which pass the
+        limit, before the offset is applied.
         """
         block = plan_constant_el_scan(
-            field=FieldRegion(ra_center=60.0, dec_center=26.25, width=2.0, height=2.0),
+            field=FieldRegion(ra_center=60.0, dec_center=25.8, width=2.0, height=2.0),
             elevation=40.0,
             velocity=3.0,
             site=site,
             start_time=Time("2026-11-15T18:00:00", scale="utc"),
             rising=False,
-            detector_offset=get_primecam_offset("i2"),
+            detector_offset=off_axis_offset(-30),
         )
-        assert block.computed_params["az_start"] == pytest.approx(345.136 - 360.0, abs=1e-3)
-        assert block.computed_params["az_stop"] == pytest.approx(354.778 - 360.0, abs=1e-3)
+        assert block.computed_params["az_start"] == pytest.approx(342.249 - 360.0, abs=1e-3)
+        assert block.computed_params["az_stop"] == pytest.approx(355.588 - 360.0, abs=1e-3)
         lim = site.telescope_limits.azimuth
         assert lim.min <= block.trajectory.az.min()
         assert block.trajectory.az.max() <= lim.max
@@ -682,105 +785,108 @@ class TestCEGeometryWrapHandling:
     def test_a_pass_is_placed_where_its_samples_fit(self, site):
         """Where no branch holds the whole sweep, its samples, which stop short of an apex, decide.
 
-        Over this sidereal window the padded range runs (184.79, 360.72),
-        past the 360 deg limit, and the pass makes three legs at 2 deg/s, so
-        it turns at both edges, 2.5 deg past each. Swept by module i2, whose
-        boresight sits 2.29 deg lower in azimuth at el 40, the range one turn
-        down puts the boresight's low apex just below -180 deg, so no branch
-        holds the whole sweep. The pattern and the builder check samples, and
-        those 0.1 s apart stop short of that apex: the pass moves a turn down
-        and plans.
+        The field's border meets el 40 west of the meridian; over this
+        sidereal window the pass makes three legs at 2 deg/s, so it turns at
+        both edges, 2.5 deg past each. Swept by the detector at -30 deg, whose
+        boresight sits about 2.29 deg lower in azimuth at el 40, the padding
+        (:func:`_tune_apex_past_limit`) puts the boresight's low apex, one turn
+        down, just below -180 deg while its samples stop short of it, inside
+        the limit; on its own branch the range runs past 360 deg. So no branch
+        holds the whole sweep, the branch a turn down holds its samples (the
+        placement's grade 1) and its own branch does not (grade 0): the pass
+        moves a turn down and plans. Measured margins: the apex lies 0.10 deg
+        past -180 and the nearest sample 0.10 deg inside it.
         """
-        offset = get_primecam_offset("i2")
-        block = plan_constant_el_scan(
-            field=FieldRegion(ra_center=70.0, dec_center=-10.0, width=50.0, height=60.0),
-            elevation=40.0,
-            velocity=2.0,
-            site=site,
-            start_time=Time("2026-09-15T00:00:00", scale="utc"),
-            lsa_window=(100.0, 101.133),
-            az_padding=6.519,
-            detector_offset=offset,
+        offset = off_axis_offset(-30)
+        bore = _boresight_az_offset(40.0, offset, site)
+        lsa_window = (100.0, 101.25)
+        (lo0, hi0), padding, timestep, depth, inside = _tune_apex_past_limit(
+            site, lsa_window, high=False, shift=-360.0, offset_deg=bore
+        )
+        assert min(depth, inside) > 0.05, "no timestep leaves the apex and its samples apart"
+        block = _plan_branch_case(
+            site, lsa_window, az_padding=padding, timestep=timestep, detector_offset=offset
         )
         cp = block.computed_params
-        assert cp["n_scans"] == 3
-        assert cp["az_start"] == pytest.approx(184.790 - 360.0, abs=1e-3)
-        assert cp["az_stop"] == pytest.approx(360.722 - 360.0, abs=1e-3)
         lim = site.telescope_limits.azimuth
+        built = float(block.trajectory.times[-1])
+        assert cp["n_scans"] == 3, "the pass no longer turns at both edges"
+        # Its own branch: the commanded samples run past 360 deg.
+        assert _ce_az_reach(lo0 - padding, hi0 + padding, 2.0, 1.0, built, timestep)[1] > lim.max
+        # A turn down: the boresight's low apex lies past -180, its samples inside.
+        apex_lo = swept_az_envelope(lo0 - padding - 360.0, hi0 + padding - 360.0, 2.0, 1.0)[0]
+        assert apex_lo + bore < lim.min, "the boresight's whole path fits a turn down"
+        assert cp["az_start"] == pytest.approx(lo0 - padding - 360.0, abs=1e-9)
+        assert cp["az_stop"] == pytest.approx(hi0 + padding - 360.0, abs=1e-9)
         assert lim.min <= block.trajectory.az.min()
         assert block.trajectory.az.max() <= lim.max
-        apex_lo, _ = np.add(
-            swept_az_envelope(cp["az_start"], cp["az_stop"], 2.0, 1.0),
-            _boresight_az_offset(40.0, offset, site),
-        )
-        assert apex_lo < lim.min
 
     def test_a_pass_takes_the_branch_that_holds_all_of_it(self, site):
         """Where one branch holds the whole sweep and another only its samples, the first is taken.
 
-        Over this sidereal window the padded range runs (187.92, 357.59) and
-        the pass makes two legs at 2 deg/s, so it turns once, 2.5 deg past the
-        high edge, at 360.09 deg. Samples 0.9 s apart stop 0.15 deg short of
-        that apex, inside the limit, but the mount runs the path between them
-        too, so the pass moves a turn down, where the whole sweep fits.
+        The field's border meets el 40 west of the meridian; over this
+        sidereal window the pass makes two legs at 2 deg/s, so it turns once,
+        2.5 deg past the high edge. The padding (:func:`_tune_apex_past_limit`)
+        puts that apex just past 360 deg while the samples stop short of it,
+        inside the limit (the placement's grade 1 on its own branch), but the
+        mount runs the path between them too, so the pass moves a turn down,
+        where the whole sweep fits (grade 2). Measured margins: the apex lies
+        0.13 deg past 360 and the nearest sample 0.13 deg inside it.
         """
-        block = plan_constant_el_scan(
-            field=FieldRegion(ra_center=70.0, dec_center=-10.0, width=50.0, height=60.0),
-            elevation=40.0,
-            velocity=2.0,
-            site=site,
-            start_time=Time("2026-09-15T00:00:00", scale="utc"),
-            lsa_window=(100.0, 100.73),
-            az_padding=3.387,
-            timestep=0.9,
+        lsa_window = (100.0, 100.73)
+        (lo0, hi0), padding, timestep, depth, inside = _tune_apex_past_limit(
+            site, lsa_window, high=True, shift=0.0, offset_deg=0.0
         )
+        assert min(depth, inside) > 0.05, "no timestep leaves the apex and its samples apart"
+        block = _plan_branch_case(site, lsa_window, az_padding=padding, timestep=timestep)
         cp = block.computed_params
-        assert cp["n_scans"] == 2
-        assert cp["az_start"] == pytest.approx(187.922 - 360.0, abs=1e-3)
-        assert cp["az_stop"] == pytest.approx(357.590 - 360.0, abs=1e-3)
         lim = site.telescope_limits.azimuth
         overshoot = turnaround_overshoot_deg(2.0, 1.0)
-        _, sample_hi = _ce_az_reach(
-            cp["az_start"] + 360.0,
-            cp["az_stop"] + 360.0,
-            2.0,
-            1.0,
-            float(block.trajectory.times[-1]),
-            0.9,
-        )
-        assert sample_hi <= lim.max < cp["az_stop"] + 360.0 + overshoot
-        assert cp["az_stop"] + overshoot <= lim.max
+        built = float(block.trajectory.times[-1])
+        assert cp["n_scans"] == 2, "the pass no longer turns at one edge only"
+        # Its own branch: the samples fit, the apex between them does not.
+        sample_hi = _ce_az_reach(lo0 - padding, hi0 + padding, 2.0, 1.0, built, timestep)[1]
+        assert sample_hi <= lim.max < hi0 + padding + overshoot
+        # A turn down the whole sweep fits.
+        assert lim.min <= lo0 - padding - 360.0
+        assert hi0 + padding - 360.0 + overshoot <= lim.max
+        assert cp["az_start"] == pytest.approx(lo0 - padding - 360.0, abs=1e-9)
+        assert cp["az_stop"] == pytest.approx(hi0 + padding - 360.0, abs=1e-9)
         assert lim.min <= block.trajectory.az.min()
         assert block.trajectory.az.max() <= lim.max
 
     def test_a_pass_stays_where_the_mount_path_fits(self, site):
-        """The module's own path can pass a limit that the mount's does not; the pass stays.
+        """The detector's own path can pass a limit that the mount's does not; the pass stays.
 
-        The pass above, swept by module i2: the module's path still turns at
-        360.09 deg, but the boresight, which the mount follows, sits 2.29 deg
-        lower in azimuth at el 40, so its whole path fits, and the module's
-        samples 0.9 s apart stop short of 360. The pass keeps its branch.
+        The pass above, swept by the detector at -30 deg: the detector's path
+        still turns just past 360 deg and its samples stop short of it, but the
+        boresight, which the mount follows, sits about 2.29 deg lower in
+        azimuth at el 40, so its whole path fits (the placement's grade 2 on
+        its own branch). The pass keeps its branch. Measured margins: the
+        boresight's apex lies 2.16 deg inside the limit, the detector's apex
+        0.13 deg past it and its nearest sample 0.13 deg inside it.
         """
-        offset = get_primecam_offset("i2")
-        block = plan_constant_el_scan(
-            field=FieldRegion(ra_center=70.0, dec_center=-10.0, width=50.0, height=60.0),
-            elevation=40.0,
-            velocity=2.0,
-            site=site,
-            start_time=Time("2026-09-15T00:00:00", scale="utc"),
-            lsa_window=(100.0, 100.73),
-            az_padding=3.387,
-            timestep=0.9,
-            detector_offset=offset,
+        offset = off_axis_offset(-30)
+        bore = _boresight_az_offset(40.0, offset, site)
+        lsa_window = (100.0, 100.73)
+        (lo0, hi0), padding, timestep, depth, inside = _tune_apex_past_limit(
+            site, lsa_window, high=True, shift=0.0, offset_deg=0.0
+        )
+        assert min(depth, inside) > 0.05, "no timestep leaves the apex and its samples apart"
+        block = _plan_branch_case(
+            site, lsa_window, az_padding=padding, timestep=timestep, detector_offset=offset
         )
         cp = block.computed_params
-        assert cp["n_scans"] == 2
-        assert cp["az_start"] == pytest.approx(187.922, abs=1e-3)
-        assert cp["az_stop"] == pytest.approx(357.590, abs=1e-3)
         lim = site.telescope_limits.azimuth
         overshoot = turnaround_overshoot_deg(2.0, 1.0)
-        bore_apex = cp["az_stop"] + _boresight_az_offset(40.0, offset, site) + overshoot
-        assert bore_apex <= lim.max < cp["az_stop"] + overshoot
+        built = float(block.trajectory.times[-1])
+        assert cp["n_scans"] == 2, "the pass no longer turns at one edge only"
+        # The detector's samples fit and its path does not; the boresight's path fits.
+        sample_hi = _ce_az_reach(lo0 - padding, hi0 + padding, 2.0, 1.0, built, timestep)[1]
+        assert sample_hi <= lim.max < hi0 + padding + overshoot
+        assert hi0 + padding + overshoot + bore <= lim.max
+        assert cp["az_start"] == pytest.approx(lo0 - padding, abs=1e-9)
+        assert cp["az_stop"] == pytest.approx(hi0 + padding, abs=1e-9)
         assert lim.min <= block.trajectory.az.min()
         assert block.trajectory.az.max() <= lim.max
 
@@ -789,32 +895,33 @@ class TestCEGeometryWrapHandling:
 
         The sidereal window fixes the elevation without a crossing search, so
         the pass reaches the build at el 90, where the builder's solve fails
-        and its refusal names the samples.
+        and its refusal names the samples. The field at Dec -23 holds the
+        site's zenith declination, so its border reaches el 90.
         """
         with pytest.raises(OffsetInversionError) as excinfo:
             plan_constant_el_scan(
-                field=FieldRegion(ra_center=0.0, dec_center=-2.0, width=4.0, height=4.0),
+                field=FieldRegion(ra_center=0.0, dec_center=-23.0, width=4.0, height=4.0),
                 elevation=90.0,
                 velocity=0.5,
                 site=site,
                 start_time=Time("2026-09-15T00:00:00", scale="utc"),
                 lsa_window=(0.0, 5.0),
-                detector_offset=get_primecam_offset("i1"),
+                detector_offset=get_primecam_offset("IM2"),
                 timestep=1.0,
             )
         assert excinfo.value.indices
 
     def test_a_module_whose_boresight_solve_does_not_converge_is_refused(self, site):
-        """At el 88.5, inside the elevation limits, the boresight solve for i1 does not converge."""
+        """At el 88.5, inside the elevation limits, IM2's boresight solve does not converge."""
         with pytest.raises(OffsetInversionError, match="failed to converge"):
             plan_constant_el_scan(
-                field=FieldRegion(ra_center=0.0, dec_center=-2.0, width=4.0, height=4.0),
+                field=FieldRegion(ra_center=0.0, dec_center=-23.0, width=4.0, height=4.0),
                 elevation=88.5,
                 velocity=0.5,
                 site=site,
                 start_time=Time("2026-09-15T00:00:00", scale="utc"),
                 lsa_window=(0.0, 5.0),
-                detector_offset=get_primecam_offset("i1"),
+                detector_offset=get_primecam_offset("IM2"),
                 timestep=1.0,
             )
 
@@ -1052,6 +1159,21 @@ class TestPlanConstantElLsaWindow:
                 lsa_window=(-10.0, 30.0),
             )
 
+    @pytest.mark.parametrize("window", [(330.0,), (330.0, 350.0, 5.0), "x"])
+    def test_lsa_window_that_is_not_a_pair_raises(
+        self, site, deep56_field, deep56_search_time, window
+    ):
+        """A window of one or three values is refused, not read in part."""
+        with pytest.raises(ValueError, match="lsa_window must be a pair"):
+            plan_constant_el_scan(
+                field=deep56_field,
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=deep56_search_time,
+                lsa_window=window,
+            )
+
     def test_lsa_window_not_found_raises(self, site, deep56_field):
         """A tiny search horizon that never crosses min_lsa raises PointingError.
 
@@ -1086,14 +1208,11 @@ class TestPlanConstantElLsaWindow:
     def test_lsa_window_rejects_rising(self, site, deep56_field, deep56_search_time, rising):
         """``rising`` beside ``lsa_window`` is refused, not silently ignored.
 
-        Accepting the pair would let the flag do nothing: the LSA branch
-        derives ``obs_start`` / ``obs_end`` from the sidereal window, and
-        ``_compute_ce_az_range`` never takes a ``rising`` argument at all,
-        so both values would produce byte-identical trajectories and
-        computed params. Only the summary line would differ, printing
-        "Rising pass" or "Setting pass" over the same span, telling the
-        reader a half had been honoured. Refusing the combination is the
-        honest contract; the summary names the sidereal window instead (see
+        The sidereal window fixes the timing, and the side of the meridian
+        whose range is swept is the one the field centre stands on at the
+        window's middle, so a ``rising`` flag beside it would either repeat
+        that choice or contradict it. Refusing the combination is the honest
+        contract; the summary names the sidereal window instead (see
         ``test_lsa_window_summary_names_the_window``).
         """
         with pytest.raises(ValueError, match="rising is not accepted with lsa_window"):
@@ -1491,8 +1610,8 @@ class TestConstantElSweptSunCheck:
     A constant-elevation block can run for hours while the Sun closes at
     about 15 degrees per hour. Screening only the field centre at the search
     anchor (and, on the LSA path, at the resolved opening) leaves the rest of
-    the pass unscreened, ``obs_end`` included. The planner samples the
-    commanded azimuth envelope across the whole run.
+    the pass unscreened. The planner screens the built boresight trajectory
+    over the whole run.
     """
 
     _FIELD = FieldRegion(ra_center=180.0, dec_center=-30.0, width=20.0, height=10.0)
@@ -1512,7 +1631,7 @@ class TestConstantElSweptSunCheck:
         return plan_constant_el_scan(**kwargs)
 
     def test_sweep_reaches_the_end_of_the_pass(self, site):
-        """The sampled times span the block, so ``obs_end`` is screened."""
+        """The sampled times span the block, so its last sample is screened."""
         seen: list[Time] = []
 
         def spy(az, el, t):
@@ -1522,10 +1641,12 @@ class TestConstantElSweptSunCheck:
         block = self._plan(site, sun_safe=spy)
         cp = block.computed_params
         t_start = Time(cp["start_time_iso"], scale="utc")
-        t_end = Time(cp["end_time_iso"], scale="utc")
+        t_last = get_absolute_times(block.trajectory)[-1]
         sweep = Time([t.jd for t in seen], format="jd", scale="utc")
         assert sweep.min().unix <= t_start.unix + 1e-6
-        assert sweep.max().unix >= t_end.unix - 1e-6
+        # The spy's instants pass through a single-float Julian date, good to
+        # tens of microseconds.
+        assert sweep.max().unix >= t_last.unix - 1e-3
 
     def test_a_pass_that_ends_inside_the_zone_warns(self, site):
         """A late Sun approach is caught even though the opening is clear.
@@ -1575,6 +1696,183 @@ class TestConstantElSweptSunCheck:
             self._plan(site, sun_safe=lambda az, el, t: True)
         assert not [w for w in caught if "EXCLUSION ZONE" in str(w.message)]
 
+    def test_each_field_form_advisory_keeps_its_attribution(self, site):
+        """The centre pre-flight names the planner; the other field-form advisories the caller.
+
+        The other three are the swept-pass screen and the two long-pass
+        advisories: a 110 deg wide field that crosses el 50 deg over 8.4 h, and
+        an LSA window of 120 deg, an 8 h block.
+        """
+        long_pass = dict(
+            elevation=50.0,
+            velocity=1.0,
+            site=site,
+            start_time=Time("2026-06-15T03:00:00", scale="utc"),
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            plan_constant_el_scan(
+                FieldRegion(358.0, -2.0, 5.0, 5.0),
+                elevation=40.0,
+                velocity=0.5,
+                site=site,
+                start_time=Time("2026-03-20T10:00:00", scale="utc"),
+            )
+            plan_constant_el_scan(FieldRegion(0.0, -30.0, 110.0, 10.0), **long_pass)
+            plan_constant_el_scan(
+                FieldRegion(0.0, -30.0, 10.0, 10.0),
+                lsa_window=(300.0, 60.0),
+                max_search_hours=24.0,
+                **long_pass,
+            )
+        labels = {
+            "Field center passes": "centre",
+            "planned constant-elevation": "sweep",
+            "Computed observation duration": "crossing",
+            "LSA-derived duration": "lsa",
+        }
+        files = sorted(
+            (
+                next(label for text, label in labels.items() if text in str(w.message)),
+                Path(w.filename).name,
+            )
+            for w in caught
+        )
+        here = Path(__file__).name
+        assert files == [
+            ("centre", "constant_el.py"),
+            ("crossing", here),
+            ("lsa", here),
+            ("sweep", here),
+        ]
+
+    @pytest.mark.parametrize(
+        ("field", "elevation", "velocity", "anchor", "module", "warns"),
+        [
+            # A tall field whose throw of 64 deg puts the Sun between the envelope's
+            # edges and its middle near the end of the pass, 0.6 deg above the horizon.
+            (
+                FieldRegion(ra_center=45.0, dec_center=-10.0, width=10.0, height=40.0),
+                45.0,
+                1.0,
+                "2026-06-15T09:00:00",
+                None,
+                True,
+            ),
+            # IM6 sits below the boresight, so the boresight scans 1.66 deg higher
+            # than the detector's elevation, and nearer the Sun.
+            (
+                FieldRegion(ra_center=42.0, dec_center=0.0, width=2.0, height=2.0),
+                50.0,
+                0.5,
+                "2026-03-15T13:00:00",
+                "IM6",
+                True,
+            ),
+            # IM3 sits above it, so the boresight scans lower and stays clear.
+            (
+                FieldRegion(ra_center=41.0, dec_center=0.0, width=2.0, height=2.0),
+                50.0,
+                0.5,
+                "2026-03-15T13:00:00",
+                "IM3",
+                False,
+            ),
+        ],
+        ids=["tall-field", "IM6", "IM3"],
+    )
+    def test_the_screen_judges_every_sample_of_the_boresight_path(
+        self, site, field, elevation, velocity, anchor, module, warns
+    ):
+        """The field form warns exactly when a sample of the built trajectory is inside the zone.
+
+        The advisory names the closest sample, so its distance is the minimum
+        separation of the boresight path from the Sun over every sample.
+        """
+        kwargs = dict(
+            elevation=elevation,
+            velocity=velocity,
+            site=site,
+            start_time=Time(anchor, scale="utc"),
+            detector_offset=None if module is None else get_primecam_offset(module),
+        )
+        if warns:
+            with pytest.warns(PointingWarning, match="EXCLUSION ZONE: planned constant") as rec:
+                block = plan_constant_el_scan(field, **kwargs)
+            (message,) = [str(w.message) for w in rec if "EXCLUSION ZONE" in str(w.message)]
+        else:
+            block = plan_constant_el_scan(field, **kwargs)
+
+        closest = float(_sun_separation_of_every_sample(site, block.trajectory).min())
+        radius = site.sun_avoidance.exclusion_radius
+        assert (closest <= radius) == warns
+        if warns:
+            stated = float(message.split(" passes ")[1].split(" deg")[0])
+            assert stated == pytest.approx(closest, abs=0.06)
+
+
+class TestAnchorAtOrInsideAPass:
+    """A field-form anchor at or after the pass's opening is refused, and the refusal says why.
+
+    The search looks forward for the leading edge's crossing; from inside a
+    pass that edge has already crossed, so the next crossing is about a
+    sidereal day later, beyond the search.
+    """
+
+    _FIELD = FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7)
+
+    def _plan(self, site, start_time):
+        return plan_constant_el_scan(
+            self._FIELD, elevation=50.0, velocity=0.5, site=site, start_time=start_time
+        )
+
+    def test_an_anchor_just_before_the_opening_returns_the_pass(self, site):
+        """One millisecond before the opening, the same pass is found.
+
+        The search grid starts from the anchor, so the interpolated crossings
+        move in their last bits; the pass and its legs do not.
+        """
+        opened = self._plan(site, Time("2026-03-15T17:00:00", scale="utc"))
+        opening = Time(opened.computed_params["start_time_iso"], scale="utc")
+
+        again = self._plan(site, opening - TimeDelta(1e-3, format="sec"))
+
+        before, after = opened.computed_params, again.computed_params
+        for key in ("start_time_iso", "end_time_iso", "n_scans"):
+            assert after[key] == before[key]
+        for key in ("az_start", "az_stop", "duration"):
+            assert after[key] == pytest.approx(before[key], abs=1e-9)
+
+    @pytest.mark.parametrize("into_pass", [0.0, 0.5], ids=["opening", "mid-pass"])
+    def test_an_anchor_inside_the_pass_is_refused_as_inside_it(self, site, into_pass):
+        """At the opening and mid-pass the refusal names the anchor as inside the pass."""
+        opened = self._plan(site, Time("2026-03-15T17:00:00", scale="utc"))
+        opening = Time(opened.computed_params["start_time_iso"], scale="utc")
+        anchor = opening + TimeDelta(into_pass * opened.duration, format="sec")
+
+        with pytest.raises(PointingError, match="falls inside a pass") as err:
+            self._plan(site, anchor)
+
+        assert anchor.iso in str(err.value)
+        assert "about a sidereal day later" in str(err.value)
+
+    def test_a_field_never_below_the_elevation_is_not_called_inside_a_pass(self, site):
+        """A field above the elevation all day has no crossing, and the refusal does not claim one.
+
+        At Dec -88 the field stays between about 21 and 25 deg from FYST, so it
+        never rises through el 20.
+        """
+        with pytest.raises(PointingError, match="Could not find elevation crossing") as err:
+            plan_constant_el_scan(
+                FieldRegion(ra_center=0.0, dec_center=-88.0, width=2.0, height=2.0),
+                elevation=20.0,
+                velocity=0.5,
+                site=site,
+                start_time=Time("2026-03-15T00:00:00", scale="utc"),
+            )
+
+        assert "inside a pass" not in str(err.value)
+
 
 class TestLsaSearchStepValidation:
     """The LSA crossing search validates the step it walks forward on.
@@ -1608,3 +1906,564 @@ class TestLsaSearchStepValidation:
                 base_search_time=search_time,
                 step_seconds=-30.0,
             )
+
+
+def _ra_dec_box(ra_lo: float, ra_hi: float, dec_lo: float, dec_hi: float) -> FieldRegion:
+    """Return the FieldRegion of an RA/Dec box, its width measured at the central Dec."""
+    dec_c = 0.5 * (dec_lo + dec_hi)
+    return FieldRegion(
+        ra_center=0.5 * (ra_lo + ra_hi),
+        dec_center=dec_c,
+        width=(ra_hi - ra_lo) * math.cos(math.radians(dec_c)),
+        height=dec_hi - dec_lo,
+    )
+
+
+# Orion A: a 6 x 2.5 deg box turned by -63.2 deg about RA 05:38:28.55, Dec -06:57:02.34.
+_ORION_A = FieldRegion(
+    ra_center=(5 + 38 / 60 + 28.55 / 3600) * 15.0,
+    dec_center=-(6 + 57 / 60 + 2.34 / 3600),
+    width=6.0,
+    height=2.5,
+)
+
+# name: (field, angle, elevation, rising, the range's two ends to a tenth of a degree, the
+# coarse time step of the trace in seconds). The ends only centre the trace's azimuth
+# windows, which the trace checks it did not clip; they are not what is asserted.
+_BORDER_CASES = {
+    # COSMOS: RA 09:50:30 to 10:10:30, Dec +00:05 to +04:15.
+    "cosmos-43-rising": (
+        _ra_dec_box(147.625, 152.625, 5.0 / 60.0, 4.25),
+        0.0,
+        43.0,
+        True,
+        (59.8, 66.8),
+        60.0,
+    ),
+    # Deep56: RA 23:00 to 03:00, Dec -09 to +05, a field 60 deg long in RA.
+    "deep56-50-setting": (
+        _ra_dec_box(-15.0, 45.0, -9.0, 5.0),
+        0.0,
+        50.0,
+        False,
+        (284.1, 311.1),
+        120.0,
+    ),
+    "orion-a-45-rising": (_ORION_A, -63.2, 45.0, True, (71.0, 81.2), 60.0),
+    "orion-a-45-setting": (_ORION_A, -63.2, 45.0, False, (278.8, 289.0), 60.0),
+}
+_BORDER_NIGHT = Time("2026-11-15T00:00:00", scale="utc")
+
+# The trace's fine grid: 2 s in time and 0.002 deg in azimuth.
+_TRACE_FINE_STEP_SEC = 2.0
+_TRACE_FINE_AZ_STEP_DEG = 0.002
+
+
+@functools.cache
+def _border_block(name: str, atmosphere: bool = False) -> ScanBlock:
+    """Plan one of the border cases with the planner's default padding, vacuum or refracted."""
+    field, angle, elevation, rising, _, _ = _BORDER_CASES[name]
+    return plan_constant_el_scan(
+        field,
+        elevation=elevation,
+        velocity=0.5,
+        site=get_fyst_site(),
+        start_time=_BORDER_NIGHT,
+        rising=rising,
+        angle=angle,
+        atmosphere=AtmosphericConditions.for_fyst() if atmosphere else None,
+    )
+
+
+def _pass_span(block: ScanBlock, margin_sec: float = 2700.0) -> tuple[Time, Time]:
+    """Return the planner's timed pass widened by ``margin_sec`` on each side."""
+    cp = block.computed_params
+    margin = TimeDelta(margin_sec, format="sec")
+    return (
+        Time(cp["start_time_iso"], scale="utc") - margin,
+        Time(cp["end_time_iso"], scale="utc") + margin,
+    )
+
+
+def _in_box(ra, dec, field: FieldRegion, angle: float) -> np.ndarray:
+    """Return which RA/Dec points lie in the box, by the inverse of the planner's corner rule."""
+    a = math.radians(angle)
+    cos_dec = math.cos(math.radians(field.dec_center))
+    dx = ((np.asarray(ra) - field.ra_center + 180.0) % 360.0 - 180.0) * cos_dec
+    dy = np.asarray(dec) - field.dec_center
+    x = dx * math.cos(a) + dy * math.sin(a)
+    y = -dx * math.sin(a) + dy * math.cos(a)
+    return (np.abs(x) <= 0.5 * field.width) & (np.abs(y) <= 0.5 * field.height)
+
+
+def _border_mask(coords, field, angle, elevation, times: Time, az: np.ndarray) -> np.ndarray:
+    """Return, per time and grid azimuth, whether that point of the elevation circle is in it."""
+    n_t, n_az = len(times), az.size
+    ra, dec = coords.altaz_to_radec(
+        np.tile(az, n_t),
+        np.full(n_t * n_az, elevation),
+        times[np.repeat(np.arange(n_t), n_az)],
+    )
+    return _in_box(ra, dec, field, angle).reshape(n_t, n_az)
+
+
+def _per_time_extreme(mask: np.ndarray, az: np.ndarray, low: bool) -> np.ndarray:
+    """Return, per time, the lowest (or highest) in-box grid azimuth; +-inf where none."""
+    if low:
+        return np.where(mask, az, np.inf).min(axis=1)
+    return np.where(mask, az, -np.inf).max(axis=1)
+
+
+def _trace_end(coords, name: str, times: Time, guess_az: float, low: bool) -> float:
+    """Trace one end of the border's azimuths over ``times``, in three passes.
+
+    A coarse pass (0.02 deg in a 1.2 deg window about ``guess_az``) finds
+    the extreme over all times; a second (0.002 deg) re-reads every time
+    whose coarse value lies within one coarse step of it, since a slowly
+    drifting end ties on the coarse grid for hours; a third refines the
+    best of those in time (2 s over one coarse step either side, 0.002 deg).
+    Each pass checks that its extreme is not at its window's outer edge.
+    """
+    field, angle, elevation, _, _, coarse_step = _BORDER_CASES[name]
+    sign = 1.0 if low else -1.0
+
+    def best(times_, grid):
+        per_time = _per_time_extreme(
+            _border_mask(coords, field, angle, elevation, times_, grid), grid, low
+        )
+        k = int(np.argmin(sign * per_time))
+        value = float(per_time[k])
+        assert grid.min() < value < grid.max()
+        return value, per_time, k
+
+    def window(value, below, above):
+        # ``below`` deg past the end being traced, ``above`` deg back into the range.
+        lo, hi = (value - below, value + above) if low else (value - above, value + below)
+        return np.arange(lo, hi, _TRACE_FINE_AZ_STEP_DEG)
+
+    coarse = np.arange(guess_az - 0.6, guess_az + 0.6, 0.02)
+    value, per_time, _ = best(times, coarse)
+    near = np.flatnonzero(sign * (per_time - value) <= 0.02 + 1e-9)
+    value, _, k = best(times[near], window(value, 0.03, 0.004))
+    half = coarse_step + 10.0
+    fine_times = times[near[k]] + TimeDelta(
+        np.arange(-half, half, _TRACE_FINE_STEP_SEC), format="sec"
+    )
+    value, _, _ = best(fine_times, window(value, 0.2, 0.004))
+    return value
+
+
+def _trace_border_range(coords, name: str, t_from: Time, t_to: Time) -> tuple[float, float]:
+    """Trace where the box's border meets the scan elevation over its whole crossing.
+
+    Points of the scan-elevation circle are followed through the crossing
+    with ``altaz_to_radec`` and tested for membership in the box, and the
+    lowest and highest azimuth any of them takes at any time are returned
+    (:func:`_trace_end`, sampled at the case's coarse time step). The
+    elevation circle on the pass's side holds no point of the box at
+    ``t_from`` or ``t_to``, so the span holds the whole crossing.
+    """
+    field, angle, elevation, rising, guess, coarse_step = _BORDER_CASES[name]
+    side = np.arange(0.0, 180.0, 0.05) + (0.0 if rising else 180.0)
+    ends = t_from + TimeDelta([0.0, (t_to - t_from).sec], format="sec")
+    assert not _border_mask(coords, field, angle, elevation, ends, side).any()
+
+    times = t_from + TimeDelta(np.arange(0.0, (t_to - t_from).sec, coarse_step), format="sec")
+    return (
+        _trace_end(coords, name, times, guess[0], low=True),
+        _trace_end(coords, name, times, guess[1], low=False),
+    )
+
+
+def _corner_crossing_range(coords, name: str, t_from: Time, t_to: Time) -> tuple[float, float]:
+    """Return the azimuths of the box's corners each at its own crossing of the scan elevation.
+
+    Each corner's elevation is sampled every 60 s over the span, the one
+    crossing on the pass's side (upward when rising, downward when setting)
+    is bracketed and solved with ``brentq`` on the transform's own
+    elevation, and the corner's azimuth is read at that instant. The lowest
+    and highest of the four azimuths are returned.
+    """
+    field, angle, elevation, rising, _, _ = _BORDER_CASES[name]
+    corners = _field_region_corners(
+        field.ra_center, field.dec_center, field.width, field.height, angle
+    )
+    offsets = np.arange(0.0, (t_to - t_from).sec, 60.0)
+    times = t_from + TimeDelta(offsets, format="sec")
+    azimuths = []
+    for ra, dec in corners:
+        _, el = coords.radec_to_altaz(np.full(offsets.size, ra), np.full(offsets.size, dec), times)
+        gap = np.asarray(el) - elevation
+        if rising:
+            found = np.flatnonzero((gap[:-1] < 0.0) & (gap[1:] >= 0.0))
+        else:
+            found = np.flatnonzero((gap[:-1] > 0.0) & (gap[1:] <= 0.0))
+        assert found.size == 1
+
+        def gap_at(seconds, ra=ra, dec=dec):
+            at = t_from + TimeDelta(seconds, format="sec")
+            return coords.radec_to_altaz(ra, dec, at)[1] - elevation
+
+        k = int(found[0])
+        root = brentq(gap_at, offsets[k], offsets[k + 1], xtol=1e-4)
+        az, _ = coords.radec_to_altaz(ra, dec, t_from + TimeDelta(root, format="sec"))
+        azimuths.append(az)
+    return min(azimuths), max(azimuths)
+
+
+def _near(az: float, ref: float) -> float:
+    """Return ``az`` moved by whole turns to within half a turn of ``ref``."""
+    return az + 360.0 * round((ref - az) / 360.0)
+
+
+def _crossing_azimuths(coords, ra, dec, elevation, rising, at: Time) -> np.ndarray:
+    """Return each point's azimuth as it crosses the scan elevation, found by a search in time.
+
+    Each RA/Dec point's elevation is sampled every 900 s for one day from
+    ``at``; its first crossing on the pass's side (upward when rising,
+    downward when setting) is bracketed, bisected to 1 ms on the transform's
+    own elevation, and the point's azimuth is read at that instant. A point
+    with no such crossing gets NaN.
+    """
+    ra, dec = np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+    offsets = np.arange(0.0, 86400.0 + 900.0, 900.0)
+    n, m = ra.size, offsets.size
+    _, el = coords.radec_to_altaz(
+        np.repeat(ra, m), np.repeat(dec, m), at + TimeDelta(np.tile(offsets, n), format="sec")
+    )
+    gap = np.asarray(el).reshape(n, m) - elevation
+    if rising:
+        bracket = (gap[:, :-1] < 0.0) & (gap[:, 1:] >= 0.0)
+    else:
+        bracket = (gap[:, :-1] > 0.0) & (gap[:, 1:] <= 0.0)
+    k = bracket.argmax(axis=1)
+    lo, hi = offsets[k], offsets[k + 1]
+    for _ in range(20):  # 900 s halved 20 times is under 1 ms
+        mid = 0.5 * (lo + hi)
+        _, el_mid = coords.radec_to_altaz(ra, dec, at + TimeDelta(mid, format="sec"))
+        later = (np.asarray(el_mid) < elevation) == rising
+        lo, hi = np.where(later, mid, lo), np.where(later, hi, mid)
+    az, _ = coords.radec_to_altaz(ra, dec, at + TimeDelta(0.5 * (lo + hi), format="sec"))
+    return np.where(bracket.any(axis=1), np.asarray(az, dtype=float), np.nan)
+
+
+def _box_points(field: FieldRegion, angle: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return points of the box: 49 along each edge, corners included, and a 3 x 3 interior grid.
+
+    The box is the parallelogram spanned by the planner's corners
+    (:func:`_field_region_corners`, which go round it) in unwrapped RA and Dec.
+    """
+    c0, c1, _, c3 = np.array(
+        _field_region_corners(field.ra_center, field.dec_center, field.width, field.height, angle)
+    )
+    s = np.linspace(0.0, 1.0, 49)
+    g = np.linspace(0.25, 0.75, 3)
+    along, across = np.concatenate(
+        [
+            np.stack([s, np.zeros_like(s)]),
+            np.stack([s, np.ones_like(s)]),
+            np.stack([np.zeros_like(s), s]),
+            np.stack([np.ones_like(s), s]),
+            np.stack([np.repeat(g, 3), np.tile(g, 3)]),
+        ],
+        axis=1,
+    )
+    points = c0 + along[:, None] * (c1 - c0) + across[:, None] * (c3 - c0)
+    return points[:, 0], points[:, 1]
+
+
+class TestCEAzimuthRangeIsTheBorderAtTheElevation:
+    """The range is where the field's border meets the scan elevation over its whole crossing.
+
+    On the pass's side of the meridian it runs between the extreme azimuths
+    at which points of the box's border cross the scan elevation, and it
+    holds every azimuth at which any part of the box is ever at that
+    elevation, on the planner's timed pass or outside it.
+    """
+
+    # Every azimuth the trace keeps is that of a point of the box at the scan
+    # elevation, so the range must hold it, to within one step of the trace's
+    # fine azimuth grid (0.002 deg); the step also covers the range reading
+    # apparent places at one instant where the trace reads each at its own
+    # time (about 1e-4 deg here). The grid stops short of each end by up to
+    # that step and by the 2 s time step: near a corner of a turned box the
+    # border's meeting point moves along the elevation circle at up to about
+    # 0.005 deg/s, so up to 0.01 deg at the 2 s step (unturned boxes meet the
+    # elevation along a whole edge of constant Dec, so their ends are reached
+    # on a plateau). So the range may exceed the trace by up to 0.02 deg at
+    # each end. Deep56's north edge, 60 deg of RA long, crosses 0.012 deg past
+    # its corners at el 50 (its apparent Dec bows above theirs near RA 0), so
+    # its case fails a range read at the corners alone.
+    _EXCESS_TOLERANCE_DEG = 0.02
+    _CONTAIN_TOLERANCE_DEG = _TRACE_FINE_AZ_STEP_DEG
+
+    @pytest.mark.parametrize("name", list(_BORDER_CASES))
+    def test_the_range_holds_the_traced_border_and_little_more(self, coordinates, name):
+        block = _border_block(name)
+        traced_lo, traced_hi = _trace_border_range(coordinates, name, *_pass_span(block))
+        lo = _near(block.computed_params["az_start"], traced_lo)
+        hi = _near(block.computed_params["az_stop"], traced_hi)
+        assert lo <= traced_lo + self._CONTAIN_TOLERANCE_DEG
+        assert hi >= traced_hi - self._CONTAIN_TOLERANCE_DEG
+        assert traced_lo - lo <= self._EXCESS_TOLERANCE_DEG
+        assert hi - traced_hi <= self._EXCESS_TOLERANCE_DEG
+
+    @pytest.mark.parametrize("name", list(_BORDER_CASES))
+    def test_each_corner_crosses_inside_the_range(self, coordinates, name):
+        """Each corner's azimuth, read as that corner crosses, lies inside the range.
+
+        The corners' crossings are solved to 1e-4 s, so the 0.001 deg allowed
+        covers only the range reading apparent places at one instant.
+        """
+        block = _border_block(name)
+        corner_lo, corner_hi = _corner_crossing_range(coordinates, name, *_pass_span(block))
+        assert _near(block.computed_params["az_start"], corner_lo) <= corner_lo + 0.001
+        assert _near(block.computed_params["az_stop"], corner_hi) >= corner_hi - 0.001
+
+    # Fields many degrees long in RA, and one near the south celestial pole, whose
+    # border crosses the elevation past every corner: the corners alone fall short of
+    # the searched range by the amount given.
+    @pytest.mark.parametrize(
+        ("field", "elevation", "rising", "corner_shortfall"),
+        [
+            pytest.param(FieldRegion(0.0, -10.0, 120.0, 4.0), 45.0, True, 0.117, id="120x4-rising"),
+            pytest.param(
+                FieldRegion(0.0, -10.0, 150.0, 4.0), 45.0, False, 0.174, id="150x4-setting"
+            ),
+            pytest.param(FieldRegion(0.0, -35.0, 250.0, 6.0), 45.0, True, 0.402, id="250x6-rising"),
+            pytest.param(
+                FieldRegion(0.0, -86.0, 10.0, 4.0), 23.0, True, 0.111, id="near-pole-rising"
+            ),
+        ],
+    )
+    def test_a_long_or_polar_field_reaches_past_its_corners(
+        self, coordinates, field, elevation, rising, corner_shortfall
+    ):
+        """The range is the border's crossings searched in time, not its corners'.
+
+        Each point of the box (:func:`_box_points`) is followed through a day
+        and its azimuth read as it crosses (:func:`_crossing_azimuths`). The
+        range matches the searched extremes to 0.002 deg (measured within
+        5e-4: the search reads 49 points per edge and each point's apparent
+        place at its own crossing), and no interior point is more extreme.
+        """
+        at = Time("2026-06-15T00:00:00", scale="utc")
+        ra, dec = _box_points(field, 0.0)
+        azimuths = _crossing_azimuths(coordinates, ra, dec, elevation, rising, at)
+        assert not np.isnan(azimuths).any()
+        searched = (azimuths.min(), azimuths.max())
+        corners = azimuths[[0, 48, 49, 97]]  # the first and last points of two opposite edges
+        shortfall = (corners.min() - searched[0]) + (searched[1] - corners.max())
+        assert shortfall == pytest.approx(corner_shortfall, abs=0.001)
+        interior = azimuths[4 * 49 :]
+        assert searched[0] < interior.min() and interior.max() < searched[1]
+        lo, hi = _ce_field_az_range(field, 0.0, elevation, rising, coordinates, at, 0.0)
+        assert lo == pytest.approx(searched[0], abs=0.002)
+        assert hi == pytest.approx(searched[1], abs=0.002)
+
+    @pytest.mark.parametrize(
+        ("dec", "height", "rising"),
+        [(-10.0, 4.0, True), (-35.0, 6.0, False)],
+        ids=["dec-10-rising", "dec-35-setting"],
+    )
+    def test_a_denser_read_of_the_border_barely_moves_the_range(
+        self, coordinates, monkeypatch, dec, height, rising
+    ):
+        """20000 points per edge move a 359 deg wide field's range by less than 1e-4 deg."""
+        field = FieldRegion(0.0, dec, 359.0, height)
+        at = Time("2026-06-15T03:00:00", scale="utc")
+        as_shipped = _ce_field_az_range(field, 0.0, 45.0, rising, coordinates, at, 0.0)
+        monkeypatch.setattr(
+            "fyst_trajectories.planning._ce_geometry._CE_BORDER_SAMPLES_PER_EDGE", 20000
+        )
+        dense = _ce_field_az_range(field, 0.0, 45.0, rising, coordinates, at, 0.0)
+        assert as_shipped == pytest.approx(dense, abs=1e-4)
+
+    @pytest.mark.parametrize(
+        ("field", "angle", "elevation", "rising", "start", "expected"),
+        [
+            pytest.param(
+                *_BORDER_CASES["cosmos-43-rising"][:4],
+                _BORDER_NIGHT,
+                ("2026-11-15 08:01:44.284", "2026-11-15 08:21:39.692"),
+                id="cosmos",
+            ),
+            pytest.param(
+                *_BORDER_CASES["deep56-50-setting"][:4],
+                _BORDER_NIGHT,
+                ("2026-11-15 02:15:43.581", "2026-11-15 06:15:10.128"),
+                id="deep56",
+            ),
+            pytest.param(
+                FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7),
+                170.0,
+                50.0,
+                True,
+                Time("2026-03-15T17:00:00", scale="utc"),
+                ("2026-03-15 17:20:43.488", "2026-03-15 17:48:09.281"),
+                id="docstring-example",
+            ),
+        ],
+    )
+    def test_the_pass_timing_does_not_depend_on_the_range(
+        self, site, field, angle, elevation, rising, start, expected
+    ):
+        """The pass is still timed by the RA edges' crossings, as recorded before the range rule."""
+        block = plan_constant_el_scan(
+            field,
+            elevation=elevation,
+            velocity=0.5,
+            site=site,
+            start_time=start,
+            rising=rising,
+            angle=angle,
+        )
+        cp = block.computed_params
+        assert (cp["start_time_iso"], cp["end_time_iso"]) == expected
+
+    def test_padding_widens_each_side_by_its_value(self, site):
+        field, angle, elevation, rising, _, _ = _BORDER_CASES["cosmos-43-rising"]
+        bare, padded = (
+            plan_constant_el_scan(
+                field,
+                elevation=elevation,
+                velocity=0.5,
+                site=site,
+                start_time=_BORDER_NIGHT,
+                rising=rising,
+                angle=angle,
+                az_padding=padding,
+            )
+            for padding in (0.0, 1.5)
+        )
+        assert padded.computed_params["az_start"] == pytest.approx(
+            bare.computed_params["az_start"] - 1.5, abs=1e-12
+        )
+        assert padded.computed_params["az_stop"] == pytest.approx(
+            bare.computed_params["az_stop"] + 1.5, abs=1e-12
+        )
+
+    def test_the_default_padding_is_zero(self):
+        assert inspect.signature(plan_constant_el_scan).parameters["az_padding"].default == 0.0
+
+    def test_the_two_forms_build_one_sweep(self, site):
+        """The window form, handed the field form's range, start and pass length, builds its sweep.
+
+        COSMOS at el 43 rising: its range lies inside ``[0, 360)`` and is not
+        moved by a whole turn, so the window is the range as computed.
+        """
+        field, angle, elevation, rising, _, _ = _BORDER_CASES["cosmos-43-rising"]
+        block = plan_constant_el_scan(
+            field,
+            elevation=elevation,
+            velocity=0.5,
+            site=site,
+            start_time=_BORDER_NIGHT,
+            rising=rising,
+            angle=angle,
+            az_accel=1.0,
+            timestep=0.1,
+        )
+        cp = block.computed_params
+        assert 0.0 <= cp["az_start"] < cp["az_stop"] < 360.0
+        pass_length = (
+            Time(cp["end_time_iso"], scale="utc") - Time(cp["start_time_iso"], scale="utc")
+        ).sec
+        window = plan_constant_el_scan(
+            az_window=(cp["az_start"], cp["az_stop"]),
+            elevation=elevation,
+            velocity=0.5,
+            duration=pass_length,
+            site=site,
+            start_time=block.trajectory.start_time,
+            az_accel=1.0,
+            timestep=0.1,
+        )
+        assert window.computed_params["n_scans"] == cp["n_scans"]
+        for name in ("times", "az", "el", "scan_flag"):
+            assert np.array_equal(getattr(window.trajectory, name), getattr(block.trajectory, name))
+
+    # At el 40 a declination culminates at the scan elevation at lat + 50 deg
+    # (+27.01) north of the zenith and lat - 50 deg (-72.99) south of it. Each
+    # field reaches past that declination, so the part of it beyond never
+    # reaches el 40 and the range stops at the meridian on that side.
+    @pytest.mark.parametrize(
+        ("dec_center", "height", "rising", "end", "meridian"),
+        [
+            pytest.param(26.0, 4.0, True, "az_start", 0.0, id="north-rising"),
+            pytest.param(26.0, 4.0, False, "az_stop", 0.0, id="north-setting"),
+            pytest.param(-72.0, 6.0, True, "az_stop", 180.0, id="south-rising"),
+            pytest.param(-72.0, 6.0, False, "az_start", 180.0, id="south-setting"),
+        ],
+    )
+    def test_a_declination_short_of_the_elevation_ends_the_range_at_the_meridian(
+        self, site, dec_center, height, rising, end, meridian
+    ):
+        block = plan_constant_el_scan(
+            FieldRegion(ra_center=60.0, dec_center=dec_center, width=4.0, height=height),
+            elevation=40.0,
+            velocity=0.5,
+            site=site,
+            start_time=_BORDER_NIGHT,
+            rising=rising,
+        )
+        cp = block.computed_params
+        assert math.remainder(cp[end] - meridian, 360.0) == 0.0
+        # The other end lies strictly on the pass's side.
+        lo, hi = cp["az_start"] % 360.0, cp["az_stop"] % 360.0 or 360.0
+        assert (0.0 <= lo < hi <= 180.0) if rising else (180.0 <= lo < hi <= 360.0)
+
+    @pytest.mark.parametrize(
+        ("lsa_window", "east"),
+        [
+            # LST 50 at the window's middle puts the centre (RA 60) 10 deg east of the
+            # meridian, LST 70 10 deg west of it; each window holds the transit.
+            pytest.param((20.0, 80.0), True, id="centre-east-at-the-middle"),
+            pytest.param((40.0, 100.0), False, id="centre-west-at-the-middle"),
+        ],
+    )
+    def test_an_lsa_window_takes_the_side_of_the_centre_at_its_middle(self, site, lsa_window, east):
+        block = plan_constant_el_scan(
+            FieldRegion(ra_center=60.0, dec_center=-25.0, width=4.0, height=4.0),
+            elevation=30.0,
+            velocity=0.5,
+            site=site,
+            start_time=_BORDER_NIGHT,
+            lsa_window=lsa_window,
+        )
+        cp = block.computed_params
+        lo = cp["az_start"] % 360.0
+        hi = lo + cp["az_throw"]
+        assert (0.0 < lo < hi < 180.0) if east else (180.0 < lo < hi < 360.0)
+
+    def test_an_lsa_window_over_a_field_that_never_reaches_the_elevation_raises(self, site):
+        """The field's south edge, Dec +58, culminates at el 9 at FYST, so none of it reaches 50."""
+        with pytest.raises(PointingError, match=r"never crosses el=50\.00 deg"):
+            plan_constant_el_scan(
+                FieldRegion(ra_center=60.0, dec_center=60.0, width=4.0, height=4.0),
+                elevation=50.0,
+                velocity=0.5,
+                site=site,
+                start_time=_BORDER_NIGHT,
+                lsa_window=(20.0, 80.0),
+            )
+
+    def test_with_refraction_the_border_crosses_at_its_refracted_elevation(self, site):
+        """With an atmosphere the ends are where the border's refracted elevation is the scan's.
+
+        COSMOS's edges are 5 deg long, so its ends are crossings of corners
+        (as the corner test shows). The refracted ends are matched to the
+        corners' refracted crossings to 0.002 deg, and the vacuum range,
+        which refraction moves by about 0.008 to 0.009 deg here, misses them
+        by more than twice that.
+        """
+        name = "cosmos-43-rising"
+        refracted = _border_block(name, atmosphere=True)
+        vacuum = _border_block(name)
+        observed = Coordinates(site, atmosphere=AtmosphericConditions.for_fyst())
+        corner_lo, corner_hi = _corner_crossing_range(observed, name, *_pass_span(refracted))
+        for block, close in ((refracted, True), (vacuum, False)):
+            cp = block.computed_params
+            misses = (abs(cp["az_start"] - corner_lo), abs(cp["az_stop"] - corner_hi))
+            for miss in misses:
+                assert (miss <= 0.002) if close else (0.004 < miss < 0.05)

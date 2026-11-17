@@ -31,9 +31,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-from astropy.time import Time  # noqa: E402
-from astropy.utils import iers  # noqa: E402
+import matplotlib.pyplot as plt
+from astropy.time import Time
+from astropy.utils import iers
 
 # Earth orientation comes from the vendored IERS-A table the test suite pins, so
 # every figure renders the same bytes whatever table astropy has cached.
@@ -168,8 +168,8 @@ def pong_scan(size_in: tuple[float, float]) -> plt.Figure:
         fov_radius_deg=None,
         bin_size=0.02,
         smooth_sigma=1.5,
-        # Below the deepest dip inside the field (about 9 % of the peak), so the footprint
-        # contour does not ring the gaps one period leaves as stray dots.
+        # Below the deepest dip inside the field, so the footprint contour does not
+        # ring the gaps one period leaves as stray dots.
         footprint_threshold=0.05,
         axes=[bottom.subplots(1, 1)],
     )
@@ -224,7 +224,7 @@ def constant_el_scan(size_in: tuple[float, float]) -> plt.Figure:
     )
     fig = plot_hit_map(
         block.trajectory,
-        modules={"centre module, 1.3 deg field of view": get_primecam_offset("c")},
+        modules={"centre module, 1.3 deg field of view": get_primecam_offset("IM0")},
         site=site,
         bin_size=0.05,
         show=False,
@@ -238,7 +238,7 @@ def source_ces_track(size_in: tuple[float, float]) -> plt.Figure:
     Placed on ``planning.rst``, Planning a Source CES.
     """
     site = get_fyst_site()
-    modules = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+    modules = list(PRIMECAM_MODULES.values())
     block = plan_source_ces(
         body="jupiter",
         footprint=modules,

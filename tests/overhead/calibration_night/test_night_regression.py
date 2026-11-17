@@ -81,6 +81,29 @@ def _check_rebuild_and_regate(site, timeline):
         assert az == pytest.approx(wrap, abs=1e-6)
 
 
+def test_a_night_that_idles_to_its_end_books_no_zero_length_tail():
+    """A night of whole idle ticks ends on its last tick, not on a tail of float noise.
+
+    Jupiter is not up, so the night idles in ticks of 300 s from 09:09 to
+    the end of its usable interval, 10:34, a whole number of ticks away.
+    A tick advanced in ``Time`` arithmetic lands a few picoseconds short of
+    the next, and that remainder is no stretch of time to book.
+    """
+    site = get_fyst_site()
+    timeline = plan_calibration_night(
+        ["jupiter"],
+        site,
+        "2027-03-20T09:09:00",
+        "2027-03-20T10:39:00",
+        start_pose=(90.0, 35.0),
+    )
+    assert not any(b.scan_type == "planet_cal" for b in timeline.blocks)
+    assert timeline.end_time.isot == "2027-03-20T10:34:00.000"
+    assert min(b.duration for b in timeline.blocks) > 0.01
+    assert abs((timeline.end_time - timeline.blocks[-1].t_stop).to_value("s")) < 0.01
+    assert timeline.validate() == []
+
+
 class TestShortNight:
     """Three Saturn passes in an hour: the fast anchor."""
 

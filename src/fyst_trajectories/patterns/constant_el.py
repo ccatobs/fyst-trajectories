@@ -175,7 +175,11 @@ class ConstantElScanPattern(AltAzPattern):
         ``[az_min, az_max]`` is at constant cruise velocity, and a sample
         is science when it lies in that range, to within
         ``_SCIENCE_EDGE_TOLERANCE_DEG``, as the sample where a cruise meets
-        a turnaround does.
+        a turnaround does. The one exception is a science sample whose
+        velocity is opposite to the science sample before it: the reversal
+        fell between the two (a turnaround no longer than a timestep), and
+        that sample is flagged as turnaround so that each leg is its own run
+        of science samples.
 
         Parameters
         ----------
@@ -270,6 +274,12 @@ class ConstantElScanPattern(AltAzPattern):
         )
         scan_flag[:] = SCAN_FLAG_TURNAROUND
         scan_flag[in_science] = SCAN_FLAG_SCIENCE
+        # A turnaround no longer than a timestep can fall between two samples, so
+        # both lie in the range and the two legs would read as one run. Where two
+        # consecutive science samples move in opposite directions, the later one is
+        # flagged as turnaround, which ends the leg there.
+        reversal = in_science[:-1] & in_science[1:] & (velocities[:-1] * velocities[1:] < 0.0)
+        scan_flag[1:][reversal] = SCAN_FLAG_TURNAROUND
 
         # The turnaround's peak displacement equals turnaround_overshoot_deg,
         # so every sample already lies inside the envelope; the clip only

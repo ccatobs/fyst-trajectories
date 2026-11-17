@@ -2,8 +2,8 @@
 
 Provides what the scheduler and the calibration-night planner share: the
 UTC instant both hold every time as, the scalar cable-wrap placement, the
-check of a policy's footprint tag, and the canonical module name and the
-search start a recorded pass carries.
+check of a policy's footprint tag, and the footprint name and the search
+start a recorded pass carries.
 """
 
 import math
@@ -13,7 +13,7 @@ import numpy as np
 from astropy.time import Time
 
 from ..patterns.utils import normalize_azimuth
-from ..primecam import PRIMECAM_MODULES, get_primecam_offset
+from ..primecam import PRIMECAM_IM0, PRIMECAM_MODULES, get_primecam_offset
 from ..site import Site
 from .exceptions import ScanParamsSchemaError
 
@@ -44,6 +44,26 @@ def _utc_instant(t: Time | str) -> Time:
     instant = Time(utc.jd1, utc.jd2, format="jd", scale="utc")
     instant.format = "isot"
     return instant
+
+
+def _stored_isot(t: Time | str) -> str:
+    """Return ``t`` as a timeline file writes it: a UTC ISO string to the millisecond.
+
+    The digits are astropy's own millisecond rendering of the instant as
+    :func:`_utc_instant` holds it; ``write_timeline`` adds a ``+00:00``
+    offset.
+    """
+    return _utc_instant(t).isot
+
+
+def _stored_instant(t: Time | str) -> Time:
+    """Return ``t`` as a timeline file stores it and ``read_timeline`` reads it back.
+
+    The millisecond string :func:`_stored_isot` writes, parsed as UTC as the
+    reader parses it, so an instant held in memory and the same instant read
+    back from a file give identical ``Time`` objects.
+    """
+    return Time(_stored_isot(t), scale="utc")
 
 
 def _search_start_record(start: Time) -> list[float]:
@@ -106,15 +126,29 @@ def _require_module_tag(field: str, tag: object) -> None:
         raise ValueError(f"{field}: {exc.args[0]}") from None
 
 
-def _canonical_module_name(tag: str) -> str:
-    """Return the canonical name of the Prime-Cam module ``tag`` names.
+# The footprint name a pass dict carries for the on-axis bay. An execution
+# layer may compare the name as a string, and the name it accepts for a
+# centred pass is "c".
+_ON_AXIS_DISPATCH_FOOTPRINT = "c"
 
-    That is the first key of
-    :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` naming the same
-    module, the name the per-module coverage records use: ``"c"`` for every
-    spelling of the centre module (``"C"``, ``"center"``, ``"IM0"``) and
-    ``"i1"`` .. ``"i6"`` for the ring. A recorded pass names its module this
-    way because an execution layer may compare the name as a string.
+
+def _is_on_axis_bay(tag: str) -> bool:
+    """Return whether ``tag`` names the on-axis bay ``IM0`` (in any spelling).
+
+    Raises
+    ------
+    KeyError
+        If ``tag`` names no Prime-Cam module.
+    """
+    return get_primecam_offset(tag) is PRIMECAM_IM0
+
+
+def _dispatch_footprint(tag: str) -> str:
+    """Return the footprint name a pass's dispatch dict carries for ``tag``.
+
+    ``"c"`` for the on-axis bay, whichever spelling ``tag`` used (``"IM0"``,
+    ``"c"``, ``"Center"``), and the bay's own key, ``"IM1"`` .. ``"IM6"``,
+    for a ring bay, whatever its case.
 
     Raises
     ------
@@ -122,6 +156,8 @@ def _canonical_module_name(tag: str) -> str:
         If ``tag`` names no Prime-Cam module.
     """
     module = get_primecam_offset(tag)
+    if module is PRIMECAM_IM0:
+        return _ON_AXIS_DISPATCH_FOOTPRINT
     return next(name for name, offset in PRIMECAM_MODULES.items() if offset is module)
 
 

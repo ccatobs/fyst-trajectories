@@ -159,7 +159,11 @@ the retry interval, and the tuning policy for the detector operations.
 The quintic turnaround peaks at 1.5 times
 the nominal acceleration, so the default 1.0 deg/s² peaks at the site's
 1.5 deg/s² advisory ceiling and a default night records no acceleration
-advisory. The first pass of the night above sweeps 2.72°, one module width
+advisory. The policy and :class:`~fyst_trajectories.overhead.ScanOverrides`
+refuse an ``az_speed`` above the Go TCS limit of 3 deg/s and an
+``az_accel`` above 4 deg/s², whose turnaround peak would pass the Go TCS
+limit of 6 deg/s², since the control software would refuse every such
+pass. The first pass of the night above sweeps 2.72°, one module width
 over the cosine of its 61.4° elevation::
 
     first = next(b for b in timeline.blocks if b.scan_type == "planet_cal")
@@ -237,14 +241,20 @@ never from a clock, so a night planned twice is identical::
 An infeasible visit is returned, never raised: ``plan.reason`` names why
 (the kernel could not plan the anchor, a solved boresight elevation below
 the policy's ``el_min`` or above the site's elevation limit, the
-crossing too slow, no whole pass left before the night ends, the retune
-pose, a pass or the wait before a later pass inside the Sun zone, no
-sun-safe slew or step between passes, no azimuth wrap, the goal outside
-the axis limits, or no way out of the zone), and
-``commit_visit`` records a deferral or, for the two geometry reasons (no
-wrap and the axis limits), a drop for the night. A telescope the Sun zone has
+crossing too slow, no whole pass left before the night ends, the pose
+held through the detector operations and the wait for the first pass, a
+pass or the wait before a later pass inside the Sun zone, a pass the
+control software would refuse (a sample inside the site's exclusion
+radius, or an axis past a Go TCS limit), no sun-safe slew or step between
+passes, no azimuth wrap, the goal outside the axis limits, or no way out
+of the zone), and ``commit_visit`` records a deferral or, for the two
+geometry reasons (no wrap and the axis limits), a drop for the night. The
+idle that follows a visit the control software would refuse carries the
+reason ``sun_scan`` or ``axis_dynamics``. A telescope the Sun zone has
 overtaken while it sat still is moved out first, by ``plan_visit`` and
-``advance_idle`` alike (:func:`~fyst_trajectories.overhead.plan_escape`;
+``advance_idle`` alike, and ``advance_idle`` also moves a pose the zone
+would reach during the idle
+(:func:`~fyst_trajectories.overhead.plan_escape`;
 a slew named ``sun_escape`` leads the blocks and the pass records the
 pose it escaped to). The night's first ``retune`` block stands for the
 detector-finding operation, named in ``metadata["operation"]``, and a
@@ -270,11 +280,14 @@ which read back from ECSV unchanged), three geometry records
 (``requested``, ``applied`` and ``solved``), the science fraction, the
 number of legs, the fraction of the pass each module saw the source
 (``module_crossings``) and the transition that preceded it. The dict's
-``footprint`` is the module's canonical name, ``"c"`` or ``"i1"`` ..
-``"i6"``, whichever spelling the policy used (``"IM0"`` and ``"Center"``
-are recorded as ``"c"``), since the execution layer compares it as a
-string. Every pass rebuilds from its block, and the track of the source
-across the focal plane can be drawn. Rebuilding re-runs the kernel over the
+``footprint`` names the module the way the execution layer compares it,
+as a string: ``"c"`` for the on-axis bay, whichever spelling the policy
+used (``"IM0"``, ``"c"`` and ``"Center"`` are all recorded as ``"c"``),
+and ``"IM1"`` .. ``"IM6"`` for a ring bay. ``module_crossings`` and the
+night's summary name every bay by its ``IM`` name, so the on-axis bay is
+``IM0`` there and ``"c"`` in the dict. Every pass rebuilds from its
+block, and the track of the source across the focal plane can be drawn.
+Rebuilding re-runs the kernel over the
 search the planner made, the 24 hours from ``search_start``, so the rebuilt
 pass is the planned one sample for sample, its solved throw included. A
 pass block without ``search_start`` is re-solved instead in a window of its

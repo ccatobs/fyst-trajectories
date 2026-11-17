@@ -208,6 +208,13 @@ class TestNonScalarTimeInputs:
         with pytest.raises(ValueError, match="start_time must be a single instant"):
             plan_source_ces(body="jupiter", footprint="c", site=site, start_time=self._GRID)
 
+    @pytest.mark.parametrize("count", [1, 3])
+    def test_a_window_that_is_not_a_pair_raises(self, site, count):
+        start = self._GRID[0]
+        window = tuple(start + i * u.hour for i in range(count))
+        with pytest.raises(ValueError, match=rf"window must be a \(start, end\) pair, got {count}"):
+            plan_source_ces(body="jupiter", footprint="c", el_bore=35.0, site=site, window=window)
+
 
 class TestSweptEnvelope:
     """Every envelope the kernel reasons about covers the commanded motion.
@@ -512,7 +519,7 @@ class TestInflateFootprint:
     def test_off_centre_module_keeps_its_own_centre(self):
         from fyst_trajectories.planning.footprints import inflate_footprint, resolve_footprint
 
-        base = resolve_footprint("i1")
+        base = resolve_footprint("IM5")
         grown = inflate_footprint(base, 0.25)
         assert (grown.center_xi_deg, grown.center_eta_deg) == (
             base.center_xi_deg,

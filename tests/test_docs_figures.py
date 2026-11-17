@@ -26,9 +26,9 @@ import pytest
 
 pytest.importorskip("matplotlib")
 
-from _sun_stubs import HAVE_SUN_AVOIDANCE  # noqa: E402
-from _tiers import imported_names, is_simulator_tier  # noqa: E402
-from matplotlib.image import imread  # noqa: E402
+from _sun_stubs import HAVE_SUN_AVOIDANCE
+from _tiers import imported_names, is_simulator_tier
+from matplotlib.image import imread
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
 SCRIPT = DOCS / "make_figures.py"
@@ -36,7 +36,7 @@ FIGURES = DOCS / "figures"
 
 #: Hand-authored diagram exports: committed beside their .html source, not built
 #: by the script.
-DIAGRAMS = ("dispatch_flow", "plate_scale_surfaces", "sim_live_lanes")
+DIAGRAMS = ("dispatch_flow", "plate_scale_surfaces", "sim_live_lanes", "slew_onto_scan")
 
 #: Pixel tolerance on each axis (the figures use a fixed size, never a tight box).
 SIZE_TOLERANCE_PX = 2

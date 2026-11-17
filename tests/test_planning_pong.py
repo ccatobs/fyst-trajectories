@@ -1,5 +1,7 @@
 """Tests for plan_pong_scan and the two Pong rotation planners."""
 
+from itertools import pairwise
+
 import numpy as np
 import pytest
 from astropy.time import Time, TimeDelta
@@ -305,7 +307,7 @@ class TestPlanPongRotationScans:
 
         # Each boundary is one instant at one pose: the last sample of a block
         # is the first sample of the next.
-        for before, after in zip(blocks, blocks[1:]):
+        for before, after in pairwise(blocks):
             end = before.trajectory.start_time + TimeDelta(
                 before.trajectory.times[-1], format="sec"
             )

@@ -23,9 +23,14 @@ from fyst_trajectories.overhead.simulation import (
     _generate_trajectory_for_block,
     _slice_to_block_window,
 )
-from fyst_trajectories.overhead.utils import _search_start_record, _search_start_time
+from fyst_trajectories.overhead.utils import (
+    _search_start_record,
+    _search_start_time,
+    _stored_instant,
+)
 from fyst_trajectories.planning import plan_daisy_scan, plan_pong_scan, plan_source_ces
 from fyst_trajectories.planning.footprints import resolve_footprint
+from fyst_trajectories.trajectory import Trajectory
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +82,7 @@ class TestComputeBudget:
         stats = compute_budget(one_night_timeline)
         assert one_night_timeline.calibration_blocks
         assert len(stats["calibration_breakdown"]) > 0
-        for cal_type, cal_info in stats["calibration_breakdown"].items():
+        for _cal_type, cal_info in stats["calibration_breakdown"].items():
             assert cal_info["count"] > 0
             assert cal_info["total_time"] > 0
 
@@ -285,6 +290,41 @@ class TestSliceToBlockWindow:
         assert end.unix < block.t_stop.unix
         assert sb.duration == pytest.approx(float(traj.times[-1]))
 
+    @pytest.mark.parametrize("phase", [0.4e-3, 0.6e-3], ids=["rounded_down", "rounded_up"])
+    @pytest.mark.parametrize("origin", ["placed", "stored"])
+    def test_a_sample_on_the_start_is_kept_and_one_on_the_stop_is_not(self, phase, origin):
+        """The block's start and stop each lie on a sample, off the millisecond.
+
+        A file rounds both edges to the millisecond, down for one case and
+        up for the other. The samples run from the instant the scheduler
+        placed (``placed``) or, as a pong or daisy is rebuilt, from the
+        stored start of its first sample (``stored``). Either way the sample
+        on the start belongs to the block and the one on the stop does not,
+        unless it is the scan's own last sample.
+        """
+        whole = Time("2026-06-15T05:00:00", scale="utc")
+        first = whole + TimeDelta(phase, format="sec")
+        stored_first = _stored_instant(first)
+        # The case's premise: the file moves the edges the way its id says.
+        assert (stored_first > first) == (phase > 0.5e-3)
+        n = 30
+        traj = Trajectory(
+            times=np.arange(n) * 0.1,
+            az=np.full(n, 180.0),
+            el=np.full(n, 45.0),
+            az_vel=np.zeros(n),
+            el_vel=np.zeros(n),
+            start_time=first if origin == "placed" else stored_first,
+        )
+        block = self._pong_block(first + TimeDelta(0.5, format="sec"), 1.0)
+        kept = np.flatnonzero(sim._block_window_mask(traj, block))
+        assert kept.tolist() == list(range(5, 15))
+
+        # The scan's own last sample on the stop is kept: no later block holds it.
+        to_end = self._pong_block(first + TimeDelta(0.5, format="sec"), 2.4)
+        kept = np.flatnonzero(sim._block_window_mask(traj, to_end))
+        assert kept.tolist() == list(range(5, n))
+
     @pytest.mark.filterwarnings(
         "ignore:Trajectory elevation acceleration:"
         "fyst_trajectories.exceptions.AccelerationLimitWarning",
@@ -452,6 +492,21 @@ class TestSourceCESRebuildForwardsRecordedKeys:
         with pytest.raises(ScanParamsSchemaError, match="eta_offset_deg"):
             sim._generate_source_ces_trajectory(meta, site)
 
+    @pytest.mark.parametrize("footprint", ["i3", "IM9"])
+    def test_an_unknown_module_is_a_schema_error(self, site, footprint):
+        """A recorded pass on a name the library does not define is refused by type."""
+        params = self._full_params()
+        params["footprint"] = footprint
+        meta = {"cal_type": "planet_cal", "target": "jupiter", "scan_params": params}
+
+        with pytest.raises(ScanParamsSchemaError) as refused:
+            sim._generate_source_ces_trajectory(meta, site)
+
+        # The library's own message, without the quotes a KeyError's text carries.
+        assert str(refused.value).startswith(
+            f"Unknown PrimeCam module '{footprint}'. Available: IM0, "
+        )
+
 
 class TestSourceCESRebuildRepeatsThePlannersSearch:
     """A pass block that records ``search_start`` is rebuilt from the planner's own search.
@@ -518,7 +573,7 @@ class TestSourceCESRebuildRepeatsThePlannersSearch:
             sim._generate_source_ces_trajectory(meta, site)
 
         planned, rebuilt = windows
-        for got, want in zip(rebuilt, planned):
+        for got, want in zip(rebuilt, planned, strict=True):
             assert (got.jd1, got.jd2) == (want.jd1, want.jd2)
         assert (planned[1] - planned[0]).to_value("s") == 86400.0
 

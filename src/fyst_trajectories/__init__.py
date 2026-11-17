@@ -58,13 +58,14 @@ Planning with refraction (visibility checks, not sent to ACU):
 >>> az, el = coords.get_body_altaz("mars", obstime)
 """
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 from .coordinates import (
     FRAME_ALIASES,
     SATELLITE_BODIES,
     SOLAR_SYSTEM_BODIES,
     Coordinates,
+    check_earth_orientation_data,
     normalize_frame,
 )
 from .dispatch import (
@@ -157,7 +158,6 @@ from .planning import (
     SourceCESComputedParams,
     compute_source_ces_params,
     plan_constant_el_scan,
-    plan_constant_el_window_scan,
     plan_daisy_altaz_scan,
     plan_daisy_scan,
     plan_pong_altaz_scan,
@@ -172,13 +172,13 @@ from .planning import (
 from .primecam import (
     INNER_RING_RADIUS_MM,
     MODULE_FOV_RADIUS_DEG,
-    PRIMECAM_CENTER,
-    PRIMECAM_I1,
-    PRIMECAM_I2,
-    PRIMECAM_I3,
-    PRIMECAM_I4,
-    PRIMECAM_I5,
-    PRIMECAM_I6,
+    PRIMECAM_IM0,
+    PRIMECAM_IM1,
+    PRIMECAM_IM2,
+    PRIMECAM_IM3,
+    PRIMECAM_IM4,
+    PRIMECAM_IM5,
+    PRIMECAM_IM6,
     PRIMECAM_MODULES,
     get_primecam_offset,
     primecam_geometry_dict,
@@ -221,6 +221,10 @@ from .trajectory import (
     TrajectoryMetadata,
 )
 from .trajectory_utils import (
+    GO_TCS_AZ_MAX_ACCELERATION,
+    GO_TCS_AZ_MAX_VELOCITY,
+    GO_TCS_EL_MAX_ACCELERATION,
+    GO_TCS_EL_MAX_VELOCITY,
     GO_TCS_MIN_SAMPLE_INTERVAL_SEC,
     TRACKPOINT_NEW_LEG_GROUP_SIZE,
     PathPayload,
@@ -286,6 +290,7 @@ __all__ = [
     "SATELLITE_BODIES",
     "FRAME_ALIASES",
     "normalize_frame",
+    "check_earth_orientation_data",
     # Dispatch-time helpers (execution layer)
     "choose_encoder_solution",
     "EncoderSolution",
@@ -333,6 +338,10 @@ __all__ = [
     "to_path_payload",
     "PathPayload",
     "GO_TCS_MIN_SAMPLE_INTERVAL_SEC",
+    "GO_TCS_AZ_MAX_VELOCITY",
+    "GO_TCS_EL_MAX_VELOCITY",
+    "GO_TCS_AZ_MAX_ACCELERATION",
+    "GO_TCS_EL_MAX_ACCELERATION",
     "to_trackpoint_format",
     "TRACKPOINT_NEW_LEG_GROUP_SIZE",
     # Pattern registry
@@ -385,7 +394,6 @@ __all__ = [
     "plan_pong_rotation_scans",
     "plan_pong_rotation_sequence",
     "plan_constant_el_scan",
-    "plan_constant_el_window_scan",
     "plan_daisy_scan",
     "plan_daisy_altaz_scan",
     "plan_source_ces",
@@ -406,12 +414,12 @@ __all__ = [
     "resolve_offset",
     "INNER_RING_RADIUS_MM",
     "MODULE_FOV_RADIUS_DEG",
-    "PRIMECAM_CENTER",
-    "PRIMECAM_I1",
-    "PRIMECAM_I2",
-    "PRIMECAM_I3",
-    "PRIMECAM_I4",
-    "PRIMECAM_I5",
-    "PRIMECAM_I6",
+    "PRIMECAM_IM0",
+    "PRIMECAM_IM1",
+    "PRIMECAM_IM2",
+    "PRIMECAM_IM3",
+    "PRIMECAM_IM4",
+    "PRIMECAM_IM5",
+    "PRIMECAM_IM6",
     "PRIMECAM_MODULES",
 ]

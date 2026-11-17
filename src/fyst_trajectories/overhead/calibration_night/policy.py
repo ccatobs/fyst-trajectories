@@ -17,6 +17,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+from ...trajectory_utils import GO_TCS_AZ_MAX_ACCELERATION, GO_TCS_AZ_MAX_VELOCITY
+from .._execution_screen import _QUINTIC_PEAK_ACCEL_FACTOR
 from ..models import ObservingTimeline
 from ..transitions import DeferralReason
 from ..utils import _require_module_tag
@@ -52,6 +54,43 @@ def _non_negative(name: str, value: float) -> None:
         raise ValueError(f"{name} must be non-negative, got {value}")
 
 
+def _within_axis_ceilings(az_speed: float | None, az_accel: float | None) -> None:
+    """Refuse a sweep speed or acceleration no pass can be commanded with.
+
+    A pass sweeps at ``az_speed`` and turns with a quintic profile whose
+    peak is ``_QUINTIC_PEAK_ACCEL_FACTOR`` times ``az_accel``; the Go TCS
+    command layer refuses a path past ``GO_TCS_AZ_MAX_VELOCITY`` or
+    ``GO_TCS_AZ_MAX_ACCELERATION`` (strictly greater, as the booking
+    screen judges), so such a value would be refused at every pass.
+
+    Parameters
+    ----------
+    az_speed : float or None
+        Sweep speed in deg/s; ``None`` is not checked.
+    az_accel : float or None
+        Turnaround acceleration in deg/s^2; ``None`` is not checked.
+
+    Raises
+    ------
+    ValueError
+        If ``az_speed`` exceeds ``GO_TCS_AZ_MAX_VELOCITY`` or
+        ``_QUINTIC_PEAK_ACCEL_FACTOR`` times ``az_accel`` exceeds
+        ``GO_TCS_AZ_MAX_ACCELERATION``.
+    """
+    if az_speed is not None and az_speed > GO_TCS_AZ_MAX_VELOCITY:
+        raise ValueError(
+            f"az_speed {az_speed} deg/s exceeds the Go TCS azimuth velocity limit "
+            f"of {GO_TCS_AZ_MAX_VELOCITY} deg/s"
+        )
+    if az_accel is not None and _QUINTIC_PEAK_ACCEL_FACTOR * az_accel > GO_TCS_AZ_MAX_ACCELERATION:
+        raise ValueError(
+            f"az_accel {az_accel} deg/s^2 gives a turnaround peak of "
+            f"{_QUINTIC_PEAK_ACCEL_FACTOR * az_accel} deg/s^2 "
+            f"({_QUINTIC_PEAK_ACCEL_FACTOR} x az_accel), which exceeds the Go TCS azimuth "
+            f"acceleration limit of {GO_TCS_AZ_MAX_ACCELERATION} deg/s^2"
+        )
+
+
 @dataclass(frozen=True)
 class ScanOverrides:
     """Per-visit scan-geometry overrides; a set value wins over table and policy.
@@ -70,7 +109,9 @@ class ScanOverrides:
     Raises
     ------
     ValueError
-        If a set value is not a positive, finite number.
+        If a set value is not a positive, finite number, or ``az_speed``
+        or ``az_accel`` is one no pass can be commanded with (as
+        :class:`CalibrationNightPolicy` refuses it).
     """
 
     az_speed: float | None = None
@@ -83,6 +124,7 @@ class ScanOverrides:
             value = getattr(self, name)
             if value is not None:
                 _positive(name, value)
+        _within_axis_ceilings(self.az_speed, self.az_accel)
 
     def as_record(self) -> dict[str, float]:
         """Return the set overrides as a plain dict of JSON builtins."""
@@ -164,14 +206,15 @@ class CalibrationNightPolicy:
         turnaround peaks at 1.5 times this value, 1.5 deg/s^2 at the
         default.
     footprint : str, optional
-        The Prime-Cam module the passes are planned on, by one name as
-        :func:`~fyst_trajectories.primecam.get_primecam_offset` takes it
-        (``"c"`` or its aliases ``"center"`` and ``"IM0"``, or ``"i1"`` ..
-        ``"i6"``, in any case). A pass's dispatch dict names the module by
-        its canonical name, ``"c"`` or ``"i1"`` .. ``"i6"``, since the
-        execution layer compares the name as a string; the night's record
-        keeps the name as given. Default ``"c"``; a tag naming any other
-        module is accepted for simulation and a warning recorded (in
+        The Prime-Cam module bay the passes are planned on, by any name
+        :func:`~fyst_trajectories.primecam.get_primecam_offset` takes
+        (``"IM0"`` .. ``"IM6"`` in any case, or ``"c"`` or ``"center"`` for
+        ``IM0``). A pass's dispatch dict names the on-axis bay ``"c"``,
+        whichever spelling the policy used, and a ring bay by its ``IM``
+        name (``"IM1"`` .. ``"IM6"``), since the execution layer compares
+        the name as a string; the night's record keeps the name as given.
+        Default ``"IM0"``; a name of any other bay is accepted for
+        simulation and a warning recorded (in
         ``VisitPlan.warnings`` and the night's metadata), since the
         execution layer accepts centred footprints only.
     footprint_margin : float, optional
@@ -239,8 +282,13 @@ class CalibrationNightPolicy:
     ------
     ValueError
         If ``el_min`` is outside [0, 90), a duration, ``az_speed`` or
-        ``az_accel`` is not a positive, finite number,
-        ``footprint_margin``, ``dispatch_lead_seconds`` or
+        ``az_accel`` is not a positive, finite number, ``az_speed``
+        exceeds the Go TCS azimuth velocity limit
+        (:data:`~fyst_trajectories.trajectory_utils.GO_TCS_AZ_MAX_VELOCITY`,
+        3 deg/s), 1.5 times ``az_accel`` (the turnaround's peak) exceeds
+        its azimuth acceleration limit
+        (:data:`~fyst_trajectories.trajectory_utils.GO_TCS_AZ_MAX_ACCELERATION`,
+        6 deg/s^2), ``footprint_margin``, ``dispatch_lead_seconds`` or
         ``moon_min_separation`` is negative or not finite, ``n_passes``
         is below 1, or ``footprint`` is not a
         str naming one Prime-Cam module (for an unknown name the message
@@ -251,7 +299,7 @@ class CalibrationNightPolicy:
     max_pass_seconds: float = 1200.0
     az_speed: float = 1.5
     az_accel: float = 1.0
-    footprint: str = "c"
+    footprint: str = "IM0"
     footprint_margin: float = 0.0
     n_passes: int = 1
     use_table_dwell: bool = False
@@ -278,6 +326,7 @@ class CalibrationNightPolicy:
             "time_step",
         ):
             _positive(name, getattr(self, name))
+        _within_axis_ceilings(self.az_speed, self.az_accel)
         _non_negative("footprint_margin", self.footprint_margin)
         _non_negative("dispatch_lead_seconds", self.dispatch_lead_seconds)
         if self.n_passes < 1:

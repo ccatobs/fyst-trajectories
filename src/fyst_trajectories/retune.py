@@ -11,6 +11,7 @@ import dataclasses
 import math
 import warnings
 from collections.abc import Callable, Sequence
+from itertools import pairwise
 
 import numpy as np
 
@@ -271,8 +272,8 @@ def _inject_retune_events(
         # the same turnaround, where the second would paint samples the first
         # already claimed and vanish. The request-level check above runs
         # before snapping and cannot see it, so re-check what will be applied.
-        applied = sorted(zip(starts, (e.duration for e in in_bounds)))
-        for (s_a, d_a), (s_b, _) in zip(applied, applied[1:]):
+        applied = sorted(zip(starts, (e.duration for e in in_bounds), strict=True))
+        for (s_a, d_a), (s_b, _) in pairwise(applied):
             if s_a + d_a > s_b + _EVENT_OVERLAP_EPS:
                 raise ValueError(
                     f"Retune events overlap after snapping to turnarounds: an event "
@@ -281,7 +282,7 @@ def _inject_retune_events(
                     "further apart, or pass prefer_turnarounds=False."
                 )
 
-    for event, start in zip(in_bounds, starts):
+    for event, start in zip(in_bounds, starts, strict=True):
         end = min(start + event.duration, t_end)
         # When the event is clipped to the trajectory end, include the final
         # sample (``times < end`` would drop the science sample at exactly

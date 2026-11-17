@@ -78,10 +78,10 @@ class TestPlotSourceTrack:
             unique = {id(o) for o in PRIMECAM_MODULES.values()}
             assert len(circles) == len(unique)
             centres = {(round(c.center[0], 6), round(c.center[1], 6)) for c in circles}
-            i1 = get_primecam_offset("i1")
-            assert (round(i1.dx_deg, 6), round(i1.dy_deg, 6)) in centres
+            im6 = get_primecam_offset("IM6")
+            assert (round(im6.dx_deg, 6), round(im6.dy_deg, 6)) in centres
             labels = {t.get_text() for t in ax.texts}
-            assert {"center", "i1", "i6"} <= labels
+            assert {"IM0", "IM1", "IM6"} <= labels
         finally:
             plt.close(fig)
 

@@ -28,7 +28,7 @@ T_DAY = Time("2026-11-15T16:00:00", scale="utc")  # Sun up at FYST
 T_UP = Time("2026-11-15T22:00:00", scale="utc")  # field up (el ~31), Sun up (el ~11)
 
 
-def _patch(name="p", ra=24.0, dec=-32.0, scan_type="pong", size=10.0):
+def _patch(name="p", ra=24.0, dec=-32.0, scan_type="pong", size=10.0, velocity=1.0, elevation=None):
     return ObservingPatch(
         name=name,
         ra_center=ra,
@@ -36,8 +36,8 @@ def _patch(name="p", ra=24.0, dec=-32.0, scan_type="pong", size=10.0):
         width=size,
         height=size,
         scan_type=scan_type,
-        velocity=1.0,
-        elevation=50.0,
+        velocity=velocity,
+        elevation=elevation,
     )
 
 
@@ -85,9 +85,8 @@ def test_min_duration_constraint_boundary(coordinates):
     # Precondition: the elevation forward-check passes, so the sun branch is reached.
     assert float(f_el) >= coords.site.telescope_limits.elevation.min
     sun_az, sun_el = coords.get_sun_altaz(future)
-    # The constraint tests the Sun at the elevation the visit commands, which for
-    # a patch pinning ``elevation`` is that value rather than the field's own.
-    sep_future = coords.angular_separation(float(f_az), float(patch.elevation), sun_az, sun_el)
+    # A pong is tested at the field's own pose then.
+    sep_future = coords.angular_separation(float(f_az), float(f_el), sun_az, sun_el)
 
     site_eq = get_fyst_site(sun_exclusion_radius=sep_future, sun_warning_radius=sep_future + 5.0)
     coords_eq = Coordinates(site_eq)
@@ -264,7 +263,7 @@ def _timeline_signature(timeline):
 def test_generate_timeline_scalar_model_parity():
     """Injecting the 'scalar' model reproduces the default night exactly."""
     site = get_fyst_site()
-    patches = [_patch(name="Deep56", scan_type="constant_el")]
+    patches = [_patch(name="Deep56", scan_type="constant_el", elevation=50.0)]
     kwargs = dict(
         patches=patches,
         site=site,
@@ -283,18 +282,23 @@ def test_generate_timeline_cad_night_is_subset_of_cone50():
     Sun all day: outside every cone (45/50 pass it untouched) but inside
     the directional CAD zone whenever its clock angle enters the 88-90 deg
     sectors, so the CAD run must genuinely lose science time against the
-    zone-free cone-50 baseline. It is a 4 x 4 deg pong: the scheduler
-    slews to a pong once its whole pattern clears the elevation limit, and
-    a 10 x 10 deg pattern clears it only after the direct path from the
-    parked pose has entered the CAD zone, so with no detour the CAD night
-    would plan nothing for a reason unrelated to the zone over the field.
+    zone-free cone-50 baseline. It is a 4 x 4 deg pong at 0.5 deg/s, a
+    pattern the Go TCS axis limits accept.
     """
     pytest.importorskip("sun_avoidance", exc_type=ImportError)
     site = get_fyst_site()
     coords = Coordinates(site)
     mid = Time("2026-11-15T12:00:00", scale="utc")
     jup_ra, jup_dec = coords.get_body_radec("jupiter", mid)
-    patches = [_patch(name="JupField", ra=float(jup_ra), dec=float(jup_dec), size=4.0)]
+    patches = [
+        _patch(
+            name="JupField",
+            ra=float(jup_ra),
+            dec=float(jup_dec),
+            size=4.0,
+            velocity=0.5,
+        )
+    ]
     kwargs = dict(
         patches=patches,
         site=site,

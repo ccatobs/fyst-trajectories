@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from astropy.time import Time
 
 from ..models import CalibrationPolicy, ObservingTimeline, OverheadModel
-from ..transitions import DeferralReason
+from ..transitions import _TAIL_TOLERANCE_SEC, DeferralReason
 from .policy import (
     CalibrationNightMetadata,
     CalibrationNightPolicy,
@@ -31,6 +31,11 @@ __all__ = ["plan_calibration_night"]
 # on every infeasible visit, so it always terminates; this cap only turns a
 # programming error into an exception instead of a hang.
 _MAX_ITERATIONS_PER_TICK = 64
+
+# The reasons only the execution screen gives (``step._execution_gate``): an
+# idle tick after such a refusal carries the reason instead of saying that
+# nothing was available.
+_SCREEN_REASONS = frozenset({DeferralReason.SUN_SCAN, DeferralReason.AXIS_DYNAMICS})
 
 
 def plan_calibration_night(
@@ -152,12 +157,13 @@ def _run_night(
     set_aside_at: list[str] = []
 
     while ctx.usable and (ctx.end_time - state.t).to_value("s") > pol.min_pass_seconds:
+        screened: DeferralReason | None = None
         for _ in range(_MAX_ITERATIONS_PER_TICK):
             candidates = list_candidates(state, ctx)
             choice = rule(candidates, state)
             if choice is None:
                 n_unplaced = len(state.unplaced)
-                state = _idle(state, ctx, rule)
+                state = _idle(state, ctx, rule, screened)
                 if len(state.unplaced) > n_unplaced:
                     set_aside_at.append(state.t.iso)
                 break
@@ -174,12 +180,14 @@ def _run_night(
             state = commit_visit(state, plan, retry_after=pol.retry_after_seconds)
             if plan.feasible:
                 break
+            if plan.reason in _SCREEN_REASONS:
+                screened = plan.reason
             record = {"body": body, "at": state.t.iso, "reason": str(plan.reason)}
             (drops if body in state.dropped else deferrals).append(record)
         else:
             raise RuntimeError("the night planner made no progress in one tick")
 
-    if ctx.usable:
+    if ctx.usable and (ctx.end_time - state.t).to_value("s") > _TAIL_TOLERANCE_SEC:
         state = advance_idle(
             state, ctx, (ctx.end_time - state.t).to_value("s"), DeferralReason.WINDOW_CLOSED
         )
@@ -214,10 +222,21 @@ def _run_night(
     )
 
 
-def _idle(state: NightState, ctx: NightContext, rule: SelectionRule) -> NightState:
-    """One idle tick, with the scripted rule's waiting bookkeeping."""
+def _idle(
+    state: NightState,
+    ctx: NightContext,
+    rule: SelectionRule,
+    screened: DeferralReason | None = None,
+) -> NightState:
+    """One idle tick, with the scripted rule's waiting bookkeeping.
+
+    The tick is labelled ``SCRIPT_WAITING`` while a scripted entry waits for
+    its body; otherwise with ``screened``, the reason the execution screen
+    gave for the last pass it refused in this tick, when it refused one,
+    and ``NOTHING_AVAILABLE`` when it did not.
+    """
     pol = ctx.policy
-    reason = DeferralReason.NOTHING_AVAILABLE
+    reason = DeferralReason.NOTHING_AVAILABLE if screened is None else screened
     if isinstance(rule, ScriptedSelection) and rule.current(state) is not None:
         reason = DeferralReason.SCRIPT_WAITING
         since = state.script_waiting_since or state.t

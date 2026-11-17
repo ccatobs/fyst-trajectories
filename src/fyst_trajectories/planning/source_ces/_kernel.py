@@ -205,7 +205,9 @@ def _project_cover_to_altaz(
     n = footprint.cover_xi_deg.size
     az_cover = np.empty(n)
     el_cover = np.empty(n)
-    for i, (xi_deg, eta_deg) in enumerate(zip(footprint.cover_xi_deg, footprint.cover_eta_deg)):
+    for i, (xi_deg, eta_deg) in enumerate(
+        zip(footprint.cover_xi_deg, footprint.cover_eta_deg, strict=True)
+    ):
         # InstrumentOffset takes arcmin; convert from degrees.
         vertex_offset = InstrumentOffset(dx=xi_deg * 60.0, dy=eta_deg * 60.0)
         az_v, el_v = boresight_to_detector(
@@ -453,7 +455,9 @@ def _validate_kernel_inputs(
     if has_night and not night.isscalar:  # type: ignore[union-attr]
         raise ValueError(f"night must be a single instant, got a Time of shape {night.shape}")  # type: ignore[union-attr]
     if has_window:
-        for label, edge in zip(("window start", "window end"), window):  # type: ignore[arg-type]
+        if len(window) != 2:  # type: ignore[arg-type]
+            raise ValueError(f"window must be a (start, end) pair, got {len(window)} instants")  # type: ignore[arg-type]
+        for label, edge in zip(("window start", "window end"), window, strict=True):  # type: ignore[arg-type]
             if not edge.isscalar:
                 raise ValueError(
                     f"{label} must be a single instant, got a Time of shape {edge.shape}"
@@ -619,7 +623,7 @@ def _project_footprint(
     )
 
     # az_bore recovery. For a centred footprint (Prime-Cam full-array,
-    # PRIMECAM_CENTER) the boresight az IS the source az at el_bore.
+    # PRIMECAM_IM0) the boresight az IS the source az at el_bore.
     # For an off-centre footprint (single module), back out the
     # boresight via the spherical inverse so the array centre lands on
     # the source.
@@ -791,7 +795,7 @@ def _solve_drift(
             assume_sorted=True,
         )
         distances = []
-        for av, ev in zip(az_cover, el_cover):
+        for av, ev in zip(az_cover, el_cover, strict=True):
             if not (el_sorted[0] <= ev <= el_sorted[-1]):
                 continue
             distances.append(float(az_resid_of_el(ev)) - av)

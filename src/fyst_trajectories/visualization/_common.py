@@ -37,7 +37,7 @@ def _require_matplotlib(caller: str) -> None:
 def _unique_offsets(modules: Mapping[str, InstrumentOffset]) -> list[InstrumentOffset]:
     """Return each distinct offset object once, in mapping order.
 
-    Alias keys (``"c"``/``"center"``) reference one offset, drawn once.
+    Keys that reference one offset draw it once.
 
     Raises
     ------
@@ -52,8 +52,8 @@ def _unique_keyed_offsets(
 ) -> list[tuple[str, InstrumentOffset]]:
     """Return each distinct offset object once with its first key, in mapping order.
 
-    Alias keys (``"c"``/``"center"``) reference one offset, returned once
-    under the key that comes first (``"c"``).
+    Keys that reference one offset return it once, under the key that
+    comes first.
 
     Raises
     ------
@@ -84,8 +84,8 @@ def _palette(reserved: Iterable[str], fallback: str) -> list[str]:
 
 
 def _module_label(offset: InstrumentOffset) -> str:
-    """Return the short label drawn beside a module circle (``"c"``, ``"i1"``)."""
-    return (offset.name or "").removeprefix("PrimeCam-").lower() or "?"
+    """Return the short label drawn beside a module circle (``"IM3"``; ``"?"`` with no name)."""
+    return (offset.name or "").removeprefix("PrimeCam-") or "?"
 
 
 def _draw_module_circles(

@@ -17,17 +17,17 @@ from ..sun_protocols import SunSafePredicate, _sun_verdicts
 from ..trajectory import Trajectory
 from ..trajectory_utils import get_absolute_times
 
-# Number of times sampled along a planned constant-elevation pass for the
+# Number of times sampled along a planned source-CES pass for the kernel's
 # sun-safety sweep. Over a 10-minute arc the samples are ~10 s apart, in
 # which the Sun moves ~2.5 arcmin; a 3-hour pass is sampled ~3 min apart
 # (~0.75 deg of Sun motion), still small against the exclusion radius the
 # check screens against.
 _SUN_SAFETY_ARC_N_SAMPLES = 60
 
-# Spacing of the Sun ephemeris grid behind the built-in block screen. The Sun
-# moves about 0.25 deg per minute, so its unit vector interpolated between grid
-# points stays far inside the warning's 0.1 deg rounding, zenith transits
-# included.
+# Spacing of the Sun ephemeris grid behind _trajectory_sun_separation, which the
+# built-in block screen and the booking screen read. The Sun moves about 0.25 deg
+# per minute, so its unit vector interpolated between grid points stays well
+# under 0.01 deg of its place, zenith transits included.
 _SUN_SAFETY_EPHEMERIS_STEP_SEC = 60.0
 
 # Most samples of a built trajectory an injected sun_safe model is asked
@@ -255,15 +255,16 @@ def _check_arc_sun_safety(
     sun_safe: SunSafePredicate | None = None,
     stacklevel: int = 4,
     *,
-    sun_altaz: tuple[np.ndarray, np.ndarray] | None = None,
+    separations: np.ndarray | None = None,
 ) -> None:
     """Check sun safety along an arc of samples; warns only.
 
     Emits a single warning if any sample falls inside the Sun zone. The
-    caller chooses the sampling: the constant-elevation
-    planners pass the grid :func:`_swept_arc_samples` builds, so the check
-    covers the azimuth envelope the mount is commanded through rather than
-    the boresight track alone. Boresight-level within each sample (no
+    caller chooses the sampling: the source-CES kernel passes the grid
+    :func:`_swept_arc_samples` builds, so the check covers the azimuth
+    envelope the mount is commanded through rather than the boresight track
+    alone, and :func:`_check_trajectory_sun_safety` passes the built
+    trajectory's own samples. Boresight-level within each sample (no
     focal-plane extent), which is appropriate while the footprint is small
     relative to the exclusion radius.
 
@@ -297,11 +298,11 @@ def _check_arc_sun_safety(
         function's own frame. Default 4 attributes the warning to the
         caller of a planner that reaches this check through one
         intermediate frame.
-    sun_altaz : tuple of np.ndarray, optional
-        The Sun's azimuth and elevation in degrees at every sample, used
-        in place of solving the ephemeris at ``times`` when the caller
-        already holds it. Read on the built-in branch only; an injected
-        ``sun_safe`` model solves its own.
+    separations : np.ndarray, optional
+        Every sample's angular separation from the Sun in degrees, used in
+        place of solving the ephemeris at ``times`` when the caller already
+        holds it. Read on the built-in branch only; an injected ``sun_safe``
+        model solves its own.
 
     Warns
     -----
@@ -313,15 +314,15 @@ def _check_arc_sun_safety(
         return
 
     if sun_safe is None:
-        if sun_altaz is None:
+        if separations is None:
             sun_az_arr, sun_el_arr = coords.get_sun_altaz(times)
+            # The same separation the centre pre-flight uses, over the whole
+            # sample grid in one vectorised call.
+            seps_deg = np.asarray(
+                coords.angular_separation(az_arr, el_arr, sun_az_arr, sun_el_arr), dtype=float
+            )
         else:
-            sun_az_arr, sun_el_arr = sun_altaz
-        # The same separation the centre pre-flight uses, over the whole
-        # sample grid in one vectorised call.
-        seps_deg = np.asarray(
-            coords.angular_separation(az_arr, el_arr, sun_az_arr, sun_el_arr), dtype=float
-        )
+            seps_deg = separations
 
         excl = site.sun_avoidance.exclusion_radius
         inside = seps_deg <= excl
@@ -362,6 +363,57 @@ def _check_arc_sun_safety(
     )
 
 
+def _trajectory_sun_separation(site: Site, trajectory: Trajectory) -> np.ndarray:
+    """Return every sample's angular separation from the Sun, in degrees.
+
+    The Sun is solved on a grid ``_SUN_SAFETY_EPHEMERIS_STEP_SEC`` apart
+    from the first sample, the last sample's instant appended, and its unit
+    vector is interpolated to each sample, which is exact to well under
+    0.01 deg. The separation is taken from the trajectory's own azimuth and
+    elevation, the boresight's.
+
+    Parameters
+    ----------
+    site : Site
+        Site whose location places the Sun.
+    trajectory : Trajectory
+        The built trajectory; it must carry a ``start_time``.
+
+    Returns
+    -------
+    np.ndarray
+        Separation of each sample from the Sun in degrees, one per sample.
+
+    Raises
+    ------
+    ValueError
+        If ``trajectory`` has no ``start_time``.
+    """
+    if trajectory.start_time is None:
+        raise ValueError("a trajectory without a start_time has no Sun to separate it from")
+    coords = Coordinates(site)
+    rel = trajectory.times - trajectory.times[0]
+    grid = np.append(np.arange(0.0, rel[-1], _SUN_SAFETY_EPHEMERIS_STEP_SEC), rel[-1])
+    grid_az, grid_el = coords.get_sun_altaz(trajectory.start_time + TimeDelta(grid * u.s))
+    az_rad = np.radians(np.asarray(grid_az, dtype=float))
+    el_rad = np.radians(np.asarray(grid_el, dtype=float))
+    # Interpolate the Sun's unit vector rather than its azimuth, which swings
+    # through tens of degrees a minute near a zenith transit.
+    x, y, z = (
+        np.interp(rel, grid, component)
+        for component in (
+            np.cos(el_rad) * np.cos(az_rad),
+            np.cos(el_rad) * np.sin(az_rad),
+            np.sin(el_rad),
+        )
+    )
+    sun_az = np.degrees(np.arctan2(y, x)) % 360.0
+    sun_el = np.degrees(np.arcsin(z / np.sqrt(x * x + y * y + z * z)))
+    return np.asarray(
+        coords.angular_separation(trajectory.az, trajectory.el, sun_az, sun_el), dtype=float
+    )
+
+
 def _check_trajectory_sun_safety(
     *,
     site: Site,
@@ -377,11 +429,9 @@ def _check_trajectory_sun_safety(
     centre does not. This screens the realised boresight trajectory, so it
     covers both, and emits :func:`_check_arc_sun_safety`'s single warning.
 
-    With the built-in scalar check every sample is screened: the Sun is
-    solved on a grid ``_SUN_SAFETY_EPHEMERIS_STEP_SEC`` apart and its unit
-    vector interpolated to each sample, which is exact to well under the
-    warning's 0.1 deg rounding. An injected ``sun_safe`` model solves its own
-    ephemeris, so it is asked about at most
+    With the built-in scalar check every sample is screened, at the
+    separations :func:`_trajectory_sun_separation` gives. An injected
+    ``sun_safe`` model solves its own ephemeris, so it is asked about at most
     ``_SUN_SAFETY_TRAJECTORY_MAX_PROBES`` evenly strided samples plus the
     last one; that is a sampled screen, not a proof, and a graze between
     probes can pass unwarned.
@@ -410,23 +460,6 @@ def _check_trajectory_sun_safety(
         return
     coords = Coordinates(site)
     if sun_safe is None:
-        rel = trajectory.times - trajectory.times[0]
-        grid = np.append(np.arange(0.0, rel[-1], _SUN_SAFETY_EPHEMERIS_STEP_SEC), rel[-1])
-        grid_az, grid_el = coords.get_sun_altaz(trajectory.start_time + TimeDelta(grid * u.s))
-        az_rad = np.radians(np.asarray(grid_az, dtype=float))
-        el_rad = np.radians(np.asarray(grid_el, dtype=float))
-        # Interpolate the Sun's unit vector rather than its azimuth, which
-        # swings through tens of degrees a minute near a zenith transit.
-        x, y, z = (
-            np.interp(rel, grid, component)
-            for component in (
-                np.cos(el_rad) * np.cos(az_rad),
-                np.cos(el_rad) * np.sin(az_rad),
-                np.sin(el_rad),
-            )
-        )
-        sun_az = np.degrees(np.arctan2(y, x)) % 360.0
-        sun_el = np.degrees(np.arcsin(z / np.sqrt(x * x + y * y + z * z)))
         _check_arc_sun_safety(
             coords,
             site,
@@ -435,7 +468,7 @@ def _check_trajectory_sun_safety(
             get_absolute_times(trajectory),
             scan_label,
             stacklevel=4,
-            sun_altaz=(sun_az, sun_el),
+            separations=_trajectory_sun_separation(site, trajectory),
         )
         return
     n = trajectory.n_points

@@ -219,8 +219,9 @@ class TestMinDurationConstraintSun:
         )
         constraint = MinDurationConstraint(min_duration=600.0)
         # The target sits ~18 deg from the Sun at t0 and at t0 + 600 s, so
-        # this pins the scalar verdict; the pinned-elevation test pins that
-        # the check is made at the end of min_duration.
+        # this pins the scalar verdict; the forward-check tests in
+        # test_slew_azimuth_and_sun_clip.py pin that the check is made at the
+        # end of min_duration.
         assert constraint.score(patch, _SUN_TIME, 0.0, 0.0, coordinates) == 0.0
 
     def test_accepts_sun_safe_high_target(self, coordinates):

@@ -25,6 +25,7 @@ exactly.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import numpy as np
@@ -103,8 +104,10 @@ def resolve_footprint(
         per_module = [_module_circular_cover(o) for o in offsets]
         cover_xi = np.concatenate([f.cover_xi_deg for f in per_module])
         cover_eta = np.concatenate([f.cover_eta_deg for f in per_module])
-        center_xi = float(np.mean([f.center_xi_deg for f in per_module]))
-        center_eta = float(np.mean([f.center_eta_deg for f in per_module]))
+        # An exactly rounded sum, so modules placed symmetrically about the
+        # boresight (the whole Prime-Cam array) average to exactly zero.
+        center_xi = math.fsum(f.center_xi_deg for f in per_module) / len(per_module)
+        center_eta = math.fsum(f.center_eta_deg for f in per_module) / len(per_module)
         return ArrayFootprint(
             center_xi_deg=center_xi,
             center_eta_deg=center_eta,
@@ -207,7 +210,7 @@ def inflate_footprint(fp: ArrayFootprint, margin_deg: float) -> ArrayFootprint:
     ...     offset_footprint_eta,
     ...     resolve_footprint,
     ... )
-    >>> base = resolve_footprint("c")
+    >>> base = resolve_footprint("IM0")
     >>> fp = offset_footprint_eta(inflate_footprint(base, 0.1), 0.4)
     >>> fp.cover_xi_deg.size, round(fp.center_eta_deg, 3)
     (50, 0.4)

@@ -7,13 +7,18 @@ Each constraint scores a candidate observation from 0.0 (infeasible) to 1.0
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+import numpy as np
 from astropy.time import Time, TimeDelta
 
 from ..coordinates import Coordinates
+from ..exceptions import OffsetInversionError
+from ..offsets import _solve_boresight
 from ..site import FYST_EL_MAX, FYST_EL_MIN
 from .models import ObservingPatch
 
 if TYPE_CHECKING:
+    from ..offsets import InstrumentOffset
+    from ..site import Site
     from ..sun_protocols import SunSafePredicate
 
 __all__ = [
@@ -23,6 +28,44 @@ __all__ = [
     "MoonAvoidanceConstraint",
     "SunAvoidanceConstraint",
 ]
+
+
+def _boresight_pose(
+    az: "float | np.ndarray",
+    el: "float | np.ndarray",
+    offset: "InstrumentOffset | None",
+    site: "Site",
+) -> "tuple[float | np.ndarray, float | np.ndarray]":
+    """Return the boresight pose that puts ``offset``'s detector at ``(az, el)``.
+
+    ``(az, el)`` itself, unchanged, without an offset. With one, the
+    planners' own solve: the mechanical focal-plane rotation at the
+    boresight's elevation, iterated with the inversion until that
+    elevation settles. The rotation follows the elevation alone, so the
+    boresight's elevation is a function of the detector's elevation alone
+    and its azimuth differs from the detector's by an amount that depends
+    on that elevation only.
+
+    Raises
+    ------
+    OffsetInversionError
+        Where the boresight cannot be solved, as near the zenith, or where
+        the solved elevation is not finite or lies above 90 deg (a ring
+        bay next to the zenith, whose boresight would have to lean past
+        it): the pose is not one the telescope can take now. For an array
+        the error's ``indices`` name the samples outside the sky.
+    """
+    if offset is None:
+        return az, el
+    bore_az, bore_el = _solve_boresight(az, el, offset, site=site)
+    outside = ~(np.asarray(bore_el, dtype=float) <= 90.0)
+    if np.any(outside):
+        raise OffsetInversionError(
+            "The boresight that places the detector there lies outside the sky "
+            "(elevation above 90 deg or not finite).",
+            indices=tuple(int(i) for i in np.flatnonzero(outside)),
+        )
+    return bore_az, bore_el
 
 
 class Constraint(ABC):
@@ -51,9 +94,11 @@ class Constraint(ABC):
         time : Time
             Candidate observation start time.
         az : float
-            Azimuth of the patch center at this time (degrees).
+            Azimuth of the telescope's boresight when the patch's detector
+            looks at the field centre at this time, at the patch's
+            ``elevation`` for a constant-elevation patch (degrees).
         el : float
-            Elevation of the patch center at this time (degrees).
+            Elevation of that boresight pose (degrees).
         coords : Coordinates
             Coordinate transformer for the site.
 
@@ -276,25 +321,35 @@ class MinDurationConstraint(Constraint):
         Forward check: verify the target is still above the elevation limit
         after ``min_duration`` seconds, and, when the site has sun
         avoidance enabled, that it is still outside the Sun exclusion
-        radius then. Setting is judged on the field's own elevation; the
-        Sun check is made at the elevation the visit will command, which
-        for a patch pinning ``elevation`` is that value rather than the
-        field's.
+        radius then. Both are judged at the pose the telescope would then
+        hold: the boresight that puts the patch's ``detector_offset`` on
+        the field centre, at the patch's ``elevation`` for a
+        constant-elevation patch. The field centre must be above the limit
+        too, as the planner checks the detector's pattern before the
+        boresight's; a constant-elevation patch's pose does not set, so its
+        setting is judged on the field alone. A boresight that cannot be
+        solved then scores 0.0.
         """
         future_time = time + TimeDelta(self.min_duration, format="sec")
         future_az, future_el = coords.radec_to_altaz(patch.ra_center, patch.dec_center, future_time)
-        el_min = coords.site.telescope_limits.elevation.min
-        if future_el < el_min:
+        pose_el = float(patch.elevation if patch.elevation is not None else future_el)
+        try:
+            pose_az, pose_el = _boresight_pose(
+                float(future_az), pose_el, patch.detector_offset, coords.site
+            )
+        except OffsetInversionError:
             return 0.0
-        sun_el_check = float(patch.elevation if patch.elevation is not None else future_el)
+        el_min = coords.site.telescope_limits.elevation.min
+        if future_el < el_min or (patch.elevation is None and pose_el < el_min):
+            return 0.0
         sun_avoidance = coords.site.sun_avoidance
         if sun_avoidance.enabled:
             if self.sun_safe is not None:
-                if not self.sun_safe(float(future_az), sun_el_check, future_time):
+                if not self.sun_safe(float(pose_az), float(pose_el), future_time):
                     return 0.0
             else:
                 sun_az, sun_el = coords.get_sun_altaz(future_time)
-                sep = coords.angular_separation(future_az, sun_el_check, sun_az, sun_el)
+                sep = coords.angular_separation(pose_az, pose_el, sun_az, sun_el)
                 # `<=`: at the radius is NOT clear, matching is_sun_safe.
                 if sep <= sun_avoidance.exclusion_radius:
                     return 0.0

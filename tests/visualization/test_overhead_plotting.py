@@ -185,7 +185,9 @@ def test_gantt_lane_order_contract():
     ax = fig.axes[0]
     labels = [t.get_text() for t in ax.get_yticklabels()]
     positions = list(ax.get_yticks())
-    top_to_bottom = [label for _, label in sorted(zip(positions, labels), reverse=True)]
+    top_to_bottom = [
+        label for _, label in sorted(zip(positions, labels, strict=True), reverse=True)
+    ]
     # retune precedes pointing_cal despite appearing later in the blocks.
     assert top_to_bottom == ["PatchA", "PatchB", "retune", "pointing_cal", "slew", "idle"]
 
@@ -211,7 +213,7 @@ def test_gantt_bars_sit_in_their_labeled_lane():
     # Every lane in the default timeline is non-empty, so there is one
     # broken_barh collection per lane, drawn in the same order as the ticks.
     assert len(ax.collections) == len(ticks)
-    for tick, collection in zip(ticks, ax.collections):
+    for tick, collection in zip(ticks, ax.collections, strict=True):
         ys = np.concatenate([path.vertices[:, 1] for path in collection.get_paths()])
         assert ys.min() == pytest.approx(tick - 0.4, abs=1e-6)  # y + 0.1
         assert ys.max() == pytest.approx(tick + 0.4, abs=1e-6)  # y + 0.9

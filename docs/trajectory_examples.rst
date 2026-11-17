@@ -104,8 +104,8 @@ For field-based observations prefer
 :func:`~fyst_trajectories.planning.plan_constant_el_scan`, which
 auto-computes the azimuth range, the duration and the number of scans from
 the field geometry; :doc:`planning` works it through.
-:func:`~fyst_trajectories.planning.plan_constant_el_window_scan` sweeps a
-given azimuth window from a literal start instead. For manual control
+Its window form, given ``az_window`` and ``duration``, sweeps a given
+azimuth window from a literal start instead. For manual control
 (engineering tests), drive
 ``ConstantElScanConfig`` + ``TrajectoryBuilder`` directly::
 
@@ -260,7 +260,7 @@ planet itself::
 
     # The mechanical (horizon-frame) rotation follows the boresight
     # elevation, the unknown here: start from the planet's and iterate
-    offset = get_primecam_offset("i1")
+    offset = get_primecam_offset("IM6")
     bore_el = planet_el
     for _ in range(4):
         rotation = compute_focal_plane_rotation(el=bore_el, site=site, offset=offset)

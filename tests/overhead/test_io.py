@@ -8,7 +8,7 @@ from astropy import units as u
 from astropy.table import QTable, Table
 from astropy.time import Time, TimeDelta
 
-from fyst_trajectories import Coordinates, get_fyst_site
+from fyst_trajectories import PRIMECAM_IM0, Coordinates, get_fyst_site, get_primecam_offset
 from fyst_trajectories.exceptions import PointingWarning
 from fyst_trajectories.overhead import (
     ObservingPatch,
@@ -199,7 +199,7 @@ class TestReadTimeline:
         write_timeline(timeline, path)
 
         loaded = read_timeline(path)
-        for orig, loaded_b in zip(timeline.blocks, loaded.blocks):
+        for orig, loaded_b in zip(timeline.blocks, loaded.blocks, strict=True):
             # ISO strings carry milliseconds; this timeline's times are whole seconds.
             assert abs(orig.t_start.unix - loaded_b.t_start.unix) < 1e-3
             assert abs(orig.t_stop.unix - loaded_b.t_stop.unix) < 1e-3
@@ -229,6 +229,33 @@ class TestReadTimeline:
         loaded = read_timeline(path)
         scan_types = [b.scan_type for b in loaded.blocks]
         assert scan_types == ["retune", "pong", "retune"]
+
+    def test_a_pong_block_at_any_recorded_elevation_reads_and_rebuilds_the_same_scan(
+        self, tmp_path
+    ):
+        """A pong block's elevation is a record, never an input to its scan.
+
+        The block is written at the field centre's elevation and again at
+        an elevation the field is not at; both files read, and both rebuild
+        to the same samples, since the pattern follows the field.
+        """
+        timeline = _make_test_timeline()
+        pong = timeline.blocks[1]
+        coords = Coordinates(timeline.site)
+        _, centre_el = coords.radec_to_altaz(pong.metadata["ra_center"], -30.0, pong.t_start)
+        rebuilt = []
+        for el in (float(centre_el), 70.0):
+            blocks = list(timeline.blocks)
+            blocks[1] = dataclasses.replace(pong, elevation=el)
+            path = tmp_path / f"pong_el_{el:.0f}.ecsv"
+            write_timeline(dataclasses.replace(timeline, blocks=blocks), path)
+            loaded = read_timeline(path)
+            assert loaded.blocks[1].elevation == pytest.approx(el)
+            ((_, scan),) = schedule_to_trajectories(loaded)
+            rebuilt.append(scan.trajectory)
+        assert abs(float(centre_el) - 70.0) > 10.0
+        for name in ("times", "az", "el"):
+            assert (getattr(rebuilt[0], name) == getattr(rebuilt[1], name)).all(), name
 
 
 class TestTimelineWindowRoundTrip:
@@ -541,6 +568,94 @@ class TestAzFinalColumn:
         assert reloaded.blocks[0].end_pose_az == 200.0
 
 
+class TestElFinalColumn:
+    """The end-elevation column: written, read back, and absent in older files.
+
+    ``el_final`` records the elevation a pong or daisy subscan leaves the
+    telescope at when that differs from the elevation the block is stamped
+    at. A file written before the column existed loads with every block
+    reading ``None``, so each block hands its stamped elevation forward.
+    """
+
+    def _scanned_timeline(self):
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        science = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(600, format="sec"),
+            block_type="science",
+            patch_name="Wide01",
+            az_start=240.0,
+            az_end=250.0,
+            elevation=32.5,
+            scan_index=0,
+            scan_type="pong",
+            metadata={
+                "ra_center": 180.0,
+                "dec_center": -30.0,
+                "width": 4.0,
+                "height": 4.0,
+                "velocity": 0.5,
+                "scan_params": {"n_cycles": 1},
+            },
+            az_final=245.25,
+            el_final=30.125,
+        )
+        parked = TimelineBlock.idle(t0 + TimeDelta(600, format="sec"), 300.0, 245.25, 30.125, 0)
+        return ObservingTimeline(
+            blocks=[science, parked],
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(900, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+
+    def test_round_trips_and_leaves_the_stamped_elevation_alone(self, tmp_path):
+        timeline = self._scanned_timeline()
+        assert timeline.validate() == []
+        path = tmp_path / "el_final.ecsv"
+        write_timeline(timeline, path)
+
+        table = Table.read(str(path), format="ascii.ecsv")
+        assert "el_final" in table.colnames
+        assert float(table["el"][0]) == 32.5
+        assert table["el_final"].unit == u.deg
+
+        reloaded = read_timeline(path)
+        science, parked = reloaded.blocks
+        assert science.el_final == 30.125
+        assert science.end_pose_el == 30.125
+        assert science.elevation == 32.5
+        # A block that ends at its stamped elevation writes NaN and reads
+        # back as None, not 0.0.
+        assert parked.el_final is None
+        assert parked.end_pose_el == 30.125
+        assert reloaded.validate() == []
+
+    def test_a_file_without_the_column_reads_as_before(self, tmp_path):
+        """Drop the column the way a writer without ``el_final`` does."""
+        timeline = self._scanned_timeline()
+        path = tmp_path / "el_final.ecsv"
+        legacy = tmp_path / "legacy.ecsv"
+        write_timeline(timeline, path)
+
+        table = QTable.read(str(path), format="ascii.ecsv")
+        table.remove_column("el_final")
+        table.write(str(legacy), format="ascii.ecsv", overwrite=True)
+
+        reloaded = read_timeline(legacy)
+        assert all(b.el_final is None for b in reloaded.blocks)
+        # Such a file records only the stamped elevation, so the science
+        # block hands it forward and the idle at the true end elevation is
+        # flagged.
+        assert reloaded.blocks[0].end_pose_el == 32.5
+        assert reloaded.blocks[0].az_final == 245.25
+        warnings = reloaded.validate()
+        assert len(warnings) == 1
+        assert "previous block ended at az 245.250 / el 32.50" in warnings[0]
+
+
 class TestMetadataPersistence:
     """Per-block science metadata must survive an ECSV round-trip."""
 
@@ -559,6 +674,41 @@ class TestMetadataPersistence:
         assert meta["height"] == 4.0
         assert meta["velocity"] == 0.5
         assert meta["scan_params"] == {"spacing": 0.1, "num_terms": 4}
+
+    def test_a_science_block_without_a_field_reads_back_without_one(self, tmp_path):
+        """The writer puts 0.0 in the field columns of such a row; the reader adds no keys."""
+        timeline = _make_test_timeline()
+        science = timeline.blocks[1]
+        no_field = {"velocity": 0.5, "scan_params": {}}
+        blocks = [timeline.blocks[0], dataclasses.replace(science, metadata=no_field)]
+        path = tmp_path / "no_field.ecsv"
+        write_timeline(dataclasses.replace(timeline, blocks=blocks), path)
+
+        (row,) = [
+            r for r in Table.read(str(path), format="ascii.ecsv") if r["name"] == "deep_field"
+        ]
+        assert [float(row[k]) for k in ("ra_center", "dec_center", "width", "height")] == [0.0] * 4
+        (loaded,) = read_timeline(path).science_blocks
+        assert loaded.metadata == no_field
+
+    def test_a_science_row_with_one_zero_dimension_keeps_its_field(self, tmp_path):
+        """Only a row whose width and height are both 0.0 reads back without the field keys."""
+        timeline = _make_test_timeline()
+        science = timeline.blocks[1]
+        flat = {
+            "ra_center": 180.0,
+            "dec_center": -30.0,
+            "width": 0.0,
+            "height": 2.0,
+            "velocity": 0.5,
+            "scan_params": {},
+        }
+        blocks = [timeline.blocks[0], dataclasses.replace(science, metadata=flat)]
+        path = tmp_path / "flat_field.ecsv"
+        write_timeline(dataclasses.replace(timeline, blocks=blocks), path)
+
+        (loaded,) = read_timeline(path).science_blocks
+        assert loaded.metadata == flat
 
     def test_non_science_metadata_is_empty(self, tmp_path):
         timeline = _make_test_timeline()
@@ -584,7 +734,7 @@ class TestMetadataPersistence:
                 width=3.0,
                 height=2.0,
                 scan_type="pong",
-                velocity=0.75,
+                velocity=0.6,
                 scan_params={"spacing": 0.12, "num_terms": 5},
             ),
         ]
@@ -606,7 +756,7 @@ class TestMetadataPersistence:
             assert b.metadata["dec_center"] == pytest.approx(-28.5)
             assert b.metadata["width"] == pytest.approx(3.0)
             assert b.metadata["height"] == pytest.approx(2.0)
-            assert b.metadata["velocity"] == pytest.approx(0.75)
+            assert b.metadata["velocity"] == pytest.approx(0.6)
             # The patch's own keys, plus the whole periods the subscan holds.
             n_cycles = b.metadata["scan_params"]["n_cycles"]
             assert isinstance(n_cycles, int)
@@ -623,12 +773,73 @@ class TestMetadataPersistence:
         in_mem = schedule_to_trajectories(timeline)
         loaded_pairs = schedule_to_trajectories(loaded)
         assert len(in_mem) == len(loaded_pairs)
-        for (_, in_mem_sb), (_, loaded_sb) in zip(in_mem, loaded_pairs):
+        for (_, in_mem_sb), (_, loaded_sb) in zip(in_mem, loaded_pairs, strict=True):
             assert in_mem_sb.config.width == pytest.approx(loaded_sb.config.width)
             assert in_mem_sb.config.height == pytest.approx(loaded_sb.config.height)
             assert in_mem_sb.config.velocity == pytest.approx(loaded_sb.config.velocity)
             assert loaded_sb.config.width == pytest.approx(3.0)
             assert loaded_sb.config.height == pytest.approx(2.0)
+
+
+class TestDetectorOffsetKeys:
+    """A science block's ``detector_offset`` and ``detector_elevation`` keys in the file."""
+
+    _T0 = Time("2026-06-15T02:00:00", scale="utc")
+
+    @classmethod
+    def _timeline(cls, detector_offset, elevation=50.123456789012345):
+        patch = ObservingPatch(
+            name="Deep56",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=40.0,
+            height=10.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=elevation,
+            detector_offset=detector_offset,
+        )
+        block = TimelineBlock.science(
+            patch,
+            cls._T0,
+            600.0,
+            80.0,
+            120.0,
+            48.98765432101234,
+            0,
+            t0_scan="2026-06-15T01:58:00.000",
+        )
+        return ObservingTimeline(
+            blocks=[block],
+            site=get_fyst_site(),
+            start_time=cls._T0,
+            end_time=block.t_stop,
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+
+    def test_both_keys_round_trip_with_exact_floats(self, tmp_path):
+        timeline = self._timeline(get_primecam_offset("IM3"))
+        path = tmp_path / "offset.ecsv"
+        write_timeline(timeline, path)
+        (written,) = timeline.blocks
+        (loaded,) = read_timeline(path).blocks
+
+        assert loaded.metadata["detector_offset"] == dataclasses.asdict(get_primecam_offset("IM3"))
+        assert loaded.metadata["detector_elevation"] == 50.123456789012345
+        assert loaded.metadata == written.metadata
+        assert loaded.elevation == written.elevation == 48.98765432101234
+
+    def test_a_block_without_an_offset_writes_the_bytes_it_did(self, tmp_path):
+        """An on-axis offset is no offset, and neither adds a key to the row's JSON."""
+        plain, on_axis = tmp_path / "plain.ecsv", tmp_path / "on_axis.ecsv"
+        write_timeline(self._timeline(None), plain)
+        write_timeline(self._timeline(PRIMECAM_IM0), on_axis)
+
+        assert on_axis.read_bytes() == plain.read_bytes()
+        (row,) = Table.read(str(plain), format="ascii.ecsv")
+        assert row["block_meta_json"] == '{"t0_scan": "2026-06-15T01:58:00.000"}'
+        assert row["scan_params_json"] == "{}"
 
 
 class TestSiteReconstruction:
@@ -939,7 +1150,7 @@ class TestCalibrationPolicyRoundTrip:
             planet_cal_scan=True,  # non-default (default False)
             planet_cal_passes=5,  # non-default (default 3)
             planet_cal_el_step=1.5,  # non-default (default None) to catch dropped serialisation
-            planet_cal_footprint="i1",  # non-default (default "c")
+            planet_cal_footprint="IM2",  # non-default (default "IM0")
         )
 
         # Sanity check: every field really differs from the class default.
@@ -980,6 +1191,50 @@ class TestCalibrationPolicyRoundTrip:
             assert loaded_val == original, (
                 f"CalibrationPolicy.{fld.name}: wrote {original}, read back {loaded_val}"
             )
+
+    def test_a_header_naming_a_retired_ring_label_is_refused(self, tmp_path):
+        """A file whose planet-calibration footprint is ``i1`` .. ``i6`` does not read back.
+
+        Those labels name no bay, so ``read_timeline`` raises the policy's
+        ``ValueError`` with the note on the labels.
+        """
+        site = get_fyst_site()
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        timeline = ObservingTimeline(
+            blocks=[
+                TimelineBlock(
+                    t_start=t0,
+                    t_stop=t0 + TimeDelta(60, format="sec"),
+                    block_type="idle",
+                    patch_name="noop",
+                    az_start=180.0,
+                    az_end=180.0,
+                    elevation=50.0,
+                    scan_index=0,
+                )
+            ],
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(60, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(planet_cal_footprint="IM2"),
+        )
+        path = tmp_path / "retired_label.ecsv"
+        write_timeline(timeline, path)
+        text = path.read_text(encoding="utf-8")
+        written = "calibration_planet_cal_footprint: IM2"
+        assert text.count(written) == 1
+        path.write_text(
+            text.replace(written, "calibration_planet_cal_footprint: i2"), encoding="utf-8"
+        )
+        with pytest.raises(ValueError) as caught:
+            read_timeline(path)
+        message = str(caught.value)
+        assert message.startswith("planet_cal_footprint: Unknown PrimeCam module 'i2'")
+        assert message.endswith(
+            "The labels i1..i6 are no longer defined: the ring is the bays IM1..IM6, "
+            "at different positions, and i<n> is not IM<n>."
+        )
 
     def test_beam_map_cadence_none_round_trips(self, tmp_path):
         """``beam_map_cadence=None`` (the manual-only default) survives round-trip.
@@ -1147,7 +1402,7 @@ class TestRetuneEventsRoundTrip:
         # Same type (tuple of RetuneEvent), same ordering, same values.
         assert isinstance(loaded_events, tuple)
         assert len(loaded_events) == 3
-        for orig, got in zip(events, loaded_events):
+        for orig, got in zip(events, loaded_events, strict=True):
             assert isinstance(got, RetuneEvent)
             assert got.t_start == pytest.approx(orig.t_start)
             assert got.duration == pytest.approx(orig.duration)

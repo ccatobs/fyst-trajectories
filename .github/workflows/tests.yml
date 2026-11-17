@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v5
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v5
@@ -216,10 +216,11 @@ jobs:
 
       # Runs test_cross_validate_so_make_source_ces, the parity test against
       # SO's make_source_ces and the only slow test in
-      # test_planning_source_ces.py. Expect 1 passed; ``-rs`` names any skip,
-      # so a missing oracle cannot pass silently.
+      # test_planning_source_ces.py. Expect 1 passed; ``--fail-on-skip``
+      # (tests/conftest.py) fails the step if it skips and ``-rs`` says why,
+      # so a missing oracle cannot pass.
       - name: Run oracle tests
-        run: pytest -m slow --run-slow -rs tests/test_planning_source_ces.py
+        run: pytest -m slow --run-slow -rs --fail-on-skip tests/test_planning_source_ces.py
         timeout-minutes: 10
 
       # The second out-of-index oracle: the shared sun-avoidance library that
@@ -252,7 +253,9 @@ jobs:
       # guards drop their gated blocks with a silent ``continue``, so their
       # pass counts are identical either way; this step is the only place the
       # gap is stated. The offline half of the record-replay fixture, which pins both
-      # SHAs, runs in the fast job regardless.
+      # SHAs, runs in the fast job regardless. With the library installed every
+      # test these two commands select runs, so ``--fail-on-skip`` fails the
+      # step on any skip.
       - name: Run sun-avoidance oracle tests
         env:
           # Whether the secret is configured, never the token itself.
@@ -263,11 +266,11 @@ jobs:
             exit 0
           fi
           python -c "import sun_avoidance; import fyst_trajectories.sun_models as m; print('sun-avoidance oracle OK, pinned', m.SUN_AVOIDANCE_PINNED_SHA)"
-          pytest tests/test_sun_models_live.py tests/test_sun_protocols.py \
+          pytest --fail-on-skip tests/test_sun_models_live.py tests/test_sun_protocols.py \
             tests/test_doc_examples_rst.py \
             tests/test_docstring_examples.py tests/test_slew_safety.py \
             tests/overhead/test_sun_model_seam.py \
             tests/visualization/test_sky_view_plotting.py \
             tests/visualization/test_visibility_plotting.py
-          pytest tests/test_docs_figures.py -k sky_view_sun_zone
+          pytest --fail-on-skip tests/test_docs_figures.py -k sky_view_sun_zone
         timeout-minutes: 15

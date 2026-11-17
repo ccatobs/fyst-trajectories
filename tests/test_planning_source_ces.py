@@ -18,6 +18,7 @@ from decimal import Decimal
 
 import numpy as np
 import pytest
+from _off_axis_offsets import off_axis_offset
 from _source_ces_helpers import (
     _FULL_PRIMECAM_MODULES,
     _JUPITER_NIGHT,
@@ -87,11 +88,11 @@ def test_jupiter_rising_full_primecam(site):
 
 
 def test_sidereal_setting_single_module(site):
-    """Sidereal target on a non-centered module (PrimeCam-I1)."""
+    """Sidereal target on a non-centered module (PrimeCam-IM1)."""
     block = plan_source_ces(
         ra=180.0,
         dec=-30.0,
-        footprint="i1",
+        footprint="IM1",
         el_bore=40.0,
         night=Time("2026-03-15T00:00:00", scale="utc"),
         mode="setting",
@@ -103,12 +104,14 @@ def test_sidereal_setting_single_module(site):
     assert cp["az_throw"] > 0
     assert np.isfinite(cp["az_start"])
 
-    # PrimeCam-I1 sits ~1.78 deg off-axis (dy = -106.8 arcmin), so the boresight
-    # azimuth that places the I1 detector on the source must differ measurably
-    # from the boresight for a CENTRED footprint at the same target, not just be
+    # PrimeCam-IM1 sits ~1.78 deg off-axis (dx = -106.8 arcmin, dy = 0), and at
+    # el_bore 40 deg the Nasmyth rotation turns it 40 deg counter-clockwise, to
+    # below the boresight and toward lower azimuth. So the boresight azimuth that
+    # places the IM1 detector on the source must differ measurably from the
+    # boresight for a CENTRED footprint at the same target, not just be
     # "positive and finite". A silent fallback to az_bore = source_az (the bug the
     # gold test_off_centre_module_lands_on_source_during_pass guards) would
-    # collapse this offset to ~0. Here the off-centre boresight lands ~1.5 deg
+    # collapse this offset to ~0. Here the off-centre boresight lands ~1.6 deg
     # from the centred one.
     block_centre = plan_source_ces(
         ra=180.0,
@@ -733,14 +736,14 @@ def test_invalid_offset_type_in_sequence(site):
 
 def test_boresight_rot_changes_az_bore_for_off_centre_footprint(site):
     """Non-zero ``boresight_rot`` shifts the recovered ``az_start`` for an off-centre module."""
-    # Use module I1 (centre offset = (0.0, -106.8 arcmin) ~ (0.0, -1.78 deg))
+    # Use bay IM1 (centre offset = (-106.8, 0.0 arcmin) ~ (-1.78, 0.0 deg))
     # so the boresight recovery exercises the spherical inverse and is
     # actually sensitive to focal-plane rotation. Compare az_start
     # between boresight_rot=None (treated as 0) and boresight_rot=30.
     common = dict(
         ra=180.0,
         dec=-30.0,
-        footprint="i1",
+        footprint="IM1",
         el_bore=40.0,
         night=_JUPITER_NIGHT,
         mode="setting",
@@ -1433,9 +1436,10 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
             assert dt1 <= SAMPLING_STEP, f"centred t1 off by {dt1:.1f}s at rot={rot}"
 
     # =====================================================================
-    # Part 2 - discriminating case: OFF-CENTRE i1 module.
+    # Part 2 - discriminating case: an OFF-CENTRE cover on the elevation axis,
+    # one ring radius below the boresight.
     #
-    # i1 sits at (xi=0, eta~-1.78 deg), asymmetric, so a 90 deg axis swap or a
+    # It sits at (xi=0, eta~-1.78 deg), asymmetric, so a 90 deg axis swap or a
     # mirrored boresight rotation would NOT cancel. SO and fyst encode
     # different telescopes here (SO corotator vs FYST Nasmyth), so the
     # only way to prove the xi/eta pairing and boresight sign are correct
@@ -1446,9 +1450,9 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     # If the axis pairing or the boresight sign were wrong, parity would NOT
     # hold even after this bridge.
     # =====================================================================
-    i1_eta_deg = float(get_primecam_offset("i1").dy_deg)
-    ai_i1 = schedlib_instrument.make_circular_cover(0.0, i1_eta_deg, radius_deg, degree=True)
-    fp_i1 = ArrayFootprint.from_array_info(ai_i1, units="rad")
+    below_eta_deg = float(off_axis_offset(-90).dy_deg)
+    ai_below = schedlib_instrument.make_circular_cover(0.0, below_eta_deg, radius_deg, degree=True)
+    fp_below = ArrayFootprint.from_array_info(ai_below, units="rad")
 
     # Mechanical focal-plane rotation at el_bore, computed the same way the
     # planner does (horizon-frame term only, no parallactic angle).
@@ -1463,20 +1467,56 @@ def test_cross_validate_so_make_source_ces(site, monkeypatch):
     for v_az in PINNED_VAZ:
         for rot in rots:
             so_block = schedlib_source.make_source_ces(
-                chosen, array_info=ai_i1, el_bore=el_bore, v_az=v_az, boresight_rot=rot
+                chosen, array_info=ai_below, el_bore=el_bore, v_az=v_az, boresight_rot=rot
             )
-            assert so_block is not None, f"SO returned None (i1, rot={rot})"
+            assert so_block is not None, f"SO returned None (off-centre, rot={rot})"
             # Bridge: hand fyst the boresight_rot that cancels its extra
             # field-rotation term, leaving the same net cover rotation SO uses.
-            fy = _fy_params(fp_i1, rot - field_rot, v_az)
+            fy = _fy_params(fp_below, rot - field_rot, v_az)
 
             assert fy["az_start"] == pytest.approx(float(so_block.az), abs=AZ_TOL), (
-                f"i1 az_start mismatch at boresight_rot_SO={rot}, v_az={v_az} "
+                f"off-centre az_start mismatch at boresight_rot_SO={rot}, v_az={v_az} "
                 f"(a wrong axis pairing or boresight sign would break this): "
                 f"fyst={fy['az_start']:.4f} SO={float(so_block.az):.4f}"
             )
             assert fy["az_throw"] == pytest.approx(float(so_block.throw), abs=THROW_TOL), (
-                f"i1 az_throw mismatch at boresight_rot_SO={rot}, v_az={v_az}: "
+                f"off-centre az_throw mismatch at boresight_rot_SO={rot}, v_az={v_az}: "
+                f"fyst={fy['az_throw']:.4f} SO={float(so_block.throw):.4f}"
+            )
+            assert fy["v_az"] == pytest.approx(v_az, abs=1e-9)
+
+    # =====================================================================
+    # Part 3 - a Prime-Cam bay with both coordinates non-zero: IM6.
+    #
+    # A cover on the elevation axis (Part 2) is its own mirror image in
+    # cross-elevation, so it cannot tell xi from -xi. IM6 sits at -120 deg
+    # in the focal plane, off both axes, and its cover is handed to SO as
+    # xi = dx and eta = dy. A cover mirrored in cross-elevation would move
+    # az_start far outside AZ_TOL, so this case pins the sign of xi as well.
+    # Same bridge and tolerances as Part 2.
+    # =====================================================================
+    bay = get_primecam_offset("IM6")
+    assert bay.dx_deg != 0.0 and bay.dy_deg != 0.0
+    ai_bay = schedlib_instrument.make_circular_cover(
+        float(bay.dx_deg), float(bay.dy_deg), radius_deg, degree=True
+    )
+    fp_bay = ArrayFootprint.from_array_info(ai_bay, units="rad")
+
+    for v_az in PINNED_VAZ:
+        for rot in rots:
+            so_block = schedlib_source.make_source_ces(
+                chosen, array_info=ai_bay, el_bore=el_bore, v_az=v_az, boresight_rot=rot
+            )
+            assert so_block is not None, f"SO returned None (IM6, rot={rot})"
+            fy = _fy_params(fp_bay, rot - field_rot, v_az)
+
+            assert fy["az_start"] == pytest.approx(float(so_block.az), abs=AZ_TOL), (
+                f"IM6 az_start mismatch at boresight_rot_SO={rot}, v_az={v_az} "
+                f"(a mirrored cross-elevation axis would break this): "
+                f"fyst={fy['az_start']:.4f} SO={float(so_block.az):.4f}"
+            )
+            assert fy["az_throw"] == pytest.approx(float(so_block.throw), abs=THROW_TOL), (
+                f"IM6 az_throw mismatch at boresight_rot_SO={rot}, v_az={v_az}: "
                 f"fyst={fy['az_throw']:.4f} SO={float(so_block.throw):.4f}"
             )
             assert fy["v_az"] == pytest.approx(v_az, abs=1e-9)
@@ -1584,7 +1624,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
     source_pts = []  # (src_az, src_el) at each sample time
     bore_pts = []  # (bore_az, bore_el) at each sample time, for diagnostics
 
-    for t_k_sec, t_k in zip(t_secs_samples, sample_times):
+    for t_k_sec, t_k in zip(t_secs_samples, sample_times, strict=True):
         src_az_k, src_el_k = coords.get_body_altaz("jupiter", t_k)
         src_az_k = float(src_az_k)
         src_el_k = float(src_el_k)
@@ -1605,7 +1645,7 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
         )  # boresight_rot defaulted to 0 for this case.
 
         # Project all 350 cover vertices through the boresight.
-        for xi_deg, eta_deg in zip(fp.cover_xi_deg, fp.cover_eta_deg):
+        for xi_deg, eta_deg in zip(fp.cover_xi_deg, fp.cover_eta_deg, strict=True):
             vertex_offset = InstrumentOffset(dx=xi_deg * 60.0, dy=eta_deg * 60.0)
             az_v, el_v = boresight_to_detector(
                 az=bore_az,
@@ -1635,7 +1675,9 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
     swept_tri = Delaunay(inflated)
 
     # Pass 2: assert each source position lies inside the swept hull.
-    for (src_az_k, src_el_k), (bore_az, bore_el), t_k in zip(source_pts, bore_pts, sample_times):
+    for (src_az_k, src_el_k), (bore_az, bore_el), t_k in zip(
+        source_pts, bore_pts, sample_times, strict=True
+    ):
         source_point = np.array([src_az_k, src_el_k])
         assert swept_tri.find_simplex(source_point) >= 0, (
             f"source ({src_az_k:.4f}, {src_el_k:.4f}) lies outside the swept "
@@ -1657,29 +1699,29 @@ def test_source_lies_inside_swept_cover_along_trajectory(site):
 
 
 def test_off_centre_module_lands_on_source_during_pass(site):
-    """Verify off-centre az_bore recovery places the I1 module on the source.
+    """Verify off-centre az_bore recovery places the IM1 module on the source.
 
-    For a single-module (PrimeCam-I1, dy = -106.8 arcmin off-axis) sidereal
+    For a single-module (PrimeCam-IM1, dx = -106.8 arcmin off-axis) sidereal
     source CES, scan along the planned trajectory and find the time at
-    which the forward-projected I1 module position is closest to the
-    source's instantaneous (az, el). Assert that the minimum miss
-    distance is sub-arcmin.
+    which the forward-projected IM1 module position is closest to the
+    source's instantaneous (az, el). Assert that the closest approach is
+    a few arcmin, well inside the module.
 
     Important geometric note: the planner's reference time
     ``t_at_el_bore`` (when the source's elevation equals ``el_bore``)
     is NOT, in general, inside the trajectory window for an off-centre
-    footprint. The cover is offset below the boresight by the module's
-    ``dy``, so projected from a boresight at ``el_bore=40`` deg the cover
-    sits at lower elevations. The trajectory window
+    footprint. At ``el_bore=40`` deg the Nasmyth rotation turns IM1 from
+    180 deg in the focal plane to 220 deg on the sky, so its cover sits
+    below the boresight and toward lower azimuth. The trajectory window
     ``[t0, t1]`` is bounded by the source el span overlapping the cover
-    el span, which for I1 puts source el ~ 41 (above el_bore=40) during
-    the actual scan. The I1 module's centre lands on the source somewhere
+    el span, which for IM1 puts the source below el_bore during the
+    actual scan. The IM1 module's centre lands on the source somewhere
     near the trajectory midpoint, NOT at ``t_at_el_bore``.
 
     This test catches the case where the planner's Step-6 spherical
     inverse (:func:`detector_to_boresight`) silently fails and falls back
     to ``az_bore = source_az``, which is *wrong* for any off-centre
-    footprint (the I1 module would then sit ~1.8 deg away from the source,
+    footprint (the IM1 module would then sit ~1.8 deg away from the source,
     not on it).
     """
     # Sidereal source, off-centre module. Match the existing
@@ -1692,7 +1734,7 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     block = plan_source_ces(
         ra=ra_deg,
         dec=dec_deg,
-        footprint="i1",
+        footprint="IM1",
         el_bore=el_bore,
         night=night,
         mode="setting",
@@ -1701,12 +1743,12 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     traj = block.trajectory
     cp = block.computed_params
     coords = Coordinates(site)
-    i1_offset = get_primecam_offset("i1")
+    im1_offset = get_primecam_offset("IM1")
 
     assert traj.start_time is not None
 
     # Walk the trajectory at a moderate cadence (~100 samples) and
-    # find the time at which the projected I1 module position is closest
+    # find the time at which the projected IM1 module position is closest
     # to the source. By symmetry this is near the trajectory midpoint;
     # we don't hardcode "midpoint" because the back-and-forth scan
     # pattern means the boresight crosses the source-track multiple
@@ -1735,7 +1777,7 @@ def test_off_centre_module_lands_on_source_during_pass(site):
         det_az, det_el = boresight_to_detector(
             az=bore_az,
             el=bore_el,
-            offset=i1_offset,
+            offset=im1_offset,
             focal_plane_rotation=fp_rot_k,
         )
         det_az = float(det_az)
@@ -1758,15 +1800,17 @@ def test_off_centre_module_lands_on_source_during_pass(site):
     # an arcmin, and the 100-sample walk above resolves it only to a few
     # arcmin. 6 arcmin is well below the module's 0.65 deg (39 arcmin)
     # FOV radius, well inside the module, and an order of magnitude
-    # smaller than the dy offset (107 arcmin) a true az_bore-recovery bug
+    # smaller than the module's 107 arcmin offset a true az_bore-recovery bug
     # would expose (the planner would fall back to ``az_bore =
-    # source_az``, missing by the full ``dy``).
+    # source_az``, missing by the full offset).
     TOL_ARCMIN = 6.0
     assert best_miss * 60.0 < TOL_ARCMIN, (
-        f"I1 module never lands on source: closest approach {best_miss * 60:.2f} arcmin "
+        f"IM1 module never lands on source: closest approach {best_miss * 60:.2f} arcmin "
         f"at sample {k_best}/{n_walk} (t={diagnostics[k_best][0]}). "
         f"diagnostics={diagnostics[k_best]}. computed_params={dict(cp)}"
     )
+    # The cover sits below the boresight here, so the source is met below el_bore.
+    assert diagnostics[k_best][2] < el_bore
 
 
 # ---------------------------------------------------------------------------

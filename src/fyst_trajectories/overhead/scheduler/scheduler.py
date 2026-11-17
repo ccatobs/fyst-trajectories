@@ -6,23 +6,21 @@ exhausted or remaining time falls below the minimum scan duration.
 
 from __future__ import annotations
 
+from .._moves import plan_escape_move
 from ..calibration_state import CalibrationState
 from ..models import ObservingTimeline, TimelineBlock
-from ..transitions import DeferralReason
+from ..transitions import _TAIL_TOLERANCE_SEC, DeferralReason
 from .phases import (
     CalibrationPhase,
     PatchSelectionPhase,
     ScienceScanPhase,
     SlewPhase,
     _escape_if_overtaken,
+    _loop_top_hold,
 )
 from .state import SchedulerContext, SchedulerState
 
 __all__ = ["Scheduler"]
-
-# Shortest tail worth a block of its own, in seconds. Below this the
-# remainder is the float noise of a window boundary, not a gap.
-_TAIL_TOLERANCE_SEC = 0.01
 
 
 class Scheduler:
@@ -31,9 +29,12 @@ class Scheduler:
     The scheduler holds a :class:`SchedulerContext` and runs
     the four phases in sequence per iteration:
 
-    0. A pose the Sun zone has overtaken is moved out first
+    0. A pose the Sun zone overtakes before the first calibration due now
+       (or, with none due, one scheduler tick) would end is moved out first
        (:func:`~fyst_trajectories.overhead.plan_escape`, a SLEW block
-       named ``sun_escape``), so no phase parks inside the zone.
+       named ``sun_escape``), so no phase starts inside the zone; each
+       phase that holds the pose, a calibration or an idle, then asks
+       again for the time it holds it, so none parks inside the zone.
     1. :class:`CalibrationPhase`: emit any due calibration blocks.
     2. :class:`PatchSelectionPhase`: pick the best observable patch,
        or emit an IDLE block if none are observable.
@@ -45,7 +46,10 @@ class Scheduler:
     Whatever the loop exits on, the stretch between the last block and
     the end of the window is filled with one idle labelled
     ``window_closed``, so the timeline tiles its declared extent and the
-    science, calibration, slew and idle totals add up to it.
+    science, calibration, slew and idle totals add up to it. When the Sun
+    zone would reach the pose before the window closes, the telescope is
+    moved out first and the idle is held where the escape ends; when it
+    cannot be moved in time the idle is labelled ``no_escape``.
 
     ``Scheduler.run()`` returns the completed
     :class:`~fyst_trajectories.overhead.ObservingTimeline`. Downstream
@@ -62,8 +66,9 @@ class Scheduler:
     ----------
     context : SchedulerContext
         The scheduling context (patches, site, coords, models,
-        constraints, time window); phases read it and write only its
-        crossing-pass and escape memos.
+        constraints, time window); phases read it and write only its four
+        memos, ``ce_corridors``, ``escapes``, ``ce_scan_starts`` and
+        ``science_probes``.
 
     Notes
     -----
@@ -96,9 +101,10 @@ class Scheduler:
             if remaining < ctx.overhead_model.min_scan_duration:
                 break
 
-            # A pose the Sun zone has overtaken is moved out before any
-            # phase parks a calibration or idles there.
-            escaped = _escape_if_overtaken(state, ctx)
+            # A pose the Sun zone overtakes before the next block it would
+            # hold ends is moved out before any phase parks a calibration or
+            # idles there.
+            escaped = _escape_if_overtaken(state, ctx, hold=_loop_top_hold(state, ctx))
             if escaped is not None:
                 blocks.extend(escaped.blocks)
                 state = escaped.state
@@ -109,6 +115,10 @@ class Scheduler:
             cal_result = cal_phase.run(state, ctx)
             blocks.extend(cal_result.blocks)
             state = cal_result.state
+            if cal_result.stop:
+                break
+            if cal_result.skip_to_next_iter:
+                continue
 
             if state.current_time.unix >= ctx.end_time.unix:
                 break
@@ -140,6 +150,37 @@ class Scheduler:
         # total_time. The tail is under a minimum scan duration in the
         # ordinary case and one refused move in the others.
         tail = (ctx.end_time - state.current_time).sec
+        reason = DeferralReason.WINDOW_CLOSED
+        if tail > _TAIL_TOLERANCE_SEC:
+            # The tail holds the pose too: one the zone reaches before the
+            # window closes is moved out first and the rest is held where the
+            # escape ends, or, when it cannot be moved in time, the tail
+            # records that the zone holds it.
+            move = plan_escape_move(
+                state.current_az,
+                state.current_el,
+                state.current_time,
+                ctx.site,
+                sun_safe=ctx.sun_safe,
+                slew_safe=ctx.slew_safe,
+                settle_time=ctx.overhead_model.settle_time,
+                el_floor=ctx.el_floor,
+                remaining=tail,
+                scan_index=state.scan_counter,
+                cache=ctx.escapes,
+                hold=tail,
+            )
+            if move.block is not None:
+                assert move.transition is not None
+                blocks.append(move.block)
+                state = state.advanced(
+                    current_time=move.transition.arrival,
+                    current_az=move.transition.az_to,
+                    current_el=move.transition.el_to,
+                )
+                tail = (ctx.end_time - state.current_time).sec
+            elif move.label is not None:
+                reason = move.label
         if tail > _TAIL_TOLERANCE_SEC:
             blocks.append(
                 TimelineBlock.idle(
@@ -148,7 +189,7 @@ class Scheduler:
                     az=state.current_az,
                     el=state.current_el,
                     scan_index=state.scan_counter,
-                    reason=str(DeferralReason.WINDOW_CLOSED),
+                    reason=str(reason),
                 )
             )
 

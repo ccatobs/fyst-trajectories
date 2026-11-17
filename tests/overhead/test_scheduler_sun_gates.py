@@ -27,6 +27,20 @@ def _sky_band_blocker(lo: float, hi: float, until: Time | None = None):
     return predicate
 
 
+#: When the pong field below (RA 24, Dec -32) sits near azimuth 115, at
+#: elevation 29, on 2026-06-15: the slew ends where its pattern starts, so
+#: a selection must name where the field really is.
+_FIELD_AT_AZ_115 = "2026-06-15T07:58:00"
+
+
+def _real_selection(ctx, state, patch):
+    """Return the selection of ``patch`` at its real position at the tick."""
+    az, el = ctx.coords.radec_to_altaz(patch.ra_center, patch.dec_center, state.current_time)
+    return PhaseResult(
+        state=state, blocks=[], selection=patch, best_az=float(az), best_el=float(el)
+    )
+
+
 class TestSlewTransition:
     """The slew is Sun-checked; a refusal idles the tick instead of raising."""
 
@@ -48,9 +62,14 @@ class TestSlewTransition:
         patch = self._pong_patch()
         # Sky azimuth 115 has a single encoder image, so the blocked band
         # between the bootstrap pose (180) and the goal leaves no wrap.
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(140.0, 160.0))
+        ctx = _make_ctx(
+            patches=[patch],
+            sun_safe=_sky_band_blocker(140.0, 160.0),
+            start_time=_FIELD_AT_AZ_115,
+        )
         state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
+        sel = _real_selection(ctx, state, patch)
+        assert sel.best_az == pytest.approx(115.0, abs=1.0)
 
         result = SlewPhase().run(state, ctx, selection=sel)
 
@@ -70,9 +89,13 @@ class TestSlewTransition:
     def test_sun_blocked_goal_idles_as_sun_point(self):
         """A goal inside the zone in every wrap is refused as ``sun_point``."""
         patch = self._pong_patch()
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(100.0, 130.0))
+        ctx = _make_ctx(
+            patches=[patch],
+            sun_safe=_sky_band_blocker(100.0, 130.0),
+            start_time=_FIELD_AT_AZ_115,
+        )
         state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
+        sel = _real_selection(ctx, state, patch)
 
         result = SlewPhase().run(state, ctx, selection=sel)
 
@@ -91,51 +114,85 @@ class TestSlewTransition:
     def test_far_wrap_carries_the_science_frame(self):
         """When only the far wrap has a clear path, best_az follows it.
 
-        Sky azimuth 200 has encoder images 200 and -160. The band blocks
-        the short path from 180 to 200 but not the long way round, so the
-        transition lands on -160 and the science range downstream must be
-        derived on that wrap, not a full turn away from the telescope. The
-        schedule starts at 09:00 UTC, when the field is up with room for a
-        whole visit: the slew is booked only if the visit's shortest
-        subscan still fits on arrival.
+        At 09:00 UTC the field (RA 302, Dec -60) sits at sky azimuth 200.87,
+        which has encoder images 200.87 and -159.13. The band blocks the
+        short path from 180 to it but not the long way round, and every
+        point of the pattern is clear of it, so the
+        transition lands on the negative wrap and the science range
+        downstream must be derived on that wrap, not a full turn away from
+        the telescope. The field is up with room for a whole visit: the
+        slew is booked only if the visit's shortest subscan still fits on
+        arrival, and it ends where the pong starts, the field centre after
+        the slew and the retune.
         """
-        patch = self._pong_patch()
+        patch = self._pong_patch(ra_center=302.0, dec_center=-60.0)
         ctx = _make_ctx(
             patches=[patch],
-            sun_safe=_sky_band_blocker(185.0, 195.0),
+            sun_safe=_sky_band_blocker(183.0, 188.0),
             start_time="2026-06-15T09:00:00",
         )
         state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=200.0, best_el=50.0)
+        az, el = ctx.coords.radec_to_altaz(patch.ra_center, patch.dec_center, state.current_time)
+        sel = PhaseResult(
+            state=state, blocks=[], selection=patch, best_az=float(az), best_el=float(el)
+        )
+        assert sel.best_az == pytest.approx(200.87, abs=0.01)
 
         result = SlewPhase().run(state, ctx, selection=sel)
 
         (block,) = result.blocks
         assert str(block.block_type) == "slew"
-        assert block.az_end == pytest.approx(-160.0)
-        assert result.state.current_az == pytest.approx(-160.0)
-        assert result.best_az == pytest.approx(-160.0)
+        assert block.az_end == pytest.approx(-158.16, abs=0.01)
+        assert result.state.current_az == block.az_end
+        assert result.best_az == pytest.approx(sel.best_az - 360.0)
         lo, hi = _compute_az_range(patch, result.best_az, result.best_el, ctx.site)
         assert lo <= result.state.current_az <= hi
         # The long way round is priced as such.
         assert block.duration > 100.0
 
-    def test_explicit_window_cannot_follow_the_far_wrap(self):
-        """An explicit window pins the range, so a far-wrap-only slew idles."""
+    def test_a_window_visit_follows_the_far_wrap(self):
+        """A window visit whose near wrap is blocked is slewed to, and scanned on, the far one.
+
+        The window (242, 252) has encoder images (242, 252) and (-118, -108).
+        The band between the bootstrap pose (180) and 242 leaves only the far
+        wrap; the slew ends at the window scan's first sample there, the
+        science block records its azimuths on that turn, and its record keeps
+        the window as the planner placed it.
+        """
+        from fyst_trajectories.overhead.scheduler import ScienceScanPhase
+        from fyst_trajectories.overhead.scheduler.helpers import _ce_crossing_corridor
+
         patch = self._pong_patch(
             scan_type="constant_el",
+            velocity=0.5,
             elevation=50.0,
-            scan_params={"az_min": 200.0, "az_max": 220.0},
+            scan_params={"az_min": 242.0, "az_max": 252.0},
         )
-        ctx = _make_ctx(patches=[patch], sun_safe=_sky_band_blocker(185.0, 195.0))
+        probe = _make_ctx(patches=[patch])
+        t_open, _ = _ce_crossing_corridor(
+            patch, 50.0, False, Time("2026-06-15T10:00:00", scale="utc"), probe.coords, {}
+        )
+        ctx = _make_ctx(
+            patches=[patch],
+            sun_safe=_sky_band_blocker(200.0, 230.0),
+            start_time=(t_open - TimeDelta(300.0, format="sec")).isot,
+            end_time=(t_open + TimeDelta(3600.0, format="sec")).isot,
+        )
         state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=210.0, best_el=50.0)
+        sel = _real_selection(ctx, state, patch)
 
         result = SlewPhase().run(state, ctx, selection=sel)
 
-        assert result.skip_to_next_iter is True
-        assert result.blocks[0].metadata["reason"] == "no_wrap"
-        assert result.state.current_az == state.current_az
+        (block,) = result.blocks
+        assert str(block.block_type) == "slew"
+        assert block.az_end == pytest.approx(-118.0, abs=1e-9)
+        assert result.best_az == pytest.approx(sel.best_az - 360.0)
+
+        science = ScienceScanPhase().run(result.state, ctx, selection=result)
+        scans = [b for b in science.blocks if str(b.block_type) == "science"]
+        assert scans
+        assert -119.0 < scans[0].az_start < -118.0
+        assert scans[0].metadata["window_scan"]["az_window"] == [242.0, 252.0]
 
     def test_scheduler_retries_once_the_path_clears(self):
         """The loop idles on a refusal and slews once the Sun has moved.
@@ -275,16 +332,16 @@ class TestSunEscape:
     def test_escape_past_the_window_end_on_the_idle_path_stops_cleanly(self):
         """The idle path's escape can end past the window; the loop must stop, not raise.
 
-        The pose is safe when the loop-top check runs, the opening
-        calibrations then consume the window down to a sliver, and the
-        selection idle finds the pose overtaken with too little time for
-        the escape. That result carries ``stop`` and no selection, which
-        the loop must not hand on to the slew phase.
+        The pose holds through the opening calibrations, which consume the
+        window down to a sliver, and the selection idle finds the pose
+        overtaken within that sliver with too little time for the escape.
+        That result carries ``stop`` and no selection, which the loop must
+        not hand on to the slew phase.
         """
         from fyst_trajectories.overhead import generate_timeline
 
         start = Time("2026-06-15T02:00:00", scale="utc")
-        overtaken_at = start + TimeDelta(1000.0, format="sec")
+        overtaken_at = start + TimeDelta(1090.0, format="sec")
 
         def sun_safe(az, el, t):
             if t < overtaken_at:
@@ -315,7 +372,7 @@ class TestSunEscape:
         phase asks for one scheduler tick of dwell instead, and refuses.
         """
         patch = self._pong_patch()
-        start = Time("2026-06-15T02:00:00", scale="utc")
+        start = Time(_FIELD_AT_AZ_115, scale="utc")
         closes_at = start + TimeDelta(120.0, format="sec")
 
         def sun_safe(az, el, t):
@@ -325,9 +382,9 @@ class TestSunEscape:
                 return True
             return bool(t < closes_at)
 
-        ctx = _make_ctx(patches=[patch], sun_safe=sun_safe, time_step=300.0)
+        ctx = _make_ctx(patches=[patch], sun_safe=sun_safe, time_step=300.0, start_time=start.isot)
         state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=patch, best_az=115.0, best_el=50.0)
+        sel = _real_selection(ctx, state, patch)
 
         result = SlewPhase().run(state, ctx, selection=sel)
 

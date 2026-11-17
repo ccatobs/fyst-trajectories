@@ -321,8 +321,9 @@ def test_footprint_draws_each_module_once():
     fig = plot_array_footprint(el=45.0, show=False)
     assert isinstance(fig, Figure)
     circles = _circles(fig)
-    # 8 dict keys, but "c"/"center" alias one offset: 7 unique modules.
+    # Seven keys, IM0..IM6, each a distinct offset: seven circles.
     assert len(circles) == 7
+    assert len(PRIMECAM_MODULES) == 7
     assert len({id(offset) for offset in PRIMECAM_MODULES.values()}) == 7
     for circle in circles:
         assert circle.get_radius() == pytest.approx(MODULE_FOV_RADIUS_DEG)
@@ -336,7 +337,7 @@ def test_footprint_is_to_scale(el):
     project-through-the-sphere-then-flatten implementation fails this from
     ~el=80 and collapses entirely at el=90.
     """
-    ring = PRIMECAM_MODULES["i1"]
+    ring = PRIMECAM_MODULES["IM1"]
     expected = float(np.hypot(ring.dx_deg, ring.dy_deg))
     fig = plot_array_footprint(el=el, show=False)
     radial = sorted(np.hypot(*c.get_center()) for c in _circles(fig))
@@ -352,7 +353,7 @@ def test_footprint_spans_follow_the_pending_geometry():
     FOV radius, which are pending instrument verification (see the table on
     the documentation index); these pins move with them.
     """
-    ring = PRIMECAM_MODULES["i1"]
+    ring = PRIMECAM_MODULES["IM1"]
     rho = float(np.hypot(ring.dx_deg, ring.dy_deg))
     assert 2.0 * rho == pytest.approx(3.56, abs=0.01)
     assert 2.0 * (rho + MODULE_FOV_RADIUS_DEG) == pytest.approx(4.86, abs=0.01)
@@ -386,7 +387,7 @@ def test_footprint_nasmyth_port_mirrors_layout():
         c.get_center() for c in _circles(plot_array_footprint(el=50.0, site=flipped, show=False))
     )
     mirrored_base = sorted((-x, y) for x, y in base)
-    for (x1, y1), (x2, y2) in zip(mirrored_base, mirror):
+    for (x1, y1), (x2, y2) in zip(mirrored_base, mirror, strict=True):
         assert x1 == pytest.approx(x2, abs=1e-6)
         assert y1 == pytest.approx(y2, abs=1e-6)
 
@@ -456,7 +457,7 @@ def test_windows_bars_match_report():
     assert report.windows  # the probe date must actually have windows
     paths = bars[0].get_paths()
     assert len(paths) == len(report.windows)
-    for path, window in zip(paths, report.windows):
+    for path, window in zip(paths, report.windows, strict=True):
         xs = path.vertices[:, 0]
         assert float(xs.min()) == pytest.approx(window.start.plot_date, abs=1e-9)
         assert float(xs.max()) == pytest.approx(window.end.plot_date, abs=1e-9)

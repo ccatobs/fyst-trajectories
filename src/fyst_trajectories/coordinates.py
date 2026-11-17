@@ -46,7 +46,10 @@ import numpy as np
 from astropy import units as u
 from astropy.coordinates import AltAz, SkyCoord, get_body
 from astropy.time import Time, TimeDelta
+from astropy.utils import iers
 
+from ._validation import _require_non_negative
+from .exceptions import PointingError
 from .site import AtmosphericConditions, Site
 
 # Supported solar system bodies for ephemeris
@@ -213,6 +216,92 @@ def normalize_frame(frame: str) -> str:
     'icrs'
     """
     return FRAME_ALIASES.get(frame.upper(), frame.lower())
+
+
+def check_earth_orientation_data(start: Time, *, days: float = 0.0) -> Time:
+    """Check that astropy's Earth-orientation table covers ``start`` and the days after it.
+
+    Every transform between the sky and the horizon needs UT1-UTC, which
+    astropy interpolates from its active IERS table (``astropy.utils.iers``).
+    This asks that table for UT1-UTC at ``start`` and at ``start + days``,
+    first for where the instants fall in it, then as the transforms ask.
+    Asking also makes astropy load the table and try any download a
+    transform would try, so a caller can have both done before its first
+    transform.
+
+    Parameters
+    ----------
+    start : Time
+        The first instant the table must cover, a single instant.
+    days : float, optional
+        How far past ``start`` the table must reach, in days. Default is 0.
+
+    Returns
+    -------
+    Time
+        The instant the active table runs to, in UTC: it covers the instants
+        before it.
+
+    Raises
+    ------
+    PointingError
+        If the table does not reach from ``start`` to ``start + days``, or if
+        astropy refuses its predictions there as older than its
+        ``auto_max_age``, as it then does in every transform.
+    TypeError
+        If ``start`` is not an astropy ``Time``.
+    ValueError
+        If ``start`` is not a single instant, or ``days`` is negative or
+        not finite.
+
+    Notes
+    -----
+    Astropy judges the age of its predictions by the host's clock at each
+    transform, not by ``start``, so the result holds for transforms made now.
+    An error astropy raises before the coverage is known passes through
+    unchanged: a ``start`` in UT1 outside the table, an invalid
+    ``astropy.utils.iers.conf`` value.
+
+    Examples
+    --------
+    >>> from astropy.time import Time
+    >>> start = Time("2026-03-15T04:00:00", scale="utc")
+    >>> covered_until = check_earth_orientation_data(start, days=2.0)
+    >>> bool(covered_until > start)
+    True
+    """
+    if not isinstance(start, Time):
+        raise TypeError(f"start must be an astropy Time, got {type(start).__name__}")
+    if not start.isscalar:
+        raise ValueError(f"start must be a single instant, got a Time of shape {start.shape}")
+    days = _require_non_negative(days, "days")
+    span = start.utc + np.array([0.0, days]) * u.day
+    named = span[0].iso if days == 0.0 else f"{span[0].iso} to {span[1].iso}"
+    remedy = (
+        "Give astropy a current table: let it reach the IERS servers, name a mirror in "
+        "astropy.utils.iers.conf.iers_auto_url, or set one with "
+        "astropy.utils.iers.earth_orientation_table.set()."
+    )
+    table = iers.earth_orientation_table.get()
+    _, status = table.ut1_utc(span, return_status=True)
+    first, last = (
+        Time(float(table["MJD"][row].to_value(u.day)), format="mjd", scale="utc") for row in (0, -1)
+    )
+    if np.any(np.isin(status, (iers.TIME_BEFORE_IERS_RANGE, iers.TIME_BEYOND_IERS_RANGE))):
+        raise PointingError(
+            f"astropy's Earth-orientation (IERS) table does not cover {named}: it runs "
+            f"from {first.iso} to {last.iso}. {remedy}"
+        )
+    try:
+        # Without the status, astropy applies the check its transforms meet:
+        # it refuses predictions older than its auto_max_age.
+        table.ut1_utc(span)
+    except ValueError as exc:
+        reason = " ".join(str(exc).split()).split(". ")[0].rstrip(".")
+        raise PointingError(
+            f"astropy refuses its Earth-orientation (IERS) table for {named}: {reason}. {remedy}"
+        ) from exc
+    return last
 
 
 def _radec_frame(frame: str) -> str:

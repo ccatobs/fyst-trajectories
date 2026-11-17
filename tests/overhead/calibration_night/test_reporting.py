@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -82,14 +83,14 @@ def _night_of_parked_passes(scan_params):
 
 
 @pytest.fixture(scope="module")
-def im0_night():
-    """Plan the package's short night again, with the centre module named ``IM0``."""
+def c_night():
+    """Plan the package's short night again, with the on-axis bay spelled ``c``."""
     return plan_calibration_night(
         ["saturn", "uranus"],
         get_fyst_site(),
         "2026-09-11T06:30:00",
         "2026-09-11T07:30:00",
-        policy=CalibrationNightPolicy(footprint="IM0"),
+        policy=CalibrationNightPolicy(footprint="c"),
     )
 
 
@@ -106,7 +107,7 @@ class TestSummary:
         assert uranus.passes == 0
         assert 25.0 < saturn.minutes_on_source < 35.0
         assert 0.3 < saturn.mean_duty_cycle < 0.45
-        assert saturn.module_crossings["c"] > 0.2
+        assert saturn.module_crossings["IM0"] > 0.2
         assert summary.tuning_minutes == pytest.approx(25.0)
         assert summary.slew_minutes > 0.0 and summary.idle_minutes > 0.0
         assert set(summary.idle_reasons) <= {
@@ -136,7 +137,7 @@ class TestSummary:
         assert "saturn: 3 visit(s), 3 pass(es)" in text
         assert "uranus: no passes" in text
         assert "requested: az_accel=1, az_speed=1.5 (+2 more)" in text
-        assert "modules crossed: c" in text
+        assert "modules crossed: IM0 " in text
 
 
 class TestDispatchSheet:
@@ -221,13 +222,13 @@ class TestDispatchSheet:
         blocks = sorted(timeline.blocks, key=lambda b: b.t_start.unix)
         waits = [
             previous.duration
-            for previous, block in zip(blocks, blocks[1:])
+            for previous, block in pairwise(blocks)
             if block.metadata.get("cal_type") == "planet_cal"
             and previous.metadata.get("reason") == "waiting_for_pass"
         ]
         pass_rows = [ln for ln in dispatch_sheet(timeline).splitlines() if "source_scan on" in ln]
         assert len(waits) == len(pass_rows) == 3
-        for row, wait in zip(pass_rows, waits):
+        for row, wait in zip(pass_rows, waits, strict=True):
             assert f"slack {wait:.0f} s" in row
 
     def test_header_states_the_rule_and_the_lead(self, short_night):
@@ -246,7 +247,7 @@ class TestDispatchSheet:
         passes = [b for b in blocks if b.metadata.get("cal_type") == "planet_cal"]
         lines = [ln for ln in dispatch_sheet(timeline).splitlines() if "scheduled_t0_unix=" in ln]
         assert len(lines) == len(passes) == 3
-        for block, line in zip(passes, lines):
+        for block, line in zip(passes, lines, strict=True):
             printed = float(line.rsplit("scheduled_t0_unix=", 1)[1])
             anchor = _search_start_time(block.metadata["search_start"])
             assert printed == pytest.approx(anchor.unix, abs=1e-3)
@@ -309,45 +310,79 @@ class TestDispatchSheet:
 
 
 class TestCentreModuleSpelling:
-    """A night whose policy names the centre module ``IM0`` dispatches as a ``"c"`` night does.
+    """The on-axis bay dispatches as ``"c"`` whether the policy says ``IM0`` or ``c``.
 
     The execution layer's centred-only check compares a pass dict's
     ``footprint`` with ``"c"`` and ``"center"`` as strings, so the dict names
-    the module by its canonical name whatever spelling the policy was given.
+    the bay ``"c"`` whatever spelling the policy was given. The package's
+    short night uses the default, ``IM0``; ``c_night`` is the same hour with
+    the policy spelling ``c``.
     """
 
-    def test_every_dict_names_the_centre_module_c(self, im0_night):
-        passes = [b for b in im0_night.blocks if b.scan_type == "planet_cal"]
+    @pytest.mark.parametrize("spelling", ["IM0", "c"])
+    def test_every_dict_names_the_centre_module_c(self, short_night, c_night, spelling):
+        night = short_night[1] if spelling == "IM0" else c_night
+        passes = [b for b in night.blocks if b.scan_type == "planet_cal"]
         assert len(passes) == 3
         footprints = [b.metadata["scan_params"]["footprint"] for b in passes]
         assert all(fp in ("c", "center") for fp in footprints)
         assert set(footprints) == {"c"}
         # The night's own record keeps the spelling the caller gave.
-        assert read_calibration_night_metadata(im0_night)["policy"]["footprint"] == "IM0"
+        assert read_calibration_night_metadata(night)["policy"]["footprint"] == spelling
 
-    def test_the_sheet_is_the_c_night_sheet(self, short_night, im0_night, tmp_path):
-        _, c_night = short_night
-        sheet = dispatch_sheet(im0_night)
-        assert sheet == dispatch_sheet(c_night)
+    def test_the_sheet_is_the_im0_night_sheet(self, short_night, c_night, tmp_path):
+        _, im0_night = short_night
+        sheet = dispatch_sheet(c_night)
+        assert sheet == dispatch_sheet(im0_night)
         path = tmp_path / "night.ecsv"
-        write_timeline(im0_night, path)
+        write_timeline(c_night, path)
         assert dispatch_sheet(read_timeline(path)) == sheet
 
     @pytest.mark.filterwarnings(
         "ignore:High elevation reduces on-sky azimuth speed:"
         "fyst_trajectories.exceptions.PointingWarning"
     )
-    def test_the_passes_rebuild_as_on_the_c_night(self, short_night, im0_night):
-        _, c_night = short_night
-        want = schedule_to_trajectories(c_night, science_only=False)
-        got = schedule_to_trajectories(im0_night, science_only=False)
+    def test_the_passes_rebuild_as_on_the_im0_night(self, short_night, c_night):
+        _, im0_night = short_night
+        want = schedule_to_trajectories(im0_night, science_only=False)
+        got = schedule_to_trajectories(c_night, science_only=False)
         assert len(got) == len(want) == 3
-        for (_, rebuilt), (_, reference) in zip(got, want):
+        for (_, rebuilt), (_, reference) in zip(got, want, strict=True):
             assert rebuilt.computed_params == reference.computed_params
             for name in ("times", "az", "el", "scan_flag"):
                 assert np.array_equal(
                     getattr(rebuilt.trajectory, name), getattr(reference.trajectory, name)
                 )
+
+
+_RETIRED_LABEL_NOTE = (
+    "The labels i1..i6 are no longer defined: the ring is the bays IM1..IM6, "
+    "at different positions, and i<n> is not IM<n>."
+)
+
+
+class TestRecordedRetiredRingLabel:
+    """A night whose recorded policy names a ring label ``i1`` .. ``i6`` is refused on reading.
+
+    Those labels name no bay, so the sheet, the record and a resume refuse
+    the night with the policy's message instead of planning or printing it.
+    """
+
+    @pytest.mark.parametrize(
+        "reader",
+        [dispatch_sheet, dispatch_records, NightContext.from_timeline],
+        ids=["dispatch_sheet", "dispatch_records", "NightContext.from_timeline"],
+    )
+    def test_the_night_is_refused_with_the_note(self, short_night, reader):
+        _, timeline = short_night
+        meta = read_calibration_night_metadata(timeline)
+        policy = {**meta["policy"], "footprint": "i2"}
+        tampered = dataclasses.replace(
+            timeline, metadata=encode_calibration_night_metadata({**meta, "policy": policy})
+        )
+        with pytest.raises(ValueError, match="footprint: Unknown PrimeCam module 'i2'") as caught:
+            reader(tampered)
+        assert str(caught.value).endswith(_RETIRED_LABEL_NOTE)
 
 
 class TestMetadataPayload:

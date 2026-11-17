@@ -111,13 +111,14 @@ class TestPlanDaisyAltAzScan:
         assert set(params) == set(DaisyAltAzComputedParams.__required_keys__)
         assert params["az_center"] == 120.0
         assert params["el_center"] == 60.0
-        assert params["duration"] == pytest.approx(100.0)
+        assert params["duration"] == block.trajectory.duration
 
     @pytest.mark.filterwarnings(_SPEED_ADVISORY)
     def test_duration_honored(self, site, start_time):
+        """The built length is the requested one less up to one timestep."""
         block = _plan(site, start_time, duration=250.0)
-        assert block.duration == pytest.approx(250.0)
-        assert block.computed_params["duration"] == pytest.approx(250.0)
+        assert block.duration == pytest.approx(249.9)
+        assert block.computed_params["duration"] == block.trajectory.duration
 
     @pytest.mark.filterwarnings(_SPEED_ADVISORY)
     def test_accepts_iso_start_time(self, site):

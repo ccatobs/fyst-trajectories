@@ -87,7 +87,7 @@ def test_every_time_is_held_in_utc_at_the_utc_nights_instants(given_night, short
     for t in (timeline.start_time, timeline.end_time):
         assert (t.scale, t.location, t.precision, t.out_subfmt) == ("utc", None, 3, "*")
     assert len(timeline.blocks) == len(utc_night.blocks)
-    for block, utc_block in zip(timeline.blocks, utc_night.blocks):
+    for block, utc_block in zip(timeline.blocks, utc_night.blocks, strict=True):
         assert (block.t_start.scale, block.t_stop.scale) == ("utc", "utc")
         assert _seconds(block.t_start, utc_block.t_start) < 1e-6
         assert _seconds(block.t_stop, utc_block.t_stop) < 1e-6

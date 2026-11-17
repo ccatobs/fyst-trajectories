@@ -59,7 +59,11 @@ def plan_daisy_scan(
         Observation start time (required for celestial patterns).
         Accepts an ISO string or ``astropy.time.Time``.
     duration : float
-        Observation duration in seconds. Must be positive.
+        Observation duration in seconds. Must be positive. The samples fall
+        a whole ``timestep`` apart from the start, the last one before
+        ``duration``, so the built trajectory is up to one ``timestep``
+        shorter; ``ScanBlock.duration``, ``computed_params["duration"]`` and
+        the summary give the built length.
     timestep : float, optional
         Time between trajectory points in seconds. Default is 0.1. Must be
         positive.
@@ -135,7 +139,7 @@ def plan_daisy_scan(
     ...     duration=300.0,
     ... )
     >>> round(block.duration, 1), block.trajectory.n_points
-    (300.0, 3000)
+    (299.9, 3000)
     """
     start_time = _coerce_start_time(start_time)
 
@@ -161,6 +165,7 @@ def plan_daisy_scan(
         atmosphere=atmosphere,
         detector_offset=detector_offset,
     )
+    duration = trajectory.duration
 
     computed_params: DaisyComputedParams = {
         "duration": duration,

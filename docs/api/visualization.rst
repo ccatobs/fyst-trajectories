@@ -198,7 +198,7 @@ and for how much of the pass.
     site = get_fyst_site()
     block = plan_source_ces(
         body="jupiter",
-        footprint="c",
+        footprint="IM0",
         el_bore=35.0,
         night=Time("2026-03-15T00:00:00", scale="utc"),
         mode="rising",
@@ -241,8 +241,8 @@ any built ``Trajectory`` with a ``start_time``::
 
     # Coverage of two PrimeCam modules, each averaged over its field of view
     modules = {
-        "module i1": get_primecam_offset("i1"),
-        "module i6": get_primecam_offset("i6"),
+        "IM5": get_primecam_offset("IM5"),
+        "IM6": get_primecam_offset("IM6"),
     }
     fig = plot_hit_map(trajectory, modules=modules, site=site, show=False)
     fig.savefig("coverage_map.png", dpi=300)

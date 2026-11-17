@@ -199,7 +199,7 @@ class TestAzimuthWrapAround:
         assert len(decs) == 5
         assert all(0 <= ra < 360 for ra in ras)
         assert all(-90 <= dec <= 90 for dec in decs)
-        for az, ra, dec in zip(azs, ras, decs):
+        for az, ra, dec in zip(azs, ras, decs, strict=True):
             expected = coordinates.altaz_to_radec(float(az), 45.0, obstime=obstime)
             assert (ra, dec) == pytest.approx(expected, abs=1e-9)
 

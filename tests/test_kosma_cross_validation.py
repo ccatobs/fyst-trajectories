@@ -487,7 +487,7 @@ class TestKOSMACrossValidationLargeOffsets:
 
         # Quadratic growth: each ratio to the smallest offset tracks the square
         # of the size ratio; higher-order terms add up to 7% by 5 deg.
-        for size, diff in zip(offset_mm_sizes, diffs):
+        for size, diff in zip(offset_mm_sizes, diffs, strict=True):
             assert diff / diffs[0] == pytest.approx((size / offset_mm_sizes[0]) ** 2, rel=0.07)
 
 

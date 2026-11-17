@@ -326,8 +326,8 @@ def plot_sky_view(
         both ``targets`` and a named ``boresight``.
     modules : mapping of str to InstrumentOffset, optional
         Modules to draw at the boresight. Default
-        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (alias keys
-        drawn once).
+        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (keys that
+        name one offset are drawn once).
     fov_radius_deg : float, optional
         Per-module on-sky FOV radius in degrees. Default
         :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG`.

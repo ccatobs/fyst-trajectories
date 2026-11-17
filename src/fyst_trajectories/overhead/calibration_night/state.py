@@ -287,7 +287,7 @@ class NightState:
 
         done = tuple(b for b in timeline.blocks if _by(b.t_stop, t))
         if done:
-            az, el = float(done[-1].end_pose_az), float(done[-1].elevation)
+            az, el = float(done[-1].end_pose_az), float(done[-1].end_pose_el)
         else:
             az, el = (float(v) for v in meta["start_pose"])
         passes = [b for b in done if _is_pass(b)]
@@ -399,8 +399,8 @@ class NightContext:
     ephem_cache : dict
         A cache of body positions keyed by ``(body, jd)``; not state.
     escape_cache : dict
-        A cache of escape searches keyed by pose, time, elevation floor
-        and settle time (see :func:`~fyst_trajectories.overhead.plan_escape`). The driver asks
+        A cache of escape searches keyed by pose, time, elevation floor,
+        settle time and hold (see :func:`~fyst_trajectories.overhead.plan_escape`). The driver asks
         the same question once per candidate body per tick and each search
         costs a Sun ephemeris solve; not state.
     """
@@ -611,7 +611,7 @@ class NightContext:
         """
         meta = read_calibration_night_metadata(timeline)
         site = timeline.site if site is None else site
-        # A record written before the limits were recorded skips this check.
+        # A record without telescope_limits skips this check.
         recorded_limits = meta.get("telescope_limits")
         limits = dataclasses.asdict(site.telescope_limits)
         if recorded_limits is not None and limits != recorded_limits:
@@ -640,13 +640,17 @@ class NightContext:
                     f"{meta[name]!r}; pass the night's predicate"
                 )
         recorded = meta["usable_interval"]
+        if recorded is not None and len(recorded) != 2:
+            raise ValueError(
+                f"the recorded usable interval must be a (start, end) pair, got {recorded!r}"
+            )
         resolved = (ctx.start_time, ctx.end_time) if ctx.usable else None
         if (recorded is None) != (resolved is None) or (
             recorded is not None
             and resolved is not None
             and any(
                 abs((Time(r, scale="utc") - x).to_value("s")) > _RESUME_TOL_SEC
-                for r, x in zip(recorded, resolved)
+                for r, x in zip(recorded, resolved, strict=True)
             )
         ):
             shown = None if resolved is None else [x.iso for x in resolved]

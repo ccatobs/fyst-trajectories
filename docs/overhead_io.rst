@@ -47,7 +47,7 @@ Read it back and check what it holds::
 
     timeline = read_timeline("schedule.ecsv")
     print(f"Loaded {len(timeline)} blocks")  # Loaded 30 blocks
-    print(f"Efficiency: {timeline.efficiency:.1%}")  # Efficiency: 45.2%
+    print(f"Efficiency: {timeline.efficiency:.1%}")  # Efficiency: 44.8%
 
 The window holds the patch's constant-elevation pass, so the night has
 science in it. A window that closes before the pass opens reports
@@ -107,6 +107,10 @@ scan pattern:
 |                      |        | (deg) when that differs from ``azmax``;      |
 |                      |        | ``nan`` otherwise (see below)                |
 +----------------------+--------+----------------------------------------------+
+| ``el_final``         | float  | FYST extension: elevation the block ends at  |
+|                      |        | (deg) when that differs from ``el``; ``nan`` |
+|                      |        | otherwise (see below)                        |
++----------------------+--------+----------------------------------------------+
 | ``block_meta_json``  | str    | FYST extension: JSON-encoded bag of any      |
 |                      |        | ``TimelineBlock.metadata`` keys (see below)  |
 |                      |        | not promoted to a dedicated column above;    |
@@ -120,15 +124,27 @@ for science and calibration rows. A consumer that needs ordered bounds
 (for example ``azmax - azmin`` as a scan width) must filter on
 ``block_type`` first. On a row that sweeps, the bounds are the azimuth
 envelope the block executes; the field geometry is in the ``ra_center`` /
-``dec_center`` / ``width`` / ``height`` columns instead.
+``dec_center`` / ``width`` / ``height`` columns instead. A row whose block
+records no field holds 0.0 in those four columns, and such a science row
+reads back without the four keys. A constant-elevation window scan's record,
+``metadata["window_scan"]`` (see :ref:`overhead-timeline-window-scan`), and
+the scan's start, ``metadata["scan_start"]``, on a block that starts after
+it, travel in ``block_meta_json``, as do a science block's
+``metadata["detector_offset"]`` and ``metadata["detector_elevation"]`` (see
+:ref:`overhead-timeline-module`) and an idle block's
+``metadata["reason"]``.
 
 ``az_final`` records the pose a swept block is actually left at, which is
 generally neither bound; read it through
 :attr:`~fyst_trajectories.overhead.TimelineBlock.end_pose_az`, which
 falls back to ``azmax`` wherever the column is ``nan``, including a file
-written before the column existed. See
-:class:`~fyst_trajectories.overhead.TimelineBlock` for the full
-envelope-versus-pose distinction.
+written before the column existed. ``el_final`` does the same for the
+elevation: a pong or daisy subscan is recorded at the field centre's
+elevation where it starts and ends wherever its pattern leaves the
+telescope; read it through
+:attr:`~fyst_trajectories.overhead.TimelineBlock.end_pose_el`, which falls
+back to ``el``. See :class:`~fyst_trajectories.overhead.TimelineBlock` for
+the full envelope-versus-pose distinction.
 
 The set of FYST extension columns may grow over time; any
 :attr:`~fyst_trajectories.overhead.TimelineBlock.metadata` field not surfaced
@@ -189,7 +205,7 @@ TOAST Compatibility
 
 Files written by fyst-trajectories use TOAST canonical column names for the
 common fields **and** attach ``u.deg`` units to the angle columns
-(``azmin``, ``azmax``, ``el``, ``boresight_angle`` and ``az_final``), with the site
+(``azmin``, ``azmax``, ``el``, ``boresight_angle``, ``az_final`` and ``el_final``), with the site
 coordinates stored as ``Quantity`` header metadata. TOAST's
 ``GroundSchedule`` v5 reader can therefore read them directly, ignoring
 the FYST extension columns.

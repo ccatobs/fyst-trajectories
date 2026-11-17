@@ -19,7 +19,7 @@ from astropy.time import Time
 from ..models import BlockType, ObservingTimeline, TimelineBlock
 from ..schemas import SourceCESScanParams
 from ..transitions import DeferralReason
-from ..utils import _search_start_time, _utc_instant
+from ..utils import _search_start_time, _stored_instant
 from .policy import (
     CalibrationNightMetadata,
     _policy_from_record,
@@ -59,11 +59,6 @@ def _is_waiting(block: TimelineBlock) -> bool:
     )
 
 
-def _stored(t: Time) -> Time:
-    """Return ``t`` as :func:`write_timeline` stores it, a UTC ISO string to the millisecond."""
-    return Time(_utc_instant(t).iso, scale="utc")
-
-
 class _Span(NamedTuple):
     """A block with its start and its duration in seconds as the file stores its times."""
 
@@ -82,8 +77,8 @@ def _in_stored_order(timeline: ObservingTimeline) -> list[_Span]:
     """
     spans = []
     for block in timeline.blocks:
-        start = _stored(block.t_start)
-        spans.append(_Span(block, start, float((_stored(block.t_stop) - start).sec)))
+        start = _stored_instant(block.t_start)
+        spans.append(_Span(block, start, float((_stored_instant(block.t_stop) - start).sec)))
     return sorted(spans, key=lambda span: span.start.unix)
 
 
@@ -915,7 +910,7 @@ def dispatch_records(timeline: ObservingTimeline, *, source: str | None = None) 
         "dispatch_lead_s": float(lead),
         "unforwarded_keys_note": _UNFORWARDED_KEYS_NOTE,
         "night_start_utc": spans[0].start.iso[:19] if spans else None,
-        "night_end_utc": _stored(spans[-1].block.t_stop).iso[:19] if spans else None,
+        "night_end_utc": _stored_instant(spans[-1].block.t_stop).iso[:19] if spans else None,
         "visits": visits,
         "idle": idle,
     }

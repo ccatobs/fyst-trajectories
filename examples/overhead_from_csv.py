@@ -19,8 +19,9 @@ so it wins the telescope in the minutes before its elevation crossing
 opens, the only time the scheduler can place a constant-elevation pass. The
 scheduler is greedy (equal scores go to the patch listed first), and its
 look-ahead admits a constant-elevation pass only when the pass opens
-within one ``time_step`` plus a slew allowance, so a row left at the same
-priority as the tracking patches listed before it schedules nothing.
+within one ``time_step`` plus a slew allowance and any retune due, so a row
+left at the same priority as the tracking patches listed before it schedules
+nothing.
 
 Run it from the repository root::
 

@@ -2,6 +2,7 @@
 
 import math
 import warnings
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -26,7 +27,7 @@ from fyst_trajectories.patterns import (
     TrajectoryBuilder,
 )
 from fyst_trajectories.primecam import (
-    PRIMECAM_I1,
+    PRIMECAM_IM3,
     get_primecam_offset,
 )
 from fyst_trajectories.retune import inject_retune
@@ -252,22 +253,22 @@ class TestBuilderForDetector:
             .starting_at(start_time)
             .build()
         )
-        traj_i1 = (
+        traj_im3 = (
             TrajectoryBuilder(site)
             .at(ra=180.0, dec=-30.0)
             .with_config(config)
-            .for_detector(get_primecam_offset("i1"))
+            .for_detector(get_primecam_offset("IM3"))
             .duration(60.0)
             .starting_at(start_time)
             .build()
         )
 
-        assert traj_i1.n_points == traj_boresight.n_points
-        # I1 sits ~1.78 deg off-axis, so applying it displaces the pointing from
-        # the boresight pointing by that distance on-sky (a no-op offset would
-        # leave the two trajectories identical).
-        d_el = traj_i1.el - traj_boresight.el
-        d_az = (traj_i1.az - traj_boresight.az) * np.cos(np.radians(traj_i1.el))
+        assert traj_im3.n_points == traj_boresight.n_points
+        # IM3 sits one ring radius, ~1.78 deg, off-axis, so applying it displaces
+        # the pointing from the boresight pointing by that distance on-sky (a
+        # no-op offset would leave the two trajectories identical).
+        d_el = traj_im3.el - traj_boresight.el
+        d_az = (traj_im3.az - traj_boresight.az) * np.cos(np.radians(traj_im3.el))
         sep = np.hypot(d_az, d_el)
         assert np.median(sep) == pytest.approx(1.78, abs=0.05)
 
@@ -593,13 +594,14 @@ class TestOffsetPathLandsOnTarget:
         site = get_fyst_site()
         trajectory = self._build_trajectory(site)
 
-        # PRIMECAM_I1 is an inner-ring module ~106.8 arcmin (1.78 deg) off-axis.
-        boresight = apply_detector_offset(trajectory, PRIMECAM_I1, site=site)
+        # PRIMECAM_IM3 is a ring bay ~106.8 arcmin (1.78 deg) off-axis, at 60 deg in the
+        # focal plane, so both of its coordinates are non-zero.
+        boresight = apply_detector_offset(trajectory, PRIMECAM_IM3, site=site)
 
         # Independent mechanical (horizon-frame) rotation at the boresight's
         # own elevation.
-        rho_mech = site.nasmyth_sign * boresight.el + PRIMECAM_I1.instrument_rotation
-        miss = self._miss_arcsec(trajectory, boresight, PRIMECAM_I1, rho_mech)
+        rho_mech = site.nasmyth_sign * boresight.el + PRIMECAM_IM3.instrument_rotation
+        miss = self._miss_arcsec(trajectory, boresight, PRIMECAM_IM3, rho_mech)
 
         assert miss.max() < 1.0, (
             f"inner-ring module misses target by up to {miss.max():.3f} arcsec; "
@@ -611,10 +613,10 @@ class TestOffsetPathLandsOnTarget:
         site = get_fyst_site()
         trajectory = self._build_trajectory(site)
 
-        boresight = apply_detector_offset(trajectory, PRIMECAM_I1, site=site)
+        boresight = apply_detector_offset(trajectory, PRIMECAM_IM3, site=site)
 
-        rho_detector = site.nasmyth_sign * trajectory.el + PRIMECAM_I1.instrument_rotation
-        miss = self._miss_arcsec(trajectory, boresight, PRIMECAM_I1, rho_detector)
+        rho_detector = site.nasmyth_sign * trajectory.el + PRIMECAM_IM3.instrument_rotation
+        miss = self._miss_arcsec(trajectory, boresight, PRIMECAM_IM3, rho_detector)
 
         assert miss.min() > 60.0, (
             "a detector-elevation rotation should miss by arcminutes; if it lands "
@@ -627,7 +629,7 @@ class TestOffsetPathLandsOnTarget:
         coords = Coordinates(site)
         trajectory = self._build_trajectory(site)
 
-        boresight = apply_detector_offset(trajectory, PRIMECAM_I1, site=site)
+        boresight = apply_detector_offset(trajectory, PRIMECAM_IM3, site=site)
 
         abs_times = get_absolute_times(trajectory)
         pa = _apparent_pa(coords, trajectory.center_ra, trajectory.center_dec, abs_times)
@@ -635,7 +637,7 @@ class TestOffsetPathLandsOnTarget:
         assert np.abs(pa).min() > 25.0
 
         rho_wrong = site.nasmyth_sign * boresight.el + pa
-        miss = self._miss_arcsec(trajectory, boresight, PRIMECAM_I1, rho_wrong)
+        miss = self._miss_arcsec(trajectory, boresight, PRIMECAM_IM3, rho_wrong)
 
         assert miss.min() > 0.5 * 3600.0, (
             "pa-rotated projection should miss by degrees; if it lands on "
@@ -716,7 +718,7 @@ class TestApplyDetectorOffsetVelocities:
         # moves exactly as the target does. Differencing the boresight instead
         # missed the analytic turnaround velocity by 0.2 deg/s at a 1 s step.
         trajectory = self._ce(site, timestep)
-        adjusted = apply_detector_offset(trajectory, PRIMECAM_I1, site=site)
+        adjusted = apply_detector_offset(trajectory, PRIMECAM_IM3, site=site)
         np.testing.assert_allclose(adjusted.az_vel, trajectory.az_vel, rtol=0, atol=1e-12)
         np.testing.assert_allclose(adjusted.el_vel, trajectory.el_vel, rtol=0, atol=1e-12)
 
@@ -729,7 +731,7 @@ class TestApplyDetectorOffsetVelocities:
     def test_differenced_input_matches_differencing_the_boresight(self, site, pong_trajectory):
         # A celestial pattern's velocities are already a finite difference of
         # its positions, and np.gradient is linear, so the two forms agree.
-        adjusted = apply_detector_offset(pong_trajectory, PRIMECAM_I1, site=site)
+        adjusted = apply_detector_offset(pong_trajectory, PRIMECAM_IM3, site=site)
         np.testing.assert_allclose(
             adjusted.az_vel, np.gradient(adjusted.az, adjusted.times), rtol=0, atol=1e-10
         )
@@ -793,7 +795,7 @@ class TestApplyDetectorOffsetFrameConsistency:
     therefore evaluates
     ``nasmyth_sign * el`` at the apparent elevation, differing from vacuum
     by ``nasmyth_sign * (refraction bump)``, which moves the boresight of an
-    inner-ring module by about 2 arcsec at el ~ 36 deg. This test bounds that
+    inner-ring module by 1 to 2 arcsec at el ~ 36 deg. This test bounds that
     leak; the vacuum path remains the reference.
     """
 
@@ -821,7 +823,7 @@ class TestApplyDetectorOffsetFrameConsistency:
     def test_refracted_input_leak_is_bounded_arcsec(self, site):
         # el ~ 36 deg at this epoch, near the worst case for the leak.
         start_time = Time("2026-03-15T09:00:00", scale="utc")
-        offset = PRIMECAM_I1  # inner ring rho ~ 1.78 deg
+        offset = PRIMECAM_IM3  # a ring bay, rho ~ 1.78 deg
 
         traj_vac = self._build(site, start_time, atmosphere=None)
         traj_ref = self._build(site, start_time, atmosphere=AtmosphericConditions.for_fyst())
@@ -853,7 +855,7 @@ class TestApplyDetectorOffsetFrameConsistency:
     def test_vacuum_path_lands_on_target(self, site):
         """The vacuum (live) path is the reference: the module lands on target."""
         start_time = Time("2026-03-15T09:00:00", scale="utc")
-        offset = PRIMECAM_I1
+        offset = PRIMECAM_IM3
 
         traj_vac = self._build(site, start_time, atmosphere=None)
         boresight = apply_detector_offset(traj_vac, offset, site=site)
@@ -873,7 +875,7 @@ class TestApplyDetectorOffsetFrameConsistency:
 class TestApplyDetectorOffsetContraction:
     """Each pass of the boresight-elevation iteration contracts by at most the offset radius."""
 
-    @pytest.mark.parametrize("module", ["i1", "i2", "i3", "i4", "i5", "i6"])
+    @pytest.mark.parametrize("module", ["IM1", "IM2", "IM3", "IM4", "IM5", "IM6"])
     @pytest.mark.parametrize("el", [30.0, 45.0, 70.0])
     def test_step_ratio_is_at_most_the_offset_radius(self, site, module, el):
         """Successive elevation steps shrink by at most hypot(dx, dy) in radians."""
@@ -886,5 +888,5 @@ class TestApplyDetectorOffsetContraction:
             _, new_bore_el = detector_to_boresight(100.0, el, offset, rotation)
             steps.append(abs(float(new_bore_el) - bore_el))
             bore_el = float(new_bore_el)
-        for previous, current in zip(steps, steps[1:]):
+        for previous, current in pairwise(steps):
             assert current / previous <= bound * 1.01

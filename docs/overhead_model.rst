@@ -53,11 +53,11 @@ Calibration Cadences
 
 Controls *when* each calibration type is triggered. Cadences are in seconds.
 A cadence of 0 keeps that calibration permanently due: retune then fires
-immediately before every science subscan (plus once at startup) and never on
-an idle tick, while every other calibration type fires on each scheduler
-iteration, idle ticks included. A cadence of ``None`` (valid only for
-``beam_map_cadence``) disables automatic scheduling for that calibration type
-entirely::
+before every science subscan, ahead of any wait for its pass to open (plus
+once at startup), and never on an idle tick, while every other calibration
+type fires on each scheduler iteration, idle ticks included. A cadence of
+``None`` (valid only for ``beam_map_cadence``) disables automatic
+scheduling for that calibration type entirely::
 
     from fyst_trajectories.overhead import CalibrationPolicy
 
@@ -73,7 +73,7 @@ entirely::
         planet_cal_scan=False,        # False = parked; True = source-CES passes
         planet_cal_passes=3,          # passes per planet cal when scanning
         planet_cal_el_step=None,      # None = planner default (footprint extent)
-        planet_cal_footprint="c",     # Prime-Cam module tag the passes tile
+        planet_cal_footprint="IM0",   # Prime-Cam module tag the passes tile
     )
 
 Planet calibrations and beam maps are only scheduled when at least one
@@ -124,7 +124,7 @@ stepped in elevation so they run sequentially:
         planet_cal_scan=True,
         planet_cal_passes=3,          # three drift passes per calibration
         planet_cal_el_step=None,      # None = planner default spacing
-        planet_cal_footprint="c",     # tile Prime-Cam module "c"
+        planet_cal_footprint="IM0",   # tile Prime-Cam module "IM0"
     )
 
 Each pass becomes its own calibration block (``scan_type="planet_cal"``),
@@ -136,12 +136,17 @@ for the pass began in ``metadata["search_start"]``. Unlike a
 calibration-night pass (see :doc:`overhead_calibration_night`), the dict
 records the absolute ``window`` of its pass, so it describes that pass
 rather than serving as a dispatch dict. Each pass is swept against the Sun
-model in the slew's azimuth wrap before it is emitted. If no listed planet
-is up and clear of the Sun, the sequence is not feasible (the planet never
-reaches the required geometry in the search window), the slew is refused,
-or a pass would enter the Sun zone, the calibration is skipped and left
-due, so it is retried on a later scheduler iteration, exactly like a
-planet cal with no visible planet.
+model in the slew's azimuth wrap before it is emitted, and put to the
+booking screen (see :ref:`overhead-timeline-booking-screen`). The time
+before each pass opens is an idle block with reason ``waiting_for_pass``,
+at the pose the slew or the previous pass left the telescope at, and the
+move from one pass's end to the next pass's start is not booked as a
+slew. If no listed planet is up and clear of the Sun, the sequence is not
+feasible (the planet never reaches the required geometry in the search
+window), the slew is refused, a pass or the pose held before one would
+enter the Sun zone, or the booking screen refuses a pass, the
+calibration is skipped and left due, so it is retried on a later
+scheduler iteration, exactly like a planet cal with no visible planet.
 
 Rebuild the pass trajectories with
 ``schedule_to_trajectories(timeline, science_only=False)``, which repeats

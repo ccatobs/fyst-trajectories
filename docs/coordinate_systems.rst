@@ -110,3 +110,63 @@ and ``compute_focal_plane_rotation()``, which computes either frame.
    band. See
    :meth:`~fyst_trajectories.coordinates.Coordinates.get_parallactic_angle` Notes
    for the rate.
+
+.. _earth-orientation-data:
+
+Earth-orientation data
+----------------------
+
+Every transform between the sky and the horizon needs UT1-UTC and polar
+motion, which astropy reads from its IERS table
+(:mod:`astropy.utils.iers`). An error of one second in UT1-UTC turns the
+sky about the Earth's axis by 15.04 arcsec, which moves a source at
+declination δ by 15.04 cos δ arcsec.
+
+By default astropy's table refreshes itself: when a transform needs predicted
+values and the table's predictions are more than 30 days old, astropy downloads
+a new table from the IERS servers. On a host that cannot reach them, astropy
+falls back to a table it already holds, and what follows depends on its version:
+
+- Astropy 7 and later fall back to the IERS-A table bundled in the
+  ``astropy-iers-data`` package. Once that table's predictions are more than
+  30 days old, a transform that needs them raises astropy's ``ValueError``
+  ("interpolating from IERS_Auto using predictive values that are more than
+  30.0 days old").
+- Astropy 6 and earlier fall back to an IERS-B table, which holds no
+  predictions: a transform of the present warns and takes UT1-UTC as zero and
+  polar motion as its 50-year mean. With an earlier download in its cache,
+  astropy uses that table and raises the same ``ValueError`` once it is stale.
+
+Such a host also waits on downloads that fail, each attempt up to its network
+timeout: every version tries again at each transform once its table is stale,
+and astropy 7 and earlier also while they have no downloaded table.
+
+:func:`~fyst_trajectories.coordinates.check_earth_orientation_data` raises
+:class:`~fyst_trajectories.exceptions.PointingError` when the active table does
+not cover the span a caller will plan in, or astropy refuses its predictions
+there. Called before the first plan, it also has astropy load the table, and
+download a new one if needed, at that point::
+
+    from astropy.time import Time
+
+    from fyst_trajectories import check_earth_orientation_data
+
+    start = Time("2026-03-15T04:00:00", scale="utc")  # for example Time.now()
+    covered_until = check_earth_orientation_data(start, days=2.0)
+    print(covered_until > start)  # True
+
+Astropy judges the age of its predictions by the host's clock at each
+transform, so a table that passes the check can be refused later.
+
+A host that cannot reach the IERS servers has two ways to give astropy a table:
+
+- A mirror of the IERS ``finals2000A.all`` file that the host can reach, named
+  in ``iers.conf.iers_auto_url`` (in code, or in astropy's configuration file).
+  Astropy then refreshes its table from the mirror as it does from the IERS
+  servers.
+- A table set by hand (with ``from astropy.utils import iers``):
+  ``iers.conf.auto_download = False``, then
+  ``iers.earth_orientation_table.set(iers.IERS_A.open(path))``, with ``path``
+  such a file; astropy 6 and later bundle one, which ``iers.IERS_A.open()``
+  reads when given no path. Astropy makes no download attempt for a table set
+  by hand and does not check its age; its predictions lose accuracy as they age.

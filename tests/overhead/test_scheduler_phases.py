@@ -7,14 +7,19 @@ without driving the whole scheduler loop. A composition test checks that
 the loop reproduces ``generate_timeline``.
 """
 
+import dataclasses
+
+import numpy as np
 import pytest
 from _scheduler_helpers import _initial_state, _make_ctx
+from astropy import units as u
 from astropy.time import Time, TimeDelta
 
 from fyst_trajectories import get_fyst_site
 from fyst_trajectories.exceptions import PointingError
 from fyst_trajectories.overhead import (
     CalibrationPolicy,
+    DeferralReason,
     ObservingPatch,
     OverheadModel,
 )
@@ -260,11 +265,24 @@ class TestSlewPhase:
         state = _initial_state(ctx)
         selection = PatchSelectionPhase().run(state, ctx)
         # Simulate a state where the telescope is already at the science
-        # pose: the slew targets the pinned patch elevation, not the
-        # field centre's instantaneous elevation.
+        # pose: the first sample of the pass after the retune due now, at
+        # the pinned patch elevation, not the field centre's instantaneous
+        # elevation.
         assert selection.best_az is not None
         assert selection.best_el is not None
-        at_patch = state.advanced(current_az=selection.best_az, current_el=ce_patch.elevation)
+        lo, hi = _compute_az_range(ce_patch, selection.best_az, selection.best_el, ctx.site)
+        start = phases._scan_start_pose(
+            ce_patch,
+            state.current_time,
+            elevation=ce_patch.elevation,
+            wrap_ref=0.5 * (lo + hi),
+            ce_plan=selection.ce_plan,
+            state=state,
+            ctx=ctx,
+        )
+        assert start is not None
+        assert start[1] == ce_patch.elevation
+        at_patch = state.advanced(current_az=start[0], current_el=start[1])
 
         result = SlewPhase().run(at_patch, ctx, selection=selection)
 
@@ -281,22 +299,24 @@ class TestSlewPhase:
 
         result = SlewPhase().run(state, ctx, selection=selection)
 
-        # Slew from state's (180, 50) to deep56's science pose (~115 az at
-        # the pinned el=50): a large ~65 deg az move.
+        # Slew from state's (180, 50) to where deep56's scan starts: the
+        # first sample of its pass after the retune due on arrival (~106 az
+        # at the pinned el=50, short of the field centre's ~115), a large
+        # ~74 deg az move.
         assert len(result.blocks) == 1
         block = result.blocks[0]
         assert str(block.block_type) == "slew"
         assert block.az_start == state.current_az
-        assert block.az_end == selection.best_az
+        assert block.az_end == pytest.approx(106.17, abs=0.01)
+        assert selection.best_az == pytest.approx(114.85, abs=0.01)
         assert block.elevation == ce_patch.elevation
         # The slew establishes the pose downstream blocks are stamped with.
-        assert result.state.current_az == selection.best_az
+        assert result.state.current_az == block.az_end
         assert result.state.current_el == ce_patch.elevation
-        # Pin the dominant az move against the ~65 deg expectation stated above.
-        assert abs(block.az_end - block.az_start) == pytest.approx(65.15, abs=0.01)
-        # Time advanced by the slew duration (~29 s for this move).
+        assert abs(block.az_end - block.az_start) == pytest.approx(73.83, abs=0.01)
+        # Time advanced by the slew duration.
         assert result.state.current_time.unix > state.current_time.unix
-        assert block.duration == pytest.approx(28.72, abs=0.01)
+        assert block.duration == pytest.approx(32.02, abs=0.01)
 
 
 class TestScienceScanPhase:
@@ -382,6 +402,7 @@ class TestScienceScanPhase:
             az_start_sci=100.0,
             az_end_sci=140.0,
             deadline=ctx.end_time,
+            first_retune=phases._due_retune_spec(state, ctx),
             t0_scan=None,
         )
         assert blocks == []
@@ -411,6 +432,7 @@ class TestScienceScanPhase:
             az_start_sci=100.0,
             az_end_sci=140.0,
             deadline=deadline,
+            first_retune=phases._due_retune_spec(state, ctx),
             t0_scan=ctx.start_time.isot,
         )
         assert refusal is None
@@ -487,7 +509,12 @@ class TestWholePeriodPong:
 
     @pytest.mark.parametrize("scan_type", ["pong", "constant_el"])
     def test_a_refused_subscan_books_neither_block(self, monkeypatch, scan_type):
-        """A subscan the planner refuses leaves no retune; the tick idles."""
+        """A subscan the planner refuses leaves no retune; the tick idles.
+
+        A pong's shortest subscan is built by the slew phase too, which then
+        idles the tick at the unmoved pose and books no slew; the science
+        phase, handed the selection, refuses the subscan the same way.
+        """
 
         def refuse(block, site):
             raise PointingError("refused for the test")
@@ -497,14 +524,23 @@ class TestWholePeriodPong:
             ctx = _make_ctx(patches=[_pong_patch()])
         else:
             ctx = _ce_ready_ctx(_deep56_ce_patch())
-        slew, result = self._visit(ctx)
+        state = _initial_state(ctx)
+        selection = PatchSelectionPhase().run(state, ctx)
+        slew = SlewPhase().run(state, ctx, selection=selection)
+        before = slew
+        if scan_type == "pong":
+            assert _kinds(slew.blocks) == ["idle"]
+            assert slew.blocks[0].metadata["reason"] == "unplannable"
+            assert slew.skip_to_next_iter is True
+            before = selection
+        result = ScienceScanPhase().run(before.state, ctx, selection=before)
 
         assert _kinds(result.blocks) == ["idle"]
         assert result.blocks[0].metadata["reason"] == "unplannable"
         # The boundary retune was never booked: the cadence tracker is untouched.
         assert result.state.cal_state.last_retune is None
-        assert result.state.scan_counter == slew.state.scan_counter
-        assert result.blocks[0].t_start.unix == pytest.approx(slew.state.current_time.unix)
+        assert result.state.scan_counter == before.state.scan_counter
+        assert result.blocks[0].t_start.unix == pytest.approx(before.state.current_time.unix)
 
     def test_a_refused_pong_retries_with_fewer_periods(self, monkeypatch):
         """A refusal at ``n`` periods emits the largest plannable count below it."""
@@ -523,7 +559,9 @@ class TestWholePeriodPong:
         ctx = _make_ctx(patches=[patch])
         _, result = self._visit(ctx)
 
-        assert asked == [4, 3, 2]
+        # The slew phase builds the shortest subscan, one period, before it
+        # books the slew; the science phase then asks for 4, 3 and 2.
+        assert asked == [1, 4, 3, 2]
         assert _kinds(result.blocks) == ["retune", "science"]
         science = result.blocks[1]
         assert science.metadata["scan_params"]["n_cycles"] == 2
@@ -551,6 +589,149 @@ class TestWholePeriodPong:
         result = PatchSelectionPhase().run(_initial_state(alone), alone)
         assert result.selection is None
         assert _kinds(result.blocks) == ["idle"]
+
+
+def _daisy_patch(name="Daisy01"):
+    """Build a daisy patch that is up from 02:00 UTC on the fixture night."""
+    return ObservingPatch(
+        name=name,
+        ra_center=180.0,
+        dec_center=-30.0,
+        width=4.0,
+        height=4.0,
+        scan_type="daisy",
+        velocity=0.5,
+    )
+
+
+class TestShorterRetry:
+    """A daisy or constant-elevation subscan the booking screen refuses is retried shorter.
+
+    The lengths tried are the subscan's budget, then half of it again and
+    again while that is longer than the shortest subscan, then the shortest
+    subscan, which is the one the slew phase screened before it booked the
+    slew; that last attempt is the slew phase's own build.
+    """
+
+    @staticmethod
+    def _record(monkeypatch, longest_run):
+        """Record every build's length; refuse any scan whose samples run past ``longest_run``."""
+        build = phases._generate_trajectory_for_block
+        screen = phases._execution_refusal
+        built = []
+
+        def record(block, site):
+            built.append(block.duration)
+            return build(block, site)
+
+        def refuse_long(trajectory, scan_type, scan_params, site, sun_safe):
+            if float(trajectory.times[-1]) > longest_run:
+                return DeferralReason.AXIS_DYNAMICS
+            return screen(trajectory, scan_type, scan_params, site, sun_safe)
+
+        monkeypatch.setattr(phases, "_generate_trajectory_for_block", record)
+        monkeypatch.setattr(phases, "_execution_refusal", refuse_long)
+        return built
+
+    @staticmethod
+    def _halvings(available, shortest):
+        lengths = [available]
+        while lengths[-1] / 2.0 > shortest:
+            lengths.append(lengths[-1] / 2.0)
+        return [*lengths, shortest]
+
+    def test_a_daisy_that_runs_is_built_once_after_the_probe(self, monkeypatch):
+        built = self._record(monkeypatch, longest_run=1e9)
+        ctx = _make_ctx(patches=[_daisy_patch()])
+        _, result = TestWholePeriodPong._visit(ctx)
+
+        assert _kinds(result.blocks) == ["retune", "science"]
+        shortest = ctx.overhead_model.min_scan_duration
+        assert built == pytest.approx([shortest, result.blocks[1].duration], abs=1e-6)
+
+    def test_a_refused_daisy_is_booked_at_the_first_length_that_runs(self, monkeypatch):
+        built = self._record(monkeypatch, longest_run=500.0)
+        ctx = _make_ctx(patches=[_daisy_patch()])
+        _, result = TestWholePeriodPong._visit(ctx)
+
+        assert _kinds(result.blocks) == ["retune", "science"]
+        science = result.blocks[1]
+        shortest = ctx.overhead_model.min_scan_duration
+        # The slew phase's probe first, then the subscan's whole budget.
+        assert built[0] == pytest.approx(shortest, abs=1e-6)
+        lengths = self._halvings(built[1], shortest)
+        assert len(lengths) > 3
+        booked = next(length for length in lengths if length <= 500.0)
+        assert science.duration == pytest.approx(booked, abs=1e-6)
+        assert built == pytest.approx([shortest, *lengths[: lengths.index(booked) + 1]], abs=1e-6)
+
+    def test_the_last_attempt_is_the_slew_phase_probe(self, monkeypatch):
+        """Refused down to the shortest, the subscan booked is the one the slew phase built."""
+        shortest = OverheadModel().min_scan_duration
+        built = self._record(monkeypatch, longest_run=shortest)
+        ctx = _make_ctx(patches=[_daisy_patch()])
+        slew, result = TestWholePeriodPong._visit(ctx)
+
+        assert _kinds(slew.blocks) == ["slew"]
+        assert _kinds(result.blocks) == ["retune", "science"]
+        assert result.blocks[1].duration == pytest.approx(shortest, abs=1e-6)
+        # Every length but the shortest was built and refused; the shortest
+        # came from the slew phase's build, so it was not built again.
+        lengths = self._halvings(built[1], shortest)
+        assert built == pytest.approx([shortest, *lengths[:-1]], abs=1e-6)
+
+    def test_a_refused_constant_elevation_subscan_is_booked_shorter(self, monkeypatch):
+        built = self._record(monkeypatch, longest_run=700.0)
+        ctx = _ce_ready_ctx(_deep56_ce_patch())
+        slew, result = TestWholePeriodPong._visit(ctx)
+
+        assert _kinds(slew.blocks) == ["slew"]
+        science = [b for b in result.blocks if str(b.block_type) == "science"]
+        assert science, _kinds(result.blocks)
+        assert science[0].duration <= 700.0 + 0.1
+        assert science[0].duration >= ctx.overhead_model.min_scan_duration
+        assert built
+
+    def test_the_constant_elevation_probe_is_the_last_attempt(self, monkeypatch):
+        """The slew phase screens the shortest subscan from the pass's first sample.
+
+        Every longer subscan is refused, so the science phase books the
+        shortest one, from the pass's first sample after the wait for the
+        pass; the samples the slew phase screened are that subscan's. A 30 s
+        retune leaves the visit waiting for its pass.
+        """
+        model = dataclasses.replace(OverheadModel(), retune_duration=30.0)
+        shortest = model.min_scan_duration
+        screen = phases._execution_refusal
+        screened = []
+
+        def refuse_long(trajectory, scan_type, scan_params, site, sun_safe):
+            if scan_type == "constant_el":
+                screened.append(trajectory)
+                if float(trajectory.times[-1] - trajectory.times[0]) > shortest + 1.0:
+                    return DeferralReason.AXIS_DYNAMICS
+            return screen(trajectory, scan_type, scan_params, site, sun_safe)
+
+        monkeypatch.setattr(phases, "_execution_refusal", refuse_long)
+        ctx = _ce_ready_ctx(_deep56_ce_patch(), overhead_model=model)
+        slew, result = TestWholePeriodPong._visit(ctx)
+
+        assert _kinds(slew.blocks) == ["slew"]
+        # The case's premise: the pass opens after the retune, so the visit waits.
+        assert [b.metadata.get("reason") for b in result.blocks if str(b.block_type) == "idle"] == [
+            "waiting_for_pass"
+        ]
+        science = [b for b in result.blocks if str(b.block_type) == "science"]
+        assert science[0].duration == pytest.approx(shortest, abs=0.1)
+        # The shortest slices screened: the slew phase's, then the first
+        # subscan's last attempt, then those of the subscans after it.
+        heads = [tr for tr in screened if float(tr.times[-1] - tr.times[0]) <= shortest + 1.0]
+        probe, booked = heads[0], heads[1]
+        first = probe.start_time + probe.times[0] * u.s
+        assert first == booked.start_time + booked.times[0] * u.s
+        assert abs((first - science[0].t_start).sec) <= 1e-3
+        for name in ("times", "az", "el"):
+            assert np.array_equal(getattr(probe, name), getattr(booked, name)), name
 
 
 class TestSchedulerComposition:
@@ -734,8 +915,16 @@ class TestCoherentAzimuthFrames:
         # of [-180, 360], so a pose at 355 still gets 5.
         assert _normalize_az(5.0, site, ref=355.0) == pytest.approx(5.0)
 
-    def test_compute_az_range_explicit_window_contiguous(self):
-        """A wrap-crossing az_min/az_max window stays one contiguous range."""
+    def test_a_window_across_north_is_swept_as_one_range(self):
+        """An azimuth window written across azimuth 0 is swept as one contiguous range.
+
+        The window is written unwrapped, (-10, 15); the range the slew's
+        wrap must hold is that window with the turnaround overshoot on each
+        side, one interval, not two pieces either side of north.
+        """
+        from fyst_trajectories.coordinates import Coordinates
+        from fyst_trajectories.overhead.scheduler.helpers import _ce_swept_az_envelope
+
         site = get_fyst_site()
         patch = ObservingPatch(
             name="win",
@@ -746,11 +935,13 @@ class TestCoherentAzimuthFrames:
             scan_type="constant_el",
             velocity=0.5,
             elevation=45.0,
-            scan_params={"az_min": 350.0, "az_max": 15.0},
+            scan_params={"az_min": -10.0, "az_max": 15.0, "rising": True},
         )
-        lo, hi = _compute_az_range(patch, 316.8, 45.0, site)
-        assert lo == pytest.approx(-10.0)
-        assert hi == pytest.approx(15.0)
+        lo, hi = _ce_swept_az_envelope(
+            patch, 45.0, True, Coordinates(site), Time("2026-06-15T02:00:00", scale="utc")
+        )
+        assert -10.5 < lo < -10.0
+        assert 15.0 < hi < 15.5
 
     def test_compute_az_range_width_branch_shift(self):
         """A range poking past az_max shifts both endpoints together."""
@@ -770,49 +961,55 @@ class TestCoherentAzimuthFrames:
         assert lo <= hi
 
     def test_slew_follows_scan_branch(self):
-        """An explicit wrap-crossing window pulls the slew onto its branch.
+        """The slew onto a window visit ends on the turn the window scan runs on.
 
-        Targeting the field centre (316.8) while the scan sits at
-        (-10, 15) would be a ~327 deg cable-wrap unwind modelled as zero
-        time, invisible to validate() because the pose tracker follows
-        the recorded blocks.
+        The window is written a whole turn below the azimuth limit,
+        (-252, -242); the planner sweeps it a turn up, on (108, 118), and the
+        slew ends at that scan's first sample, on the same turn: targeting the
+        written window, or the field centre's turn, would leave a cable-wrap
+        unwind the timeline never models.
         """
-        ce = ObservingPatch(
-            name="win",
-            ra_center=150.0,
-            dec_center=2.2,
-            width=4.0,
-            height=4.0,
-            scan_type="constant_el",
+        ce = dataclasses.replace(
+            _deep56_ce_patch("deep56_window"),
             velocity=0.5,
-            elevation=45.0,
-            scan_params={"az_min": 350.0, "az_max": 15.0},
+            scan_params={"az_min": -252.0, "az_max": -242.0},
         )
-        ctx = _make_ctx(patches=[ce])
+        ctx = _ce_ready_ctx(ce)
         state = _initial_state(ctx)
-        sel = PhaseResult(state=state, blocks=[], selection=ce, best_az=316.8, best_el=44.0)
+        sel = PatchSelectionPhase().run(state, ctx)
+        assert sel.selection is ce
 
         result = SlewPhase().run(state, ctx, selection=sel)
 
         block = result.blocks[0]
-        # The slew targets the scan range's midpoint on its branch, and
-        # the pose follows it.
-        assert block.az_end == pytest.approx(2.5)
-        assert result.state.current_az == pytest.approx(2.5)
-        lo, hi = _compute_az_range(ce, sel.best_az, sel.best_el, ctx.site)
-        assert abs(0.5 * (lo + hi) - result.state.current_az) <= 180.0
+        assert block.az_end == pytest.approx(108.0, abs=1e-9)
+        assert result.state.current_az == block.az_end
 
     def test_slew_wrap_check_holds_the_swept_corridor(self, monkeypatch):
         """The wrap must hold the corridor the pass sweeps, not the window.
 
         The science window is an estimate of the field's width at the tick
-        azimuth. A drifting constant-elevation pass crosses a corridor tens
-        of degrees wider, so a wrap admitted against the narrow range can
-        be one the scan does not fit inside.
+        azimuth, ``width / cos(el)`` about the field centre: for this field,
+        2 deg wide and 30 deg tall, rising through el 50, it is
+        (111.14, 114.25). The pass sweeps the range where the field's border
+        meets the scan elevation, which follows the field's declination
+        extent, plus its turnarounds: (88.50, 137.31), past the window by
+        more than 20 deg on each side. The span the slew's wrap check is
+        handed is that envelope, so the wrap holds azimuths the scan reaches
+        that a check against the window would never see.
         """
         from fyst_trajectories.overhead.scheduler import phases
 
-        ce = _deep56_ce_patch()
+        ce = ObservingPatch(
+            name="tall",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=2.0,
+            height=30.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=50.0,
+        )
         ctx = _ce_ready_ctx(ce)
         state = _initial_state(ctx)
         az, el = ctx.coords.radec_to_altaz(ce.ra_center, ce.dec_center, state.current_time)
@@ -835,14 +1032,65 @@ class TestCoherentAzimuthFrames:
 
         SlewPhase().run(state, ctx, selection=sel)
 
-        (span,) = spans
+        # The slew is planned again to each target its arrival moves the
+        # scan's first sample to; every target lies inside the corridor,
+        # so every plan is handed the same span.
+        span = spans[0]
+        assert len(spans) > 1
+        assert all(s == span for s in spans)
         win_lo, win_hi = _compute_az_range(ce, sel.best_az, sel.best_el, ctx.site)
-        assert span[0] == pytest.approx(102.33, abs=0.01)
-        assert span[1] == pytest.approx(215.62, abs=0.01)
-        assert span[1] - span[0] > (win_hi - win_lo) + 40.0
+        assert span == pytest.approx((88.50, 137.31), abs=0.01)
+        assert (win_lo, win_hi) == pytest.approx((111.14, 114.25), abs=0.01)
+        assert span[0] < win_lo - 20.0 and win_hi + 20.0 < span[1]
+
+    def test_the_wrap_check_holds_the_window_a_visit_sweeps(self, monkeypatch):
+        """With an az_min/az_max window the wrap holds that window, as swept.
+
+        A visit to a patch with an azimuth window sweeps the window, not the
+        range where the field's border meets the elevation (Deep56 rising
+        through el 50: about (104.3, 121.2) with the turnarounds). Every plan
+        of the slew is handed the window (110, 116) with the turnaround
+        overshoot on each side, about 0.5 deg at 1 deg/s.
+        """
+        from fyst_trajectories.overhead.scheduler import phases
+
+        ce = ObservingPatch(
+            name="deep56_window",
+            ra_center=24.0,
+            dec_center=-32.0,
+            width=40.0,
+            height=10.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=50.0,
+            scan_params={"az_min": 110.0, "az_max": 116.0},
+        )
+        ctx = _ce_ready_ctx(ce)
+        state = _initial_state(ctx)
+        sel = PatchSelectionPhase().run(state, ctx)
+        assert sel.selection is ce
+
+        spans = []
+        original = phases.plan_transition
+
+        def recording(*args, **kwargs):
+            spans.append(kwargs["goal_az_span"])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(phases, "plan_transition", recording)
+
+        SlewPhase().run(state, ctx, selection=sel)
+
+        assert spans
+        for lo, hi in spans:
+            assert 109.0 < lo < 110.0 and 116.0 < hi < 117.0
 
     def test_slew_keeps_field_centre_on_same_branch(self):
-        """Without a branch split the slew target is the field centre, exactly."""
+        """Without a branch split the starting target is the field centre, exactly.
+
+        At 02:00 no Deep56 pass is plannable (the pass opens near 08:02),
+        so there is no scan start to aim for and the slew keeps that target.
+        """
         ce = _deep56_ce_patch()
         ctx = _make_ctx(patches=[ce])
         state = _initial_state(ctx)
@@ -878,6 +1126,7 @@ class TestRetuneElevation:
             az_start_sci=100.0,
             az_end_sci=140.0,
             deadline=ctx.start_time + TimeDelta(window, format="sec"),
+            first_retune=phases._due_retune_spec(state, ctx),
             t0_scan=ctx.start_time.isot,
         )
         retunes = [b for b in blocks if str(b.scan_type) == "retune"]

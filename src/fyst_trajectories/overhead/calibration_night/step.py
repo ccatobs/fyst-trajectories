@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
@@ -22,11 +23,12 @@ from ...exceptions import DwellExceedsCrossingError, PointingError, PointingWarn
 from ...planning import ScanBlock, plan_source_ces_passes
 from ...planning.footprints import inflate_footprint, resolve_footprint
 from ...trajectory_utils import get_absolute_times
+from .._execution_screen import _execution_refusal
 from .._moves import EscapeMove, plan_escape_move
 from ..models import CalibrationType, TimelineBlock
 from ..schemas import validate_scan_params
-from ..transitions import DeferralReason, Transition, plan_transition
-from ..utils import _canonical_module_name, _normalize_az, _search_start_record
+from ..transitions import DeferralReason, Transition, _pose_holds, plan_transition
+from ..utils import _dispatch_footprint, _is_on_axis_bay, _normalize_az, _search_start_record
 from .helpers import (
     json_native,
     module_crossings,
@@ -433,12 +435,17 @@ def plan_visit(
     7. The slew to the first pass is planned in a wrap that holds the pass
        start clear for the length of that pass; the visit is re-anchored
        once if the slew plus the reserved time overruns the pass start.
-    8. The visit is gated on the Sun, failing closed: the retune pose, the
-       whole planned trajectory of every pass and, between passes, both
-       poses held through the wait and the step itself.
-    9. The blocks are assembled: the slew, the detector operations at the
-       target pose, then one calibration block per pass carrying a relative
-       dispatch dict and the geometry records.
+    8. The visit is gated on the Sun, failing closed: the retune pose,
+       held from the slew's arrival to the first pass, the whole planned
+       trajectory of every pass and, between passes, both poses held
+       through the wait and the step itself.
+    9. Every pass is put to the checks PCS makes before it runs a source
+       scan: each sample outside the site's exclusion radius, the axes
+       inside the Go TCS speed and acceleration limits, and no two
+       samples closer than the Go TCS ``/path`` minimum interval.
+    10. The blocks are assembled: the slew, the detector operations at the
+        target pose, then one calibration block per pass carrying a
+        relative dispatch dict and the geometry records.
 
     Parameters
     ----------
@@ -456,7 +463,9 @@ def plan_visit(
     -------
     VisitPlan
         Feasible with blocks and a transition, or infeasible with a
-        reason: ``UNPLANNABLE`` when the kernel refuses the anchor,
+        reason: ``UNPLANNABLE`` when the kernel refuses the anchor or a
+        pass has two samples closer than the Go TCS ``/path`` minimum
+        interval,
         ``BELOW_BAND`` or ``ABOVE_BAND`` when the solved boresight
         elevation leaves the band, ``CROSSING_TOO_SLOW`` when the solved
         crossing exceeds the cap, ``WINDOW_CLOSED`` when no whole pass
@@ -464,7 +473,9 @@ def plan_visit(
         the pass, ``SUN_POINT`` when the retune pose, a pass or a pose
         held through the wait before a later pass is inside the Sun zone,
         ``SUN_PATH`` when the step between two passes crosses it,
-        ``NO_ESCAPE`` when the zone holds the telescope where it sits, or
+        ``SUN_SCAN`` when a pass sample is inside the site's exclusion
+        radius, ``AXIS_DYNAMICS`` when a pass exceeds a Go TCS speed or
+        acceleration limit, ``NO_ESCAPE`` when the zone holds the telescope where it sits, or
         the transition's own cause.
 
     Raises
@@ -480,7 +491,7 @@ def plan_visit(
     policy = ctx.policy
     warns: list[str] = []
 
-    if _canonical_module_name(policy.footprint) != "c":
+    if not _is_on_axis_bay(policy.footprint):
         warns.append(
             f"footprint {policy.footprint!r} is planned for simulation; the execution "
             "layer accepts centred footprints only"
@@ -527,6 +538,8 @@ def plan_visit(
 
     wrap_shift = transition.az_to - float(passes[0].trajectory.az[0])
     refusal = _sun_gate(ctx, transition, passes, el_bore, wrap_shift)
+    if refusal is None:
+        refusal = _execution_gate(ctx, passes, requested)
     if refusal is not None:
         return _infeasible(body, refusal, warns)
 
@@ -630,8 +643,8 @@ def _solve_visit(
             allow_detour=policy.allow_detour,
             # The pass has to stay clear for its whole length, so the wrap
             # choice holds the start pose that long. It is the cheap gate,
-            # three instants at one azimuth; the full trajectory sweep in
-            # the Sun gate is what actually certifies the pass.
+            # one azimuth every 30 s; the full trajectory sweep in the Sun
+            # gate is what actually certifies the pass.
             hold=float(passes[0].duration),
         )
         if not transition.safe:
@@ -719,11 +732,15 @@ def _sun_gate(
 ) -> DeferralReason | None:
     """Return why the visit is not clear of the Sun, or ``None`` when it is.
 
-    Checks the retune pose, then every pass's whole trajectory in the wrap,
-    then the wait and the step between each pair of consecutive passes.
-    Fails closed: an empty pass trajectory is not clear.
+    Checks the pose the slew ends at, which the detector operations and the
+    wait for the first pass hold from the slew's arrival to that pass's
+    start (every 30 s and at the end), then every pass's whole trajectory
+    in the wrap, then the wait and the step between each pair of
+    consecutive passes. Fails closed: an empty pass trajectory is not
+    clear.
     """
-    if not ctx.sun_safe(transition.az_to, el_bore, transition.arrival):
+    held = max((passes[0].trajectory.start_time - transition.arrival).to_value("s"), 0.0)
+    if not _pose_holds(ctx.sun_safe, transition.az_to, el_bore, transition.arrival, held):
         return DeferralReason.SUN_POINT
     for p in passes:
         times = get_absolute_times(p.trajectory)
@@ -731,8 +748,30 @@ def _sun_gate(
         el = np.asarray(p.trajectory.el)
         if not sweep_sun_safe(ctx.sun_safe, az, el, times):
             return DeferralReason.SUN_POINT
-    for before, after in zip(passes, passes[1:]):
+    for before, after in pairwise(passes):
         refusal = _between_passes_gate(ctx, before, after, wrap_shift)
+        if refusal is not None:
+            return refusal
+    return None
+
+
+def _execution_gate(
+    ctx: NightContext, passes: list[ScanBlock], requested: dict[str, float]
+) -> DeferralReason | None:
+    """Return the booking screen's refusal of the first pass it refuses, or ``None``.
+
+    Each pass is put to the checks PCS makes before it POSTs a source scan
+    (:func:`~fyst_trajectories.overhead._execution_screen._execution_refusal`):
+    every sample outside the site's exclusion radius (``SUN_SCAN``), and
+    each axis's speed and acceleration, with the turnaround judged on the
+    requested ``az_accel``, inside the Go TCS limits (``AXIS_DYNAMICS``),
+    and no two samples closer than the Go TCS ``/path`` minimum interval
+    (``UNPLANNABLE``). The night's Sun model is not asked again here; :func:`_sun_gate` has
+    swept every pass against it.
+    """
+    params = {"az_accel": float(requested["az_accel"])}
+    for p in passes:
+        refusal = _execution_refusal(p.trajectory, "source_ces", params, ctx.site, None)
         if refusal is not None:
             return refusal
     return None
@@ -881,7 +920,7 @@ def _assemble_blocks(
         )
         t = blocks[-1].t_stop
         pose_az = blocks[-1].end_pose_az
-        pose_el = blocks[-1].elevation
+        pose_el = blocks[-1].end_pose_el
         scan_index += 1
     return blocks
 
@@ -915,9 +954,8 @@ def _pass_block(
 
     scan_params: dict[str, Any] = {
         "body": body,
-        # The execution layer compares the module name as a string, so the
-        # dict names the module canonically ("c", not "IM0" or "Center").
-        "footprint": _canonical_module_name(policy.footprint),
+        # "c" for the on-axis bay in any spelling, IM<n> for a ring bay.
+        "footprint": _dispatch_footprint(policy.footprint),
         "el_bore": el_bore,
         "mode": str(cp["mode"]),
         # The dict repeats the request, and the planner requests no boresight
@@ -1023,7 +1061,7 @@ def commit_visit(state: NightState, plan: VisitPlan, *, retry_after: float = 0.0
     return state.advanced(
         t=last.t_stop,
         az=float(last.end_pose_az),
-        el=float(last.elevation),
+        el=float(last.end_pose_el),
         blocks=state.blocks + plan.blocks,
         cal_state=_fold_calibrations(state.cal_state, plan.blocks),
         deferred=deferred,
@@ -1053,13 +1091,15 @@ def advance_idle(
     -------
     NightState
         The new state, unchanged when no time remains. A pose the Sun
-        zone has overtaken is moved out first
+        zone reaches at any instant of the idle (checked every 30 s and at
+        its end) is moved out first
         (:func:`~fyst_trajectories.overhead.plan_escape`, a slew named
         ``sun_escape``) and the idle, shortened by the move, parks at the
-        escape pose. When no escape exists, or too little of the night is
-        left to make the one that does, the telescope stays inside the
-        zone and the idle is labelled ``NO_ESCAPE`` instead of
-        ``reason``, so the record says so.
+        escape pose, which stays outside the zone for the idle's length
+        after the escape's arrival. When no escape exists, or too little
+        of the night is left to make the one that does, the telescope
+        stays where it is and the idle is labelled ``NO_ESCAPE`` instead
+        of ``reason``, so the record says so.
     """
     remaining = (ctx.end_time - state.t).to_value("s")
     seconds = min(float(seconds), remaining)
@@ -1077,6 +1117,7 @@ def advance_idle(
         remaining=remaining,
         scan_index=state.scan_counter,
         cache=ctx.escape_cache,
+        hold=seconds,
     )
     if not escape.clear:
         if escape.label is not None:

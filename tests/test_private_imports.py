@@ -41,10 +41,45 @@ _GRID = "the plot draws the target track on the observability grid it reports on
 #: Every private name one unit imports from another, and why it may, as
 #: ``(importer, name)`` relative to the package.
 _ALLOWED: dict[tuple[str, str], str] = {
+    ("overhead._execution_screen", "planning._sun_safety._SUN_SAFETY_TRAJECTORY_MAX_PROBES"): (
+        "a booked block is put to an injected Sun model on the planners' own probe budget"
+    ),
+    ("overhead._execution_screen", "planning._sun_safety._trajectory_sun_separation"): (
+        "a booked block is screened at every sample with the planners' own Sun separation"
+    ),
+    ("overhead.constraints", "offsets._solve_boresight"): (
+        "planning = execution: the simulator judges the boresight the planners solve for a detector"
+    ),
+    ("overhead.models", "planning._ce_geometry._lsa_window_endpoints"): (
+        "a patch refuses the sidereal window the planner would refuse, by the planner's own rule"
+    ),
     ("overhead.scheduler.helpers", "patterns.daisy._daisy_reach"): _PATTERN_REACH,
     ("overhead.scheduler.helpers", "patterns.pong._pong_peak_offsets"): _PATTERN_REACH,
     ("overhead.scheduler.helpers", "planning._ce_geometry._ce_field_az_range"): _PLANNER_SOLVE,
     ("overhead.scheduler.helpers", "planning._ce_geometry._compute_ce_duration"): _PLANNER_SOLVE,
+    ("overhead.scheduler.helpers", "planning._ce_geometry._compute_ce_duration_from_lsa"): (
+        _PLANNER_SOLVE
+    ),
+    ("overhead.models", "planning._ce_geometry._window_side"): (
+        "a patch's azimuth window watches the crossing on its side of the meridian, by the "
+        "planner's own rule"
+    ),
+    ("overhead.scheduler.helpers", "planning._ce_geometry._DEFAULT_MAX_SEARCH_HOURS"): (
+        _PLANNER_SOLVE
+    ),
+    ("overhead.scheduler.helpers", "planning._ce_geometry._field_ra_edges"): (
+        "a patch whose field has no RA edges to time a pass by is refused by the planner's rule"
+    ),
+    ("overhead.scheduler.helpers", "planning._ce_geometry._quantize_ce_duration"): (
+        "a window subscan holds the whole legs the planner's quantiser counts"
+    ),
+    ("overhead.scheduler.helpers", "planning._ce_geometry._window_side"): (
+        "a patch's azimuth window watches the crossing on its side of the meridian, by the "
+        "planner's own rule"
+    ),
+    ("overhead.scheduler.helpers", "planning._ce_geometry._lsa_window_rising_side"): (
+        _PLANNER_SOLVE
+    ),
     ("overhead.simulation", "planning._sun_safety._check_trajectory_sun_safety"): (
         "a rebuilt constant-elevation slice is screened with the planners' own Sun check"
     ),

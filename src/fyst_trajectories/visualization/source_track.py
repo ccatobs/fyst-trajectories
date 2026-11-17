@@ -47,10 +47,9 @@ def plot_source_track(
     of the pass. The start of the pass is marked with a circle and the end
     with a cross.
 
-    The module positions come from the offsets registry, so the layout
-    reflects whatever module-to-position assignment the registry holds; the
-    title states the Nasmyth sign and the boresight rotation the track was
-    projected with.
+    The module circles are drawn at the offsets of ``modules`` (by default
+    the Prime-Cam bays); the title states the Nasmyth sign and the
+    boresight rotation the track was projected with.
 
     Parameters
     ----------
@@ -62,8 +61,8 @@ def plot_source_track(
         :func:`~fyst_trajectories.site.get_fyst_site`.
     modules : mapping of str to InstrumentOffset, optional
         Modules to draw. Default
-        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (alias keys
-        pointing at the same offset are drawn once).
+        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (keys that
+        name one offset are drawn once).
     fov_radius_deg : float, optional
         Per-module field-of-view radius in degrees. Default
         :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG`.
@@ -148,8 +147,7 @@ def plot_source_track(
         title = (
             f"{metadata.target_name} source-CES pass, {params['mode']} at "
             f"el_bore = {el_bore:.1f} deg\n"
-            f"Nasmyth sign {site.nasmyth_sign:+d}, boresight rotation {rot:+.1f} deg, "
-            "registry layout"
+            f"Nasmyth sign {site.nasmyth_sign:+d}, boresight rotation {rot:+.1f} deg"
         )
     ax.set_title(title, fontsize=10.5)
 

@@ -5,11 +5,13 @@ its efficiency ratio), per-pattern efficiency against real CE, pong and daisy
 planner outputs, and turnaround-overlap dead-time reduction.
 """
 
+import numpy as np
 import pytest
 from _retune_stubs import _group_retune_events
 from astropy.time import Time
 
 from fyst_trajectories import get_fyst_site
+from fyst_trajectories.patterns.turnarounds import turnaround_duration_sec
 from fyst_trajectories.planning import (
     FieldRegion,
     plan_constant_el_scan,
@@ -39,6 +41,33 @@ def ce_trajectory():
         timestep=0.1,
     )
     return block.trajectory
+
+
+def _turnaround_fraction(trajectory) -> float:
+    """Return the share of a trajectory's samples flagged as turnaround."""
+    return float((trajectory.scan_flag == SCAN_FLAG_TURNAROUND).mean())
+
+
+def _expected_turnaround_fraction(trajectory, velocity: float, az_accel: float) -> float:
+    """Return the share of a constant-elevation pass its turnarounds take, from its legs.
+
+    The legs reverse at the sweep's ends, so a pass turns at every sign change
+    of its azimuth velocity, each turnaround lasting ``2 v / a``.
+    """
+    signs = np.sign(trajectory.az_vel[np.abs(trajectory.az_vel) > 0.5 * velocity])
+    n_turnarounds = int(np.count_nonzero(np.diff(signs)))
+    duration = float(trajectory.times[-1] - trajectory.times[0])
+    return n_turnarounds * turnaround_duration_sec(velocity, az_accel) / duration
+
+
+# Retunes start at a fixed cadence whatever the legs do, so a 5 s window in every
+# 35 s covers science and turnaround samples in proportion, and only the science
+# ones are overwritten: the science share is (30 / 35) times the share the
+# turnarounds leave. The 0.002 allowed covers retunes landing on turnarounds
+# unevenly (measured within 5e-4); the turnaround share is held to its geometry
+# to 1e-3 (measured within 2e-5).
+_RETUNE_SHARE_TOLERANCE = 0.002
+_TURNAROUND_SHARE_TOLERANCE = 1e-3
 
 
 class TestScienceMaskReduction:
@@ -72,14 +101,17 @@ class TestScienceMaskReduction:
             retune_duration=5.0,
         )
 
-        total_samples = len(result.times)
-        science_samples = result.science_mask.sum()
-        ratio = science_samples / total_samples
+        ratio = result.science_mask.sum() / len(result.times)
 
-        # CE scans already have ~4.6% turnaround overhead on top of the ~14%
-        # retune overhead, so the science fraction sits between 75% and 30/35.
-        assert 0.75 <= ratio < 30.0 / 35.0, (
-            f"Science ratio {ratio:.3f} outside expected range [0.75, 30/35)"
+        # The turnarounds take the share the pass's legs imply, so
+        # dropping their flags fails this, not only the ratio below.
+        turnaround = _turnaround_fraction(ce_trajectory)
+        assert turnaround == pytest.approx(
+            _expected_turnaround_fraction(ce_trajectory, 1.0, 1.0),
+            abs=_TURNAROUND_SHARE_TOLERANCE,
+        )
+        assert ratio == pytest.approx(
+            (30.0 / 35.0) * (1.0 - turnaround), abs=_RETUNE_SHARE_TOLERANCE
         )
 
     def test_retune_and_turnaround_exclusive(self, ce_trajectory):
@@ -130,7 +162,7 @@ class TestPerPatternEfficiency:
     """
 
     def test_ce_scan_efficiency(self, site, start_time):
-        """CE scan with 30s/5s retune sits just below the 30/35 steady state (~84%)."""
+        """CE with a 30 s / 5 s retune: science is 30/35 of the share the turnarounds leave."""
         field = FieldRegion(ra_center=24.0, dec_center=-32.0, width=40.0, height=10.0)
         block = plan_constant_el_scan(
             field=field,
@@ -145,11 +177,15 @@ class TestPerPatternEfficiency:
         result = inject_retune(traj, retune_interval=30.0, retune_duration=5.0)
 
         science_frac = result.science_mask.sum() / len(result.times)
-        # The planned CE carries turnaround flags (~1.7% of samples here) that
-        # inject_retune never overwrites, so its science fraction sits below
-        # the 30/35 steady state of a flag-free trajectory.
-        assert 0.78 <= science_frac < 30.0 / 35.0, (
-            f"CE science fraction {science_frac:.3f} outside expected range [0.78, 30/35)"
+        # The planned CE carries turnaround flags that inject_retune never
+        # overwrites, so its science fraction is the 30/35 steady state of a
+        # flag-free trajectory times the share the turnarounds leave.
+        turnaround = _turnaround_fraction(traj)
+        assert turnaround == pytest.approx(
+            _expected_turnaround_fraction(traj, 1.0, 1.0), abs=_TURNAROUND_SHARE_TOLERANCE
+        )
+        assert science_frac == pytest.approx(
+            (30.0 / 35.0) * (1.0 - turnaround), abs=_RETUNE_SHARE_TOLERANCE
         )
 
         # Retune flags should exist

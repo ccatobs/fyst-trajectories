@@ -9,13 +9,192 @@ history.
 While the version is 0.x, breaking changes arrive only in minor releases,
 and a patch release never changes behaviour or the public API.
 
-Unreleased
-----------
+v0.14.0 (2026-11-17)
+--------------------
 
-Planned: the module labels ``c`` / ``i1`` .. ``i6`` will be renamed to
-the instrument team's ``IM0`` .. ``IM6`` in the first minor release after
-the correspondence to the as-built focal plane is confirmed; the two
-schemes do not correspond index-for-index (see :doc:`instrument_offsets`).
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+- **The Prime-Cam ring is the bays IM1 to IM6, and the labels i1 to i6
+  are removed.** The module positions are the instrument team's bays,
+  ``IM0`` on the optical axis and ``IM1`` .. ``IM6`` on the ring, which has
+  moved (see the fix below), so no ``i`` label names a bay or is kept as
+  an alias: everything that takes a module name refuses ``i1`` .. ``i6``
+  with a message that says so. ``PRIMECAM_MODULES`` and
+  ``primecam_geometry_dict()`` are keyed ``IM0`` .. ``IM6``, the constants
+  ``PRIMECAM_IM0`` .. ``PRIMECAM_IM6`` replace ``PRIMECAM_CENTER`` and
+  ``PRIMECAM_I1`` .. ``PRIMECAM_I6``, and the offsets are named
+  ``PrimeCam-IM0`` .. ``PrimeCam-IM6``. The name lookups still accept
+  ``c`` and ``center`` for ``IM0``, and a pass's dispatch dict still names
+  the on-axis bay ``c``. A timeline whose planet-calibration footprint is
+  an ``i`` label no longer reads, and a calibration night recorded for one
+  cannot be reported or resumed.
+
+  **Migration:** choose the bay by where it sits (the table on
+  :doc:`instrument_offsets`), not by its number: ``i1`` is not ``IM1``,
+  and no bay sits where an ``i`` label did. Look a module up with
+  ``get_primecam_offset(name)``, which ignores case, rather than indexing
+  ``PRIMECAM_MODULES`` with a lower-cased name.
+- **The window planner is now a form of plan_constant_el_scan, and
+  plan_constant_el_window_scan is removed.** ``plan_constant_el_scan``
+  takes either a ``field``, as before, or ``az_window`` with ``duration``,
+  which it sweeps from a literal ``start_time`` as the removed planner did.
+  The field form's ``rising``, ``angle``, ``lsa_window``,
+  ``max_search_hours`` and ``step_seconds`` default to ``None``, with the
+  effect of their former defaults; any of them given beside ``az_window``
+  is refused, as ``duration`` is without it, with a ``ValueError``. No
+  result changes, except in the last digit, or by one sample, for a window
+  the planner moves up a whole turn.
+
+  **Migration:** call ``plan_constant_el_scan`` with the same keywords you
+  gave ``plan_constant_el_window_scan``.
+- **az_min and az_max on a constant-elevation patch are the azimuth window
+  the visit sweeps.** ``generate_timeline`` scans such a patch with the
+  window form of ``plan_constant_el_scan``: the subscans of a visit up to
+  its next retune are one window scan in whole legs, and the visit is timed
+  by the field's pass on the window's side of the meridian (see
+  :ref:`overhead-timeline-window-patch`). The previous release used the
+  pair only to choose the cable-wrap turn of the slew and swept the field's
+  own range: Deep56 at 50° with the window (242°, 252°) on 2026-06-15 from
+  13:20 to 15:50 UTC swept 145.1° to 257.2° and booked 6393.7 s of science;
+  it now sweeps 241.8° to 252.2° and books 6550.2 s. ``ObservingPatch``
+  refuses one key without the other, ``az_min`` not below ``az_max``, the
+  pair beside ``lsa_window``, a window that reaches the meridian without
+  ``rising``, and a ``rising`` that names the other side.
+
+  **Migration:** give the window the visit is to sweep, written unwrapped
+  across 0°/360° as (355, 370); drop the pair to sweep the field's own
+  range.
+- **A pong or daisy patch takes no elevation.** ``ObservingPatch`` refuses
+  an ``elevation`` on a pong or daisy patch with a ``ValueError``. Such a
+  pattern is scanned where its field is on the sky, and the previous
+  release judged, slewed to and recorded the visit at the given elevation,
+  a pose the scan never took. A constant-elevation patch still needs one.
+
+  **Migration:** leave ``elevation`` as ``None`` on a pong or daisy patch.
+- **generate_timeline refuses a constant-elevation patch that can never
+  have a pass, and a patch sampled faster than the Go TCS accepts.** Before
+  it schedules anything, ``generate_timeline`` raises one ``ValueError``
+  naming every constant-elevation patch with no pass over a sidereal day
+  from the night's start, on the side the patch asks for (either side when
+  it names none, inside its window for an ``lsa_window``): a field
+  spanning a whole turn of RA, one reaching a celestial pole, a scan
+  elevation the field never crosses, or a pass longer than the planner's
+  12 h search. It also refuses by name a patch whose
+  ``scan_params["timestep"]`` is under 0.05 s, the Go TCS ``/path``
+  minimum sample interval (``GO_TCS_MIN_SAMPLE_INTERVAL_SEC``). The
+  previous release returned a night that idled through a patch without a
+  pass, and booked a patch sampled too fast, every scan of which
+  ``to_path_format`` refused.
+
+  **Migration:** drop the patch the message names, or give it an elevation
+  its field crosses; sample at 0.05 s or more (the planners' default is
+  0.1 s), and resample a rebuilt trajectory where a finer grid is needed.
+
+Additions
+~~~~~~~~~
+
+- **A timeline block for a constant-elevation window scan.**
+  ``TimelineBlock.from_window_scan`` writes the scan that the window form
+  of ``plan_constant_el_scan`` returned as a science block, with or
+  without an RA/Dec field, and ``schedule_to_trajectories`` rebuilds it
+  with that form, from memory and after an ECSV round trip. The writer
+  refuses a scan it would not reproduce sample for sample; with
+  ``span=(t_start, t_stop)`` it writes one stretch of the scan, so one scan
+  can be booked as consecutive blocks (see
+  :ref:`overhead-timeline-window-scan`).
+- **A patch can be observed with a Prime-Cam module.** ``ObservingPatch``
+  takes ``detector_offset``, as ``get_primecam_offset`` returns it for a
+  bay, and ``generate_timeline`` schedules the boresight that holds that
+  module on the field: every pose it scores, checks against the elevation
+  limits and the Sun, slews to, holds or records is the boresight's. A
+  pong or daisy is booked only while both the module's pattern and the
+  boresight's stay inside the elevation limits. On a constant-elevation
+  patch ``elevation`` is the module's. Every science block records the
+  offset as ``metadata["detector_offset"]``, and a constant-elevation
+  block the module's elevation as ``metadata["detector_elevation"]``;
+  ``schedule_to_trajectories`` rebuilds the block with them. A patch with
+  the on-axis bay ``IM0`` is scheduled as one without an offset (see
+  :ref:`overhead-timeline-module`). Reported by Yihong Zhou.
+
+Fixes that change results
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **Every Prime-Cam ring position moves by 0.92° on the sky.** The bays
+  now sit where the instrument team's optical model puts them (the table
+  on :doc:`instrument_offsets`), 30° round the ring from the old
+  positions, so everything aimed with a ring module moves; the centre
+  module is unchanged. The layout still awaits an on-sky check (see
+  :ref:`index-pending-verification`).
+- **A constant-elevation pass sweeps where the field's border meets the
+  scan elevation.** ``plan_constant_el_scan`` sweeps from the smallest to
+  the largest azimuth at which the field's border crosses the scan
+  elevation (the equation is on :doc:`planning`), and ``az_padding``
+  defaults to 0° (``az_padding=2.0`` restores the old margin). A field
+  60° of RA by 14° at Dec -2° setting through 50° sweeps 26.95° of
+  azimuth where it swept 167.65°. The pass opens and closes when it did,
+  and a timeline written by an earlier release rebuilds with the new
+  range.
+- **A simulated slew ends where the scan starts.** The offline scheduler
+  slews to the first sample of the visit's first subscan, where it slewed
+  to the field centre, so block times move by up to a few seconds.
+- **A simulated pong or daisy visit leaves the telescope where its scan
+  ends.** Such a block records the elevation its trajectory ends at as
+  ``TimelineBlock.el_final``, and ``write_timeline`` writes it as a new
+  ``el_final`` column; a file without the column reads as before.
+- **A constant-elevation plan's Sun advisory screens the path it plans.**
+  The field form of ``plan_constant_el_scan`` screens the built boresight
+  trajectory, as the window form does, so the advisory can appear or
+  disappear. No trajectory changes.
+- **scan_flag separates two legs whose turnaround falls between samples.**
+  Where a constant-elevation or source-CES turnaround is no longer than a
+  timestep, the first sample after the reversal is flagged as turnaround,
+  so consecutive legs are separate science runs. Scans whose turnarounds
+  hold a sample do not change.
+- **A daisy plan reports the duration it built.** ``ScanBlock.duration``,
+  ``computed_params["duration"]`` and the summary give the built length
+  (299.9 s for a 300 s request at the default 0.1 s). The trajectory is
+  unchanged.
+- **A simulated constant-elevation visit starts when its pass opens.** The
+  first science block starts at the pass's first sample, the wait before
+  it is an idle block with reason ``waiting_for_pass``, and the last block
+  ends one sample after the pass's last. In the previous release the
+  block could begin before the pass's first sample, or minutes after the
+  pass had opened. Reported by Yihong Zhou.
+- **Scan-mode planet calibrations record each pass as it runs.** With
+  ``CalibrationPolicy(planet_cal_scan=True)`` a pass block spans its
+  samples, the wait before it is an idle block with reason
+  ``waiting_for_pass``, a pass that would open before the previous one
+  ends is dropped, and the recorded ``boresight_rot`` is ``None``.
+- **A simulated scan is booked only where the control software would run
+  it.** ``generate_timeline`` puts every science subscan and scan-mode
+  planet pass to the checks the control software makes before it sends a
+  scan to the Go TCS: the Sun on every sample, the axis limits and the
+  minimum sample interval. A visit refused even at its shortest subscan
+  idles with reason ``sun_scan``, ``axis_dynamics`` or ``unplannable``
+  (see :ref:`overhead-timeline-booking-screen`). A small pattern scanned
+  fast fails the elevation acceleration limit of 1.5 deg/s²: a 4° pong or
+  a daisy of the default shape at 1 deg/s books no science, and both are
+  booked at 0.5 deg/s.
+- **A simulated telescope holds no pose inside the Sun zone.** An idle, a
+  calibration that does not scan, a wait or a retune is booked only at a
+  pose that stays outside the zone for the whole block; otherwise the
+  pose is left with a ``sun_escape`` slew, or the idle is labelled
+  ``no_escape``. A daytime night can lose a visit, since an escape is
+  chosen without regard to the next patch. A night with the Sun below the
+  horizon is not affected.
+- **A constant-elevation patch is booked on the pass it asks for.** A
+  patch with ``lsa_window`` is booked in its window, on the side
+  ``plan_constant_el_scan`` scans; a window already open when the
+  scheduler reaches the patch is not booked that day, and a ``rising``
+  beside the window is not read. A patch that asks for a side with
+  ``rising`` is booked on that side's pass even when it opens before the
+  field centre transits.
+- **A simulated night rebuilds the same samples from a file as from
+  memory.** ``schedule_to_trajectories`` cuts each block's samples at its
+  start and stop as ``write_timeline`` stores them, to the millisecond, so
+  a block rebuilds to equal arrays from memory and after an ECSV round
+  trip.
 
 v0.13.0 (2026-11-09)
 --------------------

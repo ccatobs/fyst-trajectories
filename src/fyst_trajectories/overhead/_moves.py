@@ -21,22 +21,18 @@ schedule's own elevation floor, and both leave the telescope where it is
 when the escape does not fit in what is left of the window: the pose
 stays inside the zone whether it is the zone or the clock that holds it.
 What follows differs by design: the calibration night idles out the
-sliver labelled ``no_escape``, while the survey loop stops and its tail
-idle, labelled ``window_closed``, closes the window.
+sliver, while the survey loop stops and its tail idle closes the window;
+both label that idle ``no_escape``.
 
-Where the two loops still differ, deliberately:
+Both loops start a pass's block at the pass's first sample and record the
+time before it, after the slew onto the pass or after the previous pass,
+as an idle labelled ``waiting_for_pass`` at the pose the telescope holds.
 
-- **The identity of a multi-pass calibration's passes.** Both give each
-  pass one, by different but internally consistent conventions: the
-  survey scheduler keeps the sequence as a single scan and numbers the
-  passes in ``subscan_index``, while the calibration night treats each
-  pass as its own scan. Either way ``(scan_index, subscan_index)`` is
-  unique.
-- **The gap between consecutive passes.** The calibration night records
-  it as an idle labelled ``waiting_for_pass``; the survey scheduler
-  folds it into the following pass block as acquisition time. Both are
-  gap-free and honest about the pose; the difference is what each loop
-  is for, so it stands.
+Where the two loops still differ, deliberately, is the identity of a
+multi-pass calibration's passes. Both give each pass one, by different but
+internally consistent conventions: the survey scheduler keeps the sequence
+as a single scan and numbers the passes in ``subscan_index``, while the
+calibration night treats each pass as its own scan.
 """
 
 from __future__ import annotations
@@ -115,7 +111,9 @@ def plan_escape_move(
     el_floor: float | None = None,
     remaining: float,
     scan_index: int = 0,
-    cache: dict[tuple[float, float, float, float | None, float], Transition | None] | None = None,
+    cache: dict[tuple[float, float, float, float | None, float, float], Transition | None]
+    | None = None,
+    hold: float = 0.0,
 ) -> EscapeMove:
     """Decide what to do about a pose the Sun zone may have overtaken.
 
@@ -151,12 +149,16 @@ def plan_escape_move(
     scan_index : int, optional
         Scan counter stamped on the emitted block. Default ``0``.
     cache : dict, optional
-        Per-run memo of the search, keyed by pose, time, elevation floor
-        and settle time. Both loops ask about one pose and time from
+        Per-run memo of the search, keyed by pose, time, elevation floor,
+        settle time and hold. Both loops ask about one pose and time from
         several places in a tick, and the search costs a Sun ephemeris
         solve even when it answers "clear", so a loop passes one dict for
         the whole run. Valid only while the safety models are fixed, which
         they are for one run: pass a fresh dict per set of models.
+    hold : float, optional
+        Seconds the caller will hold the pose, and the escape pose after
+        its arrival (see :func:`~fyst_trajectories.overhead.plan_escape`).
+        Default ``0.0``, the instant alone.
 
     Returns
     -------
@@ -164,7 +166,7 @@ def plan_escape_move(
         The decision. ``EscapeMove.clear`` is true when the pose needs
         no move at all.
     """
-    key = (float(az), float(el), float(time.unix), el_floor, float(settle_time))
+    key = (float(az), float(el), float(time.unix), el_floor, float(settle_time), float(hold))
     if cache is not None and key in cache:
         escape = cache[key]
     else:
@@ -177,6 +179,7 @@ def plan_escape_move(
             slew_safe=slew_safe,
             settle_time=settle_time,
             el_floor=el_floor,
+            hold=hold,
         )
         if cache is not None:
             cache[key] = escape

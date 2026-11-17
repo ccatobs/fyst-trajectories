@@ -189,7 +189,9 @@ class ConstantElScanConfig(ScanConfig):
     az_stop : float
         Ending azimuth in degrees.
     elevation : float
-        Fixed elevation in degrees.
+        Fixed elevation in degrees. With a ``detector_offset``, the
+        planners store the detector's elevation here; the trajectory they
+        build is the boresight's.
     az_speed : float
         Azimuth scan speed in azimuth coordinate degrees/second
         (not on-sky). The on-sky speed is
@@ -237,9 +239,9 @@ class ConstantElScanConfig(ScanConfig):
 
     A planner that wants a fixed on-sky scan rate (e.g. for noise
     uniformity) must scale ``az_speed`` by ``1/cos(elevation)`` for
-    each target; the ``velocity`` argument of ``plan_constant_el_scan``
-    and ``plan_constant_el_window_scan`` is the same mount-frame quantity,
-    passed through unscaled. (Pong/daisy ``velocity`` is on-sky, a
+    each target; the ``velocity`` argument of ``plan_constant_el_scan``,
+    in both its forms, is the same mount-frame quantity, passed through
+    unscaled. (Pong/daisy ``velocity`` is on-sky, a
     different frame.)
     """
 
@@ -330,6 +332,12 @@ class PongScanConfig(ScanConfig):
     approximation.  This is accurate for scan dimensions up to about
     10 degrees; beyond that, distortion at the field edges becomes
     significant.
+
+    The vertex counts are rounded up to whole ``sqrt(2) * spacing`` steps,
+    and further to make the two counts coprime, so the path can reach
+    beyond ``width`` and ``height``: a 2 x 2 deg field at 0.1 deg spacing
+    reaches a tangent-plane offset of 1.074 deg from its center in height,
+    against its 1.0 deg half-height.
     """
 
     width: float

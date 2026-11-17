@@ -23,8 +23,8 @@ Plot the coverage of two Prime-Cam modules, each averaged over its
 >>> from fyst_trajectories.primecam import get_primecam_offset
 >>> from fyst_trajectories.visualization import plot_hit_map
 >>> modules = {
-...     "module i1": get_primecam_offset("i1"),
-...     "module i6": get_primecam_offset("i6"),
+...     "IM5": get_primecam_offset("IM5"),
+...     "IM6": get_primecam_offset("IM6"),
 ... }
 >>> fig = plot_hit_map(trajectory, modules=modules, show=True)
 
@@ -189,8 +189,8 @@ def plot_hit_map(
         :func:`~fyst_trajectories.site.get_fyst_site`.
     modules : mapping of str to InstrumentOffset, optional
         Modules to draw, one panel each. Default
-        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (alias keys
-        pointing at the same offset are drawn once). Each panel is titled
+        :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` (keys that
+        name one offset are drawn once). Each panel is titled
         with the first key of its offset, so a caller can label panels
         freely (the other plot functions label modules with the offset's
         name instead); use ``InstrumentOffset(dx=0, dy=0)`` for the
@@ -299,7 +299,7 @@ def plot_hit_map(
         axes = list(axes)
         fig = axes[0].get_figure()
 
-    for ax, (label, offset) in zip(axes, panels):
+    for ax, (label, offset) in zip(axes, panels, strict=True):
         # Horizon-frame projection: mechanical rotation; the celestial
         # rotation enters in the az/el -> RA/Dec conversion below.
         fr = compute_focal_plane_rotation(

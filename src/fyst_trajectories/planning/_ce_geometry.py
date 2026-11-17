@@ -3,14 +3,22 @@
 Public to the package-internal planners; not part of the
 :mod:`fyst_trajectories.planning` public API.
 
-:func:`_compute_ce_duration`, the forward crossing search, has one
-in-repo consumer outside this subpackage: the offline scheduler gates
-its constant-elevation emission on the same solve the planner runs at
-reconstruction, so that what is scheduled is what can be rebuilt. That
-coupling is deliberate and the function stays private, because its
-return value is an internal of the search rather than a contract: it
-answers "when does this field cross this elevation next", with the
-assumptions the planner brings to that question.
+Several of these functions have in-repo consumers outside this
+subpackage, the offline scheduler and its patch model. The scheduler
+gates its constant-elevation emission on the planner's own solves,
+:func:`_compute_ce_duration` (the forward crossing search) or, for an
+LSA window, :func:`_compute_ce_duration_from_lsa` with
+:func:`_lsa_window_rising_side`, and reads the azimuths a pass sweeps
+from :func:`_ce_field_az_range`, the same solves the planner runs at
+reconstruction, so that what is scheduled is what can be rebuilt. The
+scheduler and the patch model also apply the planner's own rules where
+they time a window scan or check a patch (:func:`_quantize_ce_duration`,
+:func:`_field_ra_edges`, :func:`_lsa_window_endpoints`,
+:func:`_window_side`). That coupling is deliberate and the
+functions stay private, because their return values are internals of
+the planner rather than a contract: they answer "when does this field
+cross this elevation next" and "at which azimuths", with the
+assumptions the planner brings to those questions.
 """
 
 import math
@@ -20,7 +28,7 @@ import numpy as np
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 
-from .._validation import _require_positive
+from .._validation import _is_finite, _require_positive
 from ..coordinates import Coordinates, _threshold_crossings
 from ..exceptions import OffsetInversionError, PointingError, PointingWarning
 from ..offsets import InstrumentOffset, _solve_boresight
@@ -35,12 +43,23 @@ from ._types import FieldRegion
 # beyond about 6 h is unusual for a single block, whatever the search horizon.
 _CE_LONG_BLOCK_HOURS = 6.0
 
+# The field form's crossing search when ``max_search_hours`` / ``step_seconds``
+# are not given; the offline scheduler's corridor gate searches the same way.
+_DEFAULT_MAX_SEARCH_HOURS = 12.0
+_DEFAULT_STEP_SECONDS = 30.0
+
 # The hour angle of a fixed RA/Dec grows by one turn per sidereal day.
 _SIDEREAL_RATE_DEG_S = 360.0 / 86164.0905
 
 # A field whose RA span at its central Dec reaches a whole turn, to rounding,
 # covers every RA there and so has no leading and trailing RA edges.
 _WHOLE_TURN_RA_SPAN_DEG = 360.0 - 1e-9
+
+# Points per edge at which the constant-elevation range reads a box's border,
+# corners included. 180 points keep the samples of an edge spanning a whole
+# turn of RA about 2 deg of RA apart, and a read at 20000 points per edge
+# moves the range by less than 1e-4 deg.
+_CE_BORDER_SAMPLES_PER_EDGE = 180
 
 
 def _field_region_corners(
@@ -104,6 +123,37 @@ def _field_region_corners(
     return corners
 
 
+def _field_region_border(
+    corners: list[tuple[float, float]], samples_per_edge: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample the border of a field's box at evenly spaced points along each edge.
+
+    The box is the flat-sky parallelogram :func:`_field_region_corners`
+    returns, whose corners go round it, so each edge is the straight line
+    between two adjacent corners in their unwrapped RA and Dec. Each edge is
+    sampled at ``samples_per_edge`` points from its first corner up to, not
+    including, the next, so every corner appears once.
+
+    Parameters
+    ----------
+    corners : list of (ra, dec) tuples
+        The four corners in degrees, in order round the box.
+    samples_per_edge : int
+        Points per edge, its first corner included.
+
+    Returns
+    -------
+    ra, dec : ndarray
+        The ``4 * samples_per_edge`` border points in degrees, RA unwrapped
+        as the corners give it.
+    """
+    start = np.array(corners, dtype=float)
+    end = np.roll(start, -1, axis=0)
+    fraction = np.arange(samples_per_edge) / samples_per_edge
+    points = start[:, None, :] + fraction[None, :, None] * (end - start)[:, None, :]
+    return points[..., 0].ravel(), points[..., 1].ravel()
+
+
 def _find_elevation_crossing(
     el_array: np.ndarray,
     search_times: Time,
@@ -132,6 +182,36 @@ def _find_elevation_crossing(
     return crossings[0] if crossings else None
 
 
+def _field_ra_edges(field: FieldRegion, angle: float) -> tuple[float, float]:
+    """Return a field's leading and trailing RA edges at its central Dec, in degrees.
+
+    The edges are the extreme RAs of the (rotated) field's corners
+    (:func:`_field_region_corners`), taken as offsets from
+    ``field.ra_center`` and never reduced modulo 360: reduced, the corners
+    of a field across RA 0/360 that spans more than 180 deg would bound its
+    complement.
+
+    Raises
+    ------
+    PointingError
+        If the field lies within 0.57 deg of a celestial pole or a corner of
+        it lies past one, or if it spans a whole turn of RA or more at its
+        central Dec, where it has no leading and trailing edges.
+    """
+    corners = _field_region_corners(
+        field.ra_center, field.dec_center, field.width, field.height, angle
+    )
+    ra_min = min(ra for ra, _ in corners)
+    ra_max = max(ra for ra, _ in corners)
+    if ra_max - ra_min >= _WHOLE_TURN_RA_SPAN_DEG:
+        raise PointingError(
+            f"The field spans {ra_max - ra_min:.2f} deg of RA at its central Dec "
+            f"(Dec={field.dec_center:.3f}), a whole turn or more, so it has no leading and "
+            f"trailing RA edges to time a constant-elevation pass by."
+        )
+    return ra_min, ra_max
+
+
 def _compute_ce_duration(
     field: FieldRegion,
     angle: float,
@@ -139,8 +219,8 @@ def _compute_ce_duration(
     coords_obj: Coordinates,
     base_search_time: Time,
     rising: bool,
-    max_search_hours: float = 12.0,
-    step_seconds: float = 30.0,
+    max_search_hours: float = _DEFAULT_MAX_SEARCH_HOURS,
+    step_seconds: float = _DEFAULT_STEP_SECONDS,
 ) -> tuple[Time, Time, float]:
     """Compute when RA edges of a field cross the target elevation.
 
@@ -192,6 +272,11 @@ def _compute_ce_duration(
         0.57 deg of a celestial pole or a corner of it lies past one, or if
         it spans a whole turn of RA or more at its central Dec.
 
+    Warns
+    -----
+    PointingWarning
+        If the pass lasts longer than half of ``max_search_hours``.
+
     Notes
     -----
     This signature is load-bearing outside the planner: the offline
@@ -203,20 +288,7 @@ def _compute_ce_duration(
     max_search_hours = _require_positive(max_search_hours, "max_search_hours")
     step_seconds = _require_positive(step_seconds, "step_seconds")
 
-    corners = _field_region_corners(
-        field.ra_center, field.dec_center, field.width, field.height, angle
-    )
-    # The corners are unwrapped offsets from the centre, so their extremes
-    # are the field's own edges. Reduced modulo 360, the corners of a field
-    # across RA 0/360 that spans more than 180 deg would bound its complement.
-    ra_min = min(ra for ra, _ in corners)
-    ra_max = max(ra for ra, _ in corners)
-    if ra_max - ra_min >= _WHOLE_TURN_RA_SPAN_DEG:
-        raise PointingError(
-            f"The field spans {ra_max - ra_min:.2f} deg of RA at its central Dec "
-            f"(Dec={field.dec_center:.3f}), a whole turn or more, so it has no leading and "
-            f"trailing RA edges to time a constant-elevation pass by."
-        )
+    ra_min, ra_max = _field_ra_edges(field, angle)
 
     dt_sec = np.arange(0, max_search_hours * 3600, step_seconds)
     search_times = base_search_time + TimeDelta(dt_sec * u.s)
@@ -247,10 +319,21 @@ def _compute_ce_duration(
     )
 
     if t_start is None or t_end is None:
+        # The two edges share the central Dec, so a trailing crossing still ahead
+        # with the leading edge already past the elevation (the side the
+        # crossing search could not start from) places the anchor inside the pass.
+        leading_past = el_min_arr[0] >= elevation if rising else el_min_arr[0] < elevation
+        inside_pass = (
+            f" The anchor {base_search_time.iso} falls inside a pass: the field's leading "
+            f"edge crossed el={elevation} before it, so the next crossing is about a "
+            f"sidereal day later; anchor the plan before the pass opens."
+            if t_start is None and t_end is not None and leading_past
+            else ""
+        )
         raise PointingError(
             f"Could not find elevation crossing for field edges at el={elevation} "
             f"(rising={rising}) within {max_search_hours} hours of "
-            f"{base_search_time.iso}.{longer_than_search}"
+            f"{base_search_time.iso}.{inside_pass}{longer_than_search}"
         )
 
     if t_start > t_end:
@@ -270,40 +353,102 @@ def _compute_ce_duration(
             f"Computed observation duration {duration_seconds / 3600:.1f}h is unusually long. "
             f"Check field geometry and search parameters.",
             PointingWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
 
     return t_start, t_end, duration_seconds
 
 
+def _vacuum_crossing_elevation(
+    coords_obj: Coordinates, elevation: float, at: Time
+) -> tuple[Coordinates, float]:
+    """Return a vacuum transformer and the vacuum elevation that appears at ``elevation``.
+
+    Refraction depends on elevation alone, so a position appears at
+    ``elevation`` exactly when its vacuum elevation is the one returned:
+    that of the point the refracted transform places at azimuth 0,
+    ``elevation``, at ``at``, converted back in vacuum. Without an
+    atmosphere ``coords_obj`` and ``elevation`` are returned as given.
+
+    Parameters
+    ----------
+    coords_obj : Coordinates
+        Coordinate transformer for the site, refracted or not.
+    elevation : float
+        The elevation at which positions are seen, in degrees.
+    at : Time
+        The instant the conversion is made at.
+
+    Returns
+    -------
+    vacuum : Coordinates
+        A vacuum transformer for the same site (``coords_obj`` itself when
+        it has no atmosphere).
+    crossing_el : float
+        The vacuum elevation in degrees that appears at ``elevation``.
+    """
+    if coords_obj.atmosphere.pressure_hpa <= 0.0:
+        return coords_obj, elevation
+    ra_seen, dec_seen = coords_obj.altaz_to_radec(0.0, elevation, at)
+    vacuum = Coordinates(coords_obj.site)
+    _, crossing_el = vacuum.radec_to_altaz(ra_seen, dec_seen, at)
+    return vacuum, crossing_el
+
+
 def _ce_field_az_range(
     field: FieldRegion,
     angle: float,
+    elevation: float,
+    rising: bool,
     coords_obj: Coordinates,
-    obs_start: Time,
-    obs_end: Time,
+    at: Time,
     padding: float,
 ) -> tuple[float, float]:
-    """Compute the azimuth range that covers a field over a pass.
+    """Return the azimuth range in which a field's border meets a constant elevation.
 
-    Evaluates the azimuth of all four rotated corners and the field center
-    at three times (start, midpoint, end) and returns the encompassing range
-    with padding. Using three times captures the temporal variation in
-    azimuth coverage as the field transits.
+    On one side of the meridian, east (azimuth 0 to 180 deg) for the rising
+    crossing and west (180 to 360 deg) for the setting one, the range runs
+    from the smallest to the largest azimuth at which points of the border
+    of the field's box (:func:`_field_region_corners`, :func:`_field_region_border`)
+    cross ``elevation``. A point of apparent declination ``d`` crosses
+    elevation ``e`` at site latitude ``lat`` at the azimuth ``A`` given by
 
-    Three samples bound a monotone azimuth track exactly, since its
-    endpoints are its extremes. A track that turns inside the window, as a
-    field near its greatest elongation does, can exceed the sampled extent
-    between samples; the 2 degree default padding absorbs that, and
-    the trajectory's own bounds validation is what refuses a genuinely
-    out-of-range scan.
+        cos A = (sin d - sin e sin lat) / (cos e cos lat),
 
-    Handles the azimuth = 0/360 discontinuity for sources transiting through
-    north (plausible at FYST's -23 deg latitude for sources with dec above about +20 deg):
-    when the naive max-min span exceeds 180 deg, the samples are unwrapped
-    around the median azimuth so the returned range is contiguous. The
-    range is not placed on an azimuth branch; :func:`_compute_ce_az_range`
-    places it for the sweep the planner builds.
+    with ``A`` in ``[0, 180]`` east of the meridian and ``360 - A`` west of
+    it. ``A`` depends on the declination alone and moves monotonically with
+    it on each side, so the range runs between the crossings of the box's
+    lowest and highest apparent declinations, and holds every azimuth at
+    which the box is at ``elevation`` on that side over the field's whole
+    crossing. It depends on the field's declination extent, not on its RA
+    extent, and not on time beyond the apparent places.
+
+    Those extremes lie on the border: the apparent declination differs from
+    the catalogue one by a smooth shift of a few tenths of a degree at most
+    (precession since J2000, nutation, aberration), so it has no stationary
+    point inside the box. They need not lie at corners, since an edge of
+    constant catalogue declination is not one of constant apparent
+    declination: the shift varies along it (precession by about
+    ``0.15 cos(RA)`` deg in 2026), and on an edge spanning tens of degrees of
+    RA it bows past both corners. So each edge is sampled at
+    ``_CE_BORDER_SAMPLES_PER_EDGE`` points.
+
+    The ``sin d`` of each border point is read from the site's own
+    transform: the points are converted to azimuth and elevation once, at
+    ``at``, in vacuum, and ``sin d = sin lat sin el + cos lat cos el cos az``.
+    With an atmosphere on ``coords_obj`` a point is at ``elevation`` when its
+    refracted elevation is, so ``e`` is the vacuum elevation that appears at
+    ``elevation`` (:func:`_vacuum_crossing_elevation`).
+
+    The cosine is clipped to ``[-1, 1]``, so a point whose declination never
+    reaches ``elevation`` (culminates short of it, or for a circumpolar
+    field stays above it) lands on the meridian azimuth of its side, 0 or
+    360 deg in the north and 180 deg in the south: the range then runs to
+    the meridian and stops there. Near that limit ``A`` changes steeply with
+    declination, so for a field whose extreme declination only grazes
+    ``elevation`` that end of the range is sensitive to the declination and
+    to ``elevation``. The range is not placed on an azimuth branch;
+    :func:`_compute_ce_az_range` places it for the sweep the planner builds.
 
     Parameters
     ----------
@@ -311,56 +456,66 @@ def _ce_field_az_range(
         Rectangular field specification.
     angle : float
         Field rotation angle in degrees.
+    elevation : float
+        The scan elevation in degrees.
+    rising : bool
+        ``True`` for the range east of the meridian, ``False`` for the range
+        west of it.
     coords_obj : Coordinates
-        Coordinate transformer for the site.
-    obs_start : Time
-        Start time of the observation.
-    obs_end : Time
-        End time of the observation.
+        Coordinate transformer for the site, refracted or not.
+    at : Time
+        The instant the border's apparent places are read at.
     padding : float
         Extra padding in degrees on each side.
 
     Returns
     -------
     az_min, az_max : float
-        Azimuth range in degrees, contiguous: the extremes of the sampled
-        azimuths, which ``radec_to_altaz`` gives in ``[0, 360)``, or, when
-        they span more than 180 deg, of the same unwrapped to within half a
-        turn of their median, widened by ``padding`` on each side. So it may
-        lie outside ``[0, 360)`` by the padding alone, or further when the
-        field straddles north (e.g. ``(-5.0, 12.0)`` or ``(355.0, 372.0)``
-        rather than ``(355.0, 12.0)``), and may overrun an azimuth limit.
+        Azimuth range in degrees, ``0 <= az_min < az_max <= 180`` east of
+        the meridian or ``180 <= az_min < az_max <= 360`` west of it,
+        widened by ``padding`` on each side, so it may lie outside
+        ``[0, 360]`` by the padding and may overrun an azimuth limit.
+
+    Raises
+    ------
+    PointingError
+        If every border point lands on the same azimuth, so the range is
+        empty: no part of the field's border ever reaches ``elevation``; or
+        if the field lies within 0.57 deg of a celestial pole or a corner of
+        it lies past one (:func:`_field_region_corners`).
     """
     corners = _field_region_corners(
         field.ra_center, field.dec_center, field.width, field.height, angle
     )
-
-    obs_mid = obs_start + (obs_end - obs_start) / 2.0
-    eval_times = [obs_start, obs_mid, obs_end]
-
-    all_azimuths: list[float] = []
-    points = list(corners) + [(field.ra_center, field.dec_center)]
-    for t in eval_times:
-        for ra_c, dec_c in points:
-            az_c, _ = coords_obj.radec_to_altaz(ra_c, dec_c, t)
-            all_azimuths.append(az_c)
-
-    az_arr = np.asarray(all_azimuths)
-    # Unwrap if the samples straddle the 0/360 discontinuity. Re-centre
-    # around the median so the result is a single contiguous interval.
-    if az_arr.max() - az_arr.min() > 180.0:
-        median = float(np.median(az_arr))
-        az_arr = ((az_arr - median + 180.0) % 360.0) - 180.0 + median
-
-    return float(az_arr.min()) - padding, float(az_arr.max()) + padding
+    ra, dec = _field_region_border(corners, _CE_BORDER_SAMPLES_PER_EDGE)
+    vacuum, crossing_el = _vacuum_crossing_elevation(coords_obj, elevation, at)
+    az, el = vacuum.radec_to_altaz(ra, dec, at)
+    az = np.radians(np.asarray(az, dtype=float))
+    el = np.radians(np.asarray(el, dtype=float))
+    phi = math.radians(coords_obj.site.latitude)
+    e = math.radians(crossing_el)
+    sin_d = math.sin(phi) * np.sin(el) + math.cos(phi) * np.cos(el) * np.cos(az)
+    cos_a = (sin_d - math.sin(e) * math.sin(phi)) / (math.cos(e) * math.cos(phi))
+    crossing = np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0)))
+    if not rising:
+        crossing = 360.0 - crossing
+    az_min, az_max = float(crossing.min()), float(crossing.max())
+    if not az_max > az_min:
+        raise PointingError(
+            f"The field never crosses el={elevation:.2f} deg: no part of its border reaches "
+            f"that elevation (Dec={field.dec_center:.3f}, height={field.height:.3f}, "
+            f"angle={angle:.1f} deg), so it has no azimuth range there."
+        )
+    return az_min - padding, az_max + padding
 
 
 def _compute_ce_az_range(
     field: FieldRegion,
     angle: float,
+    elevation: float,
+    rising: bool,
     coords_obj: Coordinates,
-    obs_start: Time,
-    obs_end: Time,
+    at: Time,
     padding: float,
     *,
     velocity: float,
@@ -371,8 +526,9 @@ def _compute_ce_az_range(
 ) -> tuple[float, float, int, float]:
     """Compute the azimuth range a constant-elevation pass sweeps, on its branch, and its legs.
 
-    The field's range over the pass (:func:`_ce_field_az_range`), on the
-    branch :func:`_ce_branch_shift` chooses for the sweep the planner builds
+    The range in which the field's border meets ``elevation`` on the
+    ``rising`` side (:func:`_ce_field_az_range`), on the branch
+    :func:`_ce_branch_shift` chooses for the sweep the planner builds
     across it: the whole legs ``duration`` rounds to
     (:func:`_quantize_ce_duration`), sampled at ``timestep``, and the
     boresight's, the same moved by ``boresight_az_offset``. So a setting
@@ -383,7 +539,7 @@ def _compute_ce_az_range(
 
     Parameters
     ----------
-    field, angle, coords_obj, obs_start, obs_end, padding
+    field, angle, elevation, rising, coords_obj, at, padding
         As for :func:`_ce_field_az_range`.
     velocity : float
         Azimuth scan speed in deg/s (mount frame).
@@ -410,13 +566,19 @@ def _compute_ce_az_range(
     built_duration : float
         The sweep's length in seconds: ``n_scans`` legs and the turnarounds
         between them.
+
+    Raises
+    ------
+    PointingError
+        As :func:`_ce_field_az_range` raises it: for a field that never
+        reaches ``elevation``, or one at or past a celestial pole.
     """
-    az_min, az_max = _ce_field_az_range(field, angle, coords_obj, obs_start, obs_end, padding)
-    # Four paths land the sweep on an out-of-range branch: the median re-centre
-    # of a west-heavy straddle window, padding pushing a near-360 window past
-    # the limit, the turnaround overshoot doing the same at speed, and a
-    # detector offset moving the boresight past it. All are representation
-    # choices, not infeasibility.
+    az_min, az_max = _ce_field_az_range(field, angle, elevation, rising, coords_obj, at, padding)
+    # Three paths land the sweep on an out-of-range branch: padding pushing a
+    # range that ends at or near 360 deg past the limit (a setting range that
+    # reaches the northern meridian ends there), the turnaround overshoot
+    # doing the same at speed, and a detector offset moving the boresight past
+    # it. All are representation choices, not infeasibility.
     return _place_ce_sweep(
         az_min,
         az_max,
@@ -444,8 +606,12 @@ def _place_ce_sweep(
 
     The legs are counted first (:func:`_quantize_ce_duration`), since they
     decide which turnarounds the sweep makes, and the range is then moved by
-    the whole turn :func:`_ce_branch_shift` returns for that sweep. Both
-    constant-elevation planners place their sweep here.
+    the whole turn :func:`_ce_branch_shift` returns for that sweep. A moved
+    range's throw can differ from the given one in its last bits, so the same
+    legs are timed again on the moved range, the one the pattern sweeps: the
+    leg count stays the one the branch was chosen for, and planning the
+    returned range again, for the returned duration, gives the same sweep.
+    Both forms of ``plan_constant_el_scan`` place their sweep here.
 
     Parameters
     ----------
@@ -480,7 +646,17 @@ def _place_ce_sweep(
         boresight_az_offset=boresight_az_offset,
         limits=limits,
     )
-    return az_min + shift, az_max + shift, n_scans, built_duration
+    az_min, az_max = az_min + shift, az_max + shift
+    if shift != 0.0:
+        # The same legs, timed on the moved throw: asked for exactly the first
+        # count's whole legs, the quantiser cannot round to another count.
+        n_scans, built_duration = _quantize_ce_duration(
+            az_throw=az_max - az_min,
+            velocity=velocity,
+            duration=built_duration,
+            az_accel=az_accel,
+        )
+    return az_min, az_max, n_scans, built_duration
 
 
 def _boresight_az_offset(
@@ -488,8 +664,8 @@ def _boresight_az_offset(
 ) -> float:
     """Return the boresight's azimuth minus the detector's on a constant-elevation sweep.
 
-    With a ``detector_offset`` the constant-elevation planners command the
-    detector along the sweep, and the trajectory builder moves the boresight
+    With a ``detector_offset`` both forms of ``plan_constant_el_scan``
+    command the detector along the sweep, and the trajectory builder moves the boresight
     so that the detector lands there
     (:func:`~fyst_trajectories.offsets.apply_detector_offset`). At a fixed
     detector elevation the focal-plane rotation is fixed too, so the
@@ -540,7 +716,7 @@ def _ce_branch_shift(
 ) -> float:
     """Return the whole turn that places a constant-elevation sweep where the mount can run it.
 
-    Both constant-elevation planners command ``n_scans`` legs across
+    Both forms of ``plan_constant_el_scan`` command ``n_scans`` legs across
     ``(az_min, az_max)``, the first from ``az_min`` up, for ``duration``
     seconds sampled at ``timestep``. Each turnaround between legs overshoots
     the edge it turns at by ``5 v**2 / (8 a)``
@@ -623,12 +799,77 @@ def _ce_branch_shift(
     return other if grade(other) > here else 0.0
 
 
+def _lsa_window_endpoints(lsa_window: "tuple[float, float] | list[float]") -> tuple[float, float]:
+    """Return an LSA window's ``(min_lsa, max_lsa)`` in degrees, refusing a malformed one.
+
+    The window is a pair, a tuple, a list (ECSV/JSON serialisation turns
+    a tuple into a list) or a NumPy array, of real numbers in ``[0, 360)`` with unequal
+    endpoints; ``max_lsa < min_lsa`` wraps through LSA = 0/360.
+
+    Parameters
+    ----------
+    lsa_window : tuple or list of (min_lsa, max_lsa)
+        Local Sidereal Angle window in degrees.
+
+    Returns
+    -------
+    tuple of float
+        ``(min_lsa, max_lsa)``.
+
+    Raises
+    ------
+    ValueError
+        If ``lsa_window`` is not a pair, an endpoint is not a real number
+        (text, a ``bool``, ``None``), an endpoint is not finite or lies
+        outside ``[0, 360)``, or the endpoints are equal.
+    """
+    if not isinstance(lsa_window, (tuple, list, np.ndarray)) or len(lsa_window) != 2:
+        raise ValueError(f"lsa_window must be a pair (min_lsa, max_lsa), got {lsa_window!r}")
+    finite = [_is_finite(value, f"lsa_window[{i}]") for i, value in enumerate(lsa_window)]
+    min_lsa, max_lsa = float(lsa_window[0]), float(lsa_window[1])
+    if not all(finite) or not (0.0 <= min_lsa < 360.0) or not (0.0 <= max_lsa < 360.0):
+        raise ValueError(f"lsa_window endpoints must lie in [0, 360); got ({min_lsa}, {max_lsa})")
+    if min_lsa == max_lsa:
+        raise ValueError(
+            f"lsa_window has equal endpoints ({min_lsa}); refusing zero-duration window"
+        )
+    return min_lsa, max_lsa
+
+
+def _lsa_window_rising_side(
+    ra_center: float, dec_center: float, t_open: Time, t_close: Time, coords_obj: Coordinates
+) -> bool:
+    """Return the side of the meridian an LSA-window pass is scanned on, ``True`` for rising.
+
+    The window chooses no crossing, so the range is taken on the side of the
+    meridian the field centre is on at the window's middle: east, an azimuth
+    below 180 deg, is the rising side.
+
+    Parameters
+    ----------
+    ra_center, dec_center : float
+        The field centre in degrees.
+    t_open, t_close : Time
+        The window's start and end.
+    coords_obj : Coordinates
+        Coordinate transformer for the site.
+
+    Returns
+    -------
+    bool
+        ``True`` for the rising (east) side, ``False`` for the setting side.
+    """
+    t_mid = t_open + (t_close - t_open) / 2.0
+    centre_az, _ = coords_obj.radec_to_altaz(ra_center, dec_center, t_mid)
+    return bool(centre_az % 360.0 < 180.0)
+
+
 def _compute_ce_duration_from_lsa(
     lsa_window: "tuple[float, float] | list[float]",
     coords_obj: Coordinates,
     base_search_time: Time,
-    max_search_hours: float = 12.0,
-    step_seconds: float = 30.0,
+    max_search_hours: float = _DEFAULT_MAX_SEARCH_HOURS,
+    step_seconds: float = _DEFAULT_STEP_SECONDS,
 ) -> tuple[Time, Time, float]:
     """Compute scan start/end from a Local Sidereal Angle window.
 
@@ -675,12 +916,18 @@ def _compute_ce_duration_from_lsa(
     Raises
     ------
     ValueError
-        If ``min_lsa == max_lsa`` (zero-duration window), either
-        endpoint is outside ``[0, 360)``, or ``max_search_hours`` or
-        ``step_seconds`` is not positive.
+        If ``lsa_window`` is not a pair of real numbers, ``min_lsa ==
+        max_lsa`` (zero-duration window), either endpoint is outside
+        ``[0, 360)`` (:func:`_lsa_window_endpoints`), or
+        ``max_search_hours`` or ``step_seconds`` is not positive.
     PointingError
         If no increasing crossing of ``min_lsa`` is found within
         ``max_search_hours`` of ``base_search_time``.
+
+    Warns
+    -----
+    PointingWarning
+        If the window lasts longer than 6 h (``_CE_LONG_BLOCK_HOURS``).
 
     Notes
     -----
@@ -691,13 +938,7 @@ def _compute_ce_duration_from_lsa(
     ~ 1.3 s of time), well below operationally relevant precision for
     LSA-window scheduling.
     """
-    min_lsa, max_lsa = float(lsa_window[0]), float(lsa_window[1])
-    if not (0.0 <= min_lsa < 360.0) or not (0.0 <= max_lsa < 360.0):
-        raise ValueError(f"lsa_window endpoints must lie in [0, 360); got ({min_lsa}, {max_lsa})")
-    if min_lsa == max_lsa:
-        raise ValueError(
-            f"lsa_window has equal endpoints ({min_lsa}); refusing zero-duration window"
-        )
+    min_lsa, max_lsa = _lsa_window_endpoints(lsa_window)
     max_search_hours = _require_positive(max_search_hours, "max_search_hours")
     # 0 makes the arange below divide by zero; a negative step makes it
     # empty, and the crossing search then reports "no crossing found"
@@ -756,7 +997,7 @@ def _compute_ce_duration_from_lsa(
             f"LSA-derived duration {duration_hours:.1f}h is unusually long for a single "
             f"CE block. Check lsa_window={lsa_window}.",
             PointingWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
 
     return t_start, t_end, duration_seconds
@@ -774,8 +1015,8 @@ def _quantize_ce_duration(
     Rounds the requested ``duration`` to an integer number of azimuth legs
     (each sweeping ``az_throw`` at ``velocity``) and returns the leg count
     together with the exact duration the trajectory builder produces for that
-    count. Shared by both constant-elevation planners and the source-CES
-    planner so all three quantise a CE window identically.
+    count. Shared by both forms of ``plan_constant_el_scan`` and the
+    source-CES planner so all three quantise a CE window identically.
 
     Parameters
     ----------
@@ -813,9 +1054,8 @@ def _quantize_ce_duration(
     # ``(duration + t_turnaround) / (t_cruise + t_turnaround)`` legs. Counting
     # legs by the cruise time alone overshoots the window whenever the
     # turnaround is not negligible against a leg (fast, short legs).
-    # ``floor(x + 0.5)`` rather than ``round``: the built-in rounds a tie to
-    # the even count, so an exact 2.5 legs quantised down and an exact 3.5 up,
-    # which is a surprise in a duration and not a property anything wants.
+    # ``floor(x + 0.5)`` rather than ``round``, which rounds a tie to the even
+    # count (2.5 legs down, 3.5 up).
     legs = (duration + t_turnaround) / (t_cruise + t_turnaround)
     n_scans = max(1, int(math.floor(legs + 0.5)))
     actual_duration = n_scans * t_cruise + (n_scans - 1) * t_turnaround
@@ -872,10 +1112,11 @@ def _check_window_field_drift(
     between two passes draws one warning, naming the nearer of them: the
     pass it starts after, or the one it ends before.
 
-    With an ``atmosphere`` the edges are read in vacuum and judged at the
-    vacuum elevation that it refracts to ``elevation``; refraction depends on
-    elevation alone, so the crossings are those of the refracted positions,
-    timed as in vacuum. The culminations are judged from the site latitude
+    With an atmosphere on ``coords_obj`` the edges are read in vacuum and
+    judged at the vacuum elevation the atmosphere refracts to ``elevation``
+    (:func:`_vacuum_crossing_elevation`); refraction depends on elevation
+    alone, so the crossings are those of the refracted positions, timed as
+    in vacuum. The culminations are judged from the site latitude
     and the field's catalogue Dec (precession since J2000 ignored, which moves
     a declination by at most 0.2 deg before 2035), so an ``elevation`` that
     close to a culmination can be misjudged. A field spanning the whole RA
@@ -923,14 +1164,7 @@ def _check_window_field_drift(
     if ra_span >= _WHOLE_TURN_RA_SPAN_DEG:
         return
 
-    vacuum = coords_obj
-    crossing_el = elevation
-    if coords_obj.atmosphere.pressure_hpa > 0.0:
-        # Refraction depends on elevation alone, so a position appears at
-        # ``elevation`` exactly when its vacuum elevation is ``crossing_el``.
-        ra_seen, dec_seen = coords_obj.altaz_to_radec(0.0, elevation, start)
-        vacuum = Coordinates(coords_obj.site)
-        _, crossing_el = vacuum.radec_to_altaz(ra_seen, dec_seen, start)
+    vacuum, crossing_el = _vacuum_crossing_elevation(coords_obj, elevation, start)
 
     half_span = 0.5 * ra_span
     ra_lead = field.ra_center - half_span

@@ -69,7 +69,7 @@ class TestRadecToAltaz:
         azs, els = coordinates.radec_to_altaz(ras, decs, obstime=obstime)
 
         assert len(azs) == 4
-        for ra, dec, az, el in zip(ras, decs, azs, els):
+        for ra, dec, az, el in zip(ras, decs, azs, els, strict=True):
             expected = coordinates.radec_to_altaz(float(ra), float(dec), obstime=obstime)
             assert (az, el) == pytest.approx(expected, abs=1e-9)
         assert all(0.0 <= az < 360.0 for az in azs)
@@ -581,7 +581,7 @@ class TestGetParallacticAngle:
         assert isinstance(pa, np.ndarray)
         expected = [
             coordinates.get_parallactic_angle(float(r), float(d), obstime=obstime)
-            for r, d in zip(ras, decs)
+            for r, d in zip(ras, decs, strict=True)
         ]
         assert list(pa) == pytest.approx(expected, abs=1e-9)
 
@@ -1265,7 +1265,7 @@ class TestFieldRotationSharesOneVacuumTransform:
         vector = coordinates.get_field_rotation(ra, dec, self.OBSTIME)
         scalars = [
             coordinates.get_field_rotation(float(r), float(d), self.OBSTIME)
-            for r, d in zip(ra, dec)
+            for r, d in zip(ra, dec, strict=True)
         ]
         assert vector == pytest.approx(scalars, abs=1e-9)
 
@@ -1299,7 +1299,8 @@ class TestFieldRotationFromAltazSharesOneKernel:
         el = np.array([40.0, 55.0, 60.0, 30.0, 75.0])
         vector = coordinates.get_field_rotation_from_altaz(az, el)
         scalars = [
-            coordinates.get_field_rotation_from_altaz(float(a), float(e)) for a, e in zip(az, el)
+            coordinates.get_field_rotation_from_altaz(float(a), float(e))
+            for a, e in zip(az, el, strict=True)
         ]
         assert vector.shape == az.shape
         np.testing.assert_array_equal(vector, scalars)

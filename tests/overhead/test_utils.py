@@ -11,13 +11,14 @@ from fyst_trajectories.dispatch import estimate_slew_time
 from fyst_trajectories.exceptions import PointingWarning
 from fyst_trajectories.overhead import ScanParamsSchemaError
 from fyst_trajectories.overhead.utils import (
-    _canonical_module_name,
+    _dispatch_footprint,
+    _is_on_axis_bay,
     _normalize_az,
     _search_start_record,
     _search_start_time,
     _utc_instant,
 )
-from fyst_trajectories.primecam import PRIMECAM_MODULES, primecam_geometry_dict
+from fyst_trajectories.primecam import PRIMECAM_MODULES
 
 # Off the millisecond grid, so a record rounded anywhere would show.
 _INSTANT = Time("2026-09-11T06:46:28.371234567", scale="utc")
@@ -107,15 +108,44 @@ class TestSearchStartRecord:
             _search_start_time(record)
 
 
-class TestCanonicalModuleName:
-    """The one name a recorded pass dict gives each Prime-Cam module."""
+_CENTRE_SPELLINGS = ["c", "C", "center", "Center", "CENTER", "IM0", "im0"]
+_RING_BAYS = [name for name in PRIMECAM_MODULES if name != "IM0"]
 
-    def test_every_spelling_maps_to_one_of_the_seven_slot_names(self):
-        """The names are the slots of the scheduler geometry, ``c`` and ``i1`` .. ``i6``."""
-        spellings = [*PRIMECAM_MODULES, "im0", "IM0", "C", "Center", "CENTER", "I3"]
-        assert {_canonical_module_name(tag) for tag in spellings} == set(primecam_geometry_dict())
-        assert {_canonical_module_name(tag) for tag in ("C", "center", "IM0")} == {"c"}
-        assert _canonical_module_name("I3") == "i3"
+
+class TestDispatchFootprint:
+    """The one name a recorded pass dict gives each Prime-Cam bay."""
+
+    @pytest.mark.parametrize("tag", _CENTRE_SPELLINGS)
+    def test_every_spelling_of_the_centre_is_written_c(self, tag):
+        assert _dispatch_footprint(tag) == "c"
+
+    @pytest.mark.parametrize("bay", _RING_BAYS)
+    def test_a_ring_bay_in_any_case_is_written_as_its_key(self, bay):
+        for tag in (bay, bay.lower(), bay[0] + bay[1].lower() + bay[2:]):
+            assert _dispatch_footprint(tag) == bay
+
+    @pytest.mark.parametrize("tag", ["i1", "I6", "IM7", "zzz", "c,IM1", ""])
+    def test_an_unknown_or_retired_name_raises(self, tag):
+        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
+            _dispatch_footprint(tag)
+
+
+class TestIsOnAxisBay:
+    """Whether a footprint name is the on-axis bay ``IM0``."""
+
+    @pytest.mark.parametrize("tag", _CENTRE_SPELLINGS)
+    def test_every_spelling_of_the_centre_is_on_axis(self, tag):
+        assert _is_on_axis_bay(tag)
+
+    @pytest.mark.parametrize("bay", _RING_BAYS)
+    def test_no_ring_bay_is_on_axis(self, bay):
+        assert not _is_on_axis_bay(bay)
+        assert not _is_on_axis_bay(bay.lower())
+
+    @pytest.mark.parametrize("tag", ["i1", "I6", "IM7", "zzz", "c,IM1", ""])
+    def test_an_unknown_or_retired_name_raises(self, tag):
+        with pytest.raises(KeyError, match="Unknown PrimeCam module"):
+            _is_on_axis_bay(tag)
 
 
 class TestNormalizeAz:

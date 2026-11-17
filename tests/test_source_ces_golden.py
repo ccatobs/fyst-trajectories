@@ -121,7 +121,7 @@ _SATURN_WINDOW = (
     Time("2026-09-10T22:00:00", scale="utc"),
     Time("2026-09-11T10:00:00", scale="utc"),
 )
-_FULL_ARRAY = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+_FULL_ARRAY = list(PRIMECAM_MODULES.values())
 
 _JUP = dict(body="jupiter", night=_JUPITER_NIGHT, site=SITE)
 _SAT = dict(body="saturn", window=_SATURN_WINDOW, site=SITE)
@@ -174,7 +174,7 @@ _CASES = (
     ),
     _Case("sat_c_auto_mode", "plan", dict(_SAT, footprint="c", el_bore=32.5), False),
     _Case(
-        "sat_i1_offcentre", "plan", dict(_SAT, footprint="i1", el_bore=40.0, mode="rising"), False
+        "sat_im6_offcentre", "plan", dict(_SAT, footprint="IM6", el_bore=40.0, mode="rising"), False
     ),
     _Case(
         "sat_offset_footprint",
@@ -331,7 +331,9 @@ def _block_record(block: Any) -> tuple[dict[str, Any], dict[str, str]]:
         ),
         "summary": block.summary,
         "start_time": traj.start_time.isot,
-        "scan_flag": {str(int(flag)): int(count) for flag, count in zip(flags, counts)},
+        "scan_flag": {
+            str(int(flag)): int(count) for flag, count in zip(flags, counts, strict=True)
+        },
         "arrays": {name: _summary(getattr(traj, name)) for name in _FLOAT_ARRAYS},
         "track": {"xi": _summary(xi), "eta": _summary(eta)},
     }
@@ -369,7 +371,7 @@ def _run_case(case: _Case) -> tuple[dict[str, Any], dict[str, Any]]:
         warnings.simplefilter("ignore", ResourceWarning)
         try:
             result = _call(entry, case.kwargs)
-        except Exception as exc:  # noqa: BLE001 - every refusal is recorded and compared
+        except Exception as exc:  # every refusal is recorded and compared
             result = exc
     record: dict[str, Any] = {
         "warnings": [
@@ -407,7 +409,7 @@ def _compare_values(got: Any, want: Any, path: str, problems: list[str]) -> None
         if not isinstance(got, list) or len(got) != len(want):
             problems.append(f"{path}: {got!r} != recorded {want!r}")
             return
-        for index, (got_item, want_item) in enumerate(zip(got, want)):
+        for index, (got_item, want_item) in enumerate(zip(got, want, strict=True)):
             _compare_values(got_item, want_item, f"{path}[{index}]", problems)
     elif type(want) is float:
         if type(got) is not float or got != pytest.approx(want, rel=_SCALAR_REL, abs=0.0):
@@ -459,7 +461,7 @@ def _compare_case(got: dict[str, Any], want: dict[str, Any], name: str) -> list[
             if len(got[key]) != len(want[key]):
                 problems.append(f"{name}: {len(got[key])} passes != recorded {len(want[key])}")
                 continue
-            for index, (got_block, want_block) in enumerate(zip(got[key], want[key])):
+            for index, (got_block, want_block) in enumerate(zip(got[key], want[key], strict=True)):
                 _compare_block(got_block, want_block, f"{name}.passes[{index}]", problems)
         else:
             _compare_values(got[key], want[key], f"{name}.{key}", problems)

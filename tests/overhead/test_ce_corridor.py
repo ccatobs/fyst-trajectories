@@ -12,6 +12,7 @@ as "no plannable pass" and lets any other error through, and leaves the
 solve's advisories to the rebuild.
 """
 
+import dataclasses
 import warnings
 
 import numpy as np
@@ -35,6 +36,8 @@ from fyst_trajectories.overhead.scheduler.helpers import (
 )
 from fyst_trajectories.planning import FieldRegion, plan_constant_el_scan
 
+from . import _nights
+
 _AUGUST_PATCH = ObservingPatch(
     name="AugustCES",
     ra_center=330.0,
@@ -49,13 +52,8 @@ _AUGUST_PATCH = ObservingPatch(
 
 @pytest.fixture(scope="module")
 def august_ce_timeline():
-    """Build the night this file pins: one CE patch observed across its transit."""
-    return generate_timeline(
-        patches=[_AUGUST_PATCH],
-        site=get_fyst_site(),
-        start_time="2026-08-01T23:00:00",
-        end_time="2026-08-02T07:00:00",
-    )
+    """Return the night this file pins: one CE patch observed across its transit."""
+    return _nights.night("august")
 
 
 def _science(timeline):
@@ -73,28 +71,32 @@ def test_every_scheduled_ce_block_reconstructs(august_ce_timeline):
 
 
 def test_ce_blocks_carry_visit_anchor(august_ce_timeline):
-    """Every CE subscan stamps t0_scan, at or before its own start.
+    """Every CE subscan stamps t0_scan, the instant its visit was admitted at.
 
-    The 5 ms tolerance absorbs the ISO-millisecond rounding of the stamp.
-    Each visit's FIRST science block must additionally start within one
-    boundary retune of its anchor (the leading scan-coupled retune is the
-    only thing between the anchor and the first subscan).
+    The anchor is the selection tick the gate solved the pass from, which
+    is where the slew onto the visit starts; between it and the visit's
+    first science block lie only that slew, the boundary retune and the
+    wait for the pass, end to end. The 5 ms tolerance absorbs the
+    ISO-millisecond rounding of the stamp.
     """
-    from fyst_trajectories.overhead import OverheadModel
-
-    retune_dur = OverheadModel().retune_duration
+    blocks = list(august_ce_timeline.blocks)
     science = _science(august_ce_timeline)
     assert science, "expected science blocks on the CE corridor night"
     by_anchor: dict[str, list] = {}
     for block in science:
         assert "t0_scan" in block.metadata
-        anchor = Time(block.metadata["t0_scan"], scale="utc")
-        assert anchor.unix <= block.t_start.unix + 5e-3
         by_anchor.setdefault(block.metadata["t0_scan"], []).append(block)
     for anchor_iso, group in by_anchor.items():
         anchor = Time(anchor_iso, scale="utc")
-        first_start = min(b.t_start.unix for b in group)
-        assert first_start - anchor.unix <= retune_dur + 5e-3
+        first = blocks.index(group[0])
+        lead = [b for b in blocks if anchor.unix - 5e-3 <= b.t_start.unix < group[0].t_start.unix]
+        assert lead == blocks[first - len(lead) : first]
+        assert lead[0].block_type == BlockType.SLEW
+        assert abs(lead[0].t_start.unix - anchor.unix) <= 5e-3
+        assert [b.block_type for b in lead[1:]] in (
+            [BlockType.CALIBRATION],
+            [BlockType.CALIBRATION, BlockType.IDLE],
+        )
 
 
 def test_default_half_falls_over_to_setting(august_ce_timeline):
@@ -167,7 +169,7 @@ def test_a_night_given_in_tt_is_the_utc_night_held_in_utc(august_ce_timeline, tm
     )
     assert (night.start_time.scale, night.end_time.scale) == ("utc", "utc")
     assert len(night.blocks) == len(august_ce_timeline.blocks)
-    for block, utc_block in zip(night.blocks, august_ce_timeline.blocks):
+    for block, utc_block in zip(night.blocks, august_ce_timeline.blocks, strict=True):
         assert (block.t_start.scale, block.t_stop.scale) == ("utc", "utc")
         assert abs((block.t_start - utc_block.t_start).to_value("s")) < 1e-6
         assert block.metadata.get("t0_scan") == utc_block.metadata.get("t0_scan")
@@ -181,17 +183,18 @@ def test_a_night_given_in_tt_is_the_utc_night_held_in_utc(august_ce_timeline, tm
     utc_pairs = schedule_to_trajectories(august_ce_timeline)
     assert len(schedule_to_trajectories(loaded)) == len(_science(loaded))
     assert len(pairs) == len(utc_pairs) == len(_science(night))
-    for (_, rebuilt), (_, utc_rebuilt) in zip(pairs, utc_pairs):
+    for (_, rebuilt), (_, utc_rebuilt) in zip(pairs, utc_pairs, strict=True):
         assert np.array_equal(rebuilt.trajectory.times, utc_rebuilt.trajectory.times)
         assert np.array_equal(rebuilt.trajectory.az, utc_rebuilt.trajectory.az)
 
 
-def test_a_patch_beside_a_celestial_pole_is_skipped_not_raised():
-    """The crossing solve refuses a field within 0.57 deg of a pole; the night goes on.
+def test_a_patch_beside_a_celestial_pole_is_a_miss_for_the_gate_and_refused_at_build():
+    """The crossing solve refuses a field within 0.57 deg of a pole.
 
     ``ObservingPatch`` accepts such a declination, and the solve's flat-sky
     corner projection cannot plan it, so the refusal is a ``PointingError``
-    the corridor gate reads as "no plannable pass".
+    the corridor gate reads as "no plannable pass". The schedule refuses the
+    patch before it starts, naming it, since it can never have a pass.
     """
     polar = ObservingPatch(
         name="polar",
@@ -203,20 +206,23 @@ def test_a_patch_beside_a_celestial_pole_is_skipped_not_raised():
         velocity=1.0,
         elevation=30.0,
     )
-    timeline = generate_timeline(
-        patches=[polar],
-        site=get_fyst_site(),
-        start_time="2026-04-01T00:00:00",
-        end_time="2026-04-01T01:00:00",
-    )
-    assert timeline.blocks
-    assert not _science(timeline)
+    start = Time("2026-04-01T00:00:00", scale="utc")
+    coords = Coordinates(get_fyst_site())
+    for rising in (True, False):
+        assert _ce_crossing_corridor(polar, 30.0, rising, start, coords, {}) is None
+    with pytest.raises(ValueError, match=r"never have a pass: polar: .*pole"):
+        generate_timeline(
+            patches=[polar],
+            site=get_fyst_site(),
+            start_time=start,
+            end_time="2026-04-01T01:00:00",
+        )
 
 
 def test_the_corridor_is_the_envelope_of_the_pass_the_planner_builds_at_the_limit():
     """At an azimuth limit the corridor is the rebuilt pass's envelope, a turn apart.
 
-    At 3 deg/s this field's setting pass sweeps (345.14, 354.78) with a
+    At 3 deg/s this field's setting pass sweeps (342.25, 355.59) with a
     5.625 deg turnaround overshoot on each side, past the 360 deg limit, so
     the planner sweeps it one turn down. The corridor the scheduler slews to
     and clips against the Sun is the envelope of that trajectory on the
@@ -229,7 +235,7 @@ def test_the_corridor_is_the_envelope_of_the_pass_the_planner_builds_at_the_limi
     patch = ObservingPatch(
         name="NorthSetting",
         ra_center=60.0,
-        dec_center=26.25,
+        dec_center=25.8,
         width=2.0,
         height=2.0,
         scan_type="constant_el",
@@ -238,10 +244,10 @@ def test_the_corridor_is_the_envelope_of_the_pass_the_planner_builds_at_the_limi
     )
     window = _ce_crossing_corridor(patch, 40.0, False, start, coords, {})
     assert window is not None
-    lo, hi = _ce_swept_az_envelope(patch, *window, coords)
+    lo, hi = _ce_swept_az_envelope(patch, 40.0, False, coords, window[0])
 
     block = plan_constant_el_scan(
-        field=FieldRegion(ra_center=60.0, dec_center=26.25, width=2.0, height=2.0),
+        field=FieldRegion(ra_center=60.0, dec_center=25.8, width=2.0, height=2.0),
         elevation=40.0,
         velocity=3.0,
         site=site,
@@ -254,6 +260,106 @@ def test_the_corridor_is_the_envelope_of_the_pass_the_planner_builds_at_the_limi
     lim = site.telescope_limits.azimuth
     assert lim.min <= az.min()
     assert az.max() <= lim.max
+
+
+def test_an_lsa_window_patch_is_booked_on_the_planners_window_and_side():
+    """A patch with an ``lsa_window`` is booked inside the window the planner gives.
+
+    The planner, called directly from the night's start, times the pass by
+    the sidereal window (08:56:18.866 to 10:16:22.017 UTC on 2026-06-15)
+    and sweeps the range on the side of the meridian the field centre is on
+    at the window's middle. Every science block the night books, and every
+    rebuilt sample, lies in that window and on that range, and the visit
+    scans the window from its first sample to its last.
+    """
+    (patch,), start, _, _ = _nights.NIGHTS["lsa_window"]
+    timeline = _nights.night("lsa_window")
+    direct = plan_constant_el_scan(
+        field=FieldRegion(
+            ra_center=patch.ra_center,
+            dec_center=patch.dec_center,
+            width=patch.width,
+            height=patch.height,
+        ),
+        elevation=patch.elevation,
+        velocity=patch.velocity,
+        site=timeline.site,
+        start_time=start,
+        lsa_window=patch.scan_params["lsa_window"],
+    )
+    traj = direct.trajectory
+    t_first = traj.start_time.unix + float(traj.times[0])
+    t_last = traj.start_time.unix + float(traj.times[-1])
+    interval = float(traj.times[1] - traj.times[0])
+    az_lo, az_hi = float(traj.az.min()), float(traj.az.max())
+    coords = Coordinates(timeline.site)
+    mid = Time((t_first + t_last) / 2.0, format="unix", scale="utc")
+    centre_az, _ = coords.radec_to_altaz(patch.ra_center, patch.dec_center, mid)
+    assert float(centre_az) % 360.0 < 180.0  # the premise: the rising side
+
+    science = _science(timeline)
+    assert science
+    assert science[0].t_start.unix == pytest.approx(t_first, abs=0.01)
+    assert science[-1].t_stop.unix == pytest.approx(t_last + interval, abs=0.01)
+    for block in science:
+        assert block.rising is True
+        assert t_first - 0.01 <= block.t_start.unix
+        assert block.t_stop.unix <= t_last + interval + 0.01
+        assert (block.az_start, block.az_end) == pytest.approx((az_lo, az_hi), abs=1e-6)
+    pairs = _nights.rebuilt("lsa_window")
+    assert len([b for b, _ in pairs if b.block_type == BlockType.SCIENCE]) == len(science)
+    for _, scan in pairs:
+        rebuilt = scan.trajectory
+        assert az_lo - 1e-9 <= float(rebuilt.az.min())
+        assert float(rebuilt.az.max()) <= az_hi + 1e-9
+        assert rebuilt.start_time.unix + float(rebuilt.times[0]) >= t_first - 0.01
+
+
+def test_rising_beside_an_lsa_window_is_not_read():
+    """A ``rising`` request beside an ``lsa_window`` changes nothing.
+
+    The planner refuses the two together and the rebuild passes
+    ``rising=None`` under a window, so the window chooses the pass and its
+    side. The window's pass is on the rising side, so ``rising=False``
+    contradicts it: the night books the same blocks as the night without
+    the request, and each rebuilds to the same samples.
+    """
+    (patch,), start, end, kwargs = _nights.NIGHTS["lsa_window"]
+    contradicting = dataclasses.replace(
+        patch, scan_params={"lsa_window": patch.scan_params["lsa_window"], "rising": False}
+    )
+    timeline = generate_timeline(
+        patches=[contradicting], site=get_fyst_site(), start_time=start, end_time=end, **kwargs
+    )
+    plain = _nights.night("lsa_window")
+
+    def booked(blocks):
+        return [
+            (
+                b.block_type,
+                b.scan_type,
+                b.patch_name,
+                b.t_start.isot,
+                b.t_stop.isot,
+                b.az_start,
+                b.az_end,
+                b.elevation,
+                b.rising,
+            )
+            for b in blocks
+        ]
+
+    assert _science(plain)
+    assert booked(timeline.blocks) == booked(plain.blocks)
+    pairs = schedule_to_trajectories(timeline, science_only=False)
+    plain_pairs = _nights.rebuilt("lsa_window")
+    assert len(pairs) == len(plain_pairs)
+    for (_, scan), (_, plain_scan) in zip(pairs, plain_pairs, strict=True):
+        for key in ("times", "az", "el"):
+            assert np.array_equal(
+                getattr(scan.trajectory, key), getattr(plain_scan.trajectory, key)
+            )
+        assert scan.trajectory.start_time == plain_scan.trajectory.start_time
 
 
 def test_a_pass_advisory_from_the_gate_is_raised_by_the_rebuild_not_the_night():

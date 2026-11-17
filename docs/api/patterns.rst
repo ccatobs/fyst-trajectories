@@ -33,7 +33,7 @@ TrajectoryBuilder
    :undoc-members:
 
 **Detector offset support** - the same builder, with the boresight
-offset so module ``i1`` tracks the target::
+offset so module ``IM6`` tracks the target::
 
     from fyst_trajectories.primecam import get_primecam_offset
 
@@ -41,7 +41,7 @@ offset so module ``i1`` tracks the target::
         TrajectoryBuilder(get_fyst_site())
         .at(ra=180.0, dec=-30.0)
         .with_config(config)
-        .for_detector(get_primecam_offset("i1"))
+        .for_detector(get_primecam_offset("IM6"))
         .duration(60.0)
         .starting_at(start_time)
         .build()
@@ -85,9 +85,8 @@ Configuration Classes
 
    For field-based observations, prefer
    :func:`~fyst_trajectories.planning.plan_constant_el_scan` over building a
-   ``ConstantElScanConfig`` by hand, and for a given azimuth window
-   :func:`~fyst_trajectories.planning.plan_constant_el_window_scan`; see
-   :doc:`../planning`.
+   ``ConstantElScanConfig`` by hand, and for a given azimuth window its window
+   form (``az_window`` with ``duration``); see :doc:`../planning`.
 
 .. autoclass:: fyst_trajectories.patterns.PongScanConfig
    :members:

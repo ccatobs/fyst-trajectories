@@ -151,9 +151,10 @@ def swept_az_envelope(
     which is narrower by one overshoot per side.
 
     Widening the *right* window matters as much as widening it. A
-    drifting constant-elevation pass sweeps the corridor its field
-    crosses over the whole pass, which is far wider than the field's
-    instantaneous width, so the window handed in has to be that corridor.
+    constant-elevation pass across a field sweeps the range in which the
+    field's border meets the scan elevation over its whole crossing, which
+    is not the field's instantaneous width, so the window handed in has to
+    be that range.
 
     Parameters
     ----------

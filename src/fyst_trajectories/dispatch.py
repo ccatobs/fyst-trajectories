@@ -395,7 +395,7 @@ def choose_encoder_solution(
     verdicts = _wraps_sun_safe(
         sun_safe, np.array([az for az, _ in admissible], dtype=float), goal_el, check_times
     )
-    safe = [candidate for candidate, ok in zip(admissible, verdicts) if ok]
+    safe = [candidate for candidate, ok in zip(admissible, verdicts, strict=True) if ok]
     if not safe:
         when = (
             check_times[0].iso

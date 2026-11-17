@@ -59,9 +59,9 @@ the defaults, which :doc:`overhead_model` lists field by field.
    :width: 100%
 
    This night as ``plot_timeline_gantt`` draws it: Wide01's Pong scans
-   early, Deep56's constant-elevation scans once its crossing opens,
-   calibrations on their cadences in between, and idle ticks while no
-   patch is observable.
+   early, a wait for Deep56's crossing to open, Deep56's
+   constant-elevation scans once it has, calibrations on their cadences in
+   between, and idle ticks while no patch is observable.
 
 ``generate_timeline`` takes three more keyword arguments:
 
@@ -76,11 +76,12 @@ the defaults, which :doc:`overhead_model` lists field by field.
   :class:`~fyst_trajectories.overhead.MinDurationConstraint`, or a custom
   :class:`~fyst_trajectories.overhead.Constraint`. The list is used as
   given, so ``sun_safe`` then no longer drives patch selection; it still
-  drives the mid-scan duration clips, the slew gate, the escape move and
-  the scan-mode planet calibrations.
+  drives the mid-scan duration clips, the slew gate, the escape move, the
+  held poses, the booking screen and the scan-mode planet calibrations.
 * ``time_step=`` sets the scheduler tick in seconds (default 300): how
   far the clock advances when nothing can be scheduled, and (plus a slew
-  allowance) the look-ahead for a constant-elevation pass.
+  allowance and any retune due) the look-ahead for a constant-elevation
+  pass.
 
 See :doc:`api/overhead_timeline` for the full signature.
 

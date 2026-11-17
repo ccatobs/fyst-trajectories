@@ -23,6 +23,7 @@ from fyst_trajectories.overhead import (
     plan_transition,
 )
 from fyst_trajectories.overhead import transitions as transitions_module
+from fyst_trajectories.overhead._moves import plan_escape_move
 
 T0 = Time("2026-03-15T12:00:00", scale="utc")
 
@@ -272,7 +273,7 @@ class TestTransitionHold:
         assert held.duration == pytest.approx(plain.duration)
 
     def test_the_hold_grid_covers_start_arrival_and_the_dwell(self, site):
-        """Three instants are asked about: now, arrival, and arrival plus the hold."""
+        """The instants asked about run from now, through arrival, to arrival plus the hold."""
         seen = []
 
         class _Recorder:
@@ -300,6 +301,66 @@ class TestTransitionHold:
     def test_a_negative_hold_raises(self, site):
         with pytest.raises(ValueError, match="hold"):
             plan_transition(190.0, 45.0, 200.0, 45.0, T0, site, hold=-1.0)
+
+    @staticmethod
+    def _asked(site, hold):
+        """Return the transition and the offsets from ``T0`` its goal was asked about at."""
+        seen = set()
+
+        def recorder(az, el, t):
+            if (float(az), float(el)) == (200.0, 45.0):
+                seen.add(round(float((t - T0).sec), 6))
+            return True
+
+        tr = plan_transition(
+            190.0,
+            45.0,
+            200.0,
+            45.0,
+            T0,
+            site,
+            sun_safe=recorder,
+            slew_safe=_path_always(True),
+            hold=hold,
+        )
+        return tr, sorted(seen)
+
+    def test_a_zero_hold_asks_the_start_alone(self, site):
+        _, asked = self._asked(site, 0.0)
+        assert asked == [0.0]
+
+    def test_a_hold_of_one_grid_step_asks_the_arrival_and_its_end(self, site):
+        """A 30 s hold is the grid's one step: the arrival and 30 s after it, no more."""
+        step = transitions_module._HOLD_CHECK_STEP_SEC
+        tr, asked = self._asked(site, step)
+        d = round(tr.duration, 6)
+        assert asked == pytest.approx([0.0, d, d + step], abs=1e-5)
+
+    def test_a_longer_hold_is_sampled_every_grid_step_and_at_its_end(self, site):
+        """A 75 s hold is asked at the arrival, 30 and 60 s after it, and its end."""
+        tr, asked = self._asked(site, 75.0)
+        d = tr.duration
+        assert asked == pytest.approx([0.0, d, d + 30.0, d + 60.0, d + 75.0], abs=1e-5)
+
+    def test_a_goal_that_closes_between_the_ends_of_the_hold_is_refused(self, site):
+        """A goal unsafe only in the middle of the hold is caught by the grid."""
+
+        def gap(az, el, t):
+            offset = (t - T0).sec
+            return not (150.0 < offset < 200.0)
+
+        held = plan_transition(
+            190.0,
+            45.0,
+            200.0,
+            45.0,
+            T0,
+            site,
+            sun_safe=gap,
+            slew_safe=_path_always(True),
+            hold=300.0,
+        )
+        assert held.cause is DeferralReason.SUN_POINT
 
 
 class TestDetour:
@@ -773,3 +834,115 @@ class TestEscape:
         without = plan_escape(90.0, 50.0, T0, site, sun_safe=bare)
         assert with_threshold is not None and without is not None
         assert (with_threshold.az_to, with_threshold.el_to) == (without.az_to, without.el_to)
+
+
+def _overtaken_after(seconds: float, el_cap: float = 32.0):
+    """Build a point predicate clear everywhere until ``seconds`` after ``T0``.
+
+    From then on only the poses at or below ``el_cap`` are clear, so
+    (180, 50) is clear now and overtaken ``seconds`` later.
+    """
+    return fake_sun_model(
+        lambda az, el, t: (t - T0).sec < seconds or float(el) <= el_cap, batch=False
+    )
+
+
+class TestEscapeHold:
+    """With ``hold`` a pose counts as overtaken when the zone reaches it during the hold."""
+
+    @staticmethod
+    def _asked_at(site, hold):
+        seen = []
+
+        def recorder(az, el, t):
+            seen.append(round(float((t - T0).sec), 6))
+            return True
+
+        assert plan_escape(180.0, 50.0, T0, site, sun_safe=recorder, hold=hold) is None
+        return seen
+
+    def test_a_zero_hold_asks_the_instant_alone(self, site):
+        assert self._asked_at(site, 0.0) == [0.0]
+
+    def test_a_hold_of_one_grid_step_asks_the_start_and_the_end(self, site):
+        step = transitions_module._HOLD_CHECK_STEP_SEC
+        assert self._asked_at(site, step) == [0.0, step]
+
+    def test_a_longer_hold_is_sampled_every_grid_step_and_at_its_end(self, site):
+        assert self._asked_at(site, 75.0) == [0.0, 30.0, 60.0, 75.0]
+
+    def test_a_pose_overtaken_during_the_hold_escapes(self, site):
+        """Clear now and overtaken 100 s later: no escape for an instant, one for a hold."""
+        sun_safe = _overtaken_after(100.0)
+        assert plan_escape(180.0, 50.0, T0, site, sun_safe=sun_safe) is None
+        tr = plan_escape(180.0, 50.0, T0, site, sun_safe=sun_safe, hold=300.0)
+        assert tr is not None and tr.safe
+        assert tr.el_to == 30.0
+
+    def test_a_pose_clear_through_the_hold_needs_no_escape(self, site):
+        sun_safe = _overtaken_after(400.0)
+        assert plan_escape(180.0, 50.0, T0, site, sun_safe=sun_safe, hold=300.0) is None
+
+    def test_the_escape_pose_holds_from_its_arrival_through_the_hold(self, site):
+        """An end pose that the zone reaches before arrival plus the hold is not taken.
+
+        Poses above 32 deg close 100 s after ``T0`` and poses above 27 deg 200 s
+        after it, so (180, 50) is overtaken during either hold. With a 120 s
+        hold an escape to 30 deg holds from its arrival, well under a minute
+        away, until before 200 s; with a 300 s hold it would not, so the
+        escape descends to 25 deg.
+        """
+
+        def zone(az, el, t):
+            offset = (t - T0).sec
+            if offset < 100.0:
+                return True
+            return float(el) <= (32.0 if offset < 200.0 else 27.0)
+
+        sun_safe = fake_sun_model(zone, batch=False)
+        short = plan_escape(180.0, 50.0, T0, site, sun_safe=sun_safe, hold=120.0)
+        long = plan_escape(180.0, 50.0, T0, site, sun_safe=sun_safe, hold=300.0)
+        assert short is not None and short.el_to == 30.0
+        assert long is not None and long.el_to == 25.0
+
+    def test_no_end_pose_that_holds_is_no_escape(self, site):
+        sun_safe = fake_sun_model(lambda az, el, t: (t - T0).sec < 100.0, batch=False)
+        tr = plan_escape(180.0, 50.0, T0, site, sun_safe=sun_safe, hold=300.0)
+        assert tr is not None and tr.cause is DeferralReason.NO_ESCAPE
+
+    def test_a_negative_hold_raises(self, site):
+        with pytest.raises(ValueError, match="hold"):
+            plan_escape(180.0, 50.0, T0, site, sun_safe=_always(True), hold=-1.0)
+
+    def test_a_separation_at_the_radius_is_inside(self, site):
+        """A pose exactly at the radius of the scalar zone has to escape.
+
+        The site's radius is set to the pose's own separation from the Sun, so
+        the tie is exact by construction; a radius a hair smaller leaves the
+        pose clear.
+        """
+        coords = Coordinates(site)
+        sun_az, sun_el = coords.get_sun_altaz(T0)
+        sep = float(coords.angular_separation(180.0, 50.0, sun_az, sun_el))
+
+        def with_radius(radius):
+            zone = dataclasses.replace(
+                site.sun_avoidance, exclusion_radius=radius, warning_radius=radius + 5.0
+            )
+            return dataclasses.replace(site, sun_avoidance=zone)
+
+        assert plan_escape(180.0, 50.0, T0, with_radius(sep)) is not None
+        assert plan_escape(180.0, 50.0, T0, with_radius(np.nextafter(sep, 0.0))) is None
+
+
+class TestEscapeMoveMemo:
+    """The escape memo keeps an instant's answer apart from a hold's."""
+
+    def test_the_hold_is_part_of_the_key(self, site):
+        sun_safe = _overtaken_after(100.0)
+        cache: dict = {}
+        kwargs = dict(sun_safe=sun_safe, remaining=3600.0, cache=cache)
+        assert plan_escape_move(180.0, 50.0, T0, site, **kwargs).clear
+        held = plan_escape_move(180.0, 50.0, T0, site, hold=300.0, **kwargs)
+        assert not held.clear and held.block is not None
+        assert plan_escape_move(180.0, 50.0, T0, site, **kwargs).clear

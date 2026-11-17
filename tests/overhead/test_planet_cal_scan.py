@@ -3,8 +3,9 @@
 When ``CalibrationPolicy.planet_cal_scan`` is set, a due ``planet_cal`` is
 planned as a multi-pass source-CES sequence on the first listed planet that
 is up and clear of the Sun, reached by a SLEW block planned with
-``plan_transition`` and followed by one CALIBRATION block per pass, instead
-of a single fixed-duration parked block. These tests cover the emit path,
+``plan_transition`` and followed, for each pass, by an idle labelled
+``waiting_for_pass`` until the pass opens and a CALIBRATION block spanning
+its samples, instead of a single fixed-duration parked block. These tests cover the emit path,
 the acquisition slew, the failure, truncation and overlap semantics, where
 the planner's advisories are raised, and the ECSV round-trip of the
 recorded pass parameters.
@@ -17,6 +18,7 @@ below sit inside that rising arc.
 import dataclasses
 import logging
 import warnings
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -28,6 +30,7 @@ from fyst_trajectories.overhead import (
     BlockType,
     CalibrationPolicy,
     CalibrationState,
+    DeferralReason,
     ObservingPatch,
     ObservingTimeline,
     OverheadModel,
@@ -229,20 +232,32 @@ def _passes(blocks):
 
 
 def _assert_acquisition(blocks, anchor, ctx, az, el):
-    """Assert the slew from the anchor and the gap-free tiling after it.
+    """Assert the slew from the anchor, the waits and pass blocks after it, and their tiling.
 
     The first block is the SLEW from ``(az, el)`` at ``anchor``, as long as
-    ``plan_transition`` makes the move to the first pass's start pose; the
-    first pass starts at its arrival and every later block at the previous
-    block's stop.
+    ``plan_transition`` makes the move to the first pass's start pose. Each
+    pass block spans its pass's samples, from the first to one sample
+    interval past the last; the time before it, after the slew or after the
+    previous pass, is an idle labelled ``waiting_for_pass`` at the pose the
+    block before it left. Every block starts at the previous block's stop.
     """
     slew, passes = blocks[0], _passes(blocks)
     assert slew.block_type == BlockType.SLEW
     assert slew.patch_name == "slew_to_jupiter"
     assert slew.t_start.unix == anchor.unix
-    assert all(b.block_type == BlockType.CALIBRATION for b in blocks[1:])
+    for before, block in pairwise(blocks):
+        if block.block_type == BlockType.IDLE:
+            assert block.metadata["reason"] == "waiting_for_pass"
+            assert (block.az_start, block.elevation) == (before.end_pose_az, before.end_pose_el)
+        else:
+            assert block.block_type == BlockType.CALIBRATION
 
     refs = [_reference_pass(b, ctx.site) for b in passes]
+    for block, ref in zip(passes, refs, strict=True):
+        times = get_absolute_times(ref.trajectory)
+        step = float(ref.config.timestep)
+        assert abs((times[0] - block.t_start).sec) <= 0.01
+        assert (block.t_stop - times[-1]).sec == pytest.approx(step, abs=1e-6)
     expected = plan_transition(
         az,
         el,
@@ -265,7 +280,7 @@ def _assert_acquisition(blocks, anchor, ctx, az, el):
 
     # Tiling holds to 1e-6 s: each t_stop is constructed as the next t_start, so
     # unix-second float round-off is the only gap (same tolerance elsewhere in this file).
-    for a, b in zip(blocks, blocks[1:]):
+    for a, b in pairwise(blocks):
         assert abs(a.t_stop.unix - b.t_start.unix) < 1e-6
 
 
@@ -291,15 +306,19 @@ class TestPlanetCalScanEmit:
         anchor, ctx, result = rising_run
         blocks = result.blocks
 
-        # The acquisition slew, then one CALIBRATION block per requested pass.
-        assert len(blocks) == 4
+        # The acquisition slew, then for each requested pass the wait for it
+        # and its CALIBRATION block.
+        assert [b.block_type for b in blocks] == [BlockType.SLEW] + [
+            BlockType.IDLE,
+            BlockType.CALIBRATION,
+        ] * 3
         passes = _passes(blocks)
         assert len(passes) == 3
         assert all(b.scan_type == "planet_cal" for b in passes)
 
         # The slew starts exactly at the pre-cal clock and lasts as long as
-        # plan_transition says; the first pass starts at its arrival and the
-        # blocks tile with no gaps (each t_stop is the next t_start).
+        # plan_transition says; each pass block spans its samples, the waits
+        # fill the time before them, and the blocks tile with no gaps.
         _assert_acquisition(blocks, anchor, ctx, 180.0, 50.0)
 
         # State advances to the last block's stop and marks the cadence at
@@ -374,9 +393,9 @@ class TestPlanetCalScanEmit:
             assert sp["window"][0] == meta["t0_scan"]
             # el_bore matches the block elevation and is the pass value.
             assert sp["el_bore"] == block.elevation
-            # The true scan start is at or after the block start (acquisition
-            # and inter-pass repointing fold into the block).
-            assert Time(meta["t0_scan"]).unix >= block.t_start.unix - 1e-6
+            # The block starts at the pass's first sample, the window start
+            # recorded to the millisecond.
+            assert abs(Time(meta["t0_scan"], scale="utc").unix - block.t_start.unix) <= 1e-3
 
         # One search planned the sequence, from an anchor before its first pass;
         # every pass records it, beside the dict rather than in it.
@@ -394,14 +413,15 @@ class TestPlanetCalScanEmit:
         # abs=1e-3 deg: milli-degree tolerance on the geometric eta offsets.
         assert eta_offsets == pytest.approx([-0.4325, 0.0, 0.4325], abs=1e-3)
 
-    def test_a_centred_spelling_is_recorded_as_c(self, rising_run):
-        """A policy naming the centre module ``IM0`` records what a ``"c"`` policy does.
+    @pytest.mark.parametrize("spelling", ["c", "Center"])
+    def test_a_centred_spelling_is_recorded_as_c(self, rising_run, spelling):
+        """A policy spelling the on-axis bay otherwise records what the default ``IM0`` does.
 
-        The recorded ``footprint`` is the module's canonical name, so a
-        consumer comparing it as a string sees one spelling per module.
+        The recorded ``footprint`` names the on-axis bay ``"c"`` whatever
+        the spelling, so a consumer comparing it as a string sees one name.
         """
-        anchor, _, c_run = rising_run
-        ctx = _ctx(_scan_policy(planet_cal_passes=3, planet_cal_footprint="IM0"))
+        anchor, _, im0_run = rising_run
+        ctx = _ctx(_scan_policy(planet_cal_passes=3, planet_cal_footprint=spelling))
         state = SchedulerState(
             current_time=anchor,
             current_az=180.0,
@@ -409,9 +429,9 @@ class TestPlanetCalScanEmit:
             cal_state=_only_planet_cal_due(anchor),
             scan_counter=0,
         )
-        im0_run = CalibrationPhase().run(state, ctx)
-        got = [b.metadata["scan_params"] for b in _passes(im0_run.blocks)]
-        want = [b.metadata["scan_params"] for b in _passes(c_run.blocks)]
+        run = CalibrationPhase().run(state, ctx)
+        got = [b.metadata["scan_params"] for b in _passes(run.blocks)]
+        want = [b.metadata["scan_params"] for b in _passes(im0_run.blocks)]
         assert len(got) == 3
         assert got == want
         assert {sp["footprint"] for sp in got} == {"c"}
@@ -423,12 +443,12 @@ class TestPlanetCalScanEmit:
         assert all(b.metadata["scan_params"]["mode"] == "rising" for b in blocks)
         el_bores = [b.elevation for b in blocks]
         assert el_bores == sorted(el_bores)
-        assert all(a < b for a, b in zip(el_bores, el_bores[1:]))
+        assert all(a < b for a, b in pairwise(el_bores))
         # Each pass steps el_bore by the full footprint eta extent (1.2974 deg),
         # so consecutive passes tile the source in elevation with no overlap or gap.
         # The extent follows the per-module FOV radius, an instrument-team
         # value still pending; the pin moves with it.
-        deltas = [b - a for a, b in zip(el_bores, el_bores[1:])]
+        deltas = [b - a for a, b in pairwise(el_bores)]
         # abs=1e-3 deg: milli-degree tolerance on the geometric el_bore steps.
         assert deltas == pytest.approx([1.2974, 1.2974], abs=1e-3)
 
@@ -464,9 +484,9 @@ class TestPlanetCalScanEmit:
         # A setting source crosses higher elevations first: strictly
         # decreasing el_bore across the sequence.
         el_bores = [b.elevation for b in passes]
-        assert all(a > b for a, b in zip(el_bores, el_bores[1:]))
-        # The slew from the anchor, then contiguous tiling, same as the
-        # rising path.
+        assert all(a > b for a, b in pairwise(el_bores))
+        # The slew from the anchor, then the waits and pass blocks, same as
+        # the rising path.
         _assert_acquisition(blocks, anchor, ctx, 180.0, 50.0)
 
     def test_total_time_conserved_and_budget_counts_planet_cal(self, rising_run):
@@ -643,6 +663,35 @@ class TestPlanetCalScanDeferOnFailure:
         assert result.state.cal_state.last_planet_cal is None
         assert result.state.cal_state.last_skydip is not None
 
+    def test_a_pass_the_booking_screen_refuses_books_no_pass(self, monkeypatch):
+        """The screen refusing the second pass refuses the sequence; the cal stays due."""
+        screen = phases._execution_refusal
+        screened = []
+
+        def refuse_the_second_pass(trajectory, scan_type, scan_params, site, sun_safe):
+            if scan_type == "source_ces":
+                screened.append(scan_params["pass_index"])
+                if len(screened) == 2:
+                    return DeferralReason.AXIS_DYNAMICS
+            return screen(trajectory, scan_type, scan_params, site, sun_safe)
+
+        monkeypatch.setattr(phases, "_execution_refusal", refuse_the_second_pass)
+        anchor = Time(_ANCHOR, scale="utc")
+        ctx = _ctx(_scan_policy(planet_cal_passes=3))
+        state = SchedulerState(
+            current_time=anchor,
+            current_az=180.0,
+            current_el=50.0,
+            cal_state=_only_planet_cal_due(anchor),
+            scan_counter=0,
+        )
+        result = CalibrationPhase().run(state, ctx)
+
+        assert len(screened) == 2
+        assert not [b for b in result.blocks if b.scan_type == "planet_cal"]
+        assert not [b for b in result.blocks if (b.patch_name or "").startswith("slew_to_")]
+        assert result.state.cal_state.last_planet_cal is None
+
 
 def _refuse_every_path(current_az, current_el, goal_az, goal_el, time):
     """Refuse every slew, as a path-level model."""
@@ -667,9 +716,9 @@ class TestPlanetCalScanAcquisition:
         assert result.blocks
         assert result.blocks[0].block_type == BlockType.SLEW
         assert result.blocks[0].patch_name == "slew_to_jupiter"
-        passes = result.blocks[1:]
+        passes = _passes(result.blocks)
         assert passes
-        assert all(b.block_type == BlockType.CALIBRATION for b in passes)
+        assert {b.block_type for b in result.blocks[1:]} <= {BlockType.IDLE, BlockType.CALIBRATION}
         assert all(b.metadata["target"] == "jupiter" for b in passes)
         assert all(b.metadata["scan_params"]["body"] == "jupiter" for b in passes)
 
@@ -687,7 +736,7 @@ class TestPlanetCalScanAcquisition:
         assert slew.patch_name == "slew_to_jupiter"
         # abs=0.5 deg: the re-anchored first sample sits near -48.6.
         assert slew.az_end == pytest.approx(-48.6, abs=0.5)
-        passes = result.blocks[1:]
+        passes = _passes(result.blocks)
         assert passes
         for block in passes:
             assert block.az_start < 0.0
@@ -739,7 +788,7 @@ class TestPlanetCalScanAcquisition:
 
 
 class TestPlanetCalScanTruncation:
-    """End-of-night keeps only the passes that finish before the window closes."""
+    """End-of-night keeps only the passes whose blocks end by the window's close."""
 
     def test_truncates_to_fitting_prefix(self):
         anchor = Time("2026-03-15T20:30:00", scale="utc")
@@ -767,18 +816,20 @@ class TestPlanetCalScanTruncation:
         assert passes[0].metadata["scan_params"]["pass_index"] == 0
         assert passes[0].t_stop.unix <= ctx.end_time.unix
 
-    def test_a_pass_quantised_short_of_its_window_is_still_dropped(self):
-        # Leg quantisation moves the trajectory end and the recorded window
-        # close apart in either direction. This window closes 3.75 s before
-        # the third pass's ``t1_iso`` while the pass's own quantised
-        # trajectory ends before the close, so a filter that looks only at
-        # the trajectory end keeps a block whose ``t_stop`` lies past the
-        # window, breaking the tiling invariant ``validate`` checks.
+    def test_a_pass_is_kept_when_its_block_ends_by_the_close(self):
+        """The end of the night is judged on the block a pass gets, not on its window.
+
+        Leg quantisation moves the trajectory's end and the recorded window's
+        close apart. Here the second pass's samples end, and its block one
+        sample interval later, before the night closes at 20:47:50, while its
+        window (``t1_iso``) runs on to 20:47:54.6, so the pass is kept, and
+        no block ends after the close.
+        """
         anchor = Time("2026-03-15T20:30:00", scale="utc")
         ctx = _ctx(
             _scan_policy(planet_cal_passes=3),
             start="2026-03-15T20:30:00",
-            end="2026-03-15T20:56:45",
+            end="2026-03-15T20:47:50",
         )
         state = SchedulerState(
             current_time=anchor,
@@ -790,21 +841,25 @@ class TestPlanetCalScanTruncation:
 
         result = CalibrationPhase().run(state, ctx)
 
-        assert result.blocks
+        passes = _passes(result.blocks)
+        assert [b.metadata["scan_params"]["pass_index"] for b in passes] == [0, 1]
+        window_close = Time(passes[1].metadata["scan_params"]["window"][1], scale="utc")
+        assert window_close > ctx.end_time
         for block in result.blocks:
             assert block.t_stop.unix <= ctx.end_time.unix
         assert result.state.current_time.unix <= ctx.end_time.unix
 
 
 class TestPlanetCalScanOverlappingPasses:
-    """A pass that starts before the previous kept pass ends is dropped."""
+    """A pass whose first sample falls before the previous kept pass's block ends is dropped."""
 
     def test_a_pass_that_opens_before_the_previous_one_closes_is_dropped(self):
-        """At an el_step of 0.3 deg the second pass opens before the first closes.
+        """At an el_step of 0.3 deg the second pass opens before the first pass's block ends.
 
-        Each pass block starts where the previous pass ends, so the second
-        pass would start before its own block. It is dropped, and the third,
-        which opens after the first closes, follows the first.
+        The first pass's block runs to one sample interval after its last
+        sample, so the second pass, whose first sample comes before that,
+        would overlap it. It is dropped, and the third, which opens after
+        the first block ends, follows the first.
         """
         anchor = Time(_ANCHOR, scale="utc")
         ctx = _ctx(_scan_policy(planet_cal_el_step=0.3))
@@ -822,15 +877,19 @@ class TestPlanetCalScanOverlappingPasses:
         assert [b.subscan_index for b in passes] == [0, 1]
         for block in passes:
             assert block.metadata["scan_params"]["n_passes"] == 3
-            assert Time(block.metadata["t0_scan"], scale="utc").unix >= block.t_start.unix
+        refs = [_reference_pass(b, ctx.site) for b in passes]
+        first_end = get_absolute_times(refs[0].trajectory)[-1]
+        assert passes[0].t_stop > first_end
+        assert get_absolute_times(refs[1].trajectory)[0] >= passes[0].t_stop
 
     def test_a_pass_that_opens_while_the_previous_trajectory_runs_is_dropped(self):
         """At an el_step of 1.10 deg Saturn's second pass opens inside the first's last leg.
 
-        The second pass opens after the first block ends, at the first
-        pass's ``t1_iso``, but before the first trajectory, quantised to
-        whole legs, ends. It is dropped, and each kept pass opens after the
-        previous kept trajectory ends.
+        The second pass opens after the first pass's window closes, at its
+        ``t1_iso``, but before the first trajectory, quantised to whole
+        legs, ends, and so before the first block, which runs to one sample
+        interval past that end. It is dropped, and each kept pass opens
+        after the previous kept trajectory ends.
         """
         timeline = generate_timeline(
             patches=[],
@@ -875,7 +934,7 @@ class TestPlanetCalScanECSVRoundTrip:
 
         cal_blocks = _passes(loaded.blocks)
         assert len(cal_blocks) == 3
-        for original, restored in zip(_passes(blocks), cal_blocks):
+        for original, restored in zip(_passes(blocks), cal_blocks, strict=True):
             assert restored.metadata["t0_scan"] == original.metadata["t0_scan"]
             assert restored.metadata["scan_params"] == original.metadata["scan_params"]
             # The search start is two floats, which JSON keeps exactly.
@@ -941,7 +1000,7 @@ class TestScheduleToTrajectoriesScienceOnly:
         # science pairs are identical to the science_only=True result.
         assert len(all_false) == len(sci_true)
         assert all(b.block_type == BlockType.SCIENCE for b, _ in all_false)
-        for (b_false, sb_false), (b_true, sb_true) in zip(all_false, sci_true):
+        for (b_false, sb_false), (b_true, sb_true) in zip(all_false, sci_true, strict=True):
             assert b_false is b_true
             assert np.array_equal(sb_false.trajectory.az, sb_true.trajectory.az)
             assert np.array_equal(sb_false.trajectory.el, sb_true.trajectory.el)
@@ -949,6 +1008,55 @@ class TestScheduleToTrajectoriesScienceOnly:
 
 class TestPlanetCalScanReconstruction:
     """``schedule_to_trajectories(science_only=False)`` rebuilds source-CES passes."""
+
+    def test_a_pass_recorded_on_a_retired_ring_label_is_logged_and_skipped(
+        self, rising_run, caplog
+    ):
+        """A pass whose dict names ``i3`` is skipped with its reason; the ``"c"`` passes rebuild.
+
+        The labels ``i1`` .. ``i6`` name no bay, so the rebuild refuses that
+        pass with a schema error that the batch logs, and rebuilds the other
+        two passes as it does when no pass is changed.
+        """
+        anchor, ctx, result = rising_run
+
+        def timeline_of(blocks):
+            return ObservingTimeline(
+                blocks=list(blocks),
+                site=ctx.site,
+                start_time=anchor,
+                end_time=blocks[-1].t_stop,
+                overhead_model=ctx.overhead_model,
+                calibration_policy=ctx.calibration_policy,
+            )
+
+        retired = _passes(result.blocks)[1]
+        assert retired.metadata["scan_params"]["pass_index"] == 1
+        assert retired.metadata["scan_params"]["footprint"] == "c"
+        tampered = dataclasses.replace(
+            retired,
+            metadata={
+                **retired.metadata,
+                "scan_params": {**retired.metadata["scan_params"], "footprint": "i3"},
+            },
+        )
+        blocks = [tampered if b is retired else b for b in result.blocks]
+        want = schedule_to_trajectories(timeline_of(result.blocks), science_only=False)
+        with caplog.at_level(logging.WARNING, logger="fyst_trajectories.overhead.simulation"):
+            got = schedule_to_trajectories(timeline_of(blocks), science_only=False)
+
+        (record,) = [r for r in caplog.records if r.name == "fyst_trajectories.overhead.simulation"]
+        message = record.getMessage()
+        assert message.startswith(f"Failed to generate trajectory for block '{retired.patch_name}'")
+        assert "Unknown PrimeCam module 'i3'" in message
+        assert "The labels i1..i6 are no longer defined" in message
+        assert [b.metadata["scan_params"]["pass_index"] for b, _ in got] == [0, 2]
+        kept = [pair for pair in want if pair[0] is not retired]
+        for (block, rebuilt), (reference_block, reference) in zip(got, kept, strict=True):
+            assert block is reference_block
+            assert rebuilt.computed_params == reference.computed_params
+            assert np.array_equal(rebuilt.trajectory.az, reference.trajectory.az)
+            assert np.array_equal(rebuilt.trajectory.el, reference.trajectory.el)
 
     def test_reconstructs_science_plus_one_pair_per_pass(self, flag_on_recon, flag_on_timeline):
         site, sci_only, with_cals = flag_on_recon
@@ -964,7 +1072,7 @@ class TestPlanetCalScanReconstruction:
 
         # The science subset is exactly the science_only=True result.
         assert len(sci_pairs) == len(sci_only)
-        for (b_f, sb_f), (b_t, sb_t) in zip(sci_pairs, sci_only):
+        for (b_f, sb_f), (b_t, sb_t) in zip(sci_pairs, sci_only, strict=True):
             assert b_f is b_t
             assert np.array_equal(sb_f.trajectory.az, sb_t.trajectory.az)
 
@@ -1057,15 +1165,17 @@ class TestPlanetCalScanReconstruction:
         _assert_reconstruction_faithful(block, scan_block, ctx.site)
 
     def test_an_off_centre_pass_reconstructs_from_its_search_start(self):
-        """On ``i6`` Jupiter reaches the boresight elevation only after the pass ends.
+        """On ``IM6`` Jupiter reaches the boresight elevation 6.5 min after the pass ends.
 
-        The kernel places the module on the source from that crossing, which
-        the planner's 24 h search holds and the recorded pass widened by 300 s
-        does not: the block without ``search_start`` is refused, while the
-        block as written rebuilds as planned.
+        The boresight elevation turns IM6 to below the boresight, so the
+        rising source crosses the bay before it climbs to the boresight
+        elevation. The kernel places the bay on the source from that
+        crossing, which the planner's 24 h search holds and the recorded pass
+        widened by 300 s does not: the block without ``search_start`` is
+        refused, while the block as written rebuilds as planned.
         """
         anchor = Time(_ANCHOR, scale="utc")
-        ctx = _ctx(_scan_policy(planet_cal_passes=1, planet_cal_footprint="i6"))
+        ctx = _ctx(_scan_policy(planet_cal_passes=1, planet_cal_footprint="IM6"))
         state = SchedulerState(
             current_time=anchor,
             current_az=180.0,
@@ -1095,7 +1205,7 @@ class TestPlanetCalScanReconstruction:
         )
         refused = schedule_to_trajectories(keyless, science_only=False)
         ((block, scan_block),) = pairs
-        assert block.metadata["scan_params"]["footprint"] == "i6"
+        assert block.metadata["scan_params"]["footprint"] == "IM6"
         _assert_reconstruction_faithful(block, scan_block, ctx.site)
         assert refused == []
 
@@ -1134,8 +1244,8 @@ class TestPlanetCalScanReconstruction:
             scan_counter=0,
         )
         blocks = CalibrationPhase().run(state, ctx).blocks
-        assert len(blocks) == len(utc_result.blocks) == 4
-        for block, utc_block in zip(blocks, utc_result.blocks):
+        assert len(blocks) == len(utc_result.blocks) == 7
+        for block, utc_block in zip(blocks, utc_result.blocks, strict=True):
             assert (block.t_start.scale, block.t_stop.scale) == ("utc", "utc")
             assert abs((block.t_start - utc_block.t_start).to_value("s")) < 1e-6
             assert abs((block.t_stop - utc_block.t_stop).to_value("s")) < 1e-6

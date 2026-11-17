@@ -21,11 +21,11 @@ the fixtures below (read-only; never edited by this repo):
 * Daisy - same file, ``get_daisy_params``.
 * CE    - same file, ``create_entry_constant_elevation`` (the ``list_az_table``
   ``s`` dict + the ObsUnit ``nominal_alt`` carrier + the ``onsky_velocity``
-  ``mapping_params`` carrier). The az-table row has two consumers:
-  ``plan_constant_el_window_scan`` takes one entry of it directly
-  (``az_min``/``az_max`` as ``az_window``, ``duration`` converted from hours to
-  seconds), while ``plan_constant_el_scan`` derives its window and timing from
-  the field and treats the row as structural. The window form's dispatch
+  ``mapping_params`` carrier). The az-table row has two consumers, the two
+  forms of ``plan_constant_el_scan``: the window form takes one entry of it
+  directly (``az_min``/``az_max`` as ``az_window``, ``duration`` converted
+  from hours to seconds), while the field form derives its window and timing
+  from the field and treats the row as structural. The window form's dispatch
   dictionary carries the row's azimuth pair, elevation and duration in
   seconds, so the adapter is a rename plus one unit conversion at the script
   hop.
@@ -48,8 +48,8 @@ keyword of the ``scan_patterns`` package's ``Pong``, not fystplan;
 fystplan and this library already agree. The mapping is asserted as identity so
 that if either side ever drifts to the singular, this test catches it.
 
-For constant elevation ``onsky_velocity`` is not a rename: both CE planners
-take ``velocity`` as the mount-frame azimuth rate
+For constant elevation ``onsky_velocity`` is not a rename: both forms of
+``plan_constant_el_scan`` take ``velocity`` as the mount-frame azimuth rate
 (on-sky speed = ``velocity * cos(elevation)``), so the adapter divides the
 on-sky rate by ``cos(elevation)``. That assumes the fystplan key is on-sky,
 as its name says, which KOSMA has not yet confirmed.
@@ -69,14 +69,15 @@ from pathlib import Path
 
 import pytest
 
+from fyst_trajectories.offsets import InstrumentOffset
 from fyst_trajectories.planning import (
     FieldRegion,
     plan_constant_el_scan,
-    plan_constant_el_window_scan,
     plan_daisy_scan,
     plan_pong_scan,
     plan_source_ces,
 )
+from fyst_trajectories.site import AtmosphericConditions
 
 # ---------------------------------------------------------------------------
 # THE ADAPTER CONTRACT
@@ -98,10 +99,10 @@ RENAME_MAP: dict[str, str] = {
 # fystplan emit keys that are labels / structural inputs, NOT direct scalar
 # planner kwargs. ``name`` is a bookkeeping label. ``width``/``height`` are
 # consumed by ``FieldRegion`` (for pong / CE), not passed straight to the
-# planner. The CE az-table geometry keys are structural for
+# planner. The CE az-table geometry keys are structural for the field form of
 # ``plan_constant_el_scan``, which derives its az window and timing from the
-# field + elevation, and direct inputs of ``plan_constant_el_window_scan``,
-# which sweeps the row's window (see the CE window contract below).
+# field + elevation, and direct inputs of its window form, which sweeps the
+# row's window (see the CE window contract below).
 FYSTPLAN_LABEL_KEYS: frozenset[str] = frozenset({"name"})
 FIELDREGION_KEYS: frozenset[str] = frozenset({"width", "height"})
 
@@ -129,6 +130,49 @@ def _required_planner_params(fn) -> set[str]:
         for name, p in inspect.signature(fn).parameters.items()
         if p.default is inspect.Parameter.empty and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
     }
+
+
+# ``plan_constant_el_scan`` has two forms behind one signature: ``az_window``
+# with ``duration`` selects the window form, and the field form's own arguments
+# are refused beside it. ``test_ce_forms_partition_the_signature`` holds these
+# sets to the planner's signature and refusals, so a parameter added to the
+# signature fails there until it is placed in one of the three.
+CE_COMMON_TO_BOTH_FORMS: frozenset[str] = frozenset(
+    {
+        "field",
+        "elevation",
+        "velocity",
+        "site",
+        "start_time",
+        "az_accel",
+        "timestep",
+        "detector_offset",
+        "az_padding",
+        "atmosphere",
+        "sun_safe",
+    }
+)
+CE_WINDOW_FORM_ONLY: frozenset[str] = frozenset({"az_window", "duration"})
+CE_FIELD_FORM_ONLY: frozenset[str] = frozenset(
+    {"rising", "angle", "lsa_window", "max_search_hours", "step_seconds"}
+)
+
+
+def _ce_form_param_names(form: str) -> set[str]:
+    """Return the parameters one form of ``plan_constant_el_scan`` accepts."""
+    own = CE_WINDOW_FORM_ONLY if form == "window" else CE_FIELD_FORM_ONLY
+    return set(CE_COMMON_TO_BOTH_FORMS | own)
+
+
+def _ce_form_required_params(form: str) -> set[str]:
+    """Return the parameters one form of ``plan_constant_el_scan`` requires.
+
+    The signature's own required parameters, plus ``az_window`` and
+    ``duration`` for the window form and ``field`` for the field form, which
+    the signature leaves optional because each is required by one form only.
+    """
+    extra = CE_WINDOW_FORM_ONLY if form == "window" else {"field"}
+    return _required_planner_params(plan_constant_el_scan) | extra
 
 
 def _apply_rename(fystplan_dict: dict) -> dict:
@@ -430,9 +474,9 @@ def test_daisy_adapter_builds_a_valid_planner_call(site, fystplan_daisy_dict):
 # Constant-elevation contract (structural).
 # ---------------------------------------------------------------------------
 def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
-    """CE is structural: fystplan az-window keys map to planner-derived state.
+    """CE is structural for the field form: fystplan az-window keys map to derived state.
 
-    ``plan_constant_el_scan`` does not accept az_min/az_max/duration directly.
+    The field form of ``plan_constant_el_scan`` does not take az_min/az_max/duration.
     It *derives* the az range and duration from the field + elevation (or from
     the ``lsa_window`` partial bridge). ``onsky_velocity`` reaches ``velocity``
     through a frame conversion (on-sky to mount azimuth rate), not a literal
@@ -440,7 +484,7 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     handled by the structural adapter. This test pins which keys are
     direct-mappable and which are structural.
     """
-    accepted = _planner_param_names(plan_constant_el_scan)
+    accepted = _ce_form_param_names("field")
 
     # The converted rate lands on a real planner kwarg.
     assert "velocity" in accepted
@@ -455,7 +499,7 @@ def test_ce_velocity_rename_and_structural_mapping(fystplan_ce_dict):
     # structurally.
     assert direct_planner_overlap == {"elevation"}, (
         f"CE: unexpected direct planner overlap {sorted(direct_planner_overlap)}; "
-        f"az_min/az_max/duration are planner-derived, not passed through"
+        f"the field form derives az_min/az_max/duration, it does not take them"
     )
 
     # The lsa_window kwarg is the documented partial bridge for the az-window /
@@ -473,7 +517,7 @@ def test_ce_required_params_are_satisfiable():
     velocity (converted from onsky_velocity) come via the structural adapter; site and
     start_time are dispatch infra.
     """
-    required = _required_planner_params(plan_constant_el_scan)
+    required = _ce_form_required_params("field")
     # elevation <- nominal_alt; velocity <- onsky_velocity; field <- structural.
     adapter_supplied = {"elevation", "velocity", "field"}
     covered = adapter_supplied | DISPATCH_INFRA_KEYS
@@ -504,7 +548,8 @@ def test_ce_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
 # ---------------------------------------------------------------------------
 # Constant-elevation window contract (direct).
 #
-# How ``plan_constant_el_window_scan`` consumes one entry of an az-table row:
+# How the window form of ``plan_constant_el_scan`` consumes one entry of an
+# az-table row:
 # each geometry key fills a planner kwarg, and the labels are dropped (the
 # window's own azimuths decide which side of the meridian it watches).
 # ---------------------------------------------------------------------------
@@ -528,6 +573,88 @@ def _ce_window_kwargs(row: dict, index: int, onsky_velocity: float) -> dict:
     }
 
 
+def test_ce_forms_partition_the_signature(site):
+    """The two forms' own parameters are the planner's, and each is refused in the other form.
+
+    So the per-form sets the contract tests read are the planner's behaviour,
+    not a copy of it.
+    """
+    names = _planner_param_names(plan_constant_el_scan)
+    partition = (CE_COMMON_TO_BOTH_FORMS, CE_WINDOW_FORM_ONLY, CE_FIELD_FORM_ONLY)
+    assert names == CE_COMMON_TO_BOTH_FORMS | CE_WINDOW_FORM_ONLY | CE_FIELD_FORM_ONLY, (
+        f"unclassified: {sorted(names - set().union(*partition))}, "
+        f"gone: {sorted(set().union(*partition) - names)}"
+    )
+    assert sum(len(part) for part in partition) == len(names)
+    window = {
+        "az_window": (48.0, 76.0),
+        "elevation": 50.0,
+        "velocity": 0.5,
+        "duration": 600.0,
+        "site": site,
+        "start_time": "2026-09-15T00:00:00",
+    }
+    field_only_values = {
+        "rising": True,
+        "angle": 10.0,
+        "lsa_window": (310.0, 10.0),
+        "max_search_hours": 12.0,
+        "step_seconds": 30.0,
+    }
+    assert set(field_only_values) == CE_FIELD_FORM_ONLY
+    for name, value in field_only_values.items():
+        with pytest.raises(ValueError, match=rf"^{name} is not accepted with az_window"):
+            plan_constant_el_scan(**window, **{name: value})
+    field = FieldRegion(ra_center=0.0, dec_center=-2.0, width=10.0, height=8.0)
+    common = {key: window[key] for key in ("elevation", "velocity", "site", "start_time")}
+    with pytest.raises(ValueError, match=r"^duration is not accepted without az_window"):
+        plan_constant_el_scan(field, **common, duration=600.0)
+    with pytest.raises(ValueError, match=r"^duration must be a real number, got None$"):
+        plan_constant_el_scan(**common, az_window=(48.0, 76.0))
+    with pytest.raises(ValueError, match=r"needs a field or an az_window"):
+        plan_constant_el_scan(**common)
+
+
+def _ce_common_values(site) -> dict:
+    """Return a value other than its default for every name common to both forms."""
+    return {
+        "field": FieldRegion(ra_center=53.117, dec_center=-27.808, width=5.0, height=6.7),
+        "elevation": 50.0,
+        "velocity": 0.5,
+        "site": site,
+        "start_time": "2026-03-15T17:20:00",
+        "az_accel": 0.8,
+        "timestep": 0.2,
+        "detector_offset": InstrumentOffset(dx=0.0, dy=0.0, name="on-axis"),
+        "az_padding": 0.5,
+        "atmosphere": AtmosphericConditions.no_refraction(),
+        "sun_safe": lambda az, el, t: True,
+    }
+
+
+def test_each_form_plans_given_every_name_it_accepts(site):
+    """A call naming every parameter of a form, none at its default, plans.
+
+    So no name the contract reads as accepted by a form is refused by it. The
+    field form's ``lsa_window`` is the one left at ``None``, since it is not
+    accepted with ``rising``.
+    """
+    common = _ce_common_values(site)
+    assert set(common) == CE_COMMON_TO_BOTH_FORMS
+    window = plan_constant_el_scan(**common, az_window=(101.0, 111.6), duration=1680.0)
+    assert window.computed_params["az_start"] == pytest.approx(100.5)
+    field_only = {
+        "rising": True,
+        "angle": 10.0,
+        "lsa_window": None,
+        "max_search_hours": 6.0,
+        "step_seconds": 20.0,
+    }
+    assert set(field_only) == CE_FIELD_FORM_ONLY
+    block = plan_constant_el_scan(**{**common, "start_time": "2026-03-15T17:00:00"}, **field_only)
+    assert block.summary.splitlines()[3].startswith("  Rising pass: ")
+
+
 def test_ce_window_form_consumes_every_az_table_key(fystplan_ce_dict):
     """Every az-table key is a window-form input or a label.
 
@@ -535,7 +662,7 @@ def test_ce_window_form_consumes_every_az_table_key(fystplan_ce_dict):
     here. ``nominal_alt`` and ``onsky_velocity`` come from the other two
     carriers; the rate reaches ``velocity`` through the frame conversion.
     """
-    accepted = _planner_param_names(plan_constant_el_window_scan)
+    accepted = _ce_form_param_names("window")
     row_keys = set(fystplan_ce_dict) - {"nominal_alt", "onsky_velocity"}
     assert row_keys == set(CE_WINDOW_ROW_MAP) | CE_WINDOW_ROW_LABELS, (
         f"CE window: unclassified az-table keys "
@@ -552,7 +679,7 @@ def test_ce_window_required_params_are_satisfiable():
     The field region is optional: a row whose target no single RA/Dec box
     describes plans without one.
     """
-    required = _required_planner_params(plan_constant_el_window_scan)
+    required = _ce_form_required_params("window")
     adapter_supplied = set(CE_WINDOW_ROW_MAP.values()) | {"velocity"}
     missing = required - (adapter_supplied | (DISPATCH_INFRA_KEYS - {"duration"}))
     assert not missing, (
@@ -564,7 +691,7 @@ def test_ce_window_required_params_are_satisfiable():
 def test_ce_window_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
     """One az-table entry builds a scan over its window, for its hours rounded to whole legs."""
     kwargs = _ce_window_kwargs(fystplan_ce_dict, 0, fystplan_ce_dict["onsky_velocity"])
-    block = plan_constant_el_window_scan(
+    block = plan_constant_el_scan(
         **kwargs, site=site, start_time="2026-09-15T00:00:00", timestep=1.0
     )
     cp = block.computed_params
@@ -580,8 +707,8 @@ def test_ce_window_adapter_builds_a_valid_planner_call(site, fystplan_ce_dict):
 # Constant-elevation window contract (dispatch dictionary).
 #
 # The ``scan_params`` dictionary the typed PCS ``constant_el_scan`` task
-# receives for a window sweep and forwards to
-# ``plan_constant_el_window_scan``. The script that generates the observing
+# receives for a window sweep and forwards to the window form of
+# ``plan_constant_el_scan``. The script that generates the observing
 # day fills it from an az-table entry: the azimuth pair, elevation and mount
 # azimuth rate as the planner takes them, and ``duration`` already in
 # seconds. The field keys are optional and, when all four are present, are
@@ -654,7 +781,7 @@ def test_ce_window_dispatch_keys_are_planner_params():
     The dictionary's own keys that are not planner kwargs are exactly the
     azimuth pair, which becomes ``az_window``.
     """
-    accepted = _planner_param_names(plan_constant_el_window_scan)
+    accepted = _ce_form_param_names("window")
     full = {key: 1.0 for key in CE_WINDOW_DISPATCH_KEYS | CE_WINDOW_DISPATCH_OPTIONAL_KEYS}
     full.update({key: 1.0 for key in CE_WINDOW_DISPATCH_FIELD_KEYS})
     filled = set(_ce_window_dispatch_kwargs(full))
@@ -665,7 +792,7 @@ def test_ce_window_dispatch_keys_are_planner_params():
 
 def test_ce_window_dispatch_required_params_are_satisfiable():
     """Every required window-form param comes from the dictionary or the dispatch."""
-    required = _required_planner_params(plan_constant_el_window_scan)
+    required = _ce_form_required_params("window")
     minimal = {key: 1.0 for key in CE_WINDOW_DISPATCH_KEYS}
     adapter_supplied = set(_ce_window_dispatch_kwargs(minimal))
     missing = required - (adapter_supplied | DISPATCH_INFRA_KEYS)
@@ -678,7 +805,7 @@ def test_ce_window_dispatch_chain_reproduces_the_row_call(site, fystplan_ce_dict
     """Row, dispatch dictionary and PCS adapter plan the same scan as the row call."""
     onsky = fystplan_ce_dict["onsky_velocity"]
     start_time = "2026-09-15T00:00:00"
-    direct = plan_constant_el_window_scan(
+    direct = plan_constant_el_scan(
         **_ce_window_kwargs(fystplan_ce_dict, 0, onsky),
         site=site,
         start_time=start_time,
@@ -688,7 +815,7 @@ def test_ce_window_dispatch_chain_reproduces_the_row_call(site, fystplan_ce_dict
     scan_params["timestep"] = 1.0
     kwargs = _ce_window_dispatch_kwargs(scan_params)
     assert kwargs["field"] is None
-    chained = plan_constant_el_window_scan(**kwargs, site=site, start_time=start_time)
+    chained = plan_constant_el_scan(**kwargs, site=site, start_time=start_time)
     for key in ("az_start", "az_stop"):
         assert chained.computed_params[key] == direct.computed_params[key]
     assert chained.duration == direct.duration
@@ -714,8 +841,8 @@ def test_ce_window_dispatch_duration_is_seconds(site, fystplan_ce_dict):
     assert scan_params["duration"] == fystplan_ce_dict["duration"][0] * 3600.0
     kwargs = _ce_window_dispatch_kwargs({**scan_params, "timestep": 1.0})
     assert kwargs["duration"] == scan_params["duration"]
-    block = plan_constant_el_window_scan(**kwargs, site=site, start_time=start_time)
-    direct = plan_constant_el_window_scan(
+    block = plan_constant_el_scan(**kwargs, site=site, start_time=start_time)
+    direct = plan_constant_el_scan(
         **_ce_window_kwargs(fystplan_ce_dict, 0, 0.5),
         site=site,
         start_time=start_time,

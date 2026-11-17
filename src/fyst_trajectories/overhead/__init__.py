@@ -90,6 +90,7 @@ from .schemas import (
     SourceCESScanParams,
     TimelineBlockMetadata,
     TransitionRecord,
+    WindowScanRecord,
     validate_scan_params,
 )
 from .simulation import (
@@ -159,6 +160,7 @@ __all__ = [
     "VisitPlan",
     "VisitPlanner",
     "VisitRecord",
+    "WindowScanRecord",
     "accumulate_hitmaps",
     "advance_idle",
     "commit_visit",

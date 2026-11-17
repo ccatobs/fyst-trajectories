@@ -41,7 +41,11 @@ def plan_pong_scan(
     Parameters
     ----------
     field : FieldRegion
-        Rectangular field specification (center RA/Dec, width, height).
+        Rectangular field specification (center RA/Dec, width, height). The
+        vertex counts are rounded up, so the path can reach beyond ``width``
+        and ``height`` (1.074 deg from the center against a 1.0 deg
+        half-height for a 2 x 2 deg field at 0.1 deg spacing; see
+        :class:`~fyst_trajectories.patterns.PongScanConfig`).
     velocity : float
         Scan velocity in sky-offset degrees/second. This is the
         speed in the tangent plane, not azimuth coordinate

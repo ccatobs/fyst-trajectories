@@ -26,6 +26,7 @@ that the subscan it books is one the planner builds:
 """
 
 import logging
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -343,7 +344,7 @@ class TestTheVisitStartsOnArrival:
         blocks = timeline.blocks
         first = next(b for b in blocks if str(b.block_type) != "calibration")
         assert abs((first.t_start - tick).sec) < 1e-3
-        for before, after in zip(blocks, blocks[1:]):
+        for before, after in pairwise(blocks):
             if str(before.block_type) == "slew":
                 assert str(after.block_type) != "idle"
         if slews:
@@ -564,12 +565,12 @@ class TestZenithKeepOut:
 
         assert timeline.science_blocks
         assert not [b for b in blocks if b.metadata.get("reason") == "unplannable"]
-        for before, after in zip(blocks, blocks[1:]):
+        for before, after in pairwise(blocks):
             if str(before.block_type) == "slew":
                 assert str(after.block_type) != "idle"
             if str(after.block_type) == "idle":
                 assert after.az_start == after.az_end == pytest.approx(before.end_pose_az)
-                assert after.elevation == pytest.approx(before.elevation)
+                assert after.elevation == pytest.approx(before.end_pose_el)
         for block in timeline.science_blocks:
             offsets = np.linspace(0.0, block.duration, 31)
             _, highest = _pattern_el_bounds(

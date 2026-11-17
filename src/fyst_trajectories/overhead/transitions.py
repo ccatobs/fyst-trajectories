@@ -42,6 +42,7 @@ from ..sun_protocols import (
     SlewSafePredicate,
     SunSafePredicate,
     ZonedSunSafePredicate,
+    _sun_verdicts,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +64,50 @@ _ESCAPE_EL_STEP_DEG = 5.0
 #: against the raw Sun separation otherwise, so for a directional zone the
 #: tolerance absorbs a step of the threshold table as well.
 _ESCAPE_APPROACH_TOLERANCE_DEG = 0.5
+#: Spacing of the instants a held pose is checked at, in seconds. The Sun
+#: moves about 0.125 deg across the sky in this time, the most a hold can
+#: miss between two instants; the end of a hold is always checked as well.
+_HOLD_CHECK_STEP_SEC = 30.0
+#: Shortest stretch at the end of a schedule worth a block of its own, in
+#: seconds. Below this the remainder is the float noise of a window boundary
+#: (ticks advanced in ``Time`` arithmetic land picoseconds short of the end),
+#: not a gap.
+_TAIL_TOLERANCE_SEC = 0.01
+
+
+def _hold_offsets(hold: float) -> np.ndarray:
+    """Return the offsets a hold of ``hold`` seconds is checked at, from its start.
+
+    Every :data:`_HOLD_CHECK_STEP_SEC` from 0 and the hold's end: a zero
+    hold is its start alone, a hold of one step its start and its end.
+    """
+    return np.append(np.arange(0.0, hold, _HOLD_CHECK_STEP_SEC), hold)
+
+
+def _hold_verdicts(
+    sun_safe: SunSafePredicate, az: float, el: float, start: Time, hold: float
+) -> np.ndarray:
+    """Return the Sun verdicts of a pose held from ``start`` for ``hold`` seconds.
+
+    One verdict per offset of :func:`_hold_offsets`, ``True`` where the
+    pose is clear, asked through the model's ``batch`` when it has one; a
+    zero hold asks the model once, at ``start``.
+    """
+    offsets = _hold_offsets(hold)
+    if offsets.size == 1:
+        return np.array([bool(sun_safe(az, el, start))])
+    times = start + TimeDelta(offsets, format="sec")
+    n = offsets.size
+    return _sun_verdicts(sun_safe, np.full(n, float(az)), np.full(n, float(el)), times)
+
+
+def _pose_holds(sun_safe: SunSafePredicate, az: float, el: float, start: Time, hold: float) -> bool:
+    """Whether a pose stays clear of the Sun zone from ``start`` for ``hold`` seconds.
+
+    The pose is asked at :func:`_hold_offsets` of the hold; a pose at the
+    zone's edge is inside, as the model has it.
+    """
+    return bool(np.all(_hold_verdicts(sun_safe, az, el, start, hold)))
 
 
 class DeferralReason(str, enum.Enum):
@@ -73,13 +118,21 @@ class DeferralReason(str, enum.Enum):
     ``NO_ESCAPE`` from :func:`plan_escape`), a planner's reason for
     deferring or dropping a target (those plus
     ``BELOW_BAND``, ``ABOVE_BAND``, ``CROSSING_TOO_SLOW``, ``MOON``,
-    ``UNPLANNABLE``, ``WINDOW_CLOSED``), and the label on an idle stretch
+    ``UNPLANNABLE``, ``WINDOW_CLOSED``, ``SUN_SCAN``, ``AXIS_DYNAMICS``),
+    and the label on an idle stretch
     (``NOTHING_AVAILABLE``, ``SCRIPT_WAITING``, ``WAITING_FOR_PASS``,
     ``WINDOW_CLOSED`` on the stretch a schedule ends with,
     ``NO_ESCAPE`` when the Sun zone holds the telescope where it sits,
     ``UNPLANNABLE`` when the offline scheduler cannot plan a science
-    subscan of the patch it selected, and a refused transition's cause
-    when the offline scheduler idles instead of slewing).
+    subscan of the patch it selected or the scan it built has two samples
+    closer than the Go TCS ``/path`` minimum interval, ``SUN_SCAN`` when
+    the scan it would book, or the pass a calibration night refused in
+    that tick, has a sample inside the Sun zone (the site's exclusion
+    radius, which PCS enforces, and, in the offline scheduler, the
+    injected Sun model when one is given), ``AXIS_DYNAMICS`` when that
+    scan has an axis speed or acceleration past a Go TCS limit, which PCS
+    refuses, and a refused transition's cause when the offline scheduler
+    idles instead of slewing).
     ``NO_WRAP`` and ``LIMITS`` are geometry and drop a target for the
     night; every other refusal passes with time and defers it. Members
     are strings, so they serialise as their values.
@@ -100,6 +153,8 @@ class DeferralReason(str, enum.Enum):
     SCRIPT_WAITING = "script_waiting"
     WAITING_FOR_PASS = "waiting_for_pass"
     NO_ESCAPE = "no_escape"
+    SUN_SCAN = "sun_scan"
+    AXIS_DYNAMICS = "axis_dynamics"
 
     def __str__(self) -> str:
         return self.value
@@ -288,8 +343,8 @@ def plan_transition(
     hold : float, optional
         Seconds the goal must stay point-safe after arrival. Default
         ``0.0``, the start instant alone. A positive value re-runs the
-        wrap choice over ``(time, arrival, arrival + hold)``, using the
-        all-times gate
+        wrap choice over ``time`` and the arrival, then every 30 s after
+        the arrival and at ``arrival + hold``, using the all-times gate
         :func:`~fyst_trajectories.dispatch.choose_encoder_solution` already
         applies to a dwell grid, and a goal that does not survive it is
         refused as ``SUN_POINT``. The window is anchored on the arrival
@@ -367,7 +422,7 @@ def plan_transition(
             duration = (
                 estimate_slew_time(current_az, current_el, az_to, el_to, site=site) + settle_time
             )
-            grid = time + TimeDelta([0.0, duration, duration + hold], format="sec")
+            grid = time + TimeDelta(np.append(0.0, duration + _hold_offsets(hold)), format="sec")
             solution = _solve(grid)
             az_to, el_to = solution
     except EncoderSolutionError as exc:
@@ -431,7 +486,7 @@ def _plan_detour(
     """Try a two-leg detour to each point-safe wrap, nearest first.
 
     With a positive ``hold`` a detour counts only when its goal stays
-    point-safe at the detour's own arrival and ``hold`` seconds later. A
+    point-safe from the detour's own arrival for ``hold`` seconds. A
     ``SUN_POINT`` transition is returned when detours were found and every
     one failed that gate; ``None`` means no detour path was found at all.
     """
@@ -449,8 +504,8 @@ def _plan_detour(
             + settle_time
         )
         if hold > 0.0:
-            window = time + TimeDelta([duration, duration + hold], format="sec")
-            if not all(sun_safe(az_to, goal_el, t) for t in window):
+            arrival = time + TimeDelta(duration, format="sec")
+            if not _pose_holds(sun_safe, az_to, goal_el, arrival, hold):
                 failed_hold = True
                 continue
         return Transition(
@@ -487,6 +542,7 @@ def plan_escape(
     slew_safe: SlewSafePredicate | None = None,
     settle_time: float = 0.0,
     el_floor: float | None = None,
+    hold: float = 0.0,
 ) -> Transition | None:
     """Plan the move out of the Sun zone for a pose the zone has overtaken.
 
@@ -495,6 +551,14 @@ def plan_escape(
     starts unsafe. The mount's own sun-avoidance system performs this
     move at the telescope; an offline planner models it so an idle
     telescope is never left inside the zone.
+
+    With ``hold`` the question is asked of the time the caller will hold
+    the pose: it is overtaken when it is inside the zone at any instant of
+    ``[time, time + hold]`` (checked every 30 s and at the end), and an
+    escape's end pose must stay outside from its arrival through
+    ``arrival + hold``. A pose clear now but overtaken later in the hold is
+    moved along a path that is clear throughout, the rule
+    :func:`plan_transition` applies to any slew.
 
     Candidate azimuths are the current one, the ends of the azimuth
     window, a half-turn grid across it, and every encoder image of the
@@ -510,7 +574,8 @@ def plan_escape(
     going to the shorter move. A path is admissible under the rule an
     escape needs: it may start unsafe, it never goes more than half a
     degree deeper into the zone than it started, and its end pose is
-    safe at arrival.
+    safe at arrival. A path from a pose that is clear at ``time`` (one
+    the zone reaches later in ``hold``) must be clear throughout.
 
     Depth and margin are measured against the point model's own
     requirement when it is a zoned model
@@ -552,27 +617,33 @@ def plan_escape(
         elevation does not raise the telescope: the search keeps the
         current elevation, since a floor bounds the descent rather than
         commanding a climb.
+    hold : float, optional
+        Seconds the caller will hold the pose from ``time``, and the escape
+        pose from its arrival. Default ``0.0``, the instant ``time`` alone
+        and the escape's arrival alone.
 
     Returns
     -------
     Transition or None
-        ``None`` when the current pose is safe (nothing to escape from).
-        Otherwise the escape as a direct ``OK`` transition, or, when no
-        candidate path is admissible (the zone holds the telescope), a
-        transition whose ``cause`` is ``NO_ESCAPE`` with ``duration``
-        ``0.0`` and the current pose as its target.
+        ``None`` when the current pose is safe for the hold (nothing to
+        escape from). Otherwise the escape as a direct ``OK`` transition,
+        or, when no candidate path is admissible (the zone holds the
+        telescope), a transition whose ``cause`` is ``NO_ESCAPE`` with
+        ``duration`` ``0.0`` and the current pose as its target.
 
     Raises
     ------
     ValueError
-        If ``time`` is not scalar, ``settle_time`` is negative, ``el_floor``
-        is outside the elevation limits, or ``slew_safe`` cannot
-        ``evaluate`` a path.
+        If ``time`` is not scalar, ``settle_time`` or ``hold`` is negative,
+        ``el_floor`` is outside the elevation limits, or ``slew_safe``
+        cannot ``evaluate`` a path.
     """
     if not time.isscalar:
         raise ValueError("plan_escape takes a scalar start time")
     if not settle_time >= 0.0:
         raise ValueError(f"settle_time must be non-negative, got {settle_time}")
+    if not hold >= 0.0:
+        raise ValueError(f"hold must be non-negative, got {hold}")
     limits = site.telescope_limits
     floor = limits.elevation.min if el_floor is None else float(el_floor)
     if not limits.elevation.is_in_range(floor):
@@ -585,8 +656,10 @@ def plan_escape(
     # The pose question is answered before the path model is touched, so a
     # caller holding a bare predicate can still ask it (only an escape
     # itself needs the sampled path).
-    if sun_safe(current_az, current_el, time):
+    held = _hold_verdicts(sun_safe, current_az, current_el, time, hold)
+    if held.all():
         return None
+    clear_now = bool(held[0])
     if slew_safe is None:
         slew_safe = _default_slew_safe(sun_safe, site)
     if not isinstance(slew_safe, PathSlewSafePredicate):
@@ -631,7 +704,7 @@ def plan_escape(
         for az_to in az_candidates:
             if az_to == float(current_az) and el_to == float(current_el):
                 continue
-            _, az_path, el_path, times = slew_safe.evaluate(
+            path_clear, az_path, el_path, times = slew_safe.evaluate(
                 current_az, current_el, az_to, el_to, time
             )
             path_sun_az, path_sun_el = coords.get_sun_altaz(times)
@@ -640,13 +713,22 @@ def plan_escape(
             )
             if threshold is not None:
                 margins = margins - np.atleast_1d(threshold(az_path, el_path, times))
-            if float(margins.min()) < start_margin - _ESCAPE_APPROACH_TOLERANCE_DEG:
-                continue
-            if not sun_safe(az_to, el_to, times[-1]):  # type: ignore[arg-type]
+            if clear_now:
+                # A pose that is still clear leaves along a clear path, as
+                # any slew does; only a pose already inside may cross the zone.
+                if not path_clear:
+                    continue
+            elif float(margins.min()) < start_margin - _ESCAPE_APPROACH_TOLERANCE_DEG:
                 continue
             duration = (
                 estimate_slew_time(current_az, current_el, az_to, el_to, site=site) + settle_time
             )
+            # The end pose is held from the path's end through the arrival
+            # (the settle) and the hold after it; with no hold, the path's end.
+            end = times[-1]  # type: ignore[index]
+            end_hold = 0.0 if hold == 0.0 else max((time - end).sec + duration, 0.0) + hold
+            if not _pose_holds(sun_safe, az_to, el_to, end, end_hold):
+                continue
             key = (float(margins[-1]), -duration)
             if best is None or key > best[0]:
                 best = (

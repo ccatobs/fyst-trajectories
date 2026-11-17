@@ -17,6 +17,7 @@ import csv
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 __all__ = [
@@ -115,7 +116,7 @@ class ScanParameterTable:
         ordered = tuple(sorted(self.bins, key=lambda b: b.el_lo))
         if not ordered:
             raise ValueError("bins must not be empty")
-        for lower, upper in zip(ordered, ordered[1:]):
+        for lower, upper in pairwise(ordered):
             if upper.el_lo < lower.el_hi - _CONTIGUITY_TOL_DEG:
                 raise ValueError(
                     f"bins overlap: [{lower.el_lo}, {lower.el_hi}) and "

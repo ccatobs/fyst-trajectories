@@ -9,6 +9,7 @@ import re
 import pytest
 from astropy.time import Time, TimeDelta
 
+from fyst_trajectories import PRIMECAM_IM0, InstrumentOffset, get_primecam_offset
 from fyst_trajectories.overhead.models import (
     BlockType,
     CalibrationPolicy,
@@ -19,6 +20,7 @@ from fyst_trajectories.overhead.models import (
     OverheadModel,
     TimelineBlock,
 )
+from fyst_trajectories.planning import FieldRegion
 
 # Block durations come from a Time subtraction converted to seconds; 1 us
 # absorbs the float round-off in that conversion.
@@ -103,10 +105,52 @@ class TestObservingPatch:
         with pytest.raises(ValueError, match="weight must be non-negative"):
             ObservingPatch(**self._kwargs(weight=-0.5))
 
+    @pytest.mark.parametrize("scan_type", ["pong", "daisy"])
+    def test_an_elevation_on_a_pong_or_daisy_patch_is_refused(self, scan_type):
+        """The pattern is scanned where the field is, so its elevation is not the caller's."""
+        with pytest.raises(ValueError, match=r"patch 'p'.*where the field is on the sky"):
+            ObservingPatch(**self._kwargs(scan_type=scan_type, elevation=50.0))
+
+    @pytest.mark.parametrize("scan_type", ["pong", "daisy"])
+    def test_a_pong_or_daisy_patch_without_an_elevation_is_accepted(self, scan_type):
+        assert ObservingPatch(**self._kwargs(scan_type=scan_type)).elevation is None
+
     def test_unknown_scan_params_key_raises(self):
         """A mistyped ``scan_params`` key is refused where the patch is made."""
         with pytest.raises(ValueError, match=r"unknown keys \['spacng'\]"):
             ObservingPatch(**self._kwargs(scan_params={"spacng": 0.2}))
+
+    @pytest.mark.parametrize(
+        ("window", "message"),
+        [
+            ((350.0, 350.0), "equal endpoints"),
+            ((400.0, 10.0), r"\[0, 360\)"),
+            ((-10.0, 30.0), r"\[0, 360\)"),
+            ((float("nan"), 30.0), r"\[0, 360\)"),
+            ((330.0,), "a pair"),
+            ((330.0, 350.0, 5.0), "a pair"),
+            ("x", "a pair"),
+            (330.0, "a pair"),
+            (("330", 350.0), "must be a real number"),
+            ((True, 350.0), "must be a real number"),
+        ],
+    )
+    def test_a_malformed_lsa_window_is_refused(self, window, message):
+        """The window is refused where the patch is made, naming the patch and the key."""
+        kwargs = self._kwargs(
+            scan_type="constant_el", elevation=50.0, scan_params={"lsa_window": window}
+        )
+        with pytest.raises(ValueError, match=r"patch 'p'.*lsa_window") as excinfo:
+            ObservingPatch(**kwargs)
+        assert re.search(message, str(excinfo.value))
+
+    @pytest.mark.parametrize("window", [(330.0, 350.0), [330.0, 350.0], (350.0, 10.0)])
+    def test_an_lsa_window_pair_is_accepted(self, window):
+        """A list is accepted as a tuple is, and a window may wrap through 0."""
+        kwargs = self._kwargs(
+            scan_type="constant_el", elevation=50.0, scan_params={"lsa_window": window}
+        )
+        assert ObservingPatch(**kwargs).scan_params["lsa_window"] == window
 
     def test_scan_params_are_read_only(self):
         """An edit after construction would bypass the key check above."""
@@ -151,6 +195,123 @@ class TestObservingPatch:
         assert type(scan_params) is dict
         scan_params["spacing"] = 0.2
         assert patch.scan_params == {"spacing": 0.1}
+
+
+class TestObservingPatchDetectorOffset:
+    """The patch's ``detector_offset``, and what a science block records from it."""
+
+    _IM3 = get_primecam_offset("IM3")
+
+    @staticmethod
+    def _kwargs(**overrides):
+        base = dict(
+            name="p",
+            ra_center=180.0,
+            dec_center=-30.0,
+            width=4.0,
+            height=4.0,
+            scan_type="constant_el",
+            velocity=1.0,
+            elevation=50.0,
+        )
+        base.update(overrides)
+        return base
+
+    @staticmethod
+    def _science(patch, el=48.5):
+        return TimelineBlock.science(
+            patch=patch,
+            t_start=Time("2026-06-15T02:00:00", scale="utc"),
+            duration=600.0,
+            az_start=80.0,
+            az_end=120.0,
+            el=el,
+            scan_index=0,
+        )
+
+    def test_the_default_is_none(self):
+        assert ObservingPatch(**self._kwargs()).detector_offset is None
+
+    def test_the_offset_is_held_by_value(self):
+        patch = ObservingPatch(**self._kwargs(detector_offset=self._IM3))
+        assert patch.detector_offset == self._IM3
+
+    @pytest.mark.parametrize("offset", ["IM3", {"dx": 1.0, "dy": 0.0}, (1.0, 0.0)])
+    def test_a_value_that_is_not_an_offset_is_refused(self, offset):
+        with pytest.raises(TypeError, match="detector_offset must be an InstrumentOffset or None"):
+            ObservingPatch(**self._kwargs(detector_offset=offset))
+
+    @pytest.mark.parametrize(
+        "offset",
+        [
+            PRIMECAM_IM0,
+            InstrumentOffset(dx=0.0, dy=0.0),
+            InstrumentOffset(dx=0.0, dy=-0.0, name="on axis", instrument_rotation=15.0),
+        ],
+    )
+    def test_an_on_axis_offset_is_stored_as_none(self, offset):
+        patch = ObservingPatch(**self._kwargs(detector_offset=offset))
+        assert patch.detector_offset is None
+        assert patch == ObservingPatch(**self._kwargs())
+        assert hash(patch) == hash(ObservingPatch(**self._kwargs()))
+
+    def test_equality_and_hash_include_the_offset(self):
+        plain = ObservingPatch(**self._kwargs())
+        offset = ObservingPatch(**self._kwargs(detector_offset=self._IM3))
+        other = ObservingPatch(**self._kwargs(detector_offset=get_primecam_offset("IM6")))
+        assert offset != plain
+        assert offset != other
+        assert offset == dataclasses.replace(offset)
+        assert hash(offset) == hash(dataclasses.replace(offset))
+        assert len({plain, offset, other}) == 3
+
+    @pytest.mark.parametrize("name", [b"IM3", 3])
+    def test_an_offset_name_that_is_not_text_is_refused(self, name):
+        offset = InstrumentOffset(dx=1.0, dy=0.0, name=name)
+        with pytest.raises(ValueError, match=r"detector_offset\.name must be a str or None"):
+            ObservingPatch(**self._kwargs(detector_offset=offset))
+
+    def test_from_field_region_passes_the_offset_through(self):
+        field = FieldRegion(ra_center=180.0, dec_center=-30.0, width=4.0, height=4.0)
+        patch = ObservingPatch.from_field_region(
+            field, "p", "constant_el", 1.0, elevation=50.0, detector_offset=self._IM3
+        )
+        assert patch == ObservingPatch(**self._kwargs(detector_offset=self._IM3))
+
+    def test_a_constant_elevation_block_records_the_offset_and_the_detector_elevation(self):
+        patch = ObservingPatch(**self._kwargs(detector_offset=self._IM3))
+        block = self._science(patch, el=48.5)
+        assert block.elevation == 48.5
+        assert block.metadata["detector_offset"] == dataclasses.asdict(self._IM3)
+        assert block.metadata["detector_elevation"] == 50.0
+        assert json.loads(json.dumps(block.metadata["detector_offset"])) == dataclasses.asdict(
+            self._IM3
+        )
+
+    @pytest.mark.parametrize("scan_type", ["pong", "daisy"])
+    def test_a_pong_or_daisy_block_records_the_offset_only(self, scan_type):
+        patch = ObservingPatch(
+            **self._kwargs(scan_type=scan_type, elevation=None, detector_offset=self._IM3)
+        )
+        block = self._science(patch)
+        assert block.metadata["detector_offset"] == dataclasses.asdict(self._IM3)
+        assert "detector_elevation" not in block.metadata
+
+    @pytest.mark.parametrize("scan_type", ["constant_el", "pong", "daisy"])
+    def test_a_block_without_an_offset_records_neither_key(self, scan_type):
+        elevation = 50.0 if scan_type == "constant_el" else None
+        for offset in (None, PRIMECAM_IM0):
+            patch = ObservingPatch(
+                **self._kwargs(scan_type=scan_type, elevation=elevation, detector_offset=offset)
+            )
+            block = self._science(patch)
+            assert "detector_offset" not in block.metadata
+            assert "detector_elevation" not in block.metadata
+
+    def test_a_constant_elevation_offset_patch_without_an_elevation_is_refused(self):
+        patch = ObservingPatch(**self._kwargs(elevation=None, detector_offset=self._IM3))
+        with pytest.raises(ValueError, match="pinned elevation"):
+            self._science(patch)
 
 
 class TestCalibrationSpec:
@@ -531,9 +692,25 @@ class TestCalibrationPolicy:
         with pytest.raises(ValueError, match="planet_cal_footprint.*'zzz'.*Available"):
             CalibrationPolicy(planet_cal_footprint="zzz")
 
+    @pytest.mark.parametrize("tag", ["i1", "I5"])
+    def test_a_retired_ring_label_is_rejected_with_the_note(self, tag):
+        """The labels ``i1`` .. ``i6`` name no bay, and the message says so."""
+        expected = (
+            f"planet_cal_footprint: Unknown PrimeCam module '{tag}'. "
+            "Available: IM0, IM1, IM2, IM3, IM4, IM5, IM6. "
+            "The labels i1..i6 are no longer defined: the ring is the bays IM1..IM6, "
+            "at different positions, and i<n> is not IM<n>."
+        )
+        with pytest.raises(ValueError) as caught:
+            CalibrationPolicy(planet_cal_footprint=tag)
+        assert str(caught.value) == expected
+
+    def test_the_default_planet_cal_footprint_is_im0(self):
+        assert CalibrationPolicy().planet_cal_footprint == "IM0"
+
     def test_valid_planet_cal_footprint_accepted(self):
         """Known module tags construct cleanly, with or without the scan flag."""
-        assert CalibrationPolicy(planet_cal_footprint="i1").planet_cal_footprint == "i1"
+        assert CalibrationPolicy(planet_cal_footprint="IM5").planet_cal_footprint == "IM5"
         policy = CalibrationPolicy(planet_cal_footprint="center", planet_cal_scan=True)
         assert policy.planet_cal_footprint == "center"
 
@@ -948,3 +1125,59 @@ class TestObservingTimeline:
         # The envelope is untouched, so azmin/azmax and the midpoint
         # boresight angle keep their meaning.
         assert (swept.az_start, swept.az_end) == (40.0, 60.0)
+
+    @pytest.mark.parametrize(
+        ("el_final", "idle_el", "expected_warnings"),
+        [(40.0, 40.0, 0), (40.0, 50.0, 1), (None, 50.0, 0), (None, 40.0, 1)],
+        ids=[
+            "parks_at_el_final",
+            "parks_at_the_stamped_elevation",
+            "no_el_final_parks_at_the_elevation",
+            "no_el_final_parks_elsewhere",
+        ],
+    )
+    def test_validate_follows_el_final_on_a_science_block(
+        self, site, el_final, idle_el, expected_warnings
+    ):
+        """A science block hands ``el_final`` forward when it records one.
+
+        The scan is stamped at el 50, where it started, and ends at el 40,
+        so the idle that follows parks at 40. A block without ``el_final``
+        hands its stamped elevation forward, as before the field existed.
+        """
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        science = TimelineBlock(
+            t_start=t0,
+            t_stop=t0 + TimeDelta(600, format="sec"),
+            block_type="science",
+            patch_name="Wide01",
+            az_start=100.0,
+            az_end=110.0,
+            elevation=50.0,
+            scan_index=0,
+            scan_type="pong",
+            az_final=104.0,
+            el_final=el_final,
+        )
+        assert science.end_pose_el == (50.0 if el_final is None else el_final)
+        idle = TimelineBlock.idle(t0 + TimeDelta(600, format="sec"), 300.0, 104.0, idle_el, 0)
+        tl = ObservingTimeline(
+            blocks=[science, idle],
+            site=site,
+            start_time=t0,
+            end_time=t0 + TimeDelta(900, format="sec"),
+            overhead_model=OverheadModel(),
+            calibration_policy=CalibrationPolicy(),
+        )
+        warnings = tl.validate()
+        assert len(warnings) == expected_warnings
+        if warnings:
+            expected = f"previous block ended at az 104.000 / el {science.end_pose_el:.2f}"
+            assert expected in warnings[0]
+
+    def test_end_pose_el_defaults_to_elevation(self, site):
+        """A block without ``el_final`` ends at its stamped elevation."""
+        t0 = Time("2026-06-15T02:00:00", scale="utc")
+        parked = TimelineBlock.calibration("pointing_cal", t0, 180.0, 45.0, 50.0, scan_index=0)
+        assert parked.el_final is None
+        assert parked.end_pose_el == parked.elevation == 50.0

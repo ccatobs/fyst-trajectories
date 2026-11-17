@@ -78,6 +78,12 @@ ScienceBlockMetadata
 .. autoclass:: fyst_trajectories.overhead.ScienceBlockMetadata
    :members:
 
+WindowScanRecord
+~~~~~~~~~~~~~~~~
+
+.. autoclass:: fyst_trajectories.overhead.WindowScanRecord
+   :members:
+
 CalibrationBlockMetadata
 ~~~~~~~~~~~~~~~~~~~~~~~~
 

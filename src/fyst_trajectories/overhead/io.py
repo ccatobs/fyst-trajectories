@@ -31,7 +31,7 @@ from .models import (
     TimelineBlock,
 )
 from .schemas import EmptyBlockMetadata, ScienceBlockMetadata, TimelineBlockMetadata
-from .utils import _utc_instant
+from .utils import _stored_isot
 
 __all__ = [
     "read_timeline",
@@ -50,7 +50,7 @@ def _iso_utc(value: Time | str) -> str:
     parse with ``datetime.fromisoformat`` (TOAST's ``GroundSchedule``)
     independent of the host timezone.
     """
-    return _utc_instant(value).isot + "+00:00"
+    return _stored_isot(value) + "+00:00"
 
 
 def _read_time(value: str) -> Time:
@@ -69,14 +69,10 @@ def _read_time(value: str) -> Time:
         return Time(datetime.fromisoformat(text), scale="utc")
 
 
-# Metadata key used for per-block retune event provenance. When a block's
-# ``metadata`` carries this key (value: a sequence of
-# :class:`~fyst_trajectories.trajectory.RetuneEvent`), the ECSV writer
-# encodes it inside the per-block JSON column as a list of
-# ``[t_start, duration]`` float pairs. The reader decodes it back into a
-# tuple of :class:`RetuneEvent`. This reuses the existing
-# ``block_meta_json`` extra-payload channel (see the JSON encoding/decoding
-# helpers below) rather than adding a sidecar table or new columns.
+# Block metadata key for retune events (a sequence of
+# :class:`~fyst_trajectories.trajectory.RetuneEvent`). The writer encodes
+# them in the ``block_meta_json`` column as ``[t_start, duration]`` float
+# pairs; the reader decodes them back into a tuple of :class:`RetuneEvent`.
 _RETUNE_EVENTS_META_KEY = "retune_events"
 
 _LIMIT_META_KEYS = (
@@ -117,8 +113,7 @@ def _encode_retune_events_for_json(meta: dict) -> dict:
         if isinstance(ev, RetuneEvent):
             encoded.append([float(ev.t_start), float(ev.duration)])
         else:
-            # Allow pre-encoded list/tuple payloads to pass through. This
-            # keeps the writer robust against callers who already encoded.
+            # A pre-encoded [t_start, duration] pair passes through.
             encoded.append([float(ev[0]), float(ev[1])])
     out = dict(meta)
     out[_RETUNE_EVENTS_META_KEY] = encoded
@@ -152,7 +147,7 @@ def write_timeline(
     ``stop_time`` as ISO strings, ``name``, ``azmin``, ``azmax``,
     ``el``, ``boresight_angle``, ``scan_index``, ``subscan_index``)
     plus FYST extension columns (``block_type``, ``scan_type``,
-    ``rising``, ``az_final``, the science-block geometry columns
+    ``rising``, ``az_final``, ``el_final``, the science-block geometry columns
     ``ra_center``, ``dec_center``, ``width``, ``height``, ``velocity``,
     and the JSON payload columns ``scan_params_json`` and
     ``block_meta_json``).
@@ -168,8 +163,14 @@ def write_timeline(
     For slew rows ``azmin`` / ``azmax`` carry the from / to azimuths of
     the move and may be unordered; they are true minimum / maximum
     bounds only for science and calibration rows. ``az_final`` holds the
-    azimuth a swept block ends at when that differs from ``azmax``, and
-    is ``nan`` (read back as ``None``) on every other block.
+    azimuth a block ends at when that differs from ``azmax`` (a swept
+    block, or a retune held at the pose the telescope arrived at), and is
+    ``nan`` (read back as ``None``) on every other block; ``el_final``
+    holds the elevation a block ends at when that differs from ``el`` (a
+    pong or daisy subscan), ``nan`` otherwise. A
+    file without either column reads it as ``None``.
+    A block that records no field (no ``ra_center``, ``dec_center``,
+    ``width`` and ``height`` keys) holds 0.0 in those four columns.
     Every time is written as a UTC ISO string to the millisecond with an
     explicit ``+00:00`` offset, the form ``read_timeline`` reads, whatever
     scale, ``precision`` or ``out_subfmt`` the timeline's ``Time`` objects
@@ -214,6 +215,7 @@ def write_timeline(
                 # column has a value in every row, and the reader maps it
                 # back to ``None``.
                 "az_final": float("nan") if block.az_final is None else float(block.az_final),
+                "el_final": float("nan") if block.el_final is None else float(block.el_final),
                 "el": block.elevation,
                 "scan_index": block.scan_index,
                 "subscan_index": block.subscan_index,
@@ -245,40 +247,31 @@ def write_timeline(
         )
 
     # ECSV cannot express a table with no rows and a typed header, so a
-    # timeline with no blocks (a night the Sun never leaves, for
-    # instance) writes one placeholder row. The header says so, and
-    # ``read_timeline`` drops the row again, otherwise the file reads
-    # back as a timeline holding one block dated 2000-01-01 that fails
-    # the library's own ``validate()``.
+    # timeline with no blocks (a night the Sun never leaves, for instance)
+    # writes one placeholder row; the header marks it and ``read_timeline``
+    # drops it.
     substituted = not rows
     if substituted:
         rows = [_empty_row()]
 
     table = Table(rows)
 
-    # Attach angular units to the TOAST canonical columns so a fyst-written
-    # ECSV is readable by TOAST's GroundSchedule v5 reader, whose
-    # ``GroundScan.__init__`` calls ``az_min.to_value(u.degree)`` on them.
-    # Setting ``.unit`` on a plain ``Table`` column is NOT sufficient: that
-    # records ``unit: deg`` in the header but deserializes back to a bare
-    # float, and ``.to_value`` then raises ``AttributeError``. The table is
-    # promoted to ``QTable`` at write time (below) so these columns serialize
-    # as Quantity mixins, which is what round-trips. ``read_timeline`` reads
-    # with a plain ``Table`` and ``float(row[...])``, so it is unaffected.
-    for _deg_col in ("azmin", "azmax", "az_final", "el", "boresight_angle"):
+    # Angular units on the TOAST canonical columns: TOAST's GroundSchedule v5
+    # reader calls ``az_min.to_value(u.degree)`` in ``GroundScan.__init__``.
+    # ``.unit`` on a plain ``Table`` column reads back as a bare float, so the
+    # table is written as a ``QTable`` (below), whose Quantity columns
+    # round-trip. ``read_timeline`` reads a plain ``Table`` with ``float()``.
+    for _deg_col in ("azmin", "azmax", "az_final", "el_final", "el", "boresight_angle"):
         table[_deg_col].unit = u.deg
 
-    # Persist the declared timeline window so total_time / efficiency survive
-    # a round-trip even when the blocks do not reach the window edges (a padded
-    # window would otherwise shrink to the block extents on read). Stored as ISO
-    # strings in UTC, mirroring the block time columns. Files without these keys
-    # fall back to the block-extent derivation in ``read_timeline``.
+    # The declared timeline window, so total_time and efficiency survive the
+    # round trip when the blocks do not reach its edges. A file without these
+    # keys reads its window from the block extents.
     table.meta["timeline_start_time"] = _iso_utc(timeline.start_time)
     table.meta["timeline_end_time"] = _iso_utc(timeline.end_time)
     table.meta["timeline_is_empty"] = substituted
-    # Names the convention of the ``boresight_angle`` column; files written
-    # before the key existed hold the celestial field rotation under the
-    # same column name.
+    # Names the convention of the ``boresight_angle`` column; a file without
+    # the key holds the celestial field rotation under that column name.
     table.meta["boresight_angle_convention"] = "toast_roll"
     table.meta["site_name"] = timeline.site.name
     table.meta["site_description"] = timeline.site.description
@@ -318,8 +311,7 @@ def write_timeline(
     table.meta["calibration_focus_cadence"] = timeline.calibration_policy.focus_cadence
     table.meta["calibration_skydip_cadence"] = timeline.calibration_policy.skydip_cadence
     table.meta["calibration_planet_cal_cadence"] = timeline.calibration_policy.planet_cal_cadence
-    # ``beam_map_cadence`` is ``float | None``; ECSV preserves ``None`` cleanly
-    # in table metadata so we can store it directly without sentinel encoding.
+    # ``beam_map_cadence`` is ``float | None``; ECSV metadata keeps ``None``.
     table.meta["calibration_beam_map_cadence"] = timeline.calibration_policy.beam_map_cadence
     table.meta["calibration_planet_targets"] = json.dumps(
         list(timeline.calibration_policy.planet_targets)
@@ -329,8 +321,7 @@ def write_timeline(
     )
     table.meta["calibration_planet_cal_scan"] = timeline.calibration_policy.planet_cal_scan
     table.meta["calibration_planet_cal_passes"] = timeline.calibration_policy.planet_cal_passes
-    # ``planet_cal_el_step`` is ``float | None``; ECSV preserves ``None``
-    # in table metadata, so store it directly (mirrors beam_map_cadence).
+    # ``planet_cal_el_step`` is ``float | None`` too.
     table.meta["calibration_planet_cal_el_step"] = timeline.calibration_policy.planet_cal_el_step
     table.meta["calibration_planet_cal_footprint"] = (
         timeline.calibration_policy.planet_cal_footprint
@@ -359,12 +350,18 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     Block times are stored in UTC to millisecond precision, so a block's
     start and stop can shift by up to half a millisecond across a round
     trip, and an equality test on raw durations is not exact.
+    :func:`~fyst_trajectories.overhead.schedule_to_trajectories` cuts a
+    block's samples at those stored times, in memory as well, so a block
+    rebuilds to the same samples from memory and from the file.
     The dispatch sheet and the dispatch records render every time and
     duration from that stored form, so the sheet is byte-identical and the
     records equal either way.
     A planet pass's ``search_start`` is two floats in
     the ``block_meta_json`` column and reads back exactly, so the pass
     rebuilds the same from the file as from memory.
+    A science row whose ``width`` and ``height`` are both 0.0 is a block
+    that records no field, and reads back without the ``ra_center``,
+    ``dec_center``, ``width`` and ``height`` keys.
     Times may carry a ``+00:00`` or ``Z`` suffix, or none (older files);
     any other offset is converted to UTC.
 
@@ -377,6 +374,15 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     -------
     ObservingTimeline
         Loaded timeline.
+
+    Raises
+    ------
+    ValueError
+        If the header holds an overhead-model or calibration-policy value
+        those classes refuse, such as a ``planet_cal_footprint`` that names
+        no Prime-Cam module (``"i1"`` among them), or a row holds a block
+        :class:`~fyst_trajectories.overhead.TimelineBlock` refuses (an
+        unknown ``block_type``, a stop before its start).
 
     Warns
     -----
@@ -392,9 +398,8 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     meta = table.meta
     site = _site_from_meta(meta)
 
-    # Use the dataclass defaults as fall-backs so the I/O defaults can never
-    # drift from the class defaults. Repeating a literal default here would
-    # silently diverge the moment the dataclass default changes.
+    # Fall back to the dataclass defaults, so the reader's defaults cannot
+    # drift from the classes'.
     overhead_defaults = OverheadModel()
     overhead = OverheadModel(
         retune_duration=meta.get("overhead_retune_duration", overhead_defaults.retune_duration),
@@ -427,15 +432,13 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
         else cal_defaults.planet_targets  # class-level default
     )
 
-    # ``beam_map_cadence`` defaults to ``None`` (manual-only); ECSV preserves
-    # ``None`` so we can pass it through verbatim. Use a sentinel to distinguish
-    # "missing meta key" from "explicit None" since both are valid.
+    # ``beam_map_cadence`` may be a stored ``None``; the sentinel tells a
+    # missing key from an explicit ``None``.
     _MISSING = object()
     _bmc = meta.get("calibration_beam_map_cadence", _MISSING)
     beam_map_cadence = cal_defaults.beam_map_cadence if _bmc is _MISSING else _bmc
 
-    # ``planet_cal_el_step`` is also ``float | None``; use the same sentinel
-    # so a stored ``None`` is preserved and only a missing key falls back.
+    # Likewise ``planet_cal_el_step``.
     _ces = meta.get("calibration_planet_cal_el_step", _MISSING)
     if _ces is _MISSING:
         planet_cal_el_step = cal_defaults.planet_cal_el_step
@@ -474,6 +477,7 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
     has_rising = "rising" in table.colnames
     has_metadata = "ra_center" in table.colnames
     has_az_final = "az_final" in table.colnames
+    has_el_final = "el_final" in table.colnames
 
     # A file the writer marked empty holds one placeholder row only
     # because ECSV needs one; the timeline it stands for has no blocks.
@@ -490,39 +494,35 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
 
         block_meta: TimelineBlockMetadata
         if has_metadata and block_type == "science":
-            sci_meta: ScienceBlockMetadata = {
-                "ra_center": float(row["ra_center"]),
-                "dec_center": float(row["dec_center"]),
-                "width": float(row["width"]),
-                "height": float(row["height"]),
-                "velocity": float(row["velocity"]),
-                "scan_params": json.loads(str(row["scan_params_json"]))
+            sci_meta: ScienceBlockMetadata = {}
+            # The writer puts 0.0 in the four field columns of a block that
+            # records no field, and no field has zero size, so such a row
+            # reads back without the field keys, as it was written.
+            if not (float(row["width"]) == 0.0 and float(row["height"]) == 0.0):
+                sci_meta["ra_center"] = float(row["ra_center"])
+                sci_meta["dec_center"] = float(row["dec_center"])
+                sci_meta["width"] = float(row["width"])
+                sci_meta["height"] = float(row["height"])
+            sci_meta["velocity"] = float(row["velocity"])
+            sci_meta["scan_params"] = (
+                json.loads(str(row["scan_params_json"]))
                 if "scan_params_json" in table.colnames
-                else {},
-            }
+                else {}
+            )
             block_meta = sci_meta
         else:
-            # Slew/idle (and any non-science) blocks default to the
-            # exhaustive union's empty variant. Calibration-specific keys
-            # (``cal_type``, ``target``) are layered in below from
-            # ``block_meta_json``.
+            # Non-science blocks start empty; calibration keys (``cal_type``,
+            # ``target``) come from ``block_meta_json`` below.
             empty_meta: EmptyBlockMetadata = {}
             block_meta = empty_meta
-            # A non-science block may still carry scan_params (a planet
-            # calibration planned as a source-CES pass records its replay
-            # parameters there). The writer always dumps scan_params to the
-            # scan_params_json column, so restore it here when present and
-            # non-empty; slew/idle/retune blocks (empty scan_params) stay
-            # metadata-empty.
+            # A planet calibration planned as a source-CES pass records its
+            # replay parameters in scan_params; restore a non-empty column.
             if "scan_params_json" in table.colnames:
                 sp = json.loads(str(row["scan_params_json"]))
                 if sp:
                     block_meta["scan_params"] = sp  # type: ignore[typeddict-item]
-        # Merge any extra per-block metadata stored in block_meta_json.
-        # For calibration blocks this is where ``cal_type``/``target`` live.
-        # The retune-events payload (if present) is decoded back into a
-        # tuple of :class:`RetuneEvent` here, mirroring the encoding
-        # performed by ``write_timeline``.
+        # Extra block metadata from block_meta_json (a calibration's
+        # ``cal_type``/``target``; retune events decoded to RetuneEvent).
         if "block_meta_json" in table.colnames:
             extra = json.loads(str(row["block_meta_json"]))
             if extra:
@@ -531,13 +531,18 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
                 # legal across all union variants.
                 block_meta.update(extra)  # type: ignore[typeddict-item]
 
-        # A missing column and a NaN both mean "this block ends at azmax":
-        # files written before the column existed read back unchanged.
+        # A missing column and a NaN both mean "this block ends at azmax".
         az_final: float | None = None
         if has_az_final:
             _raw_final = float(row["az_final"])
             if not math.isnan(_raw_final):
                 az_final = _raw_final
+        # Likewise "this block ends at el".
+        el_final: float | None = None
+        if has_el_final:
+            _raw_el_final = float(row["el_final"])
+            if not math.isnan(_raw_el_final):
+                el_final = _raw_el_final
 
         block = TimelineBlock(
             t_start=t_start,
@@ -553,11 +558,11 @@ def read_timeline(path: str | Path) -> ObservingTimeline:
             scan_type=scan_type,
             metadata=block_meta,
             az_final=az_final,
+            el_final=el_final,
         )
         blocks.append(block)
 
-    # Prefer the persisted timeline window; fall back to the block extents for
-    # older files written before these keys existed (and for the empty case).
+    # The persisted window, else the block extents.
     _meta_start = meta.get("timeline_start_time")
     _meta_end = meta.get("timeline_end_time")
     if _meta_start is not None and _meta_end is not None:
@@ -613,8 +618,7 @@ def _site_from_meta(meta: dict) -> Site:
     if lat is None or lon is None or alt is None:
         return fyst
 
-    # Coordinates may be stored as bare floats (older files) or as Quantities
-    # (deg/deg/m) once TOAST-compatible units were added.
+    # Coordinates may be bare floats or Quantities (deg, deg, m).
     lat = float(lat.to_value(u.deg)) if isinstance(lat, u.Quantity) else float(lat)
     lon = float(lon.to_value(u.deg)) if isinstance(lon, u.Quantity) else float(lon)
     alt = float(alt.to_value(u.m)) if isinstance(alt, u.Quantity) else float(alt)
@@ -694,6 +698,7 @@ def _empty_row() -> dict:
         "azmin": 0.0,
         "azmax": 0.0,
         "az_final": float("nan"),
+        "el_final": float("nan"),
         "el": 0.0,
         "scan_index": 0,
         "subscan_index": 0,

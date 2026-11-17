@@ -191,6 +191,39 @@ Re-cut only when the execution layer is deliberately re-pinned. Never regenerate
 to make a red partition test pass: a red test means a key changed class, and the
 classification in the test is the thing to update.
 
+## `pcs_scan_param_keys_180746d.json` - scan-task key snapshot
+
+The `scan_params` keys each typed scan task's trajectory builder in the PCS
+ACU agent (`pcs/agents/acu_interface/trajectory.py`) reads, at `ccatobs/pcs`
+commit `180746d` (the filename carries the pin): `build_constant_el_payload`
+for `constant_el_scan`, `build_pong_payload` for `pong_scan`,
+`build_daisy_payload` for `daisy_scan` and `build_source_payload` for
+`source_scan`. Any other key in a dispatched `scan_params` dict is dropped at
+that revision without a message.
+**Not** on the runtime path.
+
+### How it is used
+- `tests/overhead/test_scan_task_keys.py` holds each simulator scan type's
+  `scan_params` vocabulary against the keys of the task it runs as. Every key
+  on one side only is listed there with the reason (a patch field rather than
+  a `scan_params` key, an option the simulator does not offer, a record the
+  task does not need), and the keys the change prepared for PCS's next
+  revision reads are listed beside them. A key added on either side fails
+  the test until it is listed.
+
+### Provenance
+- **Read from:** `git show 180746d:pcs/agents/acu_interface/trajectory.py`, the
+  `scan_params.get(...)` and `scan_params[...]` reads inside each of the four
+  builders.
+- **Refresh command:** re-run that `git show` at the new pin, transcribe each
+  builder's keys in sorted order, rename the file to the new short SHA, and
+  update the filename in the test and here.
+
+### Regenerating (deliberate re-pin only)
+Re-cut only when PCS is deliberately re-pinned. Never regenerate to make a red
+test pass: a red test means a key moved, and the lists in the test are the thing
+to update.
+
 ## `source_ces_golden.json` - source-CES golden output (golden-output fixture)
 
 The recorded outcome of the 23 cases of `tests/test_source_ces_golden.py`, which call the three

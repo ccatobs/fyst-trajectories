@@ -1,5 +1,7 @@
 """Tests for the timeline generator."""
 
+import itertools
+
 import numpy as np
 import pytest
 from astropy.time import Time
@@ -8,6 +10,7 @@ from fyst_trajectories import Coordinates, get_fyst_site
 from fyst_trajectories.overhead import (
     BlockType,
     CalibrationPolicy,
+    DeferralReason,
     ElevationConstraint,
     ObservingPatch,
     OverheadModel,
@@ -37,17 +40,23 @@ def assert_boundary_retunes_precede_science(timeline):
     """Assert every retune after the startup burst opens a science subscan.
 
     At the default ``retune_cadence=0.0`` a retune is booked only together
-    with the science subscan it precedes, so none may be left dangling.
+    with the science subscan it precedes, so none may be left dangling: the
+    subscan follows it directly, or after the wait for a constant-elevation
+    pass that opens later (an idle labelled ``waiting_for_pass``).
     """
+    waiting = str(DeferralReason.WAITING_FOR_PASS)
     blocks = timeline.blocks
     for i, block in enumerate(blocks):
         if block.block_type != BlockType.CALIBRATION or block.scan_type != "retune":
             continue
         if block.t_start.unix == timeline.start_time.unix:
             continue  # the startup burst's retune
-        following = blocks[i + 1]
-        assert following.block_type == BlockType.SCIENCE, f"dangling retune at {block.t_start}"
-        assert following.t_start.unix == pytest.approx(block.t_stop.unix, abs=1e-6)
+        chain = [block, blocks[i + 1]]
+        if chain[1].block_type == BlockType.IDLE and chain[1].metadata.get("reason") == waiting:
+            chain.append(blocks[i + 2])
+        assert chain[-1].block_type == BlockType.SCIENCE, f"dangling retune at {block.t_start}"
+        for before, after in itertools.pairwise(chain):
+            assert after.t_start.unix == pytest.approx(before.t_stop.unix, abs=1e-6)
 
 
 def assert_timeline_valid(timeline, site):

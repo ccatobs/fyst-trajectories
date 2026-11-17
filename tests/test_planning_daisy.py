@@ -43,7 +43,8 @@ class TestPlanDaisyScan:
 
         assert isinstance(block, ScanBlock)
         assert isinstance(block.config, DaisyScanConfig)
-        assert block.duration == pytest.approx(60.0)
+        # Samples fall 0.1 s apart from the start, the last one before 60 s.
+        assert block.duration == pytest.approx(59.9)
         assert block.trajectory.n_points > 0
         assert "Daisy scan" in block.summary
 

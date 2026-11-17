@@ -149,9 +149,9 @@ def test_offsets_detector_to_boresight():
 
 
 def test_drift_scan_boresight_puts_module_on_planet():
-    """The drift-scan example's iterated boresight lands module i1 on Jupiter.
+    """The drift-scan example's iterated boresight lands module IM6 on Jupiter.
 
-    Re-projecting module i1 from the returned boresight, with the mechanical
+    Re-projecting module IM6 from the returned boresight, with the mechanical
     rotation taken at the boresight elevation, must hit the planet; the
     rotation taken at the planet's elevation misses by arcminutes.
     """
@@ -162,7 +162,7 @@ def test_drift_scan_boresight_puts_module_on_planet():
     observation_time = Time("2026-03-15T00:00:00", scale="utc")
     planet_az, planet_el = coords.get_body_altaz("jupiter", observation_time)
 
-    offset = get_primecam_offset("i1")
+    offset = get_primecam_offset("IM6")
     bore_el = planet_el
     for _ in range(4):
         rotation = compute_focal_plane_rotation(el=bore_el, site=site, offset=offset)
@@ -268,7 +268,7 @@ def test_planning_plan_source_ces():
     from fyst_trajectories.planning import plan_source_ces
 
     site = get_fyst_site()
-    modules = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+    modules = list(PRIMECAM_MODULES.values())
 
     block = plan_source_ces(
         body="jupiter",

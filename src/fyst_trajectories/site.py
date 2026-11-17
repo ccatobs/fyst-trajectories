@@ -91,11 +91,21 @@ Proc. SPIE 10700, arXiv:1807.06678).
 # UNVERIFIED: see "Pending instrument verification" in docs/index.rst
 
 FYST_NASMYTH_PORT: str = "right"
-"""Nasmyth port side for instrument mounting ('right' = +1 sign)."""
-# UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-# Wrong sign produces up to 2 * el degrees of focal-plane rotation error
-# at every off-axis Prime-Cam module. Confirmation essential before
-# first-light science.
+"""Nasmyth port name that sets the sign of the focal-plane rotation ('right' = +1).
+
+Seen looking out at the sky, with elevation up and azimuth increasing to the
+right, a positive focal-plane rotation turns the focal plane
+counter-clockwise; with the sign +1 the focal plane turns counter-clockwise
+on the sky by the boresight elevation. The names "right", "left" and
+"cassegrain" select +1, -1 and 0; they name the sign only and do not say
+which side of the telescope the receiver is on.
+The default follows the instrument team's optical model of the receiver,
+with an on-sky check still to come (see the pending-verification list on the
+documentation index).
+"""
+# Awaiting confirmation: see "Pending instrument verification" in docs/index.rst.
+# A wrong sign turns every off-axis Prime-Cam bay by 2 * el degrees on the
+# sky. Confirmation essential before first-light science.
 
 # Tier 2: Mechanical limits (from the FYST telescope control system,
 # commands.go). Two envelopes: the ENCODER/SLEW envelope (az [-180, 360],
@@ -589,10 +599,15 @@ class Site:
     sun_avoidance : SunAvoidanceConfig
         Sun avoidance configuration.
     nasmyth_port : str, optional
-        Which Nasmyth port instruments are mounted on. Determines the sign
-        of the elevation component in focal-plane rotation. One of "right"
-        (+1), "left" (-1), or "cassegrain" (0), matched without regard to
-        case and stored lower-cased. Default is "right".
+        Port name that sets the sign of the elevation component in the
+        focal-plane rotation. One of "right" (+1), "left" (-1), or
+        "cassegrain" (0), matched without regard to case and stored
+        lower-cased. Default is "right". Seen looking out at the sky, with
+        elevation up and azimuth increasing to the right, a positive
+        rotation turns the focal plane counter-clockwise, so with +1 it
+        turns counter-clockwise on the sky by the boresight elevation. The
+        names select the sign only and do not say which side of the
+        telescope the receiver is on.
     plate_scale : float, optional
         Plate scale in arcsec/mm at the telescope focal surface, where the
         instrument modules sit (not the plate scale of a module's detector
@@ -670,10 +685,17 @@ class Site:
     def nasmyth_sign(self) -> int:
         """Sign convention for Nasmyth field rotation.
 
-        Returns +1 for Right Nasmyth, -1 for Left Nasmyth, and 0 for
-        Cassegrain (no Nasmyth rotation). The nasmyth_port value is
-        validated and lower-cased at construction time, so this property
-        always succeeds.
+        Returns +1 for "right", -1 for "left", and 0 for "cassegrain" (no
+        Nasmyth rotation). The focal-plane rotation's mechanical part is
+        ``nasmyth_sign * el + instrument_rotation``. Seen looking out at the
+        sky, with elevation up and azimuth increasing to the right (``+dx``
+        toward increasing azimuth, ``+dy`` toward increasing elevation), a
+        positive rotation turns the focal plane counter-clockwise, so with
+        +1 it turns counter-clockwise on the sky by the boresight elevation.
+        The port names select the sign only and do not say which side of the
+        telescope the receiver is on. The nasmyth_port value is validated
+        and lower-cased at construction time, so this property always
+        succeeds.
 
         Returns
         -------

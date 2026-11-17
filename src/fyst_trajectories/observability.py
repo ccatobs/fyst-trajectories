@@ -742,7 +742,7 @@ def check_observability(
 
         avoid_ok_grid = np.ones(n, dtype=bool)
         instant_avoid: list[AvoidSeparation] = []
-        for zone, resolved_body in zip(avoid, resolved_bodies):
+        for zone, resolved_body in zip(avoid, resolved_bodies, strict=True):
             # Self-exclusion compares RESOLVED positions: AVOIDing the target's
             # own (alias/satellite-resolved) body is skipped.
             if resolved_body == position_body:

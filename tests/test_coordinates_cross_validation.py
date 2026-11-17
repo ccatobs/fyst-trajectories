@@ -4,12 +4,15 @@ This module validates the coordinate transformations in fyst-trajectories by
 comparing results against Skyfield, an independent Python library for
 high-precision astronomy calculations.
 
-Each test class sets its own assertion threshold. Catalogue-star positions and
-sidereal time agree with Skyfield to about an arcsecond; solar-system bodies
-agree to under twenty arcseconds, where ephemeris version, light-time and
-aberration handling differ. The thresholds sit a few times above the measured
-agreement, so an Earth-orientation update cannot turn a cross-check into a flake
-while an arcsecond-scale frame error still fails.
+Each test class sets its own assertion threshold. Catalogue-star positions
+agree with Skyfield to about an arcsecond; solar-system bodies agree to under
+twenty arcseconds, where ephemeris version, light-time and aberration handling
+differ. Those thresholds sit a few times above the measured agreement, so an
+Earth-orientation update cannot turn a cross-check into a flake while an
+arcsecond-scale frame error still fails. Sidereal time is compared at one UT1
+instant, or through each library's own UTC only on a date where both hold
+measured UT1, so its threshold is far tighter, and each of its tests carries a
+control showing that the threshold catches the error it is there for.
 
 Skyfield is chosen as the reference because it:
 - Uses JPL DE ephemerides for solar system positions
@@ -19,6 +22,7 @@ Skyfield is chosen as the reference because it:
 
 from pathlib import Path
 
+import astropy.units as u
 import pytest
 from astropy.time import Time, TimeDelta
 
@@ -259,47 +263,59 @@ class TestSolarSystemCrossValidation:
 
 
 class TestLSTCrossValidation:
-    """LST matches Skyfield's own sidereal time at five points around the year."""
+    """Apparent sidereal time matches Skyfield's, and so does the UTC to UT1 step behind it.
 
-    LST_TOLERANCE = 0.01  # degrees (~2.4 seconds of time)
+    Each test has a control that must miss by more than ``CONTROL_FACTOR`` tolerances, so
+    the tolerance is shown to separate the right answer from the error it is there to catch.
+    """
+
+    LST_TOLERANCE = 1e-5  # degrees
+    CONTROL_FACTOR = 100
+
+    @staticmethod
+    def _wrapped_diff(a: float, b: float) -> float:
+        d = abs(a - b) % 360.0
+        return min(d, 360.0 - d)
 
     @pytest.mark.slow
     @pytest.mark.parametrize(
         "time_str",
         [
             "2026-01-01T00:00:00",
-            "2026-03-20T12:00:00",  # Near vernal equinox
-            "2026-06-21T12:00:00",  # Near summer solstice
-            "2026-09-22T12:00:00",  # Near autumnal equinox
-            "2026-12-21T12:00:00",  # Near winter solstice
+            "2026-03-20T12:00:00",
+            "2026-06-21T12:00:00",
+            "2026-09-22T12:00:00",
+            "2026-12-21T12:00:00",
         ],
     )
-    def test_lst_agreement(
-        self,
-        coordinates,
-        time_str,
-        skyfield_timescale,
-        fyst_topos,
+    def test_apparent_sidereal_time_at_the_same_ut1(
+        self, coordinates, time_str, skyfield_timescale, fyst_topos
     ):
-        """LST underpins every transform, so this pins the underlying time handling."""
+        """At one UT1 instant only the sidereal-time models differ, so the formula is pinned."""
+        # Skyfield is handed our UT1: on these dates each library predicts UT1 from its own
+        # table, and the two can differ by more than this tolerance.
         obstime = Time(time_str, scale="utc")
+        lst_sf = fyst_topos.lst_hours_at(skyfield_timescale.ut1_jd(obstime.ut1.jd)) * 15.0
 
-        lst_ccat = coordinates.get_lst(obstime)
+        assert self._wrapped_diff(coordinates.get_lst(obstime), lst_sf) < self.LST_TOLERANCE
 
-        ts = skyfield_timescale
-        dt = obstime.datetime
-        t = ts.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+        # Control: mean sidereal time, which omits the equation of the equinoxes.
+        mean = obstime.sidereal_time("mean", longitude=coordinates.location.lon).to_value(u.deg)
+        assert self._wrapped_diff(mean, lst_sf) > self.CONTROL_FACTOR * self.LST_TOLERANCE
 
-        lst_sf = fyst_topos.lst_hours_at(t)
-        lst_sf_deg = lst_sf * 15.0
+    @pytest.mark.slow
+    def test_ut1_through_skyfields_own_utc(self, coordinates, skyfield_timescale, fyst_topos):
+        """Where both libraries hold measured UT1, the UTC to UT1 step agrees with Skyfield's."""
+        obstime = Time("2016-12-31T12:00:00", scale="utc")
+        # UT1-UTC is -0.41 s on this date, which the control below must resolve.
+        assert obstime.get_delta_ut1_utc().to_value(u.s) == pytest.approx(-0.41, abs=0.005)
+        lst_sf = fyst_topos.lst_hours_at(skyfield_timescale.utc(2016, 12, 31, 12)) * 15.0
 
-        diff = abs(lst_ccat - lst_sf_deg)
-        diff = min(diff, 360 - diff)
+        assert self._wrapped_diff(coordinates.get_lst(obstime), lst_sf) < self.LST_TOLERANCE
 
-        assert diff < self.LST_TOLERANCE, (
-            f"LST mismatch at {time_str}: "
-            f"ccat={lst_ccat:.4f}, skyfield={lst_sf_deg:.4f}, diff={diff:.4f}"
-        )
+        # Control: the same instant labelled UT1, i.e. UTC taken for UT1.
+        mislabelled = coordinates.get_lst(Time("2016-12-31T12:00:00", scale="ut1"))
+        assert self._wrapped_diff(mislabelled, lst_sf) > self.CONTROL_FACTOR * self.LST_TOLERANCE
 
 
 class TestProperMotionCrossValidation:

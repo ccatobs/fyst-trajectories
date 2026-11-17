@@ -63,7 +63,9 @@ class TestOneSolvePerInstant:
         model.batch(*_grid(_TIMES))
         (asked,) = seen
         assert len(asked) == len(_TIMES)
-        assert sorted(zip(asked.jd1, asked.jd2)) == sorted(zip(_TIMES.jd1, _TIMES.jd2))
+        assert sorted(zip(asked.jd1, asked.jd2, strict=True)) == sorted(
+            zip(_TIMES.jd1, _TIMES.jd2, strict=True)
+        )
 
     def test_distinct_instants_are_solved_as_given(self, monkeypatch):
         model = make_sun_safe("scalar")

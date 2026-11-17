@@ -12,9 +12,11 @@ Constant-elevation science is corridor-gated (see
 tests/overhead/test_ce_corridor.py), so the schedule idles until Deep56's el=50
 rising pass is imminent and books ~1.8 h of science rather than pointing at
 empty sky beforehand. And a cadence-0 retune is scan-coupled: it fires once at
-startup and then immediately before every science subscan, never on an idle
-tick, so each of the three subscans pays a 300 s whole-array retune out of the
-crossing corridor.
+startup and then before every science subscan, never on an idle tick, so each
+of the three subscans pays a 300 s whole-array retune out of the crossing
+corridor. The gate admits the visit as soon as its pass opens within one tick,
+the slew allowance and that retune, so the visit slews, retunes and waits at
+the pass's first sample, and its science starts when the pass opens.
 """
 
 import pytest
@@ -104,7 +106,7 @@ class TestRegressionTimeline:
 
     def test_science_time(self, regression_timeline):
         """Total science time should match within 1 second."""
-        assert abs(regression_timeline.total_science_time - 6391.3) < 1.0
+        assert abs(regression_timeline.total_science_time - 6454.7) < 1.0
 
     def test_calibration_time(self, regression_timeline):
         """Total calibration time should match exactly (deterministic)."""
@@ -112,7 +114,7 @@ class TestRegressionTimeline:
 
     def test_efficiency(self, regression_timeline):
         """Science efficiency should match within 0.1%."""
-        assert abs(regression_timeline.efficiency - 0.2219) < 0.001
+        assert abs(regression_timeline.efficiency - 0.2241) < 0.001
 
     def test_block_type_distribution(self, regression_timeline):
         """Block type counts should match expected distribution."""
@@ -135,7 +137,7 @@ class TestRegressionTimeline:
         cal = stats["calibration_breakdown"]
 
         # Scan-coupled retunes (cadence 0): one at startup plus one
-        # immediately before each of the 3 subscans, none during idle.
+        # before each of the 3 subscans, none during idle.
         assert cal["retune"]["count"] == 4
         assert abs(cal["retune"]["total_time"] - 1200.0) < 0.1
 
@@ -154,19 +156,25 @@ class TestRegressionTimeline:
     def test_slew_time(self, regression_timeline):
         """Total slew time should match within 2 seconds."""
         slew_time = sum(b.duration for b in regression_timeline.blocks if b.block_type == "slew")
-        # One slew: the single CE visit starts once the pass is imminent.
-        assert abs(slew_time - 28.7) < 2.0
+        # One slew: the single CE visit starts once the pass is imminent, and
+        # the slew ends at the first sample of its first subscan.
+        assert abs(slew_time - 32.0) < 2.0
 
     def test_idle_time_is_the_pre_pass_wait(self, regression_timeline):
         """Idle time equals the honest wait before Deep56's crossing pass.
 
-        Deep56's el=50 rising pass opens ~08:02 UTC and the corridor gate
-        admits it one tick earlier, at 07:58; until then nothing on this
-        fixture night is observable, and the corridor-gated scheduler reports
-        that as idle instead of booking dead-air science.
+        Deep56's el=50 rising pass opens at 08:02:25.3 UTC and the corridor
+        gate admits it at the 07:53 tick, the first within one tick, the slew
+        allowance and the 300 s retune of the opening; until then nothing on
+        this fixture night is observable, and the corridor-gated scheduler
+        reports that as idle instead of booking dead-air science. The visit
+        then slews 32.0 s, retunes and waits 233.3 s at the pass's first
+        sample (``waiting_for_pass``), which is idle time too.
         """
-        idle_time = sum(b.duration for b in regression_timeline.blocks if b.block_type == "idle")
-        assert abs(idle_time - 18000.0) < 1.0
+        idle = [b for b in regression_timeline.blocks if b.block_type == "idle"]
+        waits = [b for b in idle if b.metadata.get("reason") == "waiting_for_pass"]
+        assert abs(sum(b.duration for b in idle) - 17933.3) < 1.0
+        assert [round(b.duration, 1) for b in waits] == [233.3]
 
     def test_timeline_validates_clean(self, regression_timeline):
         """Timeline should pass internal validation with no warnings."""
@@ -232,15 +240,16 @@ class TestRegressionTimeline:
         assert initial_cals == ["retune", "pointing_cal", "focus", "skydip"]
 
     def test_ce_visit_reconstruction_tiles_blocks(self, regression_timeline):
-        """CE subscans rebuild as slices of one shared crossing solve.
+        """CE subscans rebuild as slices of one shared crossing solve, each spanning its block.
 
         All three Deep56 subscans share ``metadata["t0_scan"]``, so each
         rebuilt trajectory must cover only its own block window rather
-        than the full pass (which triple-counted the visit at 4.75x the
-        scheduled science time). The first subscan may start up to a tick
-        plus the slew allowance before the re-solved crossing, so its slice
-        may be shorter than its block; on this night that lead is zero and
-        every slice ends within 0.13 s of its block.
+        than the full pass (which would count the visit 4.75 times over).
+        The first subscan starts when the pass opens, so its first sample is
+        its block's start; each block stops within one sample interval of its
+        last sample (the last one at the night's end, which comes before the
+        pass's), so the slices fall short of the science time by at most one
+        sample interval per block.
         """
         from fyst_trajectories.overhead import schedule_to_trajectories
 
@@ -249,27 +258,31 @@ class TestRegressionTimeline:
 
         starts = []
         total_span = 0.0
+        dt = 0.0
         for sblock, scan_block in pairs:
             traj = scan_block.trajectory
+            dt = float(traj.times[1] - traj.times[0])
             span = float(traj.times[-1] - traj.times[0])
             total_span += span
             starts.append(traj.start_time.unix)
             assert traj.times[0] == 0.0
-            assert traj.start_time.unix >= sblock.t_start.unix - 1e-3
-            end_unix = traj.start_time.unix + span
-            assert end_unix <= sblock.t_stop.unix + 1e-3
-            assert span <= sblock.duration + 1e-3
+            head = traj.start_time.unix - sblock.t_start.unix
+            tail = sblock.t_stop.unix - (traj.start_time.unix + span)
+            assert -1e-3 <= head <= dt + 0.01
+            assert -1e-3 <= tail <= dt + 0.01
 
-        # Distinct ordered starts; the pre-fix bug returned three
-        # identical full passes.
+        # Distinct ordered starts: three slices, not three full passes.
         assert starts == sorted(starts)
         assert len(set(starts)) == 3
 
+        first_block, first_scan = pairs[0]
+        assert first_scan.trajectory.start_time.unix == pytest.approx(
+            first_block.t_start.unix, abs=1e-3
+        )
+        assert pairs[-1][0].t_stop == regression_timeline.end_time
+
         science_time = regression_timeline.total_science_time
-        # The first subscan may legitimately lose its acquisition lead (up to
-        # a tick plus the slew allowance); on this night that lead is zero and
-        # each slice ends at most 0.13 s short of its block, 0.28 s in total.
-        assert science_time - 1.0 < total_span <= science_time + 1e-3
+        assert 0.0 <= science_time - total_span <= 3 * (dt + 0.01)
         # The slice, not the full pass: duration diverges from the
         # computed_params of the solved pass on purpose.
         assert pairs[0][1].duration < pairs[0][1].computed_params["duration"]
@@ -279,7 +292,7 @@ class TestRegressionTimeline:
 
         The bounds used to be a scalar estimate of the field width at the
         tick time, ``(83.71, 145.94)`` here, while the crossing pass these
-        blocks belong to drifts across ``(102.33, 215.62)``. They are read
+        blocks belong to sweeps ``(104.31, 121.23)``. They are read
         from the block's own rebuilt trajectory now, so the two cannot
         diverge again. The corridor is pinned as well: agreement alone
         would also hold if both numbers were wrong together.
@@ -294,8 +307,8 @@ class TestRegressionTimeline:
             assert sblock.az_start == pytest.approx(float(az.min()), abs=1e-9)
             assert sblock.az_end == pytest.approx(float(az.max()), abs=1e-9)
             assert sblock.end_pose_az == pytest.approx(float(az[-1]), abs=1e-9)
-            assert sblock.az_start == pytest.approx(102.33, abs=0.01)
-            assert sblock.az_end == pytest.approx(215.62, abs=0.01)
+            assert sblock.az_start == pytest.approx(104.31, abs=0.01)
+            assert sblock.az_end == pytest.approx(121.23, abs=0.01)
 
 
 class TestScienceIdleTicksTile:

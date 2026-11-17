@@ -64,9 +64,13 @@ class InstrumentOffset:
     dx : float
         X offset in arcminutes in the focal plane. At zero focal-plane rotation,
         this is the cross-elevation direction (positive = increasing azimuth).
+        The frame is seen looking out at the sky, with elevation up and
+        azimuth increasing to the right, so ``+dx`` points right.
     dy : float
         Y offset in arcminutes in the focal plane. At zero focal-plane rotation,
-        this is the elevation direction (positive = increasing elevation).
+        this is the elevation direction (positive = increasing elevation),
+        so in that view ``+dy`` points up. A positive focal-plane rotation
+        turns ``(dx, dy)`` counter-clockwise in that view.
     name : str, optional
         Name of the instrument/detector for identification.
     instrument_rotation : float, optional
@@ -170,12 +174,12 @@ class InstrumentOffset:
         Examples
         --------
         >>> offset = InstrumentOffset.from_focal_plane(
-        ...     x_mm=0.0,
-        ...     y_mm=-461.3,
+        ...     x_mm=-461.3,
+        ...     y_mm=0.0,
         ...     plate_scale=13.89,
-        ...     name="PrimeCam-I1",
+        ...     name="PrimeCam-IM1",
         ... )
-        >>> print(f"{offset.dy:.1f} arcmin")
+        >>> print(f"{offset.dx:.1f} arcmin")
         -106.8 arcmin
         """
         # Checked first: the arithmetic would read a bool as 0 or 1 and raise
@@ -389,10 +393,8 @@ def _offset_inverse(
     # report the full convergence history. The failure check itself uses
     # only the last-iteration residual: for the contractive map underlying
     # this fixed-point iteration, a converged endpoint is the user-visible
-    # answer regardless of early-iteration transients. (Non-monotone
-    # convergence does occur for unrealistic-large offsets near the zenith
-    # singularity, e.g. dx=117 deg at el=86 deg under property-based fuzzing,
-    # but the iteration still lands sub-microarcsecond at the end.)
+    # answer regardless of early-iteration transients (convergence can be
+    # non-monotone for unrealistically large offsets near the zenith).
     worst_err = 0.0
 
     for _ in range(_INVERSE_MAX_ITERATIONS):
@@ -428,6 +430,13 @@ def _rotate_offset(
     focal_plane_rotation: float | np.ndarray,
 ) -> tuple[float | np.ndarray, float | np.ndarray]:
     """Rotate offset by the focal-plane rotation angle.
+
+    The frame is seen looking out at the sky, with elevation up and azimuth
+    increasing to the right: ``+dx`` points toward increasing azimuth and
+    ``+dy`` toward increasing elevation. A positive rotation turns the offset
+    counter-clockwise in that view (the standard rotation of ``(dx, dy)``),
+    so with ``nasmyth_sign`` +1 the focal plane turns counter-clockwise on
+    the sky by the boresight elevation.
 
     Parameters
     ----------
@@ -750,7 +759,8 @@ def _solve_boresight(
     follows. That elevation is the unknown being solved for, so the rotation
     and the inversion (:func:`detector_to_boresight`) are iterated together
     until it settles. :func:`apply_detector_offset` solves a whole trajectory
-    this way; the constant-elevation planners solve one position with it.
+    this way; both forms of the constant-elevation planner solve one position
+    with it.
 
     Parameters
     ----------
@@ -776,7 +786,7 @@ def _solve_boresight(
     # Horizon-frame projection: the rotation is mechanical only; the
     # parallactic angle is a horizon-to-celestial quantity and has no place in
     # an az/el projection. Each pass shrinks the elevation error by a factor of
-    # at most the offset radius in radians (0.031 for the inner ring).
+    # at most the offset radius in radians.
     bore_el = det_el
     for _ in range(_INVERSE_MAX_ITERATIONS):
         rotation = compute_focal_plane_rotation(bore_el, site=site, offset=offset)

@@ -838,7 +838,7 @@ class TestValidateTrajectoryVelocityColumns:
             )
         assert _velocity_messages(block.trajectory, site) == []
 
-    @pytest.mark.parametrize("offset", [None, get_primecam_offset("i1")], ids=["boresight", "i1"])
+    @pytest.mark.parametrize("offset", [None, get_primecam_offset("IM5")], ids=["boresight", "IM5"])
     def test_constant_el_scan_at_velocity_ceiling_gains_no_warning(self, site, offset):
         """A constant-elevation scan at the azimuth limit, with or without an offset, is clean.
 
@@ -988,7 +988,7 @@ class TestIntegralVelocityEqualsPosition:
         from fyst_trajectories.planning import plan_source_ces
         from fyst_trajectories.primecam import PRIMECAM_MODULES
 
-        modules = [PRIMECAM_MODULES[k] for k in ("c", "i1", "i2", "i3", "i4", "i5", "i6")]
+        modules = list(PRIMECAM_MODULES.values())
         block = plan_source_ces(
             body="jupiter",
             footprint=modules,

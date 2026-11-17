@@ -9,8 +9,8 @@ the scan elevation, not only along the field centre. These tests pin:
   included. An injected model is asked about a grid of azimuth columns.
   Without the option the result is unchanged.
 - the constant-elevation branch of ``_compute_scan_duration``, which
-  refuses a visit whose corridor holds the Sun's azimuth while its field
-  centre is clear.
+  refuses a visit whose corridor reaches into the exclusion zone while its
+  field centre is clear.
 - the Sun advisory of a rebuilt constant-elevation block, which describes
   the block's own window rather than the visit's whole crossing pass.
 - (slow) a 24-hour five-patch night whose rebuilt constant-elevation
@@ -240,10 +240,21 @@ class TestInjectedModelSpan:
             )
 
 
-# The field is at el 75 in azimuth ~240 while the Sun, near el 55, sits at
-# azimuth ~98: the centre is clear, but the visit's corridor at el 55 runs
-# from ~105 to ~261 deg and crosses the Sun's side of the sky.
-_OVERHEAD_SUN = Time("2026-12-15T13:55:00", scale="utc")
+# The field centre is at el 63 in azimuth ~174 while the Sun, near el 48,
+# sits at azimuth ~260: at el 55 the centre's azimuth is 50.5 deg from the
+# Sun, but the setting pass about to open sweeps (198.5, 223.7) deg at el 55,
+# whose high end is 23.5 deg from it.
+_LOW_SUN = Time("2026-12-15T19:30:00", scale="utc")
+_SOUTH_SETTING = ObservingPatch(
+    name="SouthSetting",
+    ra_center=312.84,
+    dec_center=-50.0,
+    width=40.0,
+    height=10.0,
+    scan_type="constant_el",
+    velocity=1.0,
+    elevation=55.0,
+)
 _W4 = ObservingPatch(
     name="W4",
     ra_center=210.0,
@@ -257,16 +268,16 @@ _W4 = ObservingPatch(
 
 
 def test_ce_visit_is_refused_when_its_corridor_meets_the_zone(coordinates, site):
-    end_time = _OVERHEAD_SUN + TimeDelta(12 * 3600, format="sec")
-    plan = _ce_visit_plan(_W4, 55.0, _OVERHEAD_SUN, end_time, coordinates, {}, 480.0)
+    end_time = _LOW_SUN + TimeDelta(12 * 3600, format="sec")
+    plan = _ce_visit_plan(_SOUTH_SETTING, 55.0, _LOW_SUN, end_time, coordinates, {}, 480.0)
     assert plan is not None
-    _, t_open, t_close = plan
-    corridor = min((t_close - _OVERHEAD_SUN).sec, (end_time - _OVERHEAD_SUN).sec)
+    rising, t_open, t_close = plan
+    corridor = min((t_close - _LOW_SUN).sec, (end_time - _LOW_SUN).sec)
 
     centre_only = _time_until_sun_unsafe(
-        _W4.ra_center,
-        _W4.dec_center,
-        _OVERHEAD_SUN,
+        _SOUTH_SETTING.ra_center,
+        _SOUTH_SETTING.dec_center,
+        _LOW_SUN,
         corridor,
         coordinates,
         site.sun_avoidance.exclusion_radius,
@@ -274,15 +285,22 @@ def test_ce_visit_is_refused_when_its_corridor_meets_the_zone(coordinates, site)
     )
     assert centre_only > 3600.0  # the field centre alone would book the hours
 
-    lo, hi = _ce_swept_az_envelope(_W4, t_open, t_close, coordinates)
-    sun_az, sun_el = coordinates.get_sun_altaz(_OVERHEAD_SUN)
+    lo, hi = _ce_swept_az_envelope(_SOUTH_SETTING, 55.0, rising, coordinates, t_open)
+    sun_az, sun_el = coordinates.get_sun_altaz(_LOW_SUN)
     edge_sep = coordinates.angular_separation(
         np.array([lo, hi]), 55.0, float(sun_az), float(sun_el)
     )
     assert float(np.min(edge_sep)) < site.sun_avoidance.exclusion_radius
 
     dur = _compute_scan_duration(
-        _W4, _OVERHEAD_SUN, end_time, site, coordinates, OverheadModel(), 55.0
+        _SOUTH_SETTING,
+        _LOW_SUN,
+        end_time,
+        site,
+        coordinates,
+        OverheadModel(),
+        55.0,
+        ce_ready_lead=480.0,
     )
     assert dur == 0.0
 
@@ -342,8 +360,8 @@ def test_five_patch_night_ce_science_clears_the_zone(site, coordinates):
     """Every rebuilt constant-elevation science sample clears the radius.
 
     A 24-hour night with the Sun up for half of it: five 40 x 10 deg fields
-    pinned at 45-55 deg elevation, whose corridors run tens of degrees wider
-    than the fields.
+    pinned at 45-55 deg elevation, each sweeping the range in which its
+    border meets that elevation.
     """
     spec = [
         ("W1", 24.0, -32.0, 50.0),

@@ -165,7 +165,7 @@ def test_source_ces_default_emission_is_nominal_vacuum(site):
     kwargs = dict(
         ra=180.0,
         dec=-30.0,
-        footprint="i1",
+        footprint="IM6",
         el_bore=40.0,
         night=_SOURCE_NIGHT,
         mode="setting",

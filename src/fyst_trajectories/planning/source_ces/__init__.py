@@ -29,6 +29,7 @@ from __future__ import annotations
 import dataclasses
 import warnings
 from collections.abc import Sequence
+from itertools import pairwise
 from typing import TYPE_CHECKING, Literal
 
 from astropy import units as u
@@ -370,7 +371,7 @@ def compute_source_ces_params(
     >>> from fyst_trajectories.planning import compute_source_ces_params
     >>> params = compute_source_ces_params(
     ...     body="jupiter",
-    ...     footprint="c",
+    ...     footprint="IM0",
     ...     el_bore=35.0,
     ...     night=Time("2026-03-15T00:00:00", scale="utc"),
     ...     mode="rising",
@@ -514,7 +515,7 @@ def plan_source_ces(
         * **InstrumentOffset** - a single offset (e.g. one Prime-Cam
           module). Built as a 50-vertex circle around ``(dx, dy)``
           with radius :data:`~fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG`.
-        * **str** - a named Prime-Cam module ("c", "i1", ...); resolved
+        * **str** - a named Prime-Cam module bay ("IM0", "IM6", ...); resolved
           via :func:`~fyst_trajectories.primecam.get_primecam_offset`.
         * **sequence of InstrumentOffset** - one entry per module;
           footprint is the union of per-module circles; the aggregate
@@ -562,6 +563,11 @@ def plan_source_ces(
         Anchors within a small drift rate of transit are rejected with
         :class:`~fyst_trajectories.exceptions.TargetNotObservableError`; anchor
         away from transit or pass ``el_bore`` explicitly.
+        A pass is found only when the source has not yet entered the cover
+        at the anchor, so re-planning a rising pass from its own
+        ``t0_iso``, a few milliseconds after the source enters, can be
+        refused; re-plan from the anchor the pass was planned from, or
+        earlier.
     mode : {"rising", "setting"}, optional
         Which monotonic arc of the source to use. Required when
         ``night`` is given. With ``window``, omitting ``mode``
@@ -773,7 +779,7 @@ def plan_source_ces(
     >>> from fyst_trajectories.planning import plan_source_ces
     >>> block = plan_source_ces(
     ...     body="jupiter",
-    ...     footprint="c",
+    ...     footprint="IM0",
     ...     el_bore=35.0,
     ...     night=Time("2026-03-15T00:00:00", scale="utc"),
     ...     mode="rising",
@@ -785,7 +791,7 @@ def plan_source_ces(
 
     >>> block = plan_source_ces(
     ...     body="jupiter",
-    ...     footprint="c",
+    ...     footprint="IM0",
     ...     start_time=Time("2026-03-15T21:41:00", scale="utc"),
     ...     site=get_fyst_site(),
     ... )
@@ -1043,7 +1049,11 @@ def plan_source_ces_passes(
         first chronological pass then starts near the anchor, or later for
         a cover that lies beyond the boresight along the source's motion
         (see :func:`plan_source_ces`), and the rest follow at the usual
-        ``el_step`` spacing.
+        ``el_step`` spacing. A pass is found only when the source has not
+        yet entered the cover at the anchor, so re-planning a rising pass
+        from its own ``t0_iso``, a few milliseconds after the source
+        enters, can be refused; re-plan from the anchor the passes were
+        planned from, or earlier.
     mode : {"rising", "setting"}, optional
         Direction of the source arc, forwarded to each pass. With
         ``start_time`` and no ``mode``, taken from the elevation slope
@@ -1135,7 +1145,7 @@ def plan_source_ces_passes(
     >>> from fyst_trajectories.planning import plan_source_ces_passes
     >>> blocks = plan_source_ces_passes(
     ...     body="jupiter",
-    ...     footprint="c",
+    ...     footprint="IM0",
     ...     el_bore=35.0,
     ...     n_passes=3,
     ...     night=Time("2026-03-15T00:00:00", scale="utc"),
@@ -1280,7 +1290,7 @@ def plan_source_ces_passes(
     # reduced below the footprint eta extent), so surface it.
     n_overlaps = sum(
         1
-        for a, b in zip(tagged, tagged[1:])
+        for a, b in pairwise(tagged)
         if Time(b.computed_params["t0_iso"], scale="utc").unix
         < Time(a.computed_params["t1_iso"], scale="utc").unix
     )

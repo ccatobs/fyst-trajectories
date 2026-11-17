@@ -36,32 +36,32 @@ Quick Example
     )
 
     # Predefined PrimeCam module offset, ready for TrajectoryBuilder.for_detector()
-    i1_offset = get_primecam_offset("i1")
+    im6_offset = get_primecam_offset("IM6")
 
 Prime-Cam Modules
 -----------------
 
-Module names label focal-plane positions (one on-axis, six on the inner
-ring), not the instrument modules that occupy them. The six ring
-positions differ only in clocking: ``i1`` sits at focal-plane angle -90°
-and ``i1`` .. ``i6`` step counterclockwise in the focal-plane
-(cross-elevation, elevation) frame, the orientation
-:func:`~fyst_trajectories.visualization.plot_array_footprint` draws.
-See :doc:`../instrument_offsets` for the offset table and for the naming
-convention, which awaits as-built confirmation.
+Module names label focal-plane positions (one on-axis bay, ``IM0``, and
+six on the inner ring), not the instrument modules that occupy them. The
+six ring bays differ only in clocking: ``IM1`` sits at focal-plane angle
+180° and ``IM2`` .. ``IM6`` step clockwise by 60° in the focal-plane
+(cross-elevation, elevation) frame seen looking out at the sky, the
+orientation :func:`~fyst_trajectories.visualization.plot_array_footprint`
+draws. See :doc:`../instrument_offsets` for the offset table and for the
+naming convention; the positions await an on-sky check.
 
-.. py:data:: PRIMECAM_CENTER
-             PRIMECAM_I1
-             PRIMECAM_I2
-             PRIMECAM_I3
-             PRIMECAM_I4
-             PRIMECAM_I5
-             PRIMECAM_I6
+.. py:data:: PRIMECAM_IM0
+             PRIMECAM_IM1
+             PRIMECAM_IM2
+             PRIMECAM_IM3
+             PRIMECAM_IM4
+             PRIMECAM_IM5
+             PRIMECAM_IM6
 
    The seven positions as :class:`~fyst_trajectories.offsets.InstrumentOffset`
    constants, the same objects
-   :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` holds under ``"c"``
-   and ``"i1"`` .. ``"i6"``; all seven are also exported from
+   :data:`~fyst_trajectories.primecam.PRIMECAM_MODULES` holds under
+   ``"IM0"`` .. ``"IM6"``; all seven are also exported from
    ``fyst_trajectories``.
 
 .. autodata:: fyst_trajectories.primecam.MODULE_FOV_RADIUS_DEG

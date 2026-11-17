@@ -9,6 +9,7 @@ unavailable.
 import importlib.util
 import subprocess
 import sys
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -141,8 +142,8 @@ class TestPlotHitMap:
     def test_default_modules_draw_one_key_labelled_panel_per_module(self):
         """Without ``modules`` the seven PrimeCam modules fill a 2 x 4 grid.
 
-        The alias ``"center"`` is drawn once, under its first key ``"c"``,
-        and the eighth axes of the grid is hidden.
+        Each panel is titled with its key, ``"IM0"`` to ``"IM6"``, and the
+        eighth axes of the grid is hidden.
         """
         pytest.importorskip("scipy")
         trajectory = _make_simple_trajectory(with_start_time=True)
@@ -150,10 +151,25 @@ class TestPlotHitMap:
         fig = plot_hit_map(trajectory, title="All modules", show=False)
 
         titles = [ax.get_title(loc="left") for ax in fig.axes if ax.get_title(loc="left")]
-        assert titles == ["c", "i1", "i2", "i3", "i4", "i5", "i6"]
+        assert titles == ["IM0", "IM1", "IM2", "IM3", "IM4", "IM5", "IM6"]
         assert sum(not ax.get_visible() for ax in fig.axes) == 1
         assert tuple(fig.get_size_inches()) == pytest.approx((24.0, 10.0))
         assert fig.get_suptitle() == "All modules"
+
+    def test_keys_naming_one_offset_draw_one_panel_under_the_first_key(self):
+        """Two keys that reference the same offset draw it once, titled with the first."""
+        trajectory = _make_simple_trajectory(with_start_time=True)
+        centre = InstrumentOffset(dx=0.0, dy=0.0, name="centre")
+        modules = {
+            "c": centre,
+            "center": centre,
+            "right": InstrumentOffset(dx=5.0, dy=0.0, name="right"),
+        }
+
+        fig = plot_hit_map(trajectory, modules=modules, fov_radius_deg=None, show=False)
+
+        titles = [ax.get_title(loc="left") for ax in fig.axes if ax.get_title(loc="left")]
+        assert titles == ["c", "right"]
 
     def test_caller_axes_are_drawn_into_without_layout_or_show(self, monkeypatch):
         """With ``axes`` the caller's figure comes back, neither laid out nor shown."""
@@ -328,7 +344,7 @@ class TestHitMapRaTicks:
         assert len(texts) >= 2
         assert len(set(texts)) == len(texts), texts
         boxes = sorted(boxes, key=lambda b: b.x0)
-        gaps = [b.x0 - a.x1 for a, b in zip(boxes, boxes[1:])]
+        gaps = [b.x0 - a.x1 for a, b in pairwise(boxes)]
         assert min(gaps) >= 2.0, (texts, gaps)
 
     def test_narrow_field_ticks_are_distinct_whole_minutes(self):
@@ -403,7 +419,7 @@ class TestHitMapRaTicks:
         assert len(set(texts)) == len(texts), texts
         assert all(text.endswith("$^{s}$") for text in texts), texts
         boxes = sorted(boxes, key=lambda b: b.x0)
-        gaps = [b.x0 - a.x1 for a, b in zip(boxes, boxes[1:])]
+        gaps = [b.x0 - a.x1 for a, b in pairwise(boxes)]
         assert min(gaps) > 0.0, (texts, gaps)
 
     def test_axis_with_two_whole_minutes_keeps_minute_ticks(self):

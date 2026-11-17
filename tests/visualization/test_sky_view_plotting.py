@@ -368,7 +368,7 @@ def test_footprint_outlines_are_exact_on_sky(el_b):
         for offset in {id(o): o for o in PRIMECAM_MODULES.values()}.values()
         if offset.dx or offset.dy
     )
-    for (lo, hi), rho in zip(spans[1:], rhos):
+    for (lo, hi), rho in zip(spans[1:], rhos, strict=True):
         assert (lo, hi) == pytest.approx(
             (rho - MODULE_FOV_RADIUS_DEG, rho + MODULE_FOV_RADIUS_DEG), abs=2e-3
         )

@@ -81,7 +81,11 @@ def plan_daisy_altaz_scan(
         place the Sun for the center's sun-safety pre-flight check, and to
         time the Sun screen of the built block.
     duration : float
-        Observation duration in seconds. Must be positive.
+        Observation duration in seconds. Must be positive. The samples fall
+        a whole ``timestep`` apart from the start, the last one before
+        ``duration``, so the built trajectory is up to one ``timestep``
+        shorter; ``ScanBlock.duration``, ``computed_params["duration"]`` and
+        the summary give the built length.
     timestep : float, optional
         Time between trajectory points in seconds. Default is 0.1. Must be
         positive.
@@ -192,6 +196,7 @@ def plan_daisy_altaz_scan(
         atmosphere=atmosphere,
         detector_offset=detector_offset,
     )
+    duration = trajectory.duration
 
     _check_trajectory_sun_safety(
         site=site,

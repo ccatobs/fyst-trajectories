@@ -119,7 +119,10 @@ limits as keyword defaults (pass ``az_speed=`` and the others there).
      - Default
      - Override
    * - Nasmyth port
-     - ``"right"`` (+1 sign)
+     - ``"right"`` (+1): the focal plane turns counter-clockwise on the
+       sky, seen looking out, as the elevation increases; from the
+       instrument team's optical model of the receiver, awaiting an
+       on-sky check
      - module constant ``site.FYST_NASMYTH_PORT``
    * - Sun exclusion / warning radii
      - 45° / 50° (the Prime-Cam observing baseline, not yet formalised in
@@ -149,16 +152,17 @@ limits as keyword defaults (pass ``az_speed=`` and the others there).
      - module constant ``primecam.INNER_RING_RADIUS_MM``, a distance on the
        telescope focal surface, read once at import; for another radius
        build the offsets with ``InstrumentOffset.from_focal_plane``
-   * - Prime-Cam inner-ring ordering (clocking and parity)
-     - ``i1`` at focal-plane angle -90°, ``i1`` .. ``i6`` counterclockwise
-       in the focal-plane (cross-elevation, elevation) frame, the
+   * - Prime-Cam bay positions
+     - ``IM1`` at focal-plane angle 180° and ``IM2`` .. ``IM6`` stepping
+       clockwise by 60°, angles counter-clockwise from the direction of
+       increasing azimuth looking out at the sky at elevation 0°, the
        orientation
        :func:`~fyst_trajectories.visualization.plot_array_footprint`
-       draws; the mapping to the instrument team's ``IM0`` .. ``IM6``
-       labels is pending confirmation (see :doc:`instrument_offsets`)
-     - module constants ``primecam.PRIMECAM_I1`` .. ``PRIMECAM_I6``, fixed
-       at import; pass your own ``InstrumentOffset`` to ``.for_detector()``
-       or ``detector_offset=`` instead
+       draws; from the instrument team's optical model of the receiver,
+       awaiting an on-sky check (see :doc:`instrument_offsets`)
+     - module constants ``primecam.PRIMECAM_IM1`` .. ``PRIMECAM_IM6``,
+       fixed at import; pass your own ``InstrumentOffset`` to
+       ``.for_detector()`` or ``detector_offset=`` instead
    * - Retune interval (in-scan)
      - 300 s
      - ``inject_retune(retune_interval=...)``
@@ -182,7 +186,7 @@ limits as keyword defaults (pass ``az_speed=`` and the others there).
      - pointing 3600 s, focus 7200 s, planet cal 43 200 s
      - ``CalibrationPolicy(pointing_cadence=, ...)``
    * - Planet-calibration scan geometry
-     - parked block; 3 passes on ``c`` if ``planet_cal_scan=True``
+     - parked block; 3 passes on ``IM0`` if ``planet_cal_scan=True``
      - ``CalibrationPolicy(planet_cal_passes=, planet_cal_footprint=, ...)``
    * - Calibration-night scan tables and scan azimuth speed / acceleration
      - ``DEFAULT_SCAN_TABLES["default"]``; 1.5 deg/s, 1.0 deg/s²
@@ -192,13 +196,8 @@ limits as keyword defaults (pass ``az_speed=`` and the others there).
      - 20 s: PCS's ``SCAN_DISPATCH_BUFFER_SEC`` (10 s) plus about 10 s
        for the dispatch path
      - ``CalibrationNightPolicy(dispatch_lead_seconds=)``
-   * - Constant-elevation azimuth range
-     - projection of the whole field over the whole pass (not an
-       elevation-band drift corridor)
-     - ``plan_constant_el_window_scan(az_window=)`` sweeps a given window
-       from a literal start
    * - Constant-elevation azimuth padding
-     - 2.0° per side
+     - 0° per side
      - ``plan_constant_el_scan(az_padding=)``
 
 Indices and tables

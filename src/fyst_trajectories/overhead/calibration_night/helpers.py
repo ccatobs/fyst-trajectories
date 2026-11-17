@@ -117,7 +117,7 @@ def module_crossings(
     :func:`~fyst_trajectories.planning.source_ces_focal_plane_track` and,
     for each module, reports the fraction of trajectory samples whose
     source position lies within ``fov_radius_deg`` of the module centre.
-    Alias keys that name one offset are reported once under the first key.
+    Keys that name one offset are reported once under the first key.
 
     Parameters
     ----------

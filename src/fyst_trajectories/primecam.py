@@ -1,16 +1,40 @@
 """Prime-Cam instrument configuration.
 
 Pre-defined module offsets for the Prime-Cam focal-plane instrument on FYST.
-Prime-Cam has one center module on the optical axis and six inner-ring modules
-at 461.3 mm radius, spaced 60 degrees apart.
+Prime-Cam has seven module bays: ``IM0`` on the optical axis and ``IM1`` ..
+``IM6`` on an inner ring of 461.3 mm radius, spaced 60 degrees apart.
 
-The names ``c`` and ``i1`` .. ``i6`` label focal-plane positions, not the
-instrument modules that occupy them. The Prime-Cam team's ``IM0`` .. ``IM6``
-designations for the same positions do not correspond index-for-index to
-these labels; see :doc:`/instrument_offsets` before translating between
-the two schemes. ``IM0`` is accepted anywhere a module name is (an alias
-for the on-axis position ``c``); the ring designations ``IM1`` .. ``IM6``
-are rejected until the as-built correspondence is confirmed.
+The names ``IM0`` .. ``IM6`` are the Prime-Cam instrument team's
+designations (Keller et al. 2026, "CCAT: Design and Characterization of the
+350 GHz Instrument Module", arXiv:2608.05121, Fig. 1). They label bay
+positions, not the instrument modules that occupy them. Lookup ignores case,
+and ``c`` and ``center`` are accepted wherever a module name is, as
+spellings of ``IM0``.
+
+The bay angles below are seen looking out at the sky, with elevation up and
+azimuth increasing to the right, and are measured counter-clockwise from
++cross-elevation (``+dx``, toward increasing azimuth) at boresight
+elevation 0. Under the default rotation sign (``nasmyth_port="right"``, see
+:attr:`~fyst_trajectories.site.Site.nasmyth_sign`) the focal plane turns
+counter-clockwise on the sky by the boresight elevation, so a bay sits at
+its angle plus the boresight elevation. ``IM1`` to ``IM6`` run clockwise in
+this view.
+
+=====  ===========
+Bay    Angle (deg)
+=====  ===========
+IM0    on axis
+IM1    180
+IM2    120
+IM3    60
+IM4    0
+IM5    -60
+IM6    -120
+=====  ===========
+
+The positions follow the instrument team's optical model of the receiver;
+an on-sky check is still to come (see the pending-verification list on the
+documentation index).
 
 The module positions are converted from physical coordinates (mm) on the
 telescope focal surface, where the module bays sit, to angular offsets
@@ -27,15 +51,15 @@ Examples
 Get a named module offset:
 
 >>> from fyst_trajectories.primecam import get_primecam_offset
->>> offset = get_primecam_offset("i1")
+>>> offset = get_primecam_offset("IM6")
 >>> f"{offset.name}: dx={offset.dx:.1f}', dy={offset.dy:.1f}'"
-"PrimeCam-I1: dx=0.0', dy=-106.8'"
+"PrimeCam-IM6: dx=-53.4', dy=-92.5'"
 
 List available modules:
 
 >>> from fyst_trajectories.primecam import PRIMECAM_MODULES
->>> print(sorted(PRIMECAM_MODULES.keys()))
-['c', 'center', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']
+>>> print(list(PRIMECAM_MODULES))
+['IM0', 'IM1', 'IM2', 'IM3', 'IM4', 'IM5', 'IM6']
 """
 
 from collections.abc import Mapping, Sequence
@@ -47,21 +71,26 @@ from ._validation import _require_finite, _require_positive
 from .offsets import InstrumentOffset
 from .site import FYST_PLATE_SCALE
 
-# Module positions use standard polar convention: x = r*cos(theta),
-# y = r*sin(theta), where theta is measured counterclockwise from the
-# +x axis. At zero focal-plane rotation, x is the cross-elevation direction
-# and y is the elevation direction.
-# UNVERIFIED: see "Pending instrument verification" in docs/index.rst
-# (plate scale, inner ring radius, and inner-ring ordering/parity). The
-# on-sky angular offsets of every off-axis module scale linearly with the
-# first two, so wrong values produce correlated astrometric biases across
-# the inner-ring modules. An ordering/parity error would permute module
-# labels without moving the ring positions; instrument_rotation=0 further
-# assumes the cryostat is not clocked relative to the Nasmyth flange.
+# Bay positions on the telescope focal surface at boresight elevation 0, seen
+# looking out at the sky: x is the cross-elevation direction (toward
+# increasing azimuth), y the elevation direction, and a bay at angle theta
+# (counter-clockwise from +x) sits at x = R*cos(theta), y = R*sin(theta).
+# The coordinates are written from R, R/2 and R*sqrt(3)/2 rather than from
+# cos and sin, so IM1 and IM4 lie exactly on the x axis and every mirror pair
+# is an exact negation.
+# Awaiting confirmation: see "Pending instrument verification" in
+# docs/index.rst (plate scale, inner ring radius, and the on-sky check of the
+# bay positions). The on-sky angular offsets of every off-axis bay scale
+# linearly with the first two, so wrong values produce correlated astrometric
+# biases across the inner ring. instrument_rotation=0 further assumes the
+# cryostat is not clocked relative to the Nasmyth flange.
 
 INNER_RING_RADIUS_MM = 461.3
 """Inner ring module distance from the optical axis in millimeters, on the
 telescope focal surface."""
+
+_RING_HALF_MM = INNER_RING_RADIUS_MM / 2.0
+_RING_SQRT3_HALF_MM = INNER_RING_RADIUS_MM * np.sqrt(3.0) / 2.0
 
 
 MODULE_FOV_RADIUS_DEG: float = 0.65
@@ -76,8 +105,8 @@ The 0.65 deg value is the published Prime-Cam per-module field of view: each
 module has up to a 1.3 deg **diameter** on sky (Vavagiakis et al. 2022,
 "CCAT-prime: Design of the Mod-Cam receiver and 280 GHz MKID instrument
 module", Proc. SPIE, arXiv:2208.05468), i.e. a 0.65 deg **radius**. This is an
-upper bound across modules; a candidate design for the 850 GHz module gives it
-a 1.1 deg **diameter** (Chapman et al. 2022, "CCAT-prime: The 850 GHz camera for
+upper bound across modules; one module's candidate design gives it a 1.1 deg
+**diameter** (Chapman et al. 2022, "CCAT-prime: The 850 GHz camera for
 Prime-Cam on FYST", Proc. SPIE, arXiv:2208.10634), so 0.65 deg over-covers it by
 design, pending an as-built per-module measurement. The illuminated detector wafer is smaller
 than the optical field, so 0.65 deg is the field-of-view figure to cover with,
@@ -88,115 +117,126 @@ to override.
 """
 
 
-PRIMECAM_CENTER = InstrumentOffset(dx=0.0, dy=0.0, name="PrimeCam-Center")
-
-# Inner ring modules: 6 positions at 60-degree intervals.
-# theta is the angular position on the ring (counterclockwise from +x axis).
-
-PRIMECAM_I1 = InstrumentOffset.from_focal_plane(
+PRIMECAM_IM0 = InstrumentOffset.from_focal_plane(
     x_mm=0.0,
-    y_mm=-INNER_RING_RADIUS_MM,
+    y_mm=0.0,
     plate_scale=FYST_PLATE_SCALE,
-    name="PrimeCam-I1",
-)  # theta=-90 deg
+    name="PrimeCam-IM0",
+)  # on the optical axis
 
-PRIMECAM_I2 = InstrumentOffset.from_focal_plane(
-    x_mm=INNER_RING_RADIUS_MM * np.cos(np.deg2rad(-30)),
-    y_mm=INNER_RING_RADIUS_MM * np.sin(np.deg2rad(-30)),
+PRIMECAM_IM1 = InstrumentOffset.from_focal_plane(
+    x_mm=-INNER_RING_RADIUS_MM,
+    y_mm=0.0,
     plate_scale=FYST_PLATE_SCALE,
-    name="PrimeCam-I2",
-)  # theta=-30 deg
+    name="PrimeCam-IM1",
+)  # theta=180 deg
 
-PRIMECAM_I3 = InstrumentOffset.from_focal_plane(
-    x_mm=INNER_RING_RADIUS_MM * np.cos(np.deg2rad(30)),
-    y_mm=INNER_RING_RADIUS_MM * np.sin(np.deg2rad(30)),
+PRIMECAM_IM2 = InstrumentOffset.from_focal_plane(
+    x_mm=-_RING_HALF_MM,
+    y_mm=_RING_SQRT3_HALF_MM,
     plate_scale=FYST_PLATE_SCALE,
-    name="PrimeCam-I3",
-)  # theta=30 deg
+    name="PrimeCam-IM2",
+)  # theta=120 deg
 
-PRIMECAM_I4 = InstrumentOffset.from_focal_plane(
-    x_mm=0.0,
-    y_mm=INNER_RING_RADIUS_MM,
+PRIMECAM_IM3 = InstrumentOffset.from_focal_plane(
+    x_mm=_RING_HALF_MM,
+    y_mm=_RING_SQRT3_HALF_MM,
     plate_scale=FYST_PLATE_SCALE,
-    name="PrimeCam-I4",
-)  # theta=90 deg
+    name="PrimeCam-IM3",
+)  # theta=60 deg
 
-PRIMECAM_I5 = InstrumentOffset.from_focal_plane(
-    x_mm=INNER_RING_RADIUS_MM * np.cos(np.deg2rad(150)),
-    y_mm=INNER_RING_RADIUS_MM * np.sin(np.deg2rad(150)),
+PRIMECAM_IM4 = InstrumentOffset.from_focal_plane(
+    x_mm=INNER_RING_RADIUS_MM,
+    y_mm=0.0,
     plate_scale=FYST_PLATE_SCALE,
-    name="PrimeCam-I5",
-)  # theta=150 deg
+    name="PrimeCam-IM4",
+)  # theta=0 deg
 
-PRIMECAM_I6 = InstrumentOffset.from_focal_plane(
-    x_mm=INNER_RING_RADIUS_MM * np.cos(np.deg2rad(-150)),
-    y_mm=INNER_RING_RADIUS_MM * np.sin(np.deg2rad(-150)),
+PRIMECAM_IM5 = InstrumentOffset.from_focal_plane(
+    x_mm=_RING_HALF_MM,
+    y_mm=-_RING_SQRT3_HALF_MM,
     plate_scale=FYST_PLATE_SCALE,
-    name="PrimeCam-I6",
-)  # theta=-150 deg
+    name="PrimeCam-IM5",
+)  # theta=-60 deg
+
+PRIMECAM_IM6 = InstrumentOffset.from_focal_plane(
+    x_mm=-_RING_HALF_MM,
+    y_mm=-_RING_SQRT3_HALF_MM,
+    plate_scale=FYST_PLATE_SCALE,
+    name="PrimeCam-IM6",
+)  # theta=-120 deg
 
 PRIMECAM_MODULES: Mapping[str, InstrumentOffset] = MappingProxyType(
     {
-        "c": PRIMECAM_CENTER,
-        "center": PRIMECAM_CENTER,
-        "i1": PRIMECAM_I1,
-        "i2": PRIMECAM_I2,
-        "i3": PRIMECAM_I3,
-        "i4": PRIMECAM_I4,
-        "i5": PRIMECAM_I5,
-        "i6": PRIMECAM_I6,
+        "IM0": PRIMECAM_IM0,
+        "IM1": PRIMECAM_IM1,
+        "IM2": PRIMECAM_IM2,
+        "IM3": PRIMECAM_IM3,
+        "IM4": PRIMECAM_IM4,
+        "IM5": PRIMECAM_IM5,
+        "IM6": PRIMECAM_IM6,
     }
 )
-"""Read-only mapping of module names to InstrumentOffset instances."""
+"""Read-only mapping of the bay names ``IM0`` .. ``IM6`` to InstrumentOffset instances."""
 
-# The instrument team designates the same focal-plane positions IM0 .. IM6
-# (Keller et al. 2026, "CCAT: Design and Characterization of the 350 GHz
-# Instrument Module", arXiv:2608.05121, Fig. 1). Only the on-axis entry is
-# aliased here: the ring correspondence is NOT index-for-index (the two
-# schemes number the ring in opposite senses on sky) and awaits as-built
-# confirmation, so IM1 .. IM6 are deliberately rejected until it lands.
-# When it does, the ring entries are added here and nowhere else.
-_IM_TO_POSITION: dict[str, str] = {
-    "im0": "c",
+# Every name get_primecam_offset takes, lower-cased: the seven bays and the two
+# spellings of the on-axis bay.
+_MODULES_BY_LOWER_NAME: dict[str, InstrumentOffset] = {
+    **{name.lower(): offset for name, offset in PRIMECAM_MODULES.items()},
+    "c": PRIMECAM_IM0,
+    "center": PRIMECAM_IM0,
 }
+
+# i1..i6 name no position in this library (they are not bays); a lookup of one
+# gets the note below.
+_RETIRED_RING_LABELS = frozenset(f"i{n}" for n in range(1, 7))
+_RETIRED_RING_LABEL_NOTE = (
+    ". The labels i1..i6 are no longer defined: the ring is the bays IM1..IM6, "
+    "at different positions, and i<n> is not IM<n>."
+)
 
 
 def get_primecam_offset(module_name: str) -> InstrumentOffset:
-    """Get the offset for a Prime-Cam module by name.
+    """Get the offset for a Prime-Cam module bay by name.
 
     Parameters
     ----------
     module_name : str
-        Module name (e.g., "c", "center", "i1", "i2", ..., "i6"). The
-        instrument team's ``"IM0"`` is accepted as an alias for the
-        on-axis position; ``"IM1"`` .. ``"IM6"`` are rejected until the
-        as-built correspondence to the ``i`` labels is confirmed.
+        Bay name, ``"IM0"`` .. ``"IM6"``, in any case. ``"c"`` and
+        ``"center"`` (in any case) name the on-axis bay ``IM0``.
 
     Returns
     -------
     InstrumentOffset
-        The offset for the specified module.
+        The offset for the specified bay.
 
     Raises
     ------
     KeyError
-        If the module name is not recognized.
+        If the name is not recognized. The message lists the bay names.
+    TypeError
+        If ``module_name`` is not a str.
 
     Examples
     --------
-    >>> offset = get_primecam_offset("i1")
+    >>> offset = get_primecam_offset("IM6")
     >>> f"{offset.dx:.1f}', {offset.dy:.1f}'"
-    "0.0', -106.8'"
+    "-53.4', -92.5'"
 
-    >>> get_primecam_offset("IM0").name
-    'PrimeCam-Center'
+    >>> get_primecam_offset("c").name
+    'PrimeCam-IM0'
     """
+    if not isinstance(module_name, str):
+        raise TypeError(f"module_name must be a str, got {type(module_name).__name__}")
     key = module_name.lower()
-    key = _IM_TO_POSITION.get(key, key)
-    if key not in PRIMECAM_MODULES:
-        available = ", ".join(sorted([*PRIMECAM_MODULES, *_IM_TO_POSITION]))
-        raise KeyError(f"Unknown PrimeCam module '{module_name}'. Available: {available}")
-    return PRIMECAM_MODULES[key]
+    offset = _MODULES_BY_LOWER_NAME.get(key)
+    if offset is None:
+        available = ", ".join(PRIMECAM_MODULES)
+        message = f"Unknown PrimeCam module '{module_name}'. Available: {available}"
+        if key in _RETIRED_RING_LABELS:
+            message += _RETIRED_RING_LABEL_NOTE
+        raise KeyError(message)
+    return offset
 
 
 def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
@@ -212,15 +252,15 @@ def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
     Parameters
     ----------
     tag : str or sequence of str
-        ``"i1,i2"`` (exact module names, comma-separated), a sequence of
-        names (``["i1", "i2"]``), or ``"all"`` for every module
-        (``c, i1..i6``). Case-insensitive; whitespace ignored. ``c`` and
-        ``center`` are the same module and are de-duplicated.
+        ``"IM5,IM6"`` (bay names, comma-separated), a sequence of names
+        (``["IM5", "IM6"]``), or ``"all"`` for every bay (``IM0`` ..
+        ``IM6``). Case-insensitive; whitespace ignored. Names of the same
+        bay (``IM0``, ``c`` and ``center``) are de-duplicated.
 
     Returns
     -------
     list of InstrumentOffset
-        One offset per distinct module, in input order.
+        One offset per distinct bay, in input order.
 
     Raises
     ------
@@ -229,20 +269,27 @@ def resolve_module_tag(tag: str | Sequence[str]) -> list[InstrumentOffset]:
     ValueError
         If the tag resolves to no modules.
     TypeError
-        If ``tag`` is not a str or a sequence.
+        If ``tag`` is not a str or a sequence, or is a sequence holding an
+        element that is not a str.
 
     Examples
     --------
-    >>> [o.name for o in resolve_module_tag("i1,i2")]
-    ['PrimeCam-I1', 'PrimeCam-I2']
+    >>> [o.name for o in resolve_module_tag("IM5,IM6")]
+    ['PrimeCam-IM5', 'PrimeCam-IM6']
     """
     if isinstance(tag, str):
         if tag.strip().lower() == "all":
-            names = [k for k in PRIMECAM_MODULES if k != "center"]
+            names = list(PRIMECAM_MODULES)
         else:
             names = [n.strip() for n in tag.split(",") if n.strip()]
     elif isinstance(tag, Sequence) and not isinstance(tag, (bytes, bytearray)):
-        names = [str(n).strip() for n in tag if str(n).strip()]
+        for index, name in enumerate(tag):
+            if not isinstance(name, str):
+                raise TypeError(
+                    "tag must be a str or sequence of str, got "
+                    f"{type(name).__name__} at index {index} of {type(tag).__name__}"
+                )
+        names = [n.strip() for n in tag if n.strip()]
     else:
         raise TypeError(f"tag must be a str or sequence of str, got {type(tag).__name__}")
 
@@ -271,14 +318,14 @@ def resolve_offset(
     Provides a single entry point for converting user-facing offset
     specifications into an InstrumentOffset. Handles three cases:
 
-    1. Named Prime-Cam module (e.g., "i1", "center") -> predefined offset
+    1. Named Prime-Cam bay (e.g., "IM3", "center") -> predefined offset
     2. Custom dx/dy values in arcminutes -> new InstrumentOffset
     3. Neither specified -> None (boresight pointing)
 
     Parameters
     ----------
     module : str, optional
-        Prime-Cam module name (e.g., "i1", "i3"). Looks up predefined offset.
+        Prime-Cam bay name (e.g., "IM3", "IM6"). Looks up predefined offset.
     dx : float, optional
         Custom cross-elevation offset in arcminutes.
     dy : float, optional
@@ -299,14 +346,17 @@ def resolve_offset(
     KeyError
         If ``module`` is not a recognised module name (from
         :func:`get_primecam_offset`).
+    TypeError
+        If ``module`` is neither None nor a str (from
+        :func:`get_primecam_offset`).
 
     Examples
     --------
     Named module lookup:
 
-    >>> offset = resolve_offset(module="i3")
+    >>> offset = resolve_offset(module="IM3")
     >>> f"{offset.dx:.1f}', {offset.dy:.1f}'"
-    "92.5', 53.4'"
+    "53.4', 92.5'"
 
     Custom offset:
 
@@ -351,12 +401,8 @@ def primecam_geometry_dict(
     consumes. Each
     module center is the :class:`~fyst_trajectories.offsets.InstrumentOffset`
     cross-elevation/elevation offset (``xi = dx``, ``eta = dy``), converted from
-    arcminutes to degrees.
-
-    The duplicate ``"center"`` alias of ``"c"`` in :data:`PRIMECAM_MODULES` is
-    dropped, so the result has one slot per physical module, ``"c"`` plus
-    ``"i1"`` .. ``"i6"`` (seven entries). A duplicate would double the cover
-    polygon when the consumer merges queried slots.
+    arcminutes to degrees. The result has one slot per bay, keyed ``"IM0"``
+    .. ``"IM6"`` (seven entries).
 
     Parameters
     ----------
@@ -371,7 +417,7 @@ def primecam_geometry_dict(
     -------
     dict
         ``{name: {"center": [xi_deg, eta_deg], "radius": radius_deg}}`` with
-        seven entries (``"c"``, ``"i1"`` .. ``"i6"``).
+        seven entries (``"IM0"`` .. ``"IM6"``).
 
     Raises
     ------
@@ -389,9 +435,9 @@ def primecam_geometry_dict(
     Examples
     --------
     >>> geom = primecam_geometry_dict()
-    >>> sorted(geom)
-    ['c', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']
-    >>> geom["c"]["center"]
+    >>> list(geom)
+    ['IM0', 'IM1', 'IM2', 'IM3', 'IM4', 'IM5', 'IM6']
+    >>> geom["IM0"]["center"]
     [0.0, 0.0]
     """
     radius_deg = _require_positive(radius_deg, "radius_deg")
@@ -403,5 +449,4 @@ def primecam_geometry_dict(
             "radius": radius_deg,
         }
         for name, offset in PRIMECAM_MODULES.items()
-        if name != "center"
     }

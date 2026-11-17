@@ -154,12 +154,15 @@ For the Gantt view of those windows (one bar lane per target), see
 The offline overhead simulator takes the same predicate through
 ``generate_timeline(sun_safe=)``: it drives the patch-selection Sun
 constraint (unless an explicit ``constraints`` list replaces it), the
-mid-scan duration clips, the slew gate and the escape move. The duration
-clips cut a science scan short rather than run it into the zone: a
-constant-elevation scan is checked across the whole azimuth corridor it
-sweeps, turnarounds included, at the scan elevation, and a pong or daisy
-scan along its field centre. See :doc:`overhead_quickstart` for the
-simulator itself.
+mid-scan duration clips, the slew gate, the escape move, the held poses
+and the booking screen. The duration clips cut a science scan short rather
+than run it into the zone: a constant-elevation scan is checked across the
+whole azimuth corridor it sweeps, turnarounds included, at the elevation
+the telescope scans at, and a pong or daisy scan at every point within the
+pattern's reach of its field centre (with a ``detector_offset``, of the
+boresight's track). See :doc:`overhead_timeline` for the held poses and
+the booking screen, and :doc:`overhead_quickstart` for the simulator
+itself.
 
 Gating a slew at dispatch
 -------------------------
@@ -250,15 +253,15 @@ Where the check runs
        ``validate_sun_avoidance``, or plan through a ``plan_*_scan``.
    * - ``plan_*_scan(..., sun_safe=)``
      - Pre-flight on the field (or horizon) center at the start time.
-       ``plan_constant_el_scan`` additionally sweeps the whole resolved pass
-       at the commanded azimuth envelope, and re-checks the center at the
-       resolved start when ``lsa_window`` delays it.
-       ``plan_pong_altaz_scan`` and ``plan_daisy_altaz_scan`` additionally
-       screen the built trajectory over the whole block: every sample when
-       ``sun_safe`` is omitted, about 600 evenly spaced samples, both ends
-       included, with an injected model.
-       ``plan_constant_el_window_scan`` has no pre-flight and runs that
-       screen alone. Warns (``PointingWarning``), never refuses.
+       ``plan_constant_el_scan``, in both forms, ``plan_pong_altaz_scan``
+       and ``plan_daisy_altaz_scan`` additionally screen the built
+       trajectory over the whole block: every sample when ``sun_safe`` is
+       omitted, about 600 evenly spaced samples, both ends included, with
+       an injected model. ``plan_constant_el_scan`` given a field also
+       re-checks the center at the resolved start when ``lsa_window``
+       delays it; its window form (``az_window`` with ``duration``) has no
+       pre-flight and runs the screen alone. Warns (``PointingWarning``),
+       never refuses.
    * - ``plan_source_ces(...)`` and its siblings
      - Pre-flight sweep along the resolved arc (subsampled in time; at the
        midpoint and both edges of the commanded azimuth envelope, which is
@@ -272,23 +275,28 @@ Where the check runs
      - Reports ``sun_clear`` and ``SUN_TOO_CLOSE``. Never raises.
    * - ``generate_timeline(..., sun_safe=)``
      - The offline night simulator. Excludes unsafe patches, clips
-       scans that would run into the zone, refuses a slew whose direct
-       path crosses it (the tick idles, labelled with the refusal, and
-       the patch is retried once the Sun has moved), and moves a
-       telescope the zone has overtaken while parked out of it before
-       anything else happens there.
+       scans that would run into the zone, books no scan with a sample
+       inside it, refuses a slew whose direct path crosses it (the tick
+       idles, labelled with the refusal, and the patch is retried once the
+       Sun has moved), holds no pose inside it for any part of the block
+       that holds it, and moves a telescope the zone has overtaken, or
+       would reach while it is parked, out of it before anything else
+       happens there.
    * - ``plan_transition(..., sun_safe=, slew_safe=, hold=)``
      - Planning. Chooses the wrap and prices the slew; a refusal is a
        typed ``cause`` on the returned transition, never raised. With
        ``hold`` the goal must also stay clear for that long after
        arrival, so a pose the telescope would have to abandon is refused
        before it is commanded.
-   * - ``plan_escape(..., sun_safe=, slew_safe=)``
+   * - ``plan_escape(..., sun_safe=, slew_safe=, hold=)``
      - Planning. The move out of the zone for a pose it has overtaken:
        the path may start unsafe but never goes more than half a degree
        deeper into the zone than it started, and ends safe; ``None`` when
-       the pose is safe, ``no_escape`` when the
-       zone holds the telescope. Depth is measured against the model's
+       the pose is safe, ``no_escape`` when the zone holds the telescope.
+       With ``hold`` the pose counts as overtaken when the zone reaches it
+       at any instant of the hold, a pose still clear leaves along a path
+       clear throughout, and the end pose must stay clear through the
+       arrival plus the hold. Depth is measured against the model's
        own required separation when it reports one, so a directional
        zone is not judged by raw Sun distance.
    * - ``choose_encoder_solution(..., sun_safe=, slew_safe=)``

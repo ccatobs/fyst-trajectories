@@ -86,6 +86,49 @@ def pytest_addoption(parser):
         default=False,
         help="Run slow tests",
     )
+    parser.addoption(
+        "--fail-on-skip",
+        action="store_true",
+        default=False,
+        help="End with a failing exit status if any selected test or module was skipped",
+    )
+
+
+class _FailOnSkip:
+    """Turn a passing run that skipped anything into a failing one, and name the skips.
+
+    For a run whose purpose is one comparison, where a skip means the comparison
+    did not happen. An expected failure (xfail) is not a skip.
+    """
+
+    def __init__(self):
+        self.skipped = []
+
+    def _record(self, report):
+        if report.skipped and not hasattr(report, "wasxfail"):
+            self.skipped.append(report.nodeid)
+
+    def pytest_collectreport(self, report):
+        self._record(report)
+
+    def pytest_runtest_logreport(self, report):
+        self._record(report)
+
+    def pytest_sessionfinish(self, session):
+        if self.skipped and session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+    def pytest_terminal_summary(self, terminalreporter):
+        if not self.skipped:
+            return
+        terminalreporter.section("skipped under --fail-on-skip", red=True)
+        for nodeid in self.skipped:
+            terminalreporter.write_line(nodeid)
+
+
+def pytest_configure(config):
+    if config.getoption("--fail-on-skip"):
+        config.pluginmanager.register(_FailOnSkip(), "fail-on-skip")
 
 
 def _mark_simulator_tier(items):
